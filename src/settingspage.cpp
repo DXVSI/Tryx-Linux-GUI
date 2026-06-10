@@ -66,15 +66,20 @@ void SettingsPage::setupUi() {
     auto *languageGroup = new QGroupBox(tr("Language"));
     auto *languageLayout = new QGridLayout(languageGroup);
 
-    languageCombo_ = new QComboBox;
-    languageCombo_->addItem(tr("System language"), "system");
-    languageCombo_->addItem(tr("English"), "en");
-    languageCombo_->addItem(tr("Russian"), "ru");
+    languageButton_ = new QToolButton;
+    languageButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    languageButton_->setMinimumWidth(96);
+    languageButton_->setToolTip(tr("Switch interface language"));
+    setSelectedLanguage("system");
 
     languageLayout->addWidget(new QLabel(tr("Interface language:")), 0, 0);
-    languageLayout->addWidget(languageCombo_, 0, 1);
+    languageLayout->addWidget(languageButton_, 0, 1);
 
     mainLayout->addWidget(languageGroup);
+
+    connect(languageButton_, &QToolButton::clicked, this, [this]() {
+        setSelectedLanguage(nextLanguage(selectedLanguage_));
+    });
 
     // Device info
     auto *infoGroup = new QGroupBox(tr("Device"));
@@ -114,12 +119,8 @@ void SettingsPage::loadSettings() {
         }
         keepaliveSpin_->setValue(config->keepalive_interval);
         loadedLanguage_ = QString::fromStdString(config->language);
-        int langIndex = languageCombo_->findData(loadedLanguage_);
-        if (langIndex < 0) {
-            loadedLanguage_ = "system";
-            langIndex = languageCombo_->findData(loadedLanguage_);
-        }
-        languageCombo_->setCurrentIndex(langIndex);
+        setSelectedLanguage(loadedLanguage_);
+        loadedLanguage_ = selectedLanguage_;
     }
 }
 
@@ -143,7 +144,32 @@ bool SettingsPage::startMinimized() const {
 }
 
 QString SettingsPage::selectedLanguage() const {
-    return languageCombo_->currentData().toString();
+    return selectedLanguage_;
+}
+
+QString SettingsPage::languageButtonText(const QString &language) const {
+    if (language == "en") {
+        return tr("EN");
+    }
+    if (language == "ru") {
+        return tr("RU");
+    }
+    return tr("System");
+}
+
+QString SettingsPage::nextLanguage(const QString &language) const {
+    if (language == "system") {
+        return "en";
+    }
+    if (language == "en") {
+        return "ru";
+    }
+    return "system";
+}
+
+void SettingsPage::setSelectedLanguage(const QString &language) {
+    selectedLanguage_ = (language == "en" || language == "ru") ? language : "system";
+    languageButton_->setText(languageButtonText(selectedLanguage_));
 }
 
 void SettingsPage::onRefreshPorts() {
@@ -175,7 +201,7 @@ void SettingsPage::onShowDeviceInfo() {
 void SettingsPage::onResetSettings() {
     portCombo_->setCurrentIndex(0);
     keepaliveSpin_->setValue(10);
-    languageCombo_->setCurrentIndex(languageCombo_->findData("system"));
+    setSelectedLanguage("system");
     cbMinimizeToTray_->setChecked(true);
     cbStartMinimized_->setChecked(false);
     cbAutostart_->setChecked(false);

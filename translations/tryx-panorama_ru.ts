@@ -710,8 +710,8 @@ Planned features:
     </message>
     <message>
         <location filename="../src/settingspage.cpp" line="30"/>
-        <location filename="../src/settingspage.cpp" line="127"/>
-        <location filename="../src/settingspage.cpp" line="152"/>
+        <location filename="../src/settingspage.cpp" line="128"/>
+        <location filename="../src/settingspage.cpp" line="178"/>
         <source>Auto</source>
         <translation>Автоматически</translation>
     </message>
@@ -761,68 +761,85 @@ Planned features:
         <translation>Язык</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="70"/>
-        <source>System language</source>
-        <translation>Системный язык</translation>
-    </message>
-    <message>
-        <location filename="../src/settingspage.cpp" line="71"/>
-        <source>English</source>
-        <translation>Английский</translation>
-    </message>
-    <message>
         <location filename="../src/settingspage.cpp" line="72"/>
-        <source>Russian</source>
-        <translation>Русский</translation>
+        <source>Switch interface language</source>
+        <translation>Переключить язык интерфейса</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="74"/>
+        <source>System language</source>
+        <translation type="vanished">Системный язык</translation>
+    </message>
+    <message>
+        <source>English</source>
+        <translation type="vanished">Английский</translation>
+    </message>
+    <message>
+        <source>Russian</source>
+        <translation type="vanished">Русский</translation>
+    </message>
+    <message>
+        <location filename="../src/settingspage.cpp" line="75"/>
         <source>Interface language:</source>
         <translation>Язык интерфейса:</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="80"/>
-        <location filename="../src/settingspage.cpp" line="167"/>
+        <location filename="../src/settingspage.cpp" line="85"/>
+        <location filename="../src/settingspage.cpp" line="193"/>
         <source>Device</source>
         <translation>Устройство</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="83"/>
+        <location filename="../src/settingspage.cpp" line="88"/>
         <source>Device information</source>
         <translation>Информация об устройстве</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="93"/>
+        <location filename="../src/settingspage.cpp" line="98"/>
         <source>Save</source>
         <translation>Сохранить</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="94"/>
+        <location filename="../src/settingspage.cpp" line="99"/>
         <source>Reset</source>
         <translation>Сбросить</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="167"/>
+        <location filename="../src/settingspage.cpp" line="152"/>
+        <source>EN</source>
+        <translation>EN</translation>
+    </message>
+    <message>
+        <location filename="../src/settingspage.cpp" line="155"/>
+        <source>RU</source>
+        <translation>RU</translation>
+    </message>
+    <message>
+        <location filename="../src/settingspage.cpp" line="157"/>
+        <source>System</source>
+        <translation>Система</translation>
+    </message>
+    <message>
+        <location filename="../src/settingspage.cpp" line="193"/>
         <source>Device not connected</source>
         <translation>Устройство не подключено</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="172"/>
+        <location filename="../src/settingspage.cpp" line="198"/>
         <source>Requesting device information...</source>
         <translation>Запрос информации об устройстве...</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="182"/>
+        <location filename="../src/settingspage.cpp" line="208"/>
         <source>Settings reset</source>
         <translation>Настройки сброшены</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="204"/>
+        <location filename="../src/settingspage.cpp" line="230"/>
         <source>Settings saved. Restart the application to apply language changes.</source>
         <translation>Настройки сохранены. Перезапустите приложение, чтобы применить язык.</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="206"/>
+        <location filename="../src/settingspage.cpp" line="232"/>
         <source>Settings saved</source>
         <translation>Настройки сохранены</translation>
     </message>
