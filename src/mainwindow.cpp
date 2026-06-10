@@ -11,9 +11,17 @@
 #include <QStatusBar>
 #include <QApplication>
 #include <QMessageBox>
+#include <QTimer>
+#include <utility>
 
-MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent) {
+MainWindow::MainWindow(const QString &currentLanguage,
+                       std::function<void(const QString &)> languageHandler,
+                       QWidget *parent)
+    : QMainWindow(parent),
+      languageHandler_(std::move(languageHandler)),
+      currentLanguage_((currentLanguage == "en" || currentLanguage == "ru")
+                           ? currentLanguage
+                           : "system") {
 
     deviceMgr_ = new DeviceManager(this);
     trayMgr_ = new TrayManager(this);
@@ -75,6 +83,7 @@ void MainWindow::setupUi() {
     // Pages
     stack_ = new QStackedWidget;
     homepage_ = new Homepage;
+    homepage_->setCurrentLanguage(currentLanguage_);
     panoramaPage_ = new PanoramaPage(deviceMgr_);
     settingsPage_ = new SettingsPage(deviceMgr_);
 
@@ -157,14 +166,7 @@ void MainWindow::setupConnections() {
 
     connect(deviceMgr_, &DeviceManager::brightnessChanged, trayMgr_, &TrayManager::setBrightnessValue);
 
-    // Panorama page status
-    connect(panoramaPage_, &PanoramaPage::statusMessage, statusBar(),
-            [this](const QString &msg) { statusBar()->showMessage(msg, 5000); });
-    connect(panoramaPage_, &PanoramaPage::metricsRunningChanged, trayMgr_, &TrayManager::setMetricsRunning);
-
-    // Settings page status
-    connect(settingsPage_, &SettingsPage::statusMessage, statusBar(),
-            [this](const QString &msg) { statusBar()->showMessage(msg, 5000); });
+    setupPageConnections();
 
     // Tray actions
     connect(trayMgr_, &TrayManager::showWindowRequested, this, [this]() {
@@ -187,6 +189,51 @@ void MainWindow::setupConnections() {
             panoramaPage_->startMetrics();
         }
     });
+}
+
+void MainWindow::setupPageConnections() {
+    connect(homepage_, &Homepage::languageChanged, this, &MainWindow::onLanguageChanged);
+
+    // Panorama page status
+    connect(panoramaPage_, &PanoramaPage::statusMessage, statusBar(),
+            [this](const QString &msg) { statusBar()->showMessage(msg, 5000); });
+    connect(panoramaPage_, &PanoramaPage::metricsRunningChanged, trayMgr_, &TrayManager::setMetricsRunning);
+
+    // Settings page status
+    connect(settingsPage_, &SettingsPage::statusMessage, statusBar(),
+            [this](const QString &msg) { statusBar()->showMessage(msg, 5000); });
+}
+
+void MainWindow::rebuildCentralUi() {
+    const int currentRow = navList_ ? navList_->currentRow() : 0;
+    if (statusLabel_) {
+        statusBar()->removeWidget(statusLabel_);
+        delete statusLabel_;
+        statusLabel_ = nullptr;
+    }
+
+    setupUi();
+    setupPageConnections();
+
+    if (navList_->count() > 0) {
+        navList_->setCurrentRow(qBound(0, currentRow, navList_->count() - 1));
+    }
+
+    statusLabel_->setText(deviceMgr_->isConnected() ? tr("Connected") : tr("Disconnected"));
+}
+
+void MainWindow::onLanguageChanged(const QString &language) {
+    const QString normalized = (language == "en" || language == "ru") ? language : "system";
+    if (normalized == currentLanguage_) {
+        return;
+    }
+
+    currentLanguage_ = normalized;
+    if (languageHandler_) {
+        languageHandler_(currentLanguage_);
+    }
+
+    QTimer::singleShot(0, this, &MainWindow::rebuildCentralUi);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
