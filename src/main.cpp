@@ -41,8 +41,15 @@ QString configuredLanguage() {
     return QString::fromStdString(config->language);
 }
 
-void installTranslator(QApplication &app, QTranslator &translator) {
-    const QString language = configuredLanguage();
+void saveLanguage(const QString &language) {
+    panorama::Config config = panorama::ConfigManager::load_config().value_or(panorama::Config{});
+    config.language = (language == "en" || language == "ru") ? language.toStdString() : "system";
+    panorama::ConfigManager::save_config(config);
+}
+
+void applyLanguage(QApplication &app, QTranslator &translator, const QString &language) {
+    app.removeTranslator(&translator);
+
     if (language == "en") {
         return;
     }
@@ -75,7 +82,8 @@ int main(int argc, char *argv[]) {
     app.setDesktopFileName("tryx-panorama-manager");
 
     QTranslator translator;
-    installTranslator(app, translator);
+    QString activeLanguage = configuredLanguage();
+    applyLanguage(app, translator, activeLanguage);
 
     const QString socketPath = instanceSocketPath();
     if (notifyRunningInstance(socketPath)) {
@@ -89,7 +97,13 @@ int main(int argc, char *argv[]) {
                    << instanceServer.errorString();
     }
 
-    MainWindow window;
+    auto languageHandler = [&](const QString &language) {
+        activeLanguage = (language == "en" || language == "ru") ? language : "system";
+        saveLanguage(activeLanguage);
+        applyLanguage(app, translator, activeLanguage);
+    };
+
+    MainWindow window(activeLanguage, languageHandler);
     window.show();
 
     QObject::connect(&instanceServer, &QLocalServer::newConnection, &window, [&]() {

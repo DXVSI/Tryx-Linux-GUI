@@ -62,25 +62,6 @@ void SettingsPage::setupUi() {
 
     mainLayout->addWidget(behaviorGroup);
 
-    // Language
-    auto *languageGroup = new QGroupBox(tr("Language"));
-    auto *languageLayout = new QGridLayout(languageGroup);
-
-    languageButton_ = new QToolButton;
-    languageButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    languageButton_->setMinimumWidth(96);
-    languageButton_->setToolTip(tr("Switch interface language"));
-    setSelectedLanguage("system");
-
-    languageLayout->addWidget(new QLabel(tr("Interface language:")), 0, 0);
-    languageLayout->addWidget(languageButton_, 0, 1);
-
-    mainLayout->addWidget(languageGroup);
-
-    connect(languageButton_, &QToolButton::clicked, this, [this]() {
-        setSelectedLanguage(nextLanguage(selectedLanguage_));
-    });
-
     // Device info
     auto *infoGroup = new QGroupBox(tr("Device"));
     auto *infoLayout = new QHBoxLayout(infoGroup);
@@ -118,9 +99,6 @@ void SettingsPage::loadSettings() {
             portCombo_->setCurrentText(QString::fromStdString(config->port));
         }
         keepaliveSpin_->setValue(config->keepalive_interval);
-        loadedLanguage_ = QString::fromStdString(config->language);
-        setSelectedLanguage(loadedLanguage_);
-        loadedLanguage_ = selectedLanguage_;
     }
 }
 
@@ -141,35 +119,6 @@ bool SettingsPage::minimizeToTray() const {
 
 bool SettingsPage::startMinimized() const {
     return cbStartMinimized_->isChecked();
-}
-
-QString SettingsPage::selectedLanguage() const {
-    return selectedLanguage_;
-}
-
-QString SettingsPage::languageButtonText(const QString &language) const {
-    if (language == "en") {
-        return tr("EN");
-    }
-    if (language == "ru") {
-        return tr("RU");
-    }
-    return tr("System");
-}
-
-QString SettingsPage::nextLanguage(const QString &language) const {
-    if (language == "system") {
-        return "en";
-    }
-    if (language == "en") {
-        return "ru";
-    }
-    return "system";
-}
-
-void SettingsPage::setSelectedLanguage(const QString &language) {
-    selectedLanguage_ = (language == "en" || language == "ru") ? language : "system";
-    languageButton_->setText(languageButtonText(selectedLanguage_));
 }
 
 void SettingsPage::onRefreshPorts() {
@@ -201,7 +150,6 @@ void SettingsPage::onShowDeviceInfo() {
 void SettingsPage::onResetSettings() {
     portCombo_->setCurrentIndex(0);
     keepaliveSpin_->setValue(10);
-    setSelectedLanguage("system");
     cbMinimizeToTray_->setChecked(true);
     cbStartMinimized_->setChecked(false);
     cbAutostart_->setChecked(false);
@@ -209,11 +157,10 @@ void SettingsPage::onResetSettings() {
 }
 
 void SettingsPage::onSaveSettings() {
-    panorama::Config config;
+    panorama::Config config = panorama::ConfigManager::load_config().value_or(panorama::Config{});
     config.port = selectedPort().toStdString();
     config.keepalive_interval = keepaliveSpin_->value();
     config.brightness = 75;
-    config.language = selectedLanguage().toStdString();
 
     panorama::ConfigManager::save_config(config);
 
@@ -225,10 +172,5 @@ void SettingsPage::onSaveSettings() {
     }
 
     emit settingsChanged();
-    if (selectedLanguage() != loadedLanguage_) {
-        loadedLanguage_ = selectedLanguage();
-        emit statusMessage(tr("Settings saved. Restart the application to apply language changes."));
-    } else {
-        emit statusMessage(tr("Settings saved"));
-    }
+    emit statusMessage(tr("Settings saved"));
 }

@@ -182,57 +182,77 @@
 <context>
     <name>Homepage</name>
     <message>
-        <location filename="../src/homepage.cpp" line="216"/>
+        <location filename="../src/homepage.cpp" line="209"/>
+        <source>System</source>
+        <translation>Система</translation>
+    </message>
+    <message>
+        <location filename="../src/homepage.cpp" line="210"/>
+        <source>English</source>
+        <translation>Английский</translation>
+    </message>
+    <message>
+        <location filename="../src/homepage.cpp" line="211"/>
+        <source>Russian</source>
+        <translation>Русский</translation>
+    </message>
+    <message>
+        <location filename="../src/homepage.cpp" line="239"/>
         <source>PANORAMA</source>
         <translation>PANORAMA</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="224"/>
+        <location filename="../src/homepage.cpp" line="247"/>
         <source>System Monitoring Dashboard</source>
         <translation>Панель мониторинга системы</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="246"/>
+        <location filename="../src/homepage.cpp" line="254"/>
+        <source>Language:</source>
+        <translation>Язык:</translation>
+    </message>
+    <message>
+        <location filename="../src/homepage.cpp" line="286"/>
         <source>Network Status</source>
         <translation>Состояние сети</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="261"/>
+        <location filename="../src/homepage.cpp" line="301"/>
         <source>Download: 0 KB/s</source>
         <translation>Загрузка: 0 КБ/с</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="275"/>
+        <location filename="../src/homepage.cpp" line="315"/>
         <source>Upload: 0 KB/s</source>
         <translation>Отдача: 0 КБ/с</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="303"/>
+        <location filename="../src/homepage.cpp" line="343"/>
         <source>CPU Load</source>
         <translation>Загрузка CPU</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="338"/>
+        <location filename="../src/homepage.cpp" line="378"/>
         <source>GPU Load</source>
         <translation>Загрузка GPU</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="373"/>
+        <location filename="../src/homepage.cpp" line="413"/>
         <source>Memory Load</source>
         <translation>Загрузка памяти</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="422"/>
+        <location filename="../src/homepage.cpp" line="462"/>
         <source>Hard disk Load</source>
         <translation>Загрузка диска</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="510"/>
+        <location filename="../src/homepage.cpp" line="550"/>
         <source>Download: %1</source>
         <translation>Загрузка: %1</translation>
     </message>
     <message>
-        <location filename="../src/homepage.cpp" line="511"/>
+        <location filename="../src/homepage.cpp" line="551"/>
         <source>Upload: %1</source>
         <translation>Отдача: %1</translation>
     </message>
@@ -240,47 +260,47 @@
 <context>
     <name>MainWindow</name>
     <message>
-        <location filename="../src/mainwindow.cpp" line="24"/>
+        <location filename="../src/mainwindow.cpp" line="32"/>
         <source>TRYX Panorama Manager</source>
         <translation>TRYX Panorama Manager</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="46"/>
+        <location filename="../src/mainwindow.cpp" line="54"/>
         <source>Homepage</source>
         <translation>Главная</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="47"/>
+        <location filename="../src/mainwindow.cpp" line="55"/>
         <source>Panorama</source>
         <translation>Панорама</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="48"/>
+        <location filename="../src/mainwindow.cpp" line="56"/>
         <source>Rota</source>
         <translation>Rota</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="49"/>
+        <location filename="../src/mainwindow.cpp" line="57"/>
         <source>Settings</source>
         <translation>Настройки</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="87"/>
+        <location filename="../src/mainwindow.cpp" line="96"/>
         <source>ROTA</source>
         <translation>ROTA</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="91"/>
+        <location filename="../src/mainwindow.cpp" line="100"/>
         <source>Lighting &amp; Fan Speed Control</source>
         <translation>Управление подсветкой и скоростью вентиляторов</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="97"/>
+        <location filename="../src/mainwindow.cpp" line="106"/>
         <source>In Development</source>
         <translation>В разработке</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="107"/>
+        <location filename="../src/mainwindow.cpp" line="116"/>
         <source>ROTA is the ARGB lighting and fan speed controller for TRYX coolers.
 
 Planned features:
@@ -297,25 +317,31 @@ Planned features:
   - синхронизация ARGB с материнской платой</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="131"/>
-        <location filename="../src/mainwindow.cpp" line="150"/>
+        <location filename="../src/mainwindow.cpp" line="140"/>
+        <location filename="../src/mainwindow.cpp" line="159"/>
+        <location filename="../src/mainwindow.cpp" line="222"/>
         <source>Disconnected</source>
         <translation>Отключено</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="140"/>
+        <location filename="../src/mainwindow.cpp" line="149"/>
         <source>Connected: %1 (S/N: %2, FW: %3)</source>
         <translation>Подключено: %1 (S/N: %2, FW: %3)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="143"/>
+        <location filename="../src/mainwindow.cpp" line="152"/>
         <source>Device connected</source>
         <translation>Устройство подключено</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="155"/>
+        <location filename="../src/mainwindow.cpp" line="164"/>
         <source>Error: %1</source>
         <translation>Ошибка: %1</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="222"/>
+        <source>Connected</source>
+        <translation>Подключено</translation>
     </message>
 </context>
 <context>
@@ -710,8 +736,8 @@ Planned features:
     </message>
     <message>
         <location filename="../src/settingspage.cpp" line="30"/>
-        <location filename="../src/settingspage.cpp" line="128"/>
-        <location filename="../src/settingspage.cpp" line="178"/>
+        <location filename="../src/settingspage.cpp" line="106"/>
+        <location filename="../src/settingspage.cpp" line="127"/>
         <source>Auto</source>
         <translation>Автоматически</translation>
     </message>
@@ -757,89 +783,42 @@ Planned features:
     </message>
     <message>
         <location filename="../src/settingspage.cpp" line="66"/>
-        <source>Language</source>
-        <translation>Язык</translation>
-    </message>
-    <message>
-        <location filename="../src/settingspage.cpp" line="72"/>
-        <source>Switch interface language</source>
-        <translation>Переключить язык интерфейса</translation>
-    </message>
-    <message>
-        <source>System language</source>
-        <translation type="vanished">Системный язык</translation>
-    </message>
-    <message>
-        <source>English</source>
-        <translation type="vanished">Английский</translation>
-    </message>
-    <message>
-        <source>Russian</source>
-        <translation type="vanished">Русский</translation>
-    </message>
-    <message>
-        <location filename="../src/settingspage.cpp" line="75"/>
-        <source>Interface language:</source>
-        <translation>Язык интерфейса:</translation>
-    </message>
-    <message>
-        <location filename="../src/settingspage.cpp" line="85"/>
-        <location filename="../src/settingspage.cpp" line="193"/>
+        <location filename="../src/settingspage.cpp" line="142"/>
         <source>Device</source>
         <translation>Устройство</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="88"/>
+        <location filename="../src/settingspage.cpp" line="69"/>
         <source>Device information</source>
         <translation>Информация об устройстве</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="98"/>
+        <location filename="../src/settingspage.cpp" line="79"/>
         <source>Save</source>
         <translation>Сохранить</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="99"/>
+        <location filename="../src/settingspage.cpp" line="80"/>
         <source>Reset</source>
         <translation>Сбросить</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="152"/>
-        <source>EN</source>
-        <translation>EN</translation>
-    </message>
-    <message>
-        <location filename="../src/settingspage.cpp" line="155"/>
-        <source>RU</source>
-        <translation>RU</translation>
-    </message>
-    <message>
-        <location filename="../src/settingspage.cpp" line="157"/>
-        <source>System</source>
-        <translation>Система</translation>
-    </message>
-    <message>
-        <location filename="../src/settingspage.cpp" line="193"/>
+        <location filename="../src/settingspage.cpp" line="142"/>
         <source>Device not connected</source>
         <translation>Устройство не подключено</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="198"/>
+        <location filename="../src/settingspage.cpp" line="147"/>
         <source>Requesting device information...</source>
         <translation>Запрос информации об устройстве...</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="208"/>
+        <location filename="../src/settingspage.cpp" line="156"/>
         <source>Settings reset</source>
         <translation>Настройки сброшены</translation>
     </message>
     <message>
-        <location filename="../src/settingspage.cpp" line="230"/>
-        <source>Settings saved. Restart the application to apply language changes.</source>
-        <translation>Настройки сохранены. Перезапустите приложение, чтобы применить язык.</translation>
-    </message>
-    <message>
-        <location filename="../src/settingspage.cpp" line="232"/>
+        <location filename="../src/settingspage.cpp" line="175"/>
         <source>Settings saved</source>
         <translation>Настройки сохранены</translation>
     </message>
