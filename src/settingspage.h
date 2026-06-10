@@ -6,7 +6,6 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QLabel>
-#include <QToolButton>
 
 class DeviceManager;
 
@@ -33,16 +32,9 @@ private slots:
 private:
     void setupUi();
     void loadSettings();
-    QString selectedLanguage() const;
-    QString languageButtonText(const QString &language) const;
-    QString nextLanguage(const QString &language) const;
-    void setSelectedLanguage(const QString &language);
 
     DeviceManager *deviceMgr_;
     QComboBox *portCombo_;
-    QToolButton *languageButton_;
-    QString loadedLanguage_ = "system";
-    QString selectedLanguage_ = "system";
     QSpinBox *keepaliveSpin_;
     QCheckBox *cbMinimizeToTray_;
     QCheckBox *cbStartMinimized_;
