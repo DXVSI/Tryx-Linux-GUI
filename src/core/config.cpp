@@ -124,6 +124,7 @@ std::optional<Config> ConfigManager::load_config() {
   cfg.brightness = extract_number(root, "brightness", cfg.brightness);
   cfg.keepalive_interval =
       extract_number(root, "keepalive_interval", cfg.keepalive_interval);
+  cfg.language = extract_text(root, "language", cfg.language);
 
   return cfg;
 }
@@ -136,6 +137,7 @@ bool ConfigManager::save_config(const Config& config) {
   root["port"] = to_json_text(config.port);
   root["brightness"] = to_json_number(config.brightness);
   root["keepalive_interval"] = to_json_number(config.keepalive_interval);
+  root["language"] = to_json_text(config.language);
 
   std::string serialized = picojson::value(root).serialize();
   return write_json_file(get_config_path(), serialized);

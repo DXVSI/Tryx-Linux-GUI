@@ -1,8 +1,11 @@
-QT += core gui widgets multimedia
+QT += core gui widgets multimedia network
 
-CONFIG += c++17
+CONFIG += c++17 lrelease embed_translations
 TARGET = tryx-panorama-manager
 TEMPLATE = app
+
+TRANSLATIONS += translations/tryx-panorama_ru.ts
+LRELEASE_DIR = build/i18n
 
 INCLUDEPATH += $$PWD/include
 

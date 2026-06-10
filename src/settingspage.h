@@ -32,9 +32,12 @@ private slots:
 private:
     void setupUi();
     void loadSettings();
+    QString selectedLanguage() const;
 
     DeviceManager *deviceMgr_;
     QComboBox *portCombo_;
+    QComboBox *languageCombo_;
+    QString loadedLanguage_ = "en";
     QSpinBox *keepaliveSpin_;
     QCheckBox *cbMinimizeToTray_;
     QCheckBox *cbStartMinimized_;
