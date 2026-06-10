@@ -142,7 +142,7 @@ void DisplayPage::setupUi() {
     mainLayout->setSpacing(12);
 
     // Built-in TRYX media library - thumbnail grid
-    auto *builtinGroup = new QGroupBox("Медиатека TRYX");
+    auto *builtinGroup = new QGroupBox(tr("TRYX Media Library"));
     auto *builtinOuterLayout = new QVBoxLayout(builtinGroup);
 
     builtinScrollArea_ = new QScrollArea;
@@ -160,7 +160,7 @@ void DisplayPage::setupUi() {
 
     builtinOuterLayout->addWidget(builtinScrollArea_);
 
-    uploadBuiltinBtn_ = new QPushButton("Загрузить выбранное на устройство");
+    uploadBuiltinBtn_ = new QPushButton(tr("Upload selected to device"));
     builtinOuterLayout->addWidget(uploadBuiltinBtn_);
     mainLayout->addWidget(builtinGroup);
 
@@ -168,7 +168,7 @@ void DisplayPage::setupUi() {
     loadBuiltinMedia();
 
     // Drop zone
-    dropZone_ = new QLabel("Перетащите файл сюда\n(MP4, GIF, JPG, PNG)");
+    dropZone_ = new QLabel(tr("Drag a file here\n(MP4, GIF, JPG, PNG)"));
     dropZone_->setAlignment(Qt::AlignCenter);
     dropZone_->setMinimumHeight(80);
     dropZone_->setStyleSheet(
@@ -183,7 +183,7 @@ void DisplayPage::setupUi() {
 
     // Upload button
     auto *uploadLayout = new QHBoxLayout;
-    uploadBtn_ = new QPushButton("Загрузить файл...");
+    uploadBtn_ = new QPushButton(tr("Upload file..."));
     uploadLayout->addWidget(uploadBtn_);
     progressBar_ = new QProgressBar;
     progressBar_->setRange(0, 0);
@@ -195,16 +195,16 @@ void DisplayPage::setupUi() {
     connect(uploadBtn_, &QPushButton::clicked, this, &DisplayPage::onUploadClicked);
 
     // File list
-    auto *fileGroup = new QGroupBox("Файлы на устройстве");
+    auto *fileGroup = new QGroupBox(tr("Files on device"));
     auto *fileLayout = new QVBoxLayout(fileGroup);
     fileList_ = new QListWidget;
     fileList_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     fileLayout->addWidget(fileList_);
 
     auto *fileBtnLayout = new QHBoxLayout;
-    setDisplayBtn_ = new QPushButton("Установить на дисплей");
-    deleteBtn_ = new QPushButton("Удалить");
-    refreshBtn_ = new QPushButton("Обновить");
+    setDisplayBtn_ = new QPushButton(tr("Set on display"));
+    deleteBtn_ = new QPushButton(tr("Delete"));
+    refreshBtn_ = new QPushButton(tr("Refresh"));
     fileBtnLayout->addWidget(setDisplayBtn_);
     fileBtnLayout->addWidget(deleteBtn_);
     fileBtnLayout->addWidget(refreshBtn_);
@@ -217,7 +217,7 @@ void DisplayPage::setupUi() {
     connect(refreshBtn_, &QPushButton::clicked, this, &DisplayPage::onRefreshClicked);
 
     // Brightness
-    auto *brightnessGroup = new QGroupBox("Яркость");
+    auto *brightnessGroup = new QGroupBox(tr("Brightness"));
     auto *brightnessLayout = new QHBoxLayout(brightnessGroup);
     brightnessSlider_ = new QSlider(Qt::Horizontal);
     brightnessSlider_->setRange(0, 100);
@@ -235,7 +235,7 @@ void DisplayPage::setupUi() {
 
     // Ratio
     auto *optionsLayout = new QHBoxLayout;
-    optionsLayout->addWidget(new QLabel("Ratio:"));
+    optionsLayout->addWidget(new QLabel(tr("Ratio:")));
     ratioCombo_ = new QComboBox;
     ratioCombo_->addItems({"2:1", "1:1"});
     optionsLayout->addWidget(ratioCombo_);
@@ -320,7 +320,7 @@ void DisplayPage::onUploadBuiltinClicked() {
     }
 
     if (selected.isEmpty()) {
-        emit statusMessage("Выберите файлы из медиатеки");
+        emit statusMessage(tr("Select files from the media library"));
         return;
     }
 
@@ -335,7 +335,7 @@ void DisplayPage::onUploadBuiltinClicked() {
 
 void DisplayPage::onUploadClicked() {
     QString path = QFileDialog::getOpenFileName(
-        this, "Выберите медиа файл", QString(),
+        this, tr("Select media file"), QString(),
         "Media (*.mp4 *.webm *.mkv *.avi *.mov *.gif *.jpg *.jpeg *.png *.bmp *.webp)");
 
     if (!path.isEmpty()) {
@@ -348,7 +348,7 @@ void DisplayPage::onUploadClicked() {
 void DisplayPage::onSetDisplayClicked() {
     auto selected = fileList_->selectedItems();
     if (selected.isEmpty()) {
-        emit statusMessage("Выберите файлы для отображения");
+        emit statusMessage(tr("Select files to display"));
         return;
     }
 
@@ -358,13 +358,13 @@ void DisplayPage::onSetDisplayClicked() {
     }
 
     deviceMgr_->setScreenConfig(media, ratioCombo_->currentText());
-    emit statusMessage("Конфигурация экрана установлена");
+    emit statusMessage(tr("Display configuration set"));
 }
 
 void DisplayPage::onDeleteClicked() {
     auto selected = fileList_->selectedItems();
     if (selected.isEmpty()) {
-        emit statusMessage("Выберите файлы для удаления");
+        emit statusMessage(tr("Select files to delete"));
         return;
     }
 
@@ -373,8 +373,8 @@ void DisplayPage::onDeleteClicked() {
         files << item->text();
     }
 
-    auto reply = QMessageBox::question(this, "Удаление",
-                                       QString("Удалить %1 файл(ов)?").arg(files.size()));
+    auto reply = QMessageBox::question(this, tr("Delete"),
+                                       tr("Delete %1 file(s)?").arg(files.size()));
     if (reply == QMessageBox::Yes) {
         deviceMgr_->deleteMedia(files);
     }
@@ -393,19 +393,19 @@ void DisplayPage::onMediaListUpdated(const QStringList &files) {
     for (const auto &f : files) {
         fileList_->addItem(f);
     }
-    emit statusMessage(QString("Файлов на устройстве: %1").arg(files.size()));
+    emit statusMessage(tr("Files on device: %1").arg(files.size()));
 }
 
 void DisplayPage::onMediaUploaded(const QString &filename) {
     progressBar_->setVisible(false);
     uploadBtn_->setEnabled(true);
     uploadBuiltinBtn_->setEnabled(true);
-    emit statusMessage(QString("Загружен: %1").arg(filename));
+    emit statusMessage(tr("Uploaded: %1").arg(filename));
     deviceMgr_->refreshMediaList();
 }
 
 void DisplayPage::onMediaDeleted() {
-    emit statusMessage("Файлы удалены");
+    emit statusMessage(tr("Files deleted"));
     deviceMgr_->refreshMediaList();
 }
 

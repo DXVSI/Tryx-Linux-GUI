@@ -115,7 +115,7 @@ void PanoramaPage::setupUi() {
     auto *headerLayout = new QHBoxLayout(headerWidget);
     headerLayout->setContentsMargins(20, 12, 20, 12);
 
-    auto *titleLabel = new QLabel("PANORAMA");
+    auto *titleLabel = new QLabel(tr("PANORAMA"));
     QFont titleFont = titleLabel->font();
     titleFont.setPointSize(16);
     titleFont.setBold(true);
@@ -127,8 +127,8 @@ void PanoramaPage::setupUi() {
 
     // Tab bar in header
     tabBar_ = new QTabBar;
-    tabBar_->addTab("Pre-set");
-    tabBar_->addTab("Customization");
+    tabBar_->addTab(tr("Pre-set"));
+    tabBar_->addTab(tr("Customization"));
     tabBar_->setStyleSheet(
         "QTabBar::tab {"
         "  background: transparent;"
@@ -184,7 +184,7 @@ void PanoramaPage::setupPresetTab(QWidget *parent) {
     layout->setContentsMargins(20, 16, 20, 16);
 
     // Built-in media carousel
-    auto *mediaLabel = new QLabel("Built-in Media Library");
+    auto *mediaLabel = new QLabel(tr("Built-in Media Library"));
     QFont mlFont = mediaLabel->font();
     mlFont.setPointSize(12);
     mlFont.setBold(true);
@@ -227,7 +227,7 @@ void PanoramaPage::setupPresetTab(QWidget *parent) {
     loadBuiltinMedia();
 
     // System Information Display
-    auto *siLabel = new QLabel("System Information Display | Select up to 3 items");
+    auto *siLabel = new QLabel(tr("System Information Display | Select up to 3 items"));
     QFont siFont = siLabel->font();
     siFont.setPointSize(11);
     siFont.setBold(true);
@@ -236,32 +236,32 @@ void PanoramaPage::setupPresetTab(QWidget *parent) {
     layout->addWidget(siLabel);
 
     struct MetricDef {
-        QString displayName;
+        const char *displayName;
         QString protocolLabel;
         QString unit;
     };
 
     QList<MetricDef> defs = {
-        {"CPU Temperature",          "CPU Temperature",          "C"},
-        {"CPU Frequency",            "CPU Frequency",            "MHz"},
-        {"CPU Usage",                "CPU Usage",                "%"},
-        {"CPU Voltage",              "CPU Voltage",              "V"},
-        {"GPU Temperature",          "GPU Temperature",          "C"},
-        {"GPU Frequency",            "GPU Frequency",            "MHz"},
-        {"GPU Usage",                "GPU Usage",                "%"},
-        {"GPU Voltage",              "GPU Voltage",              "V"},
-        {"Hard Disk Temperature",    "Hard Disk Temperature",    "C"},
-        {"Motherboard Temperature",  "Motherboard Temperature",  "C"},
-        {"Memory Frequency",         "Memory Frequency",         "MHz"},
-        {"Memory Utilization",       "Memory Utilization",       "%"},
-        {"Date&Time",                "Date&Time",                ""},
+        {QT_TR_NOOP("CPU Temperature"),        "CPU Temperature",        "C"},
+        {QT_TR_NOOP("CPU Frequency"),          "CPU Frequency",          "MHz"},
+        {QT_TR_NOOP("CPU Usage"),              "CPU Usage",              "%"},
+        {QT_TR_NOOP("CPU Voltage"),            "CPU Voltage",            "V"},
+        {QT_TR_NOOP("GPU Temperature"),        "GPU Temperature",        "C"},
+        {QT_TR_NOOP("GPU Frequency"),          "GPU Frequency",          "MHz"},
+        {QT_TR_NOOP("GPU Usage"),              "GPU Usage",              "%"},
+        {QT_TR_NOOP("GPU Voltage"),            "GPU Voltage",            "V"},
+        {QT_TR_NOOP("Hard Disk Temperature"),  "Hard Disk Temperature",  "C"},
+        {QT_TR_NOOP("Motherboard Temperature"), "Motherboard Temperature", "C"},
+        {QT_TR_NOOP("Memory Frequency"),       "Memory Frequency",       "MHz"},
+        {QT_TR_NOOP("Memory Utilization"),     "Memory Utilization",     "%"},
+        {QT_TR_NOOP("Date&Time"),              "Date&Time",              ""},
     };
 
     auto *metricsGrid = new QGridLayout;
     metricsGrid->setSpacing(4);
     int row = 0, col = 0;
     for (const auto &def : defs) {
-        auto *cb = new QCheckBox(def.displayName);
+        auto *cb = new QCheckBox(tr(def.displayName));
         cb->setStyleSheet("color: #ccc;");
         metricsGrid->addWidget(cb, row, col);
 
@@ -278,7 +278,7 @@ void PanoramaPage::setupPresetTab(QWidget *parent) {
     }
     layout->addLayout(metricsGrid);
 
-    selectionCountLabel_ = new QLabel("Selected: 0 / 3");
+    selectionCountLabel_ = new QLabel(tr("Selected: 0 / 3"));
     selectionCountLabel_->setStyleSheet("color: #888;");
     layout->addWidget(selectionCountLabel_);
 
@@ -286,25 +286,29 @@ void PanoramaPage::setupPresetTab(QWidget *parent) {
     auto *controlsLayout = new QHBoxLayout;
     controlsLayout->setSpacing(12);
 
-    controlsLayout->addWidget(new QLabel("Position:"));
+    controlsLayout->addWidget(new QLabel(tr("Position:")));
     positionCombo_ = new QComboBox;
-    positionCombo_->addItems({"Top", "Center", "Bottom"});
+    positionCombo_->addItem(tr("Top"), "Top");
+    positionCombo_->addItem(tr("Center"), "Center");
+    positionCombo_->addItem(tr("Bottom"), "Bottom");
     controlsLayout->addWidget(positionCombo_);
 
-    controlsLayout->addWidget(new QLabel("Align:"));
+    controlsLayout->addWidget(new QLabel(tr("Align:")));
     alignCombo_ = new QComboBox;
-    alignCombo_->addItems({"Left", "Center", "Right"});
+    alignCombo_->addItem(tr("Left"), "Left");
+    alignCombo_->addItem(tr("Center"), "Center");
+    alignCombo_->addItem(tr("Right"), "Right");
     controlsLayout->addWidget(alignCombo_);
 
-    textColorBtn_ = new QPushButton("Color");
+    textColorBtn_ = new QPushButton(tr("Color"));
     textColorBtn_->setStyleSheet("background-color: #FFFFFF; color: #000; padding: 4px 12px;");
     textColorBtn_->setMaximumWidth(80);
     connect(textColorBtn_, &QPushButton::clicked, this, &PanoramaPage::onChooseTextColor);
     controlsLayout->addWidget(textColorBtn_);
 
-    cbCpuBadge_ = new QCheckBox("CPU Badge");
+    cbCpuBadge_ = new QCheckBox(tr("CPU Badge"));
     cbCpuBadge_->setStyleSheet("color: #ccc;");
-    cbGpuBadge_ = new QCheckBox("GPU Badge");
+    cbGpuBadge_ = new QCheckBox(tr("GPU Badge"));
     cbGpuBadge_->setStyleSheet("color: #ccc;");
     controlsLayout->addWidget(cbCpuBadge_);
     controlsLayout->addWidget(cbGpuBadge_);
@@ -316,7 +320,7 @@ void PanoramaPage::setupPresetTab(QWidget *parent) {
     auto *sendLayout = new QHBoxLayout;
     sendLayout->addStretch();
 
-    auto *saveBtn = new QPushButton("Save");
+    auto *saveBtn = new QPushButton(tr("Save"));
     saveBtn->setMinimumHeight(36);
     saveBtn->setMinimumWidth(120);
     saveBtn->setStyleSheet(
@@ -354,8 +358,8 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
     // Mode radio buttons
     auto *radioLayout = new QHBoxLayout;
     radioLayout->setSpacing(16);
-    fullScreenRadio_ = new QRadioButton("Full Screen");
-    splitScreenRadio_ = new QRadioButton("Screen Splitting");
+    fullScreenRadio_ = new QRadioButton(tr("Full Screen"));
+    splitScreenRadio_ = new QRadioButton(tr("Screen Splitting"));
     fullScreenRadio_->setChecked(true);
     fullScreenRadio_->setStyleSheet("color: #ccc;");
     splitScreenRadio_->setStyleSheet("color: #ccc;");
@@ -376,15 +380,18 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
     modeLayout->setSpacing(12);
 
     screenModeCombo_ = new QComboBox;
-    screenModeCombo_->addItems({"Full Screen", "Screen Splitting"});
+    screenModeCombo_->addItem(tr("Full Screen"), "Full Screen");
+    screenModeCombo_->addItem(tr("Screen Splitting"), "Screen Splitting");
     screenModeCombo_->hide(); // hidden, mode is now via radio buttons
 
-    modeLayout->addWidget(new QLabel("Play Mode:"));
+    modeLayout->addWidget(new QLabel(tr("Play Mode:")));
     playModeCombo_ = new QComboBox;
-    playModeCombo_->addItems({"Single", "Shuffle", "Loop"});
+    playModeCombo_->addItem(tr("Single"), "Single");
+    playModeCombo_->addItem(tr("Shuffle"), "Shuffle");
+    playModeCombo_->addItem(tr("Loop"), "Loop");
     modeLayout->addWidget(playModeCombo_);
 
-    modeLayout->addWidget(new QLabel("Ratio:"));
+    modeLayout->addWidget(new QLabel(tr("Ratio:")));
     ratioCombo_ = new QComboBox;
     ratioCombo_->addItems({"2:1", "1:1"});
     modeLayout->addWidget(ratioCombo_);
@@ -393,7 +400,7 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
     fsLayout->addLayout(modeLayout);
 
     // System info metrics for Full Screen
-    auto *fsMetricsLabel = new QLabel("System info:");
+    auto *fsMetricsLabel = new QLabel(tr("System info:"));
     fsMetricsLabel->setStyleSheet("color: #aaa; font-size: 11px;");
 
     customMetricsBtn_ = new QToolButton;
@@ -406,13 +413,19 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
         "QToolButton:hover { background: #3a3a4e; }");
 
     customMetricsMenu_ = new QMenu(this);
-    QStringList metricLabels = {"CPU Temperature", "CPU Frequency", "CPU Usage", "CPU Voltage",
-        "GPU Temperature", "GPU Frequency", "GPU Usage", "GPU Voltage",
-        "Hard Disk Temperature", "Motherboard Temperature", "Memory Frequency",
-        "Memory Utilization", "Date&Time"};
-    for (const auto &label : metricLabels) {
+    const char *metricLabels[] = {
+        QT_TR_NOOP("CPU Temperature"), QT_TR_NOOP("CPU Frequency"),
+        QT_TR_NOOP("CPU Usage"), QT_TR_NOOP("CPU Voltage"),
+        QT_TR_NOOP("GPU Temperature"), QT_TR_NOOP("GPU Frequency"),
+        QT_TR_NOOP("GPU Usage"), QT_TR_NOOP("GPU Voltage"),
+        QT_TR_NOOP("Hard Disk Temperature"), QT_TR_NOOP("Motherboard Temperature"),
+        QT_TR_NOOP("Memory Frequency"), QT_TR_NOOP("Memory Utilization"),
+        QT_TR_NOOP("Date&Time")
+    };
+    for (const auto *label : metricLabels) {
         auto *wa = new QWidgetAction(customMetricsMenu_);
-        auto *cb = new QCheckBox(label);
+        auto *cb = new QCheckBox(tr(label));
+        cb->setProperty("protocolLabel", label);
         cb->setStyleSheet("QCheckBox { color: #fff; padding: 4px 8px; } QCheckBox:hover { background: #3a3a4e; }");
         wa->setDefaultWidget(cb);
         customMetricsMenu_->addAction(wa);
@@ -445,7 +458,7 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
     layout->addWidget(splitConfigWidget_);
 
     // Drop zone
-    dropZone_ = new QLabel("Upload a file\n(MP4, WEBM, GIF, JPG, PNG)");
+    dropZone_ = new QLabel(tr("Upload a file\n(MP4, WEBM, GIF, JPG, PNG)"));
     dropZone_->setAlignment(Qt::AlignCenter);
     dropZone_->setMinimumHeight(80);
     dropZone_->setStyleSheet(
@@ -460,7 +473,7 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
 
     // Upload controls
     auto *uploadLayout = new QHBoxLayout;
-    uploadBtn_ = new QPushButton("Upload File...");
+    uploadBtn_ = new QPushButton(tr("Upload File..."));
     uploadBtn_->setStyleSheet(
         "QPushButton { background: #6c5ce7; color: white; border: none; border-radius: 4px; padding: 6px 16px; }"
         "QPushButton:hover { background: #5b4bd5; }");
@@ -476,7 +489,7 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
     connect(uploadBtn_, &QPushButton::clicked, this, &PanoramaPage::onUploadClicked);
 
     // Media Library header
-    auto *mlHeader = new QLabel("Media Library");
+    auto *mlHeader = new QLabel(tr("Media Library"));
     QFont mlFont = mlHeader->font();
     mlFont.setPointSize(12);
     mlFont.setBold(true);
@@ -519,7 +532,7 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
 
     // Refresh + Save row
     auto *actionLayout = new QHBoxLayout;
-    auto *refreshBtn = new QPushButton("Refresh");
+    auto *refreshBtn = new QPushButton(tr("Refresh"));
     refreshBtn->setStyleSheet(
         "QPushButton { background: #3d3d4d; color: #ddd; border: none; border-radius: 4px; padding: 6px 12px; }"
         "QPushButton:hover { background: #4d4d5d; }");
@@ -528,7 +541,7 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
 
     actionLayout->addStretch();
 
-    customSaveBtn_ = new QPushButton("Save");
+    customSaveBtn_ = new QPushButton(tr("Save"));
     customSaveBtn_->setMinimumHeight(36);
     customSaveBtn_->setMinimumWidth(120);
     customSaveBtn_->setStyleSheet(
@@ -549,7 +562,7 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
 }
 
 void PanoramaPage::setupDisplaySettings() {
-    auto *settingsGroup = new QGroupBox("Display Settings");
+    auto *settingsGroup = new QGroupBox(tr("Display Settings"));
     settingsGroup->setStyleSheet(
         "QGroupBox { border: 1px solid #444; border-radius: 6px; margin-top: 8px; padding-top: 16px; color: #fff; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 16px; padding: 0 4px; }");
@@ -558,7 +571,7 @@ void PanoramaPage::setupDisplaySettings() {
     settingsLayout->setSpacing(20);
 
     // Brightness
-    settingsLayout->addWidget(new QLabel("Brightness:"));
+    settingsLayout->addWidget(new QLabel(tr("Brightness:")));
     brightnessSlider_ = new QSlider(Qt::Horizontal);
     brightnessSlider_->setRange(0, 100);
     brightnessSlider_->setValue(75);
@@ -574,12 +587,12 @@ void PanoramaPage::setupDisplaySettings() {
             [this]() { onBrightnessChanged(brightnessSlider_->value()); });
 
     // Sleep mode
-    cbSleepMode_ = new QCheckBox("Sleep Mode");
+    cbSleepMode_ = new QCheckBox(tr("Sleep Mode"));
     cbSleepMode_->setStyleSheet("color: #ccc;");
     settingsLayout->addWidget(cbSleepMode_);
 
     // Mirror mode
-    cbMirrorMode_ = new QCheckBox("Mirror Mode");
+    cbMirrorMode_ = new QCheckBox(tr("Mirror Mode"));
     cbMirrorMode_->setStyleSheet("color: #ccc;");
     settingsLayout->addWidget(cbMirrorMode_);
 
@@ -622,7 +635,7 @@ void PanoramaPage::loadBuiltinMedia() {
         // Add preset/upload badge overlay
         QString baseName = entry.completeBaseName();
         bool isPreset = !presetIdForName(baseName).isEmpty();
-        auto *badge = new QLabel(isPreset ? "PRESET" : "UPLOAD", tile);
+        auto *badge = new QLabel(isPreset ? tr("PRESET") : tr("UPLOAD"), tile);
         badge->setStyleSheet(isPreset
             ? "background: #00b894; color: white; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: bold;"
             : "background: #fdcb6e; color: #2d3436; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: bold;");
@@ -672,7 +685,7 @@ void PanoramaPage::onMetricToggled() {
         if (opt.checkbox->isChecked()) count++;
     }
 
-    selectionCountLabel_->setText(QString("Selected: %1 / 3").arg(count));
+    selectionCountLabel_->setText(tr("Selected: %1 / 3").arg(count));
 
     for (auto &opt : metricOptions_) {
         if (!opt.checkbox->isChecked()) {
@@ -682,7 +695,7 @@ void PanoramaPage::onMetricToggled() {
 }
 
 void PanoramaPage::onChooseTextColor() {
-    QColor color = QColorDialog::getColor(textColor_, this, "Text Color");
+    QColor color = QColorDialog::getColor(textColor_, this, tr("Text Color"));
     if (color.isValid()) {
         textColor_ = color;
         textColorBtn_->setStyleSheet(
@@ -719,7 +732,7 @@ void PanoramaPage::applyScreenConfig() {
 
             fprintf(stderr, "[panorama] uploading '%s' to device...\n",
                     remoteName.toStdString().c_str());
-            emit statusMessage("Uploading " + remoteName + "...");
+            emit statusMessage(tr("Uploading %1...").arg(remoteName));
 
             // Upload in background, set config after upload completes
             auto conn = std::make_shared<QMetaObject::Connection>();
@@ -735,12 +748,12 @@ void PanoramaPage::applyScreenConfig() {
                         actualMedia,
                         ratioCombo_ ? ratioCombo_->currentText() : "2:1",
                         "Full Screen", "Single", labels,
-                        positionCombo_->currentText(),
+                        positionCombo_->currentData().toString(),
                         textColor_.name(),
-                        alignCombo_->currentText(),
+                        alignCombo_->currentData().toString(),
                         badges, 0, QString()
                     );
-                    emit statusMessage("Configuration applied");
+                    emit statusMessage(tr("Configuration applied"));
                 });
 
             auto errConn = std::make_shared<QMetaObject::Connection>();
@@ -750,7 +763,7 @@ void PanoramaPage::applyScreenConfig() {
                     disconnect(*errConn);
                     fprintf(stderr, "[panorama] upload failed: %s\n",
                             msg.toStdString().c_str());
-                    emit statusMessage("Upload failed: " + msg);
+                    emit statusMessage(tr("Upload failed: %1").arg(msg));
                 });
 
             deviceMgr_->uploadMedia(localPath);
@@ -767,9 +780,9 @@ void PanoramaPage::applyScreenConfig() {
         "Full Screen",
         "Single",
         labels,
-        positionCombo_->currentText(),
+        positionCombo_->currentData().toString(),
         textColor_.name(),
-        alignCombo_->currentText(),
+        alignCombo_->currentData().toString(),
         badges,
         0,
         presetId
@@ -797,8 +810,8 @@ void PanoramaPage::savePageState() {
     settings.setValue("metrics/checked", checkedMetrics);
 
     // Save display settings
-    settings.setValue("display/position", positionCombo_->currentText());
-    settings.setValue("display/align", alignCombo_->currentText());
+    settings.setValue("display/position", positionCombo_->currentData().toString());
+    settings.setValue("display/align", alignCombo_->currentData().toString());
     settings.setValue("display/textColor", textColor_.name());
     settings.setValue("display/cpuBadge", cbCpuBadge_->isChecked());
     settings.setValue("display/gpuBadge", cbGpuBadge_->isChecked());
@@ -832,11 +845,11 @@ void PanoramaPage::restorePageState() {
 
     // Restore display settings
     if (settings.contains("display/position")) {
-        int idx = positionCombo_->findText(settings.value("display/position").toString());
+        int idx = positionCombo_->findData(settings.value("display/position").toString());
         if (idx >= 0) positionCombo_->setCurrentIndex(idx);
     }
     if (settings.contains("display/align")) {
-        int idx = alignCombo_->findText(settings.value("display/align").toString());
+        int idx = alignCombo_->findData(settings.value("display/align").toString());
         if (idx >= 0) alignCombo_->setCurrentIndex(idx);
     }
     if (settings.contains("display/textColor")) {
@@ -873,7 +886,7 @@ void PanoramaPage::onPresetSave() {
     // Persist current page state
     savePageState();
 
-    emit statusMessage("Configuration applied");
+    emit statusMessage(tr("Configuration applied"));
 }
 
 void PanoramaPage::startMetrics() {
@@ -890,7 +903,7 @@ void PanoramaPage::startMetrics() {
     metricsRunning_ = true;
     metricsTimer_->start(2000);
     emit metricsRunningChanged(true);
-    metricsStatusLabel_->setText("Metrics active");
+    metricsStatusLabel_->setText(tr("Metrics active"));
     metricsStatusLabel_->setStyleSheet("color: #00b894;");
 
     onSendMetrics();
@@ -985,14 +998,14 @@ void PanoramaPage::onSendMetrics() {
     }
 
     deviceMgr_->sendSysinfo(labels, values, units);
-    metricsStatusLabel_->setText(QString("Metrics active"));
+    metricsStatusLabel_->setText(tr("Metrics active"));
 }
 
 // Customization tab slots
 
 void PanoramaPage::onUploadClicked() {
     QString path = QFileDialog::getOpenFileName(
-        this, "Select media file", QString(),
+        this, tr("Select media file"), QString(),
         "Media (*.mp4 *.webm *.mkv *.avi *.mov *.gif *.jpg *.jpeg *.png *.bmp *.webp)");
 
     if (!path.isEmpty()) {
@@ -1005,7 +1018,7 @@ void PanoramaPage::onUploadClicked() {
 void PanoramaPage::onUploadBuiltinClicked() {
     // Upload selected preset tile to device
     if (!selectedPresetTile_) {
-        emit statusMessage("Select a video from the library");
+        emit statusMessage(tr("Select a video from the library"));
         return;
     }
 
@@ -1028,7 +1041,7 @@ void PanoramaPage::onCustomSave() {
         QStringList rightMedia = splitConfigWidget_->rightMedia();
 
         if (leftMedia.isEmpty() || rightMedia.isEmpty()) {
-            emit statusMessage("Assign media to both left and right sides");
+            emit statusMessage(tr("Assign media to both left and right sides"));
             return;
         }
 
@@ -1068,12 +1081,12 @@ void PanoramaPage::onCustomSave() {
             QTimer::singleShot(2000, this, [this]() { startMetrics(); });
         }
 
-        emit statusMessage("Screen Splitting configuration applied");
+        emit statusMessage(tr("Screen Splitting configuration applied"));
     } else {
         // Full Screen mode - use selected files from list
         auto selected = fileList_->selectedItems();
         if (selected.isEmpty()) {
-            emit statusMessage("Select files to display");
+            emit statusMessage(tr("Select files to display"));
             return;
         }
 
@@ -1085,12 +1098,12 @@ void PanoramaPage::onCustomSave() {
         }
 
         QString ratio = ratioCombo_->currentText();
-        QString playMode = playModeCombo_->currentText();
+        QString playMode = playModeCombo_->currentData().toString();
 
         // Collect selected metrics
         QStringList metrics;
         for (auto *cb : customMetricCheckboxes_)
-            if (cb->isChecked()) metrics << cb->text();
+            if (cb->isChecked()) metrics << cb->property("protocolLabel").toString();
 
         deviceMgr_->setScreenConfig(media, ratio, "Full Screen", playMode, metrics,
             "Top", "#FFFFFF", "Left", {}, 0);
@@ -1099,7 +1112,7 @@ void PanoramaPage::onCustomSave() {
             QTimer::singleShot(2000, this, [this]() { startMetrics(); });
         }
 
-        emit statusMessage("Full Screen configuration applied");
+        emit statusMessage(tr("Full Screen configuration applied"));
     }
 }
 
@@ -1111,8 +1124,8 @@ void PanoramaPage::onFileListContextMenu(const QPoint &pos) {
     bool isSplit = splitScreenRadio_->isChecked();
 
     if (isSplit) {
-        auto *setLeft = menu.addAction("Set to left side");
-        auto *setRight = menu.addAction("Set to right side");
+        auto *setLeft = menu.addAction(tr("Set to left side"));
+        auto *setRight = menu.addAction(tr("Set to right side"));
 
         connect(setLeft, &QAction::triggered, this, [this, item]() {
             QString filename = item->data(Qt::UserRole).toString();
@@ -1143,28 +1156,28 @@ void PanoramaPage::onFileListContextMenu(const QPoint &pos) {
             splitConfigWidget_->assignToRight(filename, thumb);
         });
     } else {
-        auto *setDisplay = menu.addAction("Set as display");
+        auto *setDisplay = menu.addAction(tr("Set as display"));
         connect(setDisplay, &QAction::triggered, this, [this, item]() {
             QString filename = item->data(Qt::UserRole).toString();
             if (filename.isEmpty()) filename = item->text().section('\n', 0, 0);
             QStringList media;
             media << filename;
             QString ratio = ratioCombo_->currentText();
-            QString playMode = playModeCombo_->currentText();
+            QString playMode = playModeCombo_->currentData().toString();
             deviceMgr_->setScreenConfig(media, ratio, "Full Screen", playMode);
-            emit statusMessage("Screen config applied");
+            emit statusMessage(tr("Screen config applied"));
         });
     }
 
     menu.addSeparator();
-    auto *deleteAction = menu.addAction("Delete");
+    auto *deleteAction = menu.addAction(tr("Delete"));
     connect(deleteAction, &QAction::triggered, this, [this, item]() {
         QString filename = item->data(Qt::UserRole).toString();
         if (filename.isEmpty()) filename = item->text().section('\n', 0, 0);
         QStringList files;
         files << filename;
-        auto reply = QMessageBox::question(this, "Delete",
-                                           QString("Delete %1?").arg(filename));
+        auto reply = QMessageBox::question(this, tr("Delete"),
+                                           tr("Delete %1?").arg(filename));
         if (reply == QMessageBox::Yes) {
             deviceMgr_->deleteMedia(files);
         }
@@ -1176,7 +1189,7 @@ void PanoramaPage::onFileListContextMenu(const QPoint &pos) {
 void PanoramaPage::onSetDisplayClicked() {
     auto selected = fileList_->selectedItems();
     if (selected.isEmpty()) {
-        emit statusMessage("Select files to display");
+        emit statusMessage(tr("Select files to display"));
         return;
     }
 
@@ -1188,17 +1201,17 @@ void PanoramaPage::onSetDisplayClicked() {
     }
 
     QString ratio = ratioCombo_ ? ratioCombo_->currentText() : "2:1";
-    QString screenMode = screenModeCombo_ ? screenModeCombo_->currentText() : "Full Screen";
-    QString playMode = playModeCombo_ ? playModeCombo_->currentText() : "Single";
+    QString screenMode = screenModeCombo_ ? screenModeCombo_->currentData().toString() : "Full Screen";
+    QString playMode = playModeCombo_ ? playModeCombo_->currentData().toString() : "Single";
 
     deviceMgr_->setScreenConfig(media, ratio, screenMode, playMode);
-    emit statusMessage("Screen config applied");
+    emit statusMessage(tr("Screen config applied"));
 }
 
 void PanoramaPage::onDeleteClicked() {
     auto selected = fileList_->selectedItems();
     if (selected.isEmpty()) {
-        emit statusMessage("Select files to delete");
+        emit statusMessage(tr("Select files to delete"));
         return;
     }
 
@@ -1209,8 +1222,8 @@ void PanoramaPage::onDeleteClicked() {
         files << filename;
     }
 
-    auto reply = QMessageBox::question(this, "Delete",
-                                       QString("Delete %1 file(s)?").arg(files.size()));
+    auto reply = QMessageBox::question(this, tr("Delete"),
+                                       tr("Delete %1 file(s)?").arg(files.size()));
     if (reply == QMessageBox::Yes) {
         deviceMgr_->deleteMedia(files);
     }
@@ -1255,18 +1268,18 @@ void PanoramaPage::onMediaListUpdated(const QStringList &files) {
 
         fileList_->addItem(item);
     }
-    emit statusMessage(QString("Files on device: %1").arg(files.size()));
+    emit statusMessage(tr("Files on device: %1").arg(files.size()));
 }
 
 void PanoramaPage::onMediaUploaded(const QString &filename) {
     progressBar_->setVisible(false);
     uploadBtn_->setEnabled(true);
-    emit statusMessage(QString("Uploaded: %1").arg(filename));
+    emit statusMessage(tr("Uploaded: %1").arg(filename));
     deviceMgr_->refreshMediaList();
 }
 
 void PanoramaPage::onMediaDeleted() {
-    emit statusMessage("Files deleted");
+    emit statusMessage(tr("Files deleted"));
     deviceMgr_->refreshMediaList();
 }
 

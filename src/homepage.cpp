@@ -213,7 +213,7 @@ void Homepage::setupUi() {
     mainLayout->setContentsMargins(24, 24, 24, 24);
 
     // Title
-    auto *titleLabel = new QLabel("PANORAMA");
+    auto *titleLabel = new QLabel(tr("PANORAMA"));
     QFont titleFont = titleLabel->font();
     titleFont.setPointSize(22);
     titleFont.setBold(true);
@@ -221,7 +221,7 @@ void Homepage::setupUi() {
     titleLabel->setStyleSheet("color: #fff; background: transparent;");
     mainLayout->addWidget(titleLabel);
 
-    auto *subtitleLabel = new QLabel("System Monitoring Dashboard");
+    auto *subtitleLabel = new QLabel(tr("System Monitoring Dashboard"));
     subtitleLabel->setStyleSheet("color: #666; font-size: 12px; background: transparent; margin-bottom: 4px;");
     mainLayout->addWidget(subtitleLabel);
 
@@ -243,7 +243,7 @@ void Homepage::setupUi() {
         auto *layout = new QVBoxLayout(card);
         layout->setSpacing(8);
 
-        auto *title = new QLabel("Network Status");
+        auto *title = new QLabel(tr("Network Status"));
         QFont tf = title->font();
         tf.setPointSize(12);
         tf.setBold(true);
@@ -258,7 +258,7 @@ void Homepage::setupUi() {
         downloadGraph_->setMinimumHeight(80);
         layout->addWidget(downloadGraph_);
 
-        netDownloadLabel_ = new QLabel("Download: 0 KB/s");
+        netDownloadLabel_ = new QLabel(tr("Download: 0 KB/s"));
         netDownloadLabel_->setStyleSheet("color: #55efc4; border: none; background: transparent; font-size: 12px;");
         QFont dlFont = netDownloadLabel_->font();
         dlFont.setBold(true);
@@ -272,7 +272,7 @@ void Homepage::setupUi() {
         uploadGraph_->setMinimumHeight(80);
         layout->addWidget(uploadGraph_);
 
-        netUploadLabel_ = new QLabel("Upload: 0 KB/s");
+        netUploadLabel_ = new QLabel(tr("Upload: 0 KB/s"));
         netUploadLabel_->setStyleSheet("color: #74b9ff; border: none; background: transparent; font-size: 12px;");
         QFont ulFont = netUploadLabel_->font();
         ulFont.setBold(true);
@@ -300,7 +300,7 @@ void Homepage::setupUi() {
         cpuUsageLabel_->setAlignment(Qt::AlignCenter);
         layout->addWidget(cpuUsageLabel_);
 
-        auto *subtitle = new QLabel("CPU Load");
+        auto *subtitle = new QLabel(tr("CPU Load"));
         subtitle->setStyleSheet("color: #aaa; border: none; background: transparent; font-size: 10px;");
         subtitle->setAlignment(Qt::AlignCenter);
         layout->addWidget(subtitle);
@@ -335,7 +335,7 @@ void Homepage::setupUi() {
         gpuUsageLabel_->setAlignment(Qt::AlignCenter);
         layout->addWidget(gpuUsageLabel_);
 
-        auto *subtitle = new QLabel("GPU Load");
+        auto *subtitle = new QLabel(tr("GPU Load"));
         subtitle->setStyleSheet("color: #aaa; border: none; background: transparent; font-size: 10px;");
         subtitle->setAlignment(Qt::AlignCenter);
         layout->addWidget(subtitle);
@@ -370,7 +370,7 @@ void Homepage::setupUi() {
         memUsageLabel_->setAlignment(Qt::AlignCenter);
         layout->addWidget(memUsageLabel_);
 
-        auto *subtitle = new QLabel("Memory Load");
+        auto *subtitle = new QLabel(tr("Memory Load"));
         subtitle->setStyleSheet("color: #aaa; border: none; background: transparent; font-size: 11px;");
         subtitle->setAlignment(Qt::AlignCenter);
         layout->addWidget(subtitle);
@@ -419,7 +419,7 @@ void Homepage::setupUi() {
         diskUsageLabel_->setAlignment(Qt::AlignCenter);
         layout->addWidget(diskUsageLabel_);
 
-        auto *subtitle = new QLabel("Hard disk Load");
+        auto *subtitle = new QLabel(tr("Hard disk Load"));
         subtitle->setStyleSheet("color: #aaa; border: none; background: transparent; font-size: 11px;");
         subtitle->setAlignment(Qt::AlignCenter);
         layout->addWidget(subtitle);
@@ -507,8 +507,8 @@ void Homepage::onMetricsUpdated(const SystemMetrics &m) {
     diskBarFill_->setGeometry(0, 0, diskFillWidth, 12);
 
     // Network
-    netDownloadLabel_->setText(QString("Download: %1").arg(formatSpeed(m.net.rxSpeedKBs)));
-    netUploadLabel_->setText(QString("Upload: %1").arg(formatSpeed(m.net.txSpeedKBs)));
+    netDownloadLabel_->setText(tr("Download: %1").arg(formatSpeed(m.net.rxSpeedKBs)));
+    netUploadLabel_->setText(tr("Upload: %1").arg(formatSpeed(m.net.txSpeedKBs)));
     downloadGraph_->addValue(m.net.rxSpeedKBs);
     uploadGraph_->addValue(m.net.txSpeedKBs);
 }

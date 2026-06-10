@@ -24,32 +24,32 @@ void HudPage::setupUi() {
     mainLayout->setSpacing(12);
 
     // Metric selection (max 3)
-    auto *metricsGroup = new QGroupBox("Метрики на дисплее (макс. 3)");
+    auto *metricsGroup = new QGroupBox(tr("Metrics on display (max 3)"));
     auto *metricsLayout = new QGridLayout(metricsGroup);
 
     struct MetricDef {
-        QString displayName;
+        const char *displayName;
         QString protocolLabel;
         QString unit;
     };
 
     QList<MetricDef> defs = {
-        {"CPU Temperature",          "CPU Temperature",          "°C"},
-        {"CPU Frequency",            "CPU Frequency",            "MHz"},
-        {"CPU Usage",                "CPU Usage",                "%"},
-        {"CPU Voltage",              "CPU Voltage",              "V"},
-        {"GPU Temperature",          "GPU Temperature",          "°C"},
-        {"GPU Frequency",            "GPU Frequency",            "MHz"},
-        {"GPU Voltage",              "GPU Voltage",              "V"},
-        {"Motherboard Temperature",  "Motherboard Temperature",  "°C"},
-        {"Memory Frequency",         "Memory Frequency",         "MHz"},
-        {"Memory Utilization",       "Memory Utilization",       "%"},
-        {"Date & Time",              "Date & Time",              ""},
+        {QT_TR_NOOP("CPU Temperature"),         "CPU Temperature",         "°C"},
+        {QT_TR_NOOP("CPU Frequency"),           "CPU Frequency",           "MHz"},
+        {QT_TR_NOOP("CPU Usage"),               "CPU Usage",               "%"},
+        {QT_TR_NOOP("CPU Voltage"),             "CPU Voltage",             "V"},
+        {QT_TR_NOOP("GPU Temperature"),         "GPU Temperature",         "°C"},
+        {QT_TR_NOOP("GPU Frequency"),           "GPU Frequency",           "MHz"},
+        {QT_TR_NOOP("GPU Voltage"),             "GPU Voltage",             "V"},
+        {QT_TR_NOOP("Motherboard Temperature"), "Motherboard Temperature", "°C"},
+        {QT_TR_NOOP("Memory Frequency"),        "Memory Frequency",        "MHz"},
+        {QT_TR_NOOP("Memory Utilization"),      "Memory Utilization",      "%"},
+        {QT_TR_NOOP("Date & Time"),             "Date & Time",             ""},
     };
 
     int row = 0, col = 0;
     for (const auto &def : defs) {
-        auto *cb = new QCheckBox(def.displayName);
+        auto *cb = new QCheckBox(tr(def.displayName));
         metricsLayout->addWidget(cb, row, col);
 
         MetricOption opt;
@@ -64,56 +64,60 @@ void HudPage::setupUi() {
         if (col >= 3) { col = 0; row++; }
     }
 
-    selectionCountLabel_ = new QLabel("Выбрано: 0 / 3");
+    selectionCountLabel_ = new QLabel(tr("Selected: 0 / 3"));
     metricsLayout->addWidget(selectionCountLabel_, row + 1, 0, 1, 3);
 
     mainLayout->addWidget(metricsGroup);
 
     // Display settings
-    auto *settingsGroup = new QGroupBox("Настройки отображения");
+    auto *settingsGroup = new QGroupBox(tr("Display settings"));
     auto *settingsLayout = new QGridLayout(settingsGroup);
 
-    settingsLayout->addWidget(new QLabel("Позиция:"), 0, 0);
+    settingsLayout->addWidget(new QLabel(tr("Position:")), 0, 0);
     positionCombo_ = new QComboBox;
-    positionCombo_->addItems({"Top", "Center", "Bottom"});
+    positionCombo_->addItem(tr("Top"), "Top");
+    positionCombo_->addItem(tr("Center"), "Center");
+    positionCombo_->addItem(tr("Bottom"), "Bottom");
     settingsLayout->addWidget(positionCombo_, 0, 1);
 
-    settingsLayout->addWidget(new QLabel("Выравнивание:"), 1, 0);
+    settingsLayout->addWidget(new QLabel(tr("Alignment:")), 1, 0);
     alignCombo_ = new QComboBox;
-    alignCombo_->addItems({"Left", "Center", "Right"});
+    alignCombo_->addItem(tr("Left"), "Left");
+    alignCombo_->addItem(tr("Center"), "Center");
+    alignCombo_->addItem(tr("Right"), "Right");
     settingsLayout->addWidget(alignCombo_, 1, 1);
 
-    textColorBtn_ = new QPushButton("Цвет текста");
+    textColorBtn_ = new QPushButton(tr("Text color"));
     textColorBtn_->setStyleSheet("background-color: #FFFFFF;");
     settingsLayout->addWidget(textColorBtn_, 2, 0, 1, 2);
 
     connect(textColorBtn_, &QPushButton::clicked, this, &HudPage::onChooseTextColor);
 
     // Badges
-    cbCpuBadge_ = new QCheckBox("CPU Badge");
-    cbGpuBadge_ = new QCheckBox("GPU Badge");
+    cbCpuBadge_ = new QCheckBox(tr("CPU Badge"));
+    cbGpuBadge_ = new QCheckBox(tr("GPU Badge"));
     settingsLayout->addWidget(cbCpuBadge_, 3, 0);
     settingsLayout->addWidget(cbGpuBadge_, 3, 1);
 
     mainLayout->addWidget(settingsGroup);
 
     // Apply config button
-    applyConfigBtn_ = new QPushButton("Применить конфигурацию");
+    applyConfigBtn_ = new QPushButton(tr("Apply configuration"));
     applyConfigBtn_->setMinimumHeight(36);
     mainLayout->addWidget(applyConfigBtn_);
     connect(applyConfigBtn_, &QPushButton::clicked, this, &HudPage::onApplyConfig);
 
     // Interval + start/stop metrics sending
-    auto *controlGroup = new QGroupBox("Отправка метрик");
+    auto *controlGroup = new QGroupBox(tr("Send metrics"));
     auto *controlLayout = new QHBoxLayout(controlGroup);
 
-    controlLayout->addWidget(new QLabel("Интервал (сек):"));
+    controlLayout->addWidget(new QLabel(tr("Interval (sec):")));
     intervalSpin_ = new QSpinBox;
     intervalSpin_->setRange(1, 60);
     intervalSpin_->setValue(5);
     controlLayout->addWidget(intervalSpin_);
 
-    startStopBtn_ = new QPushButton("Запустить");
+    startStopBtn_ = new QPushButton(tr("Start"));
     startStopBtn_->setMinimumHeight(36);
     controlLayout->addWidget(startStopBtn_);
 
@@ -122,7 +126,7 @@ void HudPage::setupUi() {
     connect(startStopBtn_, &QPushButton::clicked, this, &HudPage::onStartStopClicked);
 
     // Status
-    statusLabel_ = new QLabel("Метрики не отправляются");
+    statusLabel_ = new QLabel(tr("Metrics not being sent"));
     statusLabel_->setStyleSheet("color: #888; padding: 8px;");
     mainLayout->addWidget(statusLabel_);
 
@@ -135,7 +139,7 @@ void HudPage::onMetricToggled() {
         if (opt.checkbox->isChecked()) count++;
     }
 
-    selectionCountLabel_->setText(QString("Выбрано: %1 / 3").arg(count));
+    selectionCountLabel_->setText(tr("Selected: %1 / 3").arg(count));
 
     // Disable unchecked if already 3 selected
     for (auto &opt : metricOptions_) {
@@ -146,7 +150,7 @@ void HudPage::onMetricToggled() {
 }
 
 void HudPage::onChooseTextColor() {
-    QColor color = QColorDialog::getColor(textColor_, this, "Цвет текста");
+    QColor color = QColorDialog::getColor(textColor_, this, tr("Text color"));
     if (color.isValid()) {
         textColor_ = color;
         textColorBtn_->setStyleSheet(
@@ -156,7 +160,7 @@ void HudPage::onChooseTextColor() {
 
 void HudPage::onApplyConfig() {
     applyScreenConfig();
-    emit statusMessage("Конфигурация метрик применена");
+    emit statusMessage(tr("Metrics configuration applied"));
 }
 
 void HudPage::applyScreenConfig() {
@@ -181,9 +185,9 @@ void HudPage::applyScreenConfig() {
         "Full Screen",                          // screenMode
         "Single",                               // playMode
         labels,                                 // sysinfoDisplay
-        positionCombo_->currentText(),          // position
+        positionCombo_->currentData().toString(), // position
         textColor_.name(),                      // color
-        alignCombo_->currentText(),             // align
+        alignCombo_->currentData().toString(),  // align
         badges,                                 // badges
         0                                       // filter opacity
     );
@@ -208,7 +212,7 @@ void HudPage::startHud() {
         }
     }
     if (labels.isEmpty()) {
-        emit statusMessage("Выберите хотя бы одну метрику");
+        emit statusMessage(tr("Select at least one metric"));
         return;
     }
 
@@ -216,10 +220,10 @@ void HudPage::startHud() {
     applyScreenConfig();
 
     hudRunning_ = true;
-    startStopBtn_->setText("Остановить");
+    startStopBtn_->setText(tr("Stop"));
     metricsTimer_->start(intervalSpin_->value() * 1000);
     emit hudRunningChanged(true);
-    statusLabel_->setText("Метрики отправляются...");
+    statusLabel_->setText(tr("Sending metrics..."));
     statusLabel_->setStyleSheet("color: #4CAF50; padding: 8px;");
 
     // Send first batch immediately
@@ -231,9 +235,9 @@ void HudPage::stopHud() {
 
     hudRunning_ = false;
     metricsTimer_->stop();
-    startStopBtn_->setText("Запустить");
+    startStopBtn_->setText(tr("Start"));
     emit hudRunningChanged(false);
-    statusLabel_->setText("Метрики не отправляются");
+    statusLabel_->setText(tr("Metrics not being sent"));
     statusLabel_->setStyleSheet("color: #888; padding: 8px;");
 }
 
@@ -280,5 +284,5 @@ void HudPage::onSendMetrics() {
 
     deviceMgr_->sendSysinfo(labels, values, units);
 
-    statusLabel_->setText(QString("Отправлено: %1 метрик").arg(labels.size()));
+    statusLabel_->setText(tr("Sent: %1 metrics").arg(labels.size()));
 }
