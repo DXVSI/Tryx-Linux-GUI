@@ -6,11 +6,20 @@
 #include <QHBoxLayout>
 #include <QFont>
 
-static const QStringList METRIC_LABELS = {
-    "CPU Temperature", "CPU Frequency", "CPU Usage", "CPU Voltage",
-    "GPU Temperature", "GPU Frequency", "GPU Usage", "GPU Voltage",
-    "Hard Disk Temperature", "Motherboard Temperature",
-    "Memory Frequency", "Memory Utilization", "Date&Time"
+static const char *METRIC_LABELS[] = {
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "CPU Temperature"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "CPU Frequency"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "CPU Usage"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "CPU Voltage"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "GPU Temperature"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "GPU Frequency"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "GPU Usage"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "GPU Voltage"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "Hard Disk Temperature"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "Motherboard Temperature"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "Memory Frequency"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "Memory Utilization"),
+    QT_TRANSLATE_NOOP("SplitConfigWidget", "Date&Time")
 };
 
 SplitConfigWidget::SplitConfigWidget(QWidget *parent)
@@ -29,7 +38,7 @@ void SplitConfigWidget::setupUi() {
 
     // Left preview
     auto *leftBox = new QVBoxLayout;
-    auto *leftLabel = new QLabel("Left");
+    auto *leftLabel = new QLabel(tr("Left"));
     leftLabel->setAlignment(Qt::AlignCenter);
     leftLabel->setStyleSheet("color: #ccc; font-weight: bold; font-size: 11px;");
     leftBox->addWidget(leftLabel);
@@ -41,7 +50,7 @@ void SplitConfigWidget::setupUi() {
     leftPreview_->setScaledContents(false);
     leftPreview_->setStyleSheet(
         "QLabel { background: #1e1e2e; border: 2px dashed #555; border-radius: 8px; color: #555; font-size: 12px; }");
-    leftPreview_->setText("Drop media here");
+    leftPreview_->setText(tr("Drop media here"));
     leftBox->addWidget(leftPreview_);
 
     leftFileLabel_ = new QLabel;
@@ -53,7 +62,7 @@ void SplitConfigWidget::setupUi() {
 
     // Right preview
     auto *rightBox = new QVBoxLayout;
-    auto *rightLabel = new QLabel("Right");
+    auto *rightLabel = new QLabel(tr("Right"));
     rightLabel->setAlignment(Qt::AlignCenter);
     rightLabel->setStyleSheet("color: #ccc; font-weight: bold; font-size: 11px;");
     rightBox->addWidget(rightLabel);
@@ -65,7 +74,7 @@ void SplitConfigWidget::setupUi() {
     rightPreview_->setScaledContents(false);
     rightPreview_->setStyleSheet(
         "QLabel { background: #1e1e2e; border: 2px dashed #555; border-radius: 8px; color: #555; font-size: 12px; }");
-    rightPreview_->setText("Drop media here");
+    rightPreview_->setText(tr("Drop media here"));
     rightBox->addWidget(rightPreview_);
 
     rightFileLabel_ = new QLabel;
@@ -80,19 +89,21 @@ void SplitConfigWidget::setupUi() {
     auto *settingsLayout = new QHBoxLayout;
     settingsLayout->setSpacing(12);
 
-    settingsLayout->addWidget(new QLabel("Play Mode:"));
+    settingsLayout->addWidget(new QLabel(tr("Play Mode:")));
     playModeCombo_ = new QComboBox;
-    playModeCombo_->addItems({"Single", "Shuffle", "Loop"});
+    playModeCombo_->addItem(tr("Single"), "Single");
+    playModeCombo_->addItem(tr("Shuffle"), "Shuffle");
+    playModeCombo_->addItem(tr("Loop"), "Loop");
     settingsLayout->addWidget(playModeCombo_);
 
-    waterfallCheck_ = new QCheckBox("Waterfall Mode");
-    waterfallCheck_->setToolTip("Enable if display is physically rotated 90 degrees");
+    waterfallCheck_ = new QCheckBox(tr("Waterfall Mode"));
+    waterfallCheck_->setToolTip(tr("Enable if display is physically rotated 90 degrees"));
     waterfallCheck_->setStyleSheet("QCheckBox { color: #ccc; }");
     settingsLayout->addWidget(waterfallCheck_);
 
     // Left metrics button
     leftMetricsBtn_ = new QToolButton;
-    leftMetricsBtn_->setText(QString::fromUtf8("Left: 0 / 3 \u25BC"));
+    leftMetricsBtn_->setText(QString::fromUtf8("%1: 0 / 3 \u25BC").arg(tr("Left")));
     leftMetricsBtn_->setPopupMode(QToolButton::InstantPopup);
     leftMetricsBtn_->setStyleSheet(
         "QToolButton { background: #2a2a3e; color: #fff; border: 1px solid #4a4a5e; "
@@ -101,9 +112,10 @@ void SplitConfigWidget::setupUi() {
         "QToolButton:hover { background: #3a3a4e; }");
 
     leftMetricsMenu_ = new QMenu(this);
-    for (const auto &label : METRIC_LABELS) {
+    for (const auto *label : METRIC_LABELS) {
         auto *wa = new QWidgetAction(leftMetricsMenu_);
-        auto *cb = new QCheckBox(label);
+        auto *cb = new QCheckBox(tr(label));
+        cb->setProperty("protocolLabel", label);
         cb->setStyleSheet("QCheckBox { color: #fff; padding: 4px 8px; } QCheckBox:hover { background: #3a3a4e; }");
         wa->setDefaultWidget(cb);
         leftMetricsMenu_->addAction(wa);
@@ -118,7 +130,7 @@ void SplitConfigWidget::setupUi() {
                 if (sender) sender->setChecked(false);
                 return;
             }
-            rebuildMetricsButtonCb(leftMetricsBtn_, leftMetricCheckboxes_, "Left");
+            rebuildMetricsButtonCb(leftMetricsBtn_, leftMetricCheckboxes_, tr("Left"));
         });
     }
     leftMetricsBtn_->setMenu(leftMetricsMenu_);
@@ -126,7 +138,7 @@ void SplitConfigWidget::setupUi() {
 
     // Right metrics button
     rightMetricsBtn_ = new QToolButton;
-    rightMetricsBtn_->setText(QString::fromUtf8("Right: 0 / 3 \u25BC"));
+    rightMetricsBtn_->setText(QString::fromUtf8("%1: 0 / 3 \u25BC").arg(tr("Right")));
     rightMetricsBtn_->setPopupMode(QToolButton::InstantPopup);
     rightMetricsBtn_->setStyleSheet(
         "QToolButton { background: #2a2a3e; color: #fff; border: 1px solid #4a4a5e; "
@@ -135,9 +147,10 @@ void SplitConfigWidget::setupUi() {
         "QToolButton:hover { background: #3a3a4e; }");
 
     rightMetricsMenu_ = new QMenu(this);
-    for (const auto &label : METRIC_LABELS) {
+    for (const auto *label : METRIC_LABELS) {
         auto *wa = new QWidgetAction(rightMetricsMenu_);
-        auto *cb = new QCheckBox(label);
+        auto *cb = new QCheckBox(tr(label));
+        cb->setProperty("protocolLabel", label);
         cb->setStyleSheet("QCheckBox { color: #fff; padding: 4px 8px; } QCheckBox:hover { background: #3a3a4e; }");
         wa->setDefaultWidget(cb);
         rightMetricsMenu_->addAction(wa);
@@ -152,7 +165,7 @@ void SplitConfigWidget::setupUi() {
                 if (sender) sender->setChecked(false);
                 return;
             }
-            rebuildMetricsButtonCb(rightMetricsBtn_, rightMetricCheckboxes_, "Right");
+            rebuildMetricsButtonCb(rightMetricsBtn_, rightMetricCheckboxes_, tr("Right"));
         });
     }
     rightMetricsBtn_->setMenu(rightMetricsMenu_);
@@ -188,7 +201,7 @@ QStringList SplitConfigWidget::leftMetrics() const {
     QStringList list;
     for (auto *c : leftMetricCheckboxes_) {
         if (c->isChecked())
-            list << c->text();
+            list << c->property("protocolLabel").toString();
     }
     return list;
 }
@@ -197,13 +210,13 @@ QStringList SplitConfigWidget::rightMetrics() const {
     QStringList list;
     for (auto *c : rightMetricCheckboxes_) {
         if (c->isChecked())
-            list << c->text();
+            list << c->property("protocolLabel").toString();
     }
     return list;
 }
 
 QString SplitConfigWidget::playMode() const {
-    return playModeCombo_->currentText();
+    return playModeCombo_->currentData().toString();
 }
 
 bool SplitConfigWidget::waterfallMode() const {

@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QLabel>
+#include <QComboBox>
 #include <QTimer>
 #include <QFrame>
 #include <QVBoxLayout>
@@ -46,15 +47,22 @@ class Homepage : public QWidget {
 public:
     explicit Homepage(QWidget *parent = nullptr);
 
+    void setCurrentLanguage(const QString &language);
+
+signals:
+    void languageChanged(const QString &language);
+
 private slots:
     void onMetricsUpdated(const SystemMetrics &metrics);
 
 private:
     void setupUi();
     QFrame *createCard();
+    void populateLanguageCombo();
 
     SystemMonitor *monitor_;
     QTimer *updateTimer_;
+    QComboBox *languageCombo_;
 
     // CPU card
     QLabel *cpuUsageLabel_;

@@ -22,24 +22,24 @@ void SettingsPage::setupUi() {
     mainLayout->setSpacing(12);
 
     // Port settings
-    auto *portGroup = new QGroupBox("Подключение");
+    auto *portGroup = new QGroupBox(tr("Connection"));
     auto *portLayout = new QGridLayout(portGroup);
 
     portCombo_ = new QComboBox;
     portCombo_->setEditable(true);
-    portCombo_->addItem("Автоматически");
-    refreshPortsBtn_ = new QPushButton("Обновить");
+    portCombo_->addItem(tr("Auto"));
+    refreshPortsBtn_ = new QPushButton(tr("Refresh"));
 
-    portLayout->addWidget(new QLabel("Порт:"), 0, 0);
+    portLayout->addWidget(new QLabel(tr("Port:")), 0, 0);
     portLayout->addWidget(portCombo_, 0, 1);
     portLayout->addWidget(refreshPortsBtn_, 0, 2);
 
     keepaliveSpin_ = new QSpinBox;
     keepaliveSpin_->setRange(5, 60);
     keepaliveSpin_->setValue(10);
-    keepaliveSpin_->setSuffix(" сек");
+    keepaliveSpin_->setSuffix(tr(" sec"));
 
-    portLayout->addWidget(new QLabel("Keepalive интервал:"), 1, 0);
+    portLayout->addWidget(new QLabel(tr("Keepalive interval:")), 1, 0);
     portLayout->addWidget(keepaliveSpin_, 1, 1);
 
     mainLayout->addWidget(portGroup);
@@ -47,12 +47,12 @@ void SettingsPage::setupUi() {
     connect(refreshPortsBtn_, &QPushButton::clicked, this, &SettingsPage::onRefreshPorts);
 
     // Behavior
-    auto *behaviorGroup = new QGroupBox("Поведение");
+    auto *behaviorGroup = new QGroupBox(tr("Behavior"));
     auto *behaviorLayout = new QVBoxLayout(behaviorGroup);
 
-    cbMinimizeToTray_ = new QCheckBox("Сворачивать в трей при закрытии");
-    cbStartMinimized_ = new QCheckBox("Запускать свёрнутым");
-    cbAutostart_ = new QCheckBox("Автозапуск при входе (systemd user service)");
+    cbMinimizeToTray_ = new QCheckBox(tr("Minimize to tray on close"));
+    cbStartMinimized_ = new QCheckBox(tr("Start minimized"));
+    cbAutostart_ = new QCheckBox(tr("Autostart on login (systemd user service)"));
 
     cbMinimizeToTray_->setChecked(true);
 
@@ -63,10 +63,10 @@ void SettingsPage::setupUi() {
     mainLayout->addWidget(behaviorGroup);
 
     // Device info
-    auto *infoGroup = new QGroupBox("Устройство");
+    auto *infoGroup = new QGroupBox(tr("Device"));
     auto *infoLayout = new QHBoxLayout(infoGroup);
 
-    deviceInfoBtn_ = new QPushButton("Информация об устройстве");
+    deviceInfoBtn_ = new QPushButton(tr("Device information"));
     infoLayout->addWidget(deviceInfoBtn_);
     infoLayout->addStretch();
 
@@ -76,8 +76,8 @@ void SettingsPage::setupUi() {
 
     // Buttons
     auto *btnLayout = new QHBoxLayout;
-    saveBtn_ = new QPushButton("Сохранить");
-    resetBtn_ = new QPushButton("Сбросить");
+    saveBtn_ = new QPushButton(tr("Save"));
+    resetBtn_ = new QPushButton(tr("Reset"));
     btnLayout->addStretch();
     btnLayout->addWidget(saveBtn_);
     btnLayout->addWidget(resetBtn_);
@@ -103,7 +103,7 @@ void SettingsPage::loadSettings() {
 }
 
 QString SettingsPage::selectedPort() const {
-    if (portCombo_->currentText() == "Автоматически") {
+    if (portCombo_->currentText() == tr("Auto")) {
         return {};
     }
     return portCombo_->currentText();
@@ -124,7 +124,7 @@ bool SettingsPage::startMinimized() const {
 void SettingsPage::onRefreshPorts() {
     QString current = portCombo_->currentText();
     portCombo_->clear();
-    portCombo_->addItem("Автоматически");
+    portCombo_->addItem(tr("Auto"));
 
     QDir devDir("/dev");
     for (const auto &entry : devDir.entryList(QStringList{"ttyACM*"}, QDir::System)) {
@@ -139,12 +139,12 @@ void SettingsPage::onRefreshPorts() {
 
 void SettingsPage::onShowDeviceInfo() {
     if (!deviceMgr_->isConnected()) {
-        QMessageBox::information(this, "Устройство", "Устройство не подключено");
+        QMessageBox::information(this, tr("Device"), tr("Device not connected"));
         return;
     }
 
     // Trigger handshake - info will come through signals
-    emit statusMessage("Запрос информации об устройстве...");
+    emit statusMessage(tr("Requesting device information..."));
 }
 
 void SettingsPage::onResetSettings() {
@@ -153,11 +153,11 @@ void SettingsPage::onResetSettings() {
     cbMinimizeToTray_->setChecked(true);
     cbStartMinimized_->setChecked(false);
     cbAutostart_->setChecked(false);
-    emit statusMessage("Настройки сброшены");
+    emit statusMessage(tr("Settings reset"));
 }
 
 void SettingsPage::onSaveSettings() {
-    panorama::Config config;
+    panorama::Config config = panorama::ConfigManager::load_config().value_or(panorama::Config{});
     config.port = selectedPort().toStdString();
     config.keepalive_interval = keepaliveSpin_->value();
     config.brightness = 75;
@@ -172,5 +172,5 @@ void SettingsPage::onSaveSettings() {
     }
 
     emit settingsChanged();
-    emit statusMessage("Настройки сохранены");
+    emit statusMessage(tr("Settings saved"));
 }
