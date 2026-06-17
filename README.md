@@ -17,6 +17,10 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 
 </div>
 
+## Community Guides
+
+- [Tryx Panorama 360 on Linux: What Actually Works (Hands-On, 2026)](https://pimpmycooler.com/en/guides/tryx-panorama-360-linux) - PimpMyCooler hands-on guide for using the DXVSI project on a retail Panorama 360 ARGB.
+
 ## What was done
 
 - Unpacking KANALI (official Windows app) resources to extract built-in media library (15 videos)
