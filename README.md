@@ -181,23 +181,23 @@ media/               # Built-in videos
 
 ## Support the Project
 
-If this project is useful to you, you can support continued development, protocol research, and testing on real TRYX hardware.
+If TRYX Panorama Manager is useful to you, you can support continued development, protocol compatibility work, and testing on real hardware.
 
 ### USDT on TON
 
-- TON DNS: `fedora.ton`
-- Wallet address: `UQBO74LeYwNViA9MfdWPqfj4A5SkJ8vTcVG2uZzYzu9LFU-j`
-- Network: `TON Mainnet`
-- Token: `USD₮ (USDT Jetton)`
+| Detail | Value |
+|--------|-------|
+| TON DNS | `fedora.ton` |
+| Network | `TON Mainnet` |
+| Token | `USD₮ (USDT Jetton)` |
 
-Send only USD₮ via TON Mainnet. Do not send USDT via TRON, Ethereum, BNB Chain, or any other network.
+**Wallet address**
 
-Before confirming the transaction, verify that your wallet displays USD₮, not native TON.
+`UQBO74LeYwNViA9MfdWPqfj4A5SkJ8vTcVG2uZzYzu9LFU-j`
+
+> [!IMPORTANT]
+> Send only USD₮ via TON Mainnet. Before confirming the transaction, verify that your wallet displays USD₮, not native TON. Do not use TRON, Ethereum, BNB Chain, or any other network.
 
 ## License
 
-MIT
-
-## Credits
-
-Based on [reed-tpse](https://github.com/fadli0029/reed-tpse) protocol library.
+MIT. See [LICENSE](LICENSE).
