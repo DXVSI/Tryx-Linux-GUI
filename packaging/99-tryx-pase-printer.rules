@@ -1,0 +1,4 @@
+# TRYX PANORAMA SE exposes a vendor protocol over a USB Printer Class
+# interface, but it is not a CUPS printer. Grant access to the usbfs device for
+# direct libusb I/O and clear printer units selected by generic distro rules.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="1021", OWNER="root", GROUP="lp", MODE="0660", TAG+="uaccess", ENV{SYSTEMD_WANTS}="", ENV{SYSTEMD_USER_WANTS}=""

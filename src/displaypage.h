@@ -13,6 +13,7 @@
 #include <QFrame>
 
 class DeviceManager;
+struct TryxRuntimeOperationInfo;
 
 struct MediaEntry {
     QString filePath;
@@ -70,12 +71,17 @@ private slots:
     void onMediaUploaded(const QString &filename);
     void onMediaDeleted();
     void onUploadStatus(const QString &status);
+    void onOperationChanged(const TryxRuntimeOperationInfo &info,
+                            quint64 revision);
+    void onRetryClicked();
+    void onCancelClicked();
     void onTileClicked(MediaTile *tile);
 
 private:
     void setupUi();
     void loadBuiltinMedia();
     QPixmap extractThumbnail(const QString &videoPath, const QString &cachePath);
+    void setUploadBusy(bool busy);
 
     DeviceManager *deviceMgr_;
     QListWidget *fileList_;
@@ -87,8 +93,13 @@ private:
     QPushButton *setDisplayBtn_;
     QPushButton *deleteBtn_;
     QPushButton *refreshBtn_;
+    QPushButton *retryBtn_;
+    QPushButton *cancelBtn_;
     QLabel *dropZone_;
     QProgressBar *progressBar_;
+    bool uploadBusy_ = false;
+    QString activeOperationId_;
+    QString retryOperationId_;
 
     QScrollArea *builtinScrollArea_;
     QWidget *builtinGridWidget_;

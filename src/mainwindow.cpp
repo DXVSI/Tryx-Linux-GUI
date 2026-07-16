@@ -16,6 +16,7 @@
 
 MainWindow::MainWindow(const QString &currentLanguage,
                        std::function<void(const QString &)> languageHandler,
+                       DeviceManager *deviceManager,
                        QWidget *parent)
     : QMainWindow(parent),
       languageHandler_(std::move(languageHandler)),
@@ -23,7 +24,10 @@ MainWindow::MainWindow(const QString &currentLanguage,
                            ? currentLanguage
                            : "system") {
 
-    deviceMgr_ = new DeviceManager(this);
+    deviceMgr_ = deviceManager ? deviceManager : new DeviceManager;
+    if (!deviceMgr_->parent()) {
+        deviceMgr_->setParent(this);
+    }
     trayMgr_ = new TrayManager(this);
 
     setupUi();
@@ -36,7 +40,9 @@ MainWindow::MainWindow(const QString &currentLanguage,
     trayMgr_->show();
 
     // Auto-connect on startup
-    deviceMgr_->connectDevice(settingsPage_->selectedPort());
+    if (!deviceMgr_->isRemote()) {
+        deviceMgr_->connectDevice(settingsPage_->selectedPort());
+    }
 }
 
 MainWindow::~MainWindow() = default;
@@ -146,8 +152,19 @@ void MainWindow::setupConnections() {
     connect(deviceMgr_, &DeviceManager::deviceConnected, this,
             [this](const QString &pid, const QString &serial,
                    const QString &fw, const QString &) {
-                statusLabel_->setText(tr("Connected: %1 (S/N: %2, FW: %3)")
-                                          .arg(pid, serial, fw));
+                if (deviceMgr_->isPrinterClassDevicePresent()) {
+                    connectedStatusText_ =
+                        tr("Connected: %1 (%2)").arg(pid, serial);
+                    statusLabel_->setText(connectedStatusText_);
+                    trayMgr_->setConnected(true);
+                    trayMgr_->showNotification("TRYX Panorama", tr("Device connected"));
+                    return;
+                }
+
+                connectedStatusText_ =
+                    tr("Connected: %1 (S/N: %2, FW: %3)")
+                        .arg(pid, serial, fw);
+                statusLabel_->setText(connectedStatusText_);
                 trayMgr_->setConnected(true);
                 trayMgr_->showNotification("TRYX Panorama", tr("Device connected"));
 
@@ -156,6 +173,7 @@ void MainWindow::setupConnections() {
             });
 
     connect(deviceMgr_, &DeviceManager::deviceDisconnected, this, [this]() {
+        connectedStatusText_.clear();
         statusLabel_->setText(tr("Disconnected"));
         trayMgr_->setConnected(false);
     });
@@ -163,6 +181,17 @@ void MainWindow::setupConnections() {
     connect(deviceMgr_, &DeviceManager::deviceError, this, [this](const QString &msg) {
         statusLabel_->setText(tr("Error: %1").arg(msg));
     });
+
+    connect(deviceMgr_, &DeviceManager::printerDisplaySessionChanged, this,
+            [this](bool active) {
+                if (active) {
+                    statusLabel_->setText(
+                        connectedStatusText_.isEmpty()
+                            ? tr("Connected")
+                            : connectedStatusText_);
+                    deviceMgr_->refreshMediaList();
+                }
+            });
 
     connect(deviceMgr_, &DeviceManager::brightnessChanged, trayMgr_, &TrayManager::setBrightnessValue);
 
@@ -242,7 +271,9 @@ void MainWindow::closeEvent(QCloseEvent *event) {
         event->ignore();
     } else {
         panoramaPage_->stopMetrics();
-        deviceMgr_->disconnectDevice();
+        if (!deviceMgr_->isRemote()) {
+            deviceMgr_->disconnectDevice();
+        }
         event->accept();
     }
 }

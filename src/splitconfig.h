@@ -20,15 +20,44 @@ public:
     QStringList rightMedia() const;
     QStringList leftMetrics() const;
     QStringList rightMetrics() const;
+    QStringList leftBadges() const;
+    QStringList rightBadges() const;
+    QString leftPosition() const;
+    QString rightPosition() const;
+    QString leftColor() const;
+    QString rightColor() const;
+    QString leftAlignment() const;
+    QString rightAlignment() const;
     QString playMode() const;
-    bool waterfallMode() const;
 
     void assignToLeft(const QString &filename, const QPixmap &thumb);
     void assignToRight(const QString &filename, const QPixmap &thumb);
+    void setConfiguration(const QString &leftMedia,
+                          const QString &rightMedia,
+                          const QStringList &leftMetrics,
+                          const QStringList &rightMetrics,
+                          const QStringList &leftBadges,
+                          const QStringList &rightBadges,
+                          const QString &playMode);
+    void setAreaSettings(const QString &leftPosition,
+                         const QString &leftColor,
+                         const QString &leftAlignment,
+                         const QString &rightPosition,
+                         const QString &rightColor,
+                         const QString &rightAlignment);
+    void setAvailableMetrics(const QStringList &metrics);
+    void setPaseMode(bool enabled);
 
 private:
     void setupUi();
     void rebuildMetricsButtonCb(QToolButton *btn, const QList<QCheckBox *> &checkboxes, const QString &side);
+    void setMetricSelection(const QList<QCheckBox *> &checkboxes,
+                            const QStringList &metrics);
+    void chooseCustomColor(QComboBox *combo);
+    void setColorComboValue(QComboBox *combo,
+                            const QString &color);
+    static QString colorComboValue(const QComboBox *combo);
+    static QStringList checkedBadges(QCheckBox *cpu, QCheckBox *gpu);
 
     // Preview frames
     QLabel *leftPreview_;
@@ -38,13 +67,22 @@ private:
 
     // Settings
     QComboBox *playModeCombo_;
-    QCheckBox *waterfallCheck_;
     QToolButton *leftMetricsBtn_;
     QToolButton *rightMetricsBtn_;
     QMenu *leftMetricsMenu_;
     QMenu *rightMetricsMenu_;
     QList<QCheckBox *> leftMetricCheckboxes_;
     QList<QCheckBox *> rightMetricCheckboxes_;
+    QCheckBox *leftCpuBadge_;
+    QCheckBox *leftGpuBadge_;
+    QCheckBox *rightCpuBadge_;
+    QCheckBox *rightGpuBadge_;
+    QComboBox *leftPositionCombo_;
+    QComboBox *leftColorCombo_;
+    QComboBox *leftAlignmentCombo_;
+    QComboBox *rightPositionCombo_;
+    QComboBox *rightColorCombo_;
+    QComboBox *rightAlignmentCombo_;
 
     // Media assignments
     QString leftFilename_;

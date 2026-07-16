@@ -1,13 +1,19 @@
 [Unit]
 Description=TRYX Panorama SE 360 Display Manager
 Documentation=https://github.com/fadli0029/reed-tpse
-After=local-fs.target
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
-Type=simple
-ExecStart=%h/.local/bin/tryx-panorama-manager --daemon
+Type=dbus
+BusName=org.tryx.Panorama
+ExecStart=/usr/bin/tryx-panorama-manager --daemon
 Restart=on-failure
-RestartSec=5
+RestartSec=1
+TimeoutStartSec=15
+TimeoutStopSec=10
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target

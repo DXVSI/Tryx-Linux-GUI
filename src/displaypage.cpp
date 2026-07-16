@@ -15,6 +15,7 @@
 #include <QProcess>
 #include <QPixmap>
 #include <QMouseEvent>
+#include <QSignalBlocker>
 
 static const int TILE_WIDTH = 200;
 static const int TILE_IMG_HEIGHT = 100;
@@ -115,15 +116,38 @@ DisplayPage::DisplayPage(DeviceManager *deviceMgr, QWidget *parent)
     connect(deviceMgr_, &DeviceManager::mediaUploaded, this, &DisplayPage::onMediaUploaded);
     connect(deviceMgr_, &DeviceManager::mediaDeleted, this, &DisplayPage::onMediaDeleted);
     connect(deviceMgr_, &DeviceManager::uploadStatus, this, &DisplayPage::onUploadStatus);
+    connect(deviceMgr_, &DeviceManager::operationChanged, this,
+            &DisplayPage::onOperationChanged);
+    connect(deviceMgr_, &DeviceManager::operationSnapshotUpdated, this,
+            [this](const TryxRuntimeOperationsSnapshot &snapshot) {
+                if (snapshot.activeOperationId.isEmpty()) {
+                    return;
+                }
+                activeOperationId_ = snapshot.activeOperationId;
+                onOperationChanged(
+                    deviceMgr_->operationInfo(activeOperationId_),
+                    snapshot.revision);
+            });
+    connect(deviceMgr_, &DeviceManager::deviceError, this,
+            [this](const QString &message) {
+                refreshBtn_->setEnabled(!uploadBusy_);
+                emit statusMessage(message);
+            });
     connect(deviceMgr_, &DeviceManager::brightnessChanged, this,
-            [this](int val) { brightnessLabel_->setText(QString::number(val)); });
+            [this](int val) {
+                const QSignalBlocker blocker(brightnessSlider_);
+                brightnessSlider_->setValue(val);
+                brightnessLabel_->setText(QString::number(val));
+            });
 }
 
 QString DisplayPage::builtinMediaDir() {
     QString appDir = QCoreApplication::applicationDirPath();
     QStringList candidates = {
+        QStringLiteral("/usr/share/tryx-panorama-manager/media"),
+        QDir::cleanPath(appDir +
+                        QStringLiteral("/../share/tryx-panorama-manager/media")),
         appDir + "/../media",
-        appDir + "/../../media",
         appDir + "/media",
     };
     for (const auto &path : candidates) {
@@ -190,9 +214,19 @@ void DisplayPage::setupUi() {
     progressBar_->setVisible(false);
     progressBar_->setMaximumHeight(20);
     uploadLayout->addWidget(progressBar_);
+    retryBtn_ = new QPushButton(tr("Retry transfer"));
+    retryBtn_->setVisible(false);
+    uploadLayout->addWidget(retryBtn_);
+    cancelBtn_ = new QPushButton(tr("Cancel"));
+    cancelBtn_->setVisible(false);
+    uploadLayout->addWidget(cancelBtn_);
     mainLayout->addLayout(uploadLayout);
 
     connect(uploadBtn_, &QPushButton::clicked, this, &DisplayPage::onUploadClicked);
+    connect(retryBtn_, &QPushButton::clicked, this,
+            &DisplayPage::onRetryClicked);
+    connect(cancelBtn_, &QPushButton::clicked, this,
+            &DisplayPage::onCancelClicked);
 
     // File list
     auto *fileGroup = new QGroupBox(tr("Files on device"));
@@ -221,8 +255,8 @@ void DisplayPage::setupUi() {
     auto *brightnessLayout = new QHBoxLayout(brightnessGroup);
     brightnessSlider_ = new QSlider(Qt::Horizontal);
     brightnessSlider_->setRange(0, 100);
-    brightnessSlider_->setValue(75);
-    brightnessLabel_ = new QLabel("75");
+    brightnessSlider_->setValue(0);
+    brightnessLabel_ = new QLabel(QStringLiteral("--"));
     brightnessLabel_->setMinimumWidth(30);
     brightnessLayout->addWidget(brightnessSlider_);
     brightnessLayout->addWidget(brightnessLabel_);
@@ -323,13 +357,20 @@ void DisplayPage::onUploadBuiltinClicked() {
         emit statusMessage(tr("Select files from the media library"));
         return;
     }
+    if (deviceMgr_->isPrinterClassDevicePresent() && selected.size() > 1) {
+        emit statusMessage(tr("Upload one media file at a time on printer-class firmware."));
+        return;
+    }
 
-    progressBar_->setVisible(true);
-    uploadBtn_->setEnabled(false);
-    uploadBuiltinBtn_->setEnabled(false);
+    setUploadBusy(true);
 
     for (const auto &path : selected) {
-        deviceMgr_->uploadMedia(path);
+        if (deviceMgr_->isPrinterClassDevicePresent()) {
+            activeOperationId_ =
+                deviceMgr_->queueUploadOperation(QString(), path, false);
+        } else {
+            deviceMgr_->uploadMedia(path);
+        }
     }
 }
 
@@ -339,9 +380,13 @@ void DisplayPage::onUploadClicked() {
         "Media (*.mp4 *.webm *.mkv *.avi *.mov *.gif *.jpg *.jpeg *.png *.bmp *.webp)");
 
     if (!path.isEmpty()) {
-        progressBar_->setVisible(true);
-        uploadBtn_->setEnabled(false);
-        deviceMgr_->uploadMedia(path);
+        setUploadBusy(true);
+        if (deviceMgr_->isPrinterClassDevicePresent()) {
+            activeOperationId_ =
+                deviceMgr_->queueUploadOperation(QString(), path, false);
+        } else {
+            deviceMgr_->uploadMedia(path);
+        }
     }
 }
 
@@ -351,14 +396,29 @@ void DisplayPage::onSetDisplayClicked() {
         emit statusMessage(tr("Select files to display"));
         return;
     }
+    if (deviceMgr_->isPrinterClassDevicePresent() && selected.size() > 1) {
+        emit statusMessage(tr("Only one media file can be applied on printer-class firmware yet."));
+        return;
+    }
 
     QStringList media;
     for (auto *item : selected) {
         media << item->text();
     }
 
-    deviceMgr_->setScreenConfig(media, ratioCombo_->currentText());
-    emit statusMessage(tr("Display configuration set"));
+    if (deviceMgr_->isPrinterClassDevicePresent()) {
+        TryxRuntimeApplyRequest request;
+        request.media = media;
+        request.ratio = ratioCombo_->currentText();
+        request.screenMode = QStringLiteral("Full Screen");
+        request.playMode = QStringLiteral("Single");
+        activeOperationId_ =
+            deviceMgr_->queueApplyOperation(QString(), request);
+        setUploadBusy(true);
+    } else {
+        deviceMgr_->setScreenConfig(media, ratioCombo_->currentText());
+        emit statusMessage(tr("Display configuration set"));
+    }
 }
 
 void DisplayPage::onDeleteClicked() {
@@ -373,14 +433,56 @@ void DisplayPage::onDeleteClicked() {
         files << item->text();
     }
 
-    auto reply = QMessageBox::question(this, tr("Delete"),
-                                       tr("Delete %1 file(s)?").arg(files.size()));
+    if (deviceMgr_->isPrinterClassDevicePresent()) {
+        if (files.size() != 1) {
+            emit statusMessage(
+                tr("Select exactly one PASE media file to delete"));
+            return;
+        }
+        TryxRuntimeMediaEntry matched;
+        bool found = false;
+        for (const TryxRuntimeMediaEntry &entry :
+             deviceMgr_->mediaCatalogSnapshot().entries) {
+            if (entry.name == files.constFirst()) {
+                matched = entry;
+                found = true;
+                break;
+            }
+        }
+        if (!found || !matched.deleteAllowed) {
+            emit statusMessage(
+                matched.deleteBlockReason.isEmpty()
+                    ? tr("This PASE media file cannot be deleted")
+                    : tr("This PASE media file cannot be deleted: %1")
+                          .arg(matched.deleteBlockReason));
+            return;
+        }
+        const auto reply = QMessageBox::question(
+            this, tr("Delete"),
+            tr("Delete this file from PASE?\n\nName: %1\nSize: %2 bytes\n\nThe operation cannot be undone.")
+                .arg(matched.name)
+                .arg(matched.size),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply == QMessageBox::Yes) {
+            activeOperationId_ = deviceMgr_->queueDeleteMediaOperation(
+                QString(), QStringList{matched.name});
+            setUploadBusy(true);
+        }
+        return;
+    }
+
+    const auto reply = QMessageBox::question(
+        this, tr("Delete"), tr("Delete %1 file(s)?").arg(files.size()));
     if (reply == QMessageBox::Yes) {
         deviceMgr_->deleteMedia(files);
     }
 }
 
 void DisplayPage::onRefreshClicked() {
+    if (!refreshBtn_->isEnabled()) {
+        return;
+    }
+    refreshBtn_->setEnabled(false);
     deviceMgr_->refreshMediaList();
 }
 
@@ -389,6 +491,7 @@ void DisplayPage::onBrightnessChanged(int value) {
 }
 
 void DisplayPage::onMediaListUpdated(const QStringList &files) {
+    refreshBtn_->setEnabled(!uploadBusy_);
     fileList_->clear();
     for (const auto &f : files) {
         fileList_->addItem(f);
@@ -397,9 +500,10 @@ void DisplayPage::onMediaListUpdated(const QStringList &files) {
 }
 
 void DisplayPage::onMediaUploaded(const QString &filename) {
-    progressBar_->setVisible(false);
-    uploadBtn_->setEnabled(true);
-    uploadBuiltinBtn_->setEnabled(true);
+    if (deviceMgr_->isPrinterClassDevicePresent()) {
+        return;
+    }
+    setUploadBusy(false);
     emit statusMessage(tr("Uploaded: %1").arg(filename));
     deviceMgr_->refreshMediaList();
 }
@@ -411,6 +515,107 @@ void DisplayPage::onMediaDeleted() {
 
 void DisplayPage::onUploadStatus(const QString &status) {
     emit statusMessage(status);
+}
+
+void DisplayPage::onOperationChanged(
+    const TryxRuntimeOperationInfo &info, quint64 revision) {
+    Q_UNUSED(revision);
+    const bool terminal = info.state == QStringLiteral("Succeeded") ||
+                          info.state == QStringLiteral("Failed") ||
+                          info.state == QStringLiteral("Cancelled") ||
+                          info.state == QStringLiteral("RetryAvailable");
+    if (info.id != activeOperationId_ &&
+        info.state != QStringLiteral("RetryAvailable")) {
+        return;
+    }
+
+    if (!terminal) {
+        setUploadBusy(true);
+        retryBtn_->setVisible(false);
+        cancelBtn_->setVisible(true);
+        if (info.total > 0) {
+            progressBar_->setRange(0, 100);
+            const int percent = static_cast<int>(qBound<qint64>(
+                qint64(0), (info.completed * 100) / info.total,
+                qint64(100)));
+            progressBar_->setValue(percent);
+        } else {
+            progressBar_->setRange(0, 0);
+        }
+        if (!info.message.isEmpty()) {
+            emit statusMessage(info.message);
+        }
+        return;
+    }
+
+    if (info.state == QStringLiteral("RetryAvailable")) {
+        const bool preparedRetry =
+            info.retryMode == QStringLiteral("PreparedMedia");
+        retryOperationId_ = preparedRetry ? info.id : QString();
+        retryBtn_->setVisible(preparedRetry);
+        cancelBtn_->setVisible(false);
+        setUploadBusy(false);
+        retryBtn_->setVisible(preparedRetry);
+        QString retryStatus = info.message.isEmpty()
+            ? tr("Prepared media is available for manual retry")
+            : info.message;
+        if (!info.primaryErrorMessage.trimmed().isEmpty()) {
+            retryStatus += QLatin1Char('\n') +
+                tr("Initial transfer error: %1")
+                    .arg(info.primaryErrorMessage.trimmed());
+        }
+        if (info.confirmedBytes > 0 && info.total > 0) {
+            retryStatus += QLatin1Char('\n') +
+                tr("Confirmed in the previous attempt: %1 of %2 bytes")
+                    .arg(info.confirmedBytes)
+                    .arg(info.total);
+        }
+        emit statusMessage(retryStatus);
+    } else {
+        setUploadBusy(false);
+        cancelBtn_->setVisible(false);
+        if (info.state == QStringLiteral("Succeeded")) {
+            emit statusMessage(
+                info.kind == QStringLiteral("DeleteMedia")
+                    ? tr("Media file deleted and verified")
+                    : info.kind.contains(QStringLiteral("Apply"))
+                    ? tr("Display media applied")
+                    : tr("Media upload completed and verified"));
+        } else if (!info.message.isEmpty()) {
+            emit statusMessage(info.message);
+        }
+    }
+    if (info.id == activeOperationId_) {
+        activeOperationId_.clear();
+    }
+}
+
+void DisplayPage::onRetryClicked() {
+    if (retryOperationId_.isEmpty()) {
+        return;
+    }
+    activeOperationId_ =
+        deviceMgr_->retryOperation(retryOperationId_, QString());
+    retryBtn_->setVisible(false);
+    setUploadBusy(true);
+}
+
+void DisplayPage::onCancelClicked() {
+    if (!activeOperationId_.isEmpty()) {
+        deviceMgr_->cancelOperation(activeOperationId_);
+    }
+}
+
+void DisplayPage::setUploadBusy(bool busy) {
+    uploadBusy_ = busy;
+    progressBar_->setVisible(busy);
+    uploadBtn_->setEnabled(!busy);
+    uploadBuiltinBtn_->setEnabled(!busy);
+    refreshBtn_->setEnabled(!busy);
+    setDisplayBtn_->setEnabled(!busy);
+    if (!busy) {
+        progressBar_->setRange(0, 0);
+    }
 }
 
 void DisplayPage::dragEnterEvent(QDragEnterEvent *event) {
@@ -440,9 +645,13 @@ void DisplayPage::dropEvent(QDropEvent *event) {
 
     for (const auto &url : event->mimeData()->urls()) {
         if (url.isLocalFile()) {
-            progressBar_->setVisible(true);
-            uploadBtn_->setEnabled(false);
-            deviceMgr_->uploadMedia(url.toLocalFile());
+            setUploadBusy(true);
+            if (deviceMgr_->isPrinterClassDevicePresent()) {
+                activeOperationId_ = deviceMgr_->queueUploadOperation(
+                    QString(), url.toLocalFile(), false);
+            } else {
+                deviceMgr_->uploadMedia(url.toLocalFile());
+            }
             break;
         }
     }
