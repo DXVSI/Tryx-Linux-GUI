@@ -77,7 +77,10 @@ jobs:
       - name: Verify clean source and release contract
         run: |
           set -euo pipefail
-          test -z "$(git status --porcelain --untracked-files=all)"
+          test -d "$GITHUB_WORKSPACE/.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          worktree_status=$(git status --porcelain --untracked-files=all)
+          test -z "$worktree_status"
           packaging/scripts/check-release-contract.sh
           if grep -R -n 'type="unfinished"' translations --include='*.ts'; then
             echo "Qt translations contain unfinished entries" >&2
@@ -233,7 +236,10 @@ jobs:
       - name: Verify clean source and release contract
         run: |
           set -euo pipefail
-          test -z "$(git status --porcelain --untracked-files=all)"
+          test -d "$GITHUB_WORKSPACE/.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          worktree_status=$(git status --porcelain --untracked-files=all)
+          test -z "$worktree_status"
           packaging/scripts/check-release-contract.sh
           if grep -R -n 'type="unfinished"' translations --include='*.ts'; then
             echo "Qt translations contain unfinished entries" >&2
@@ -359,7 +365,10 @@ jobs:
       - name: Verify clean source and release contract
         run: |
           set -euo pipefail
-          test -z "$(git status --porcelain --untracked-files=all)"
+          test -d "$GITHUB_WORKSPACE/.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          worktree_status=$(git status --porcelain --untracked-files=all)
+          test -z "$worktree_status"
           packaging/scripts/check-release-contract.sh
           if grep -R -n 'type="unfinished"' translations --include='*.ts'; then
             echo "Qt translations contain unfinished entries" >&2
