@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.dxvsi.tryx_panorama_manager</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT AND BSD-2-Clause</project_license>
+  <name>TRYX Panorama Manager</name>
+  <summary>Control TRYX Panorama cooler displays on Linux</summary>
+  <description>
+    <p>
+      TRYX Panorama Manager controls compatible TRYX Panorama and Panorama SE
+      cooler displays from Linux. It supports custom media, display settings,
+      system metrics, and the PASE printer-class USB protocol.
+    </p>
+  </description>
+  <developer id="io.github.dxvsi">
+    <name>DXVSI</name>
+  </developer>
+  <launchable type="desktop-id">tryx-panorama-manager.desktop</launchable>
+  <provides>
+    <binary>tryx-panorama-manager</binary>
+    <modalias>usb:v391Ap1021d*</modalias>
+  </provides>
+  <url type="homepage">https://github.com/DXVSI/tryx-panorama-se-360-linux-gui</url>
+  <url type="bugtracker">https://github.com/DXVSI/tryx-panorama-se-360-linux-gui/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="2.0.0" type="stable" date="2026-07-27"/>
+  </releases>
+</component>

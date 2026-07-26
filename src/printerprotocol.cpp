@@ -2686,6 +2686,21 @@ public:
         // response, but do not require it.
         if (!drainKeepaliveResponses(
                 context, errorMessage, true, trackId, outcome)) {
+            if (outcome &&
+                *outcome == TransactionOutcome::Cancelled) {
+                // The tracked setter was already written in full. Its
+                // response is optional, so a cancellation observed only
+                // during the bounded post-write drain cannot turn the
+                // completed OUT transfer into a clean pre-dispatch cancel.
+                // Let the caller move to readback, which will fail closed
+                // without replaying the mutation.
+                *outcome =
+                    TransactionOutcome::SentOutcomeUnknown;
+                if (errorMessage) {
+                    errorMessage->clear();
+                }
+                return true;
+            }
             if (!outcome ||
                 *outcome != TransactionOutcome::Rejected) {
                 closeDevice();
@@ -3762,6 +3777,10 @@ private:
             }
 
             if (isCancelled(context)) {
+                if (outcome) {
+                    *outcome =
+                        TransactionOutcome::Cancelled;
+                }
                 setCancelledError(errorMessage);
                 return false;
             }

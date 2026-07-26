@@ -956,8 +956,8 @@
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="1897"/>
-        <source>ffmpeg not found. Install: sudo dnf install ffmpeg</source>
-        <translation>ffmpeg не найден. Установите: sudo dnf install ffmpeg</translation>
+        <source>ffmpeg not found. Install it with your system package manager</source>
+        <translation>ffmpeg не найден. Установите его через пакетный менеджер вашей системы</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="1900"/>
@@ -2244,6 +2244,11 @@ The operation cannot be undone.</source>
         <translation>Состояние дисплея PASE ещё не готово. Переподключите устройство и дождитесь синхронизации.</translation>
     </message>
     <message>
+        <location filename="../src/panoramapage.cpp" line="1922"/>
+        <source>DEVICE PRESET</source>
+        <translation>ПРЕСЕТ УСТРОЙСТВА</translation>
+    </message>
+    <message>
         <location filename="../src/panoramapage.cpp" line="1926"/>
         <source>USER UPLOAD</source>
         <translation>ФАЙЛ ПОЛЬЗОВАТЕЛЯ</translation>
@@ -2463,8 +2468,8 @@ The operation cannot be undone.</source>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="1083"/>
-        <source>ffmpeg not found. Install: sudo dnf install ffmpeg</source>
-        <translation>ffmpeg не найден. Установите: sudo dnf install ffmpeg</translation>
+        <source>ffmpeg not found. Install it with your system package manager</source>
+        <translation>ffmpeg не найден. Установите его через пакетный менеджер вашей системы</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="1139"/>

@@ -1,0 +1,57 @@
+# Maintainer: DXVSI <DXVSI@users.noreply.github.com>
+# PKGBUILD metadata and directory variables are consumed or provided by makepkg.
+# shellcheck disable=SC2034,SC2154
+pkgname=tryx-panorama-manager
+pkgver=2.0.0
+pkgrel=1
+pkgdesc='Control TRYX Panorama cooler displays on Linux'
+arch=('x86_64')
+url='https://github.com/DXVSI/tryx-panorama-se-360-linux-gui'
+license=('MIT' 'BSD-2-Clause')
+depends=(
+  'dbus'
+  'ffmpeg'
+  'hicolor-icon-theme'
+  'libusb'
+  'protobuf'
+  'qt6-base'
+  'systemd'
+)
+optdepends=(
+  'android-tools: legacy OTA support and rebooting a device to loader mode'
+  'e2fsprogs: inspect Rockchip rootfs images with debugfs'
+  'mesa-utils: detect GPU names with glxinfo'
+  'pciutils: fallback GPU detection with lspci'
+  'qt6-wayland: native Qt Wayland platform integration'
+  'unzip: validate firmware ZIP archives'
+)
+makedepends=(
+  'qt6-tools'
+)
+install=tryx-panorama-manager.install
+
+# The release workflow creates this archive from the exact checked-out commit.
+# Requiring its checksum keeps standalone builds fail-closed instead of trusting
+# a remotely mutable Git tag or a source with a skipped checksum.
+_local_archive="${pkgname}-${pkgver}.tar.xz"
+_missing_source_sha256='0000000000000000000000000000000000000000000000000000000000000000'
+source=("${_local_archive}")
+sha256sums=("${TRYX_LOCAL_SOURCE_SHA256:-${_missing_source_sha256}}")
+_source_dir="${pkgname}-${pkgver}"
+
+build() {
+  cd "${srcdir}/${_source_dir}" || return 1
+  qmake6 tryx-panorama.pro
+  make
+}
+
+check() {
+  cd "${srcdir}/${_source_dir}" || return 1
+  dbus-run-session -- make check
+}
+
+package() {
+  cd "${srcdir}/${_source_dir}" || return 1
+  make INSTALL_ROOT="${pkgdir}" install
+  packaging/scripts/verify-package-contents.sh "${pkgdir}"
+}

@@ -1,0 +1,5 @@
+tryx-panorama-manager (2.0.0-1) noble; urgency=medium
+
+  * Initial native package for Ubuntu 24.04 and Linux Mint 22.
+
+ -- DXVSI <dxvsi123@gmail.com>  Mon, 27 Jul 2026 00:11:38 +0700

@@ -4,6 +4,10 @@ CONFIG += c++17 lrelease embed_translations link_pkgconfig
 TARGET = tryx-panorama-manager
 TEMPLATE = app
 
+VERSION = $$cat($$PWD/VERSION, lines)
+isEmpty(VERSION): error("VERSION is empty or missing")
+DEFINES += TRYX_APP_VERSION=\\\"$$VERSION\\\"
+
 PKGCONFIG += protobuf libudev libusb-1.0
 
 PROTOC_VERSION = $$system(protoc --version)
@@ -11,7 +15,17 @@ PROTOC_VERSION = $$last(PROTOC_VERSION)
 PROTOBUF_RUNTIME_VERSION = $$system(pkg-config --modversion protobuf)
 isEmpty(PROTOC_VERSION): error("protoc was not found")
 isEmpty(PROTOBUF_RUNTIME_VERSION): error("protobuf pkg-config metadata was not found")
-!equals(PROTOC_VERSION, $$PROTOBUF_RUNTIME_VERSION): error("protoc $$PROTOC_VERSION does not match libprotobuf $$PROTOBUF_RUNTIME_VERSION")
+# Some distributions omit only a trailing zero patch component from
+# `protoc --version` while pkg-config reports it, for example 35.1 versus
+# 35.1.0. Normalize that formatting difference without accepting real patch
+# skew such as 35.1.1 versus 35.1.0.
+PROTOC_NORMALIZED_VERSION = $$PROTOC_VERSION
+PROTOC_PATCH_VERSION = $$section(PROTOC_VERSION, ., 2, 2)
+isEmpty(PROTOC_PATCH_VERSION): PROTOC_NORMALIZED_VERSION = $${PROTOC_VERSION}.0
+PROTOBUF_RUNTIME_NORMALIZED_VERSION = $$PROTOBUF_RUNTIME_VERSION
+PROTOBUF_RUNTIME_PATCH_VERSION = $$section(PROTOBUF_RUNTIME_VERSION, ., 2, 2)
+isEmpty(PROTOBUF_RUNTIME_PATCH_VERSION): PROTOBUF_RUNTIME_NORMALIZED_VERSION = $${PROTOBUF_RUNTIME_VERSION}.0
+!equals(PROTOC_NORMALIZED_VERSION, $$PROTOBUF_RUNTIME_NORMALIZED_VERSION): error("protoc $$PROTOC_VERSION does not match libprotobuf $$PROTOBUF_RUNTIME_VERSION")
 
 TRANSLATIONS += translations/tryx-panorama_ru.ts
 LRELEASE_DIR = build/i18n
@@ -98,24 +112,50 @@ SOURCES += \
 RESOURCES += resources/resources.qrc
 
 DISTFILES += \
+    VERSION \
+    LICENSE \
+    LICENSES/picojson-BSD-2-Clause.txt \
+    packaging/70-tryx-pase-access.rules \
     packaging/99-tryx-pase-printer.rules \
+    packaging/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml \
+    packaging/scripts/check-release-contract.sh \
+    packaging/scripts/create-source-archive.sh \
+    packaging/scripts/verify-package-contents.sh \
+    packaging/tryx-panorama-manager.1 \
     packaging/tryx-panorama-manager.desktop \
+    systemd/90-tryx-panorama.preset \
     systemd/tryx-panorama.service \
     tests/check_no_bundled_video.sh
 
 unix {
     SYSTEMD_USER_UNIT_DIR = $$system(pkg-config --variable=systemduserunitdir systemd)
     isEmpty(SYSTEMD_USER_UNIT_DIR): error("systemd user unit directory was not found")
+    SYSTEMD_USER_PRESET_DIR = $$system(pkg-config --variable=systemduserpresetdir systemd)
+    isEmpty(SYSTEMD_USER_PRESET_DIR): error("systemd user preset directory was not found")
 
     target.path = /usr/bin
-    pase_udev_rule.path = /usr/lib/udev/rules.d
-    pase_udev_rule.files = packaging/99-tryx-pase-printer.rules
+    pase_udev_rules.path = /usr/lib/udev/rules.d
+    pase_udev_rules.files = \
+        packaging/70-tryx-pase-access.rules \
+        packaging/99-tryx-pase-printer.rules
     tryx_systemd_user_unit.path = $$SYSTEMD_USER_UNIT_DIR
     tryx_systemd_user_unit.files = systemd/tryx-panorama.service
+    tryx_systemd_user_preset.path = $$SYSTEMD_USER_PRESET_DIR
+    tryx_systemd_user_preset.files = systemd/90-tryx-panorama.preset
     tryx_desktop_entry.path = /usr/share/applications
     tryx_desktop_entry.files = packaging/tryx-panorama-manager.desktop
     tryx_icon.path = /usr/share/icons/hicolor/256x256/apps
     tryx_icon.files = resources/tryx-panorama.png
-    INSTALLS += target pase_udev_rule tryx_systemd_user_unit \
-        tryx_desktop_entry tryx_icon
+    tryx_metainfo.path = /usr/share/metainfo
+    tryx_metainfo.files = \
+        packaging/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
+    tryx_manpage.path = /usr/share/man/man1
+    tryx_manpage.files = packaging/tryx-panorama-manager.1
+    tryx_license.path = /usr/share/licenses/tryx-panorama-manager
+    tryx_license.files = \
+        LICENSE \
+        LICENSES/picojson-BSD-2-Clause.txt
+    INSTALLS += target pase_udev_rules tryx_systemd_user_unit \
+        tryx_systemd_user_preset \
+        tryx_desktop_entry tryx_icon tryx_metainfo tryx_manpage tryx_license
 }

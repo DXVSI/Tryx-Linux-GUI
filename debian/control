@@ -1,0 +1,46 @@
+Source: tryx-panorama-manager
+Section: utils
+Priority: optional
+Maintainer: DXVSI <dxvsi123@gmail.com>
+Build-Depends:
+ dbus-daemon,
+ debhelper-compat (= 13),
+ g++,
+ libprotobuf-dev,
+ libudev-dev,
+ libusb-1.0-0-dev,
+ make,
+ pkg-config,
+ protobuf-compiler,
+ qmake6,
+ qt6-base-dev,
+ qt6-l10n-tools,
+ systemd-dev
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/DXVSI/tryx-panorama-se-360-linux-gui
+Vcs-Browser: https://github.com/DXVSI/tryx-panorama-se-360-linux-gui
+Vcs-Git: https://github.com/DXVSI/tryx-panorama-se-360-linux-gui.git
+
+Package: tryx-panorama-manager
+Architecture: amd64
+Depends:
+ dbus-user-session,
+ ffmpeg,
+ hicolor-icon-theme,
+ systemd,
+ udev,
+ ${misc:Depends},
+ ${shlibs:Depends}
+Recommends:
+ qt6-wayland
+Suggests:
+ adb,
+ e2fsprogs,
+ mesa-utils,
+ pciutils,
+ unzip
+Description: control TRYX Panorama cooler displays on Linux
+ TRYX Panorama Manager controls compatible TRYX Panorama and Panorama SE
+ cooler displays. It supports custom media, display settings, system metrics,
+ and the PASE printer-class USB protocol.

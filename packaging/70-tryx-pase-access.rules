@@ -1,0 +1,3 @@
+# TRYX PANORAMA SE exposes a vendor protocol over a USB Printer Class
+# interface. Mark it for logind ACL assignment before 73-seat-late.rules.
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="1021", OWNER="root", GROUP="lp", MODE="0660", TAG+="uaccess"

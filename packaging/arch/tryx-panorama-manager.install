@@ -1,0 +1,10 @@
+post_install() {
+  printf '%s\n' \
+    'TRYX Panorama Manager was installed without enabling its user service.' \
+    'Reconnect the PASE USB cable so the new access rules take effect.' \
+    'Launch the application once, then enable autostart in Settings if wanted.'
+}
+
+post_upgrade() {
+  post_install
+}

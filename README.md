@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 ## Features
 
 - Upload images, videos, GIFs (auto-converts non-MP4 formats)
-- Origin-aware PASE media catalog that keeps device presets separate from selectable user uploads
+- Origin-aware PASE media catalog that labels device presets separately from user uploads
 - Real-time system metrics on display (temperature, usage, frequency, power and date/time)
 - Hardware name badges (auto-detected from system)
 - Brightness control (0-100)
@@ -92,32 +92,110 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 
 ## Media-free distribution
 
-The application does not bundle, install, or search for the extracted KANALI video library. Device presets remain on PASE and in the origin-aware runtime/D-Bus catalog, but the GUI does not expose them for selection or application. The Panorama page shows only user-upload entries. A user file with the same name as a known device file is still treated according to its catalog origin and is never promoted to a preset by filename.
+The application does not bundle, install, or search for the extracted KANALI video library. Factory media already stored on PASE appears in the unified Media Library as a read-only `DEVICE PRESET`; it can be selected and applied but never deleted by the application. User uploads remain labelled separately. A user file with the same name as a known device file is still treated according to its catalog origin and is never promoted to a preset by filename.
 
 Manual user upload remains available. Thumbnails are generated from the user-selected source and shown only after the runtime has confirmed the uploaded origin in its device-scoped XDG media catalog. Legacy files left by an older installation under `/usr/share/tryx-panorama-manager/media` are ignored by the current runtime and are not deleted automatically.
+
+## Native Linux packages
+
+Version 2.0 uses one source version to build separate native packages for
+Fedora, Ubuntu/Linux Mint, and Arch Linux. A Fedora binary is not reused on
+other distributions.
+
+Release assets use these formats:
+
+- RPM `x86_64` for supported Fedora releases
+- DEB `amd64` for Ubuntu 24.04 and Linux Mint 22
+- `.pkg.tar.zst` `x86_64` for current Arch Linux
+- `SHA256SUMS` for artifact verification
+
+The commands below apply after the corresponding files have been published
+on the GitHub Releases page. Until then, use the source build instructions
+below.
+
+Install a downloaded package with the package manager for your distribution:
+
+```fish
+# Fedora. Enable RPM Fusion Free first because media conversion requires the
+# full ffmpeg package with the libx264 encoder.
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.0.0-1.fc44.x86_64.rpm
+
+# Ubuntu 24.04 or Linux Mint 22
+sudo apt install ./tryx-panorama-manager_2.0.0-1_amd64.deb
+
+# Arch Linux
+sudo pacman -U ./tryx-panorama-manager-2.0.0-1-x86_64.pkg.tar.zst
+```
+
+For Fedora, follow the
+[RPM Fusion configuration instructions](https://rpmfusion.org/Configuration)
+before installing the RPM. Fedora's `ffmpeg-free` can provide an `ffmpeg`
+executable without the `libx264` encoder required by PASE media preparation.
+Use `--allowerasing` when installing the RPM so DNF can replace an existing
+`ffmpeg-free` package with RPM Fusion's full `ffmpeg` build.
+
+Native packages install the binary, desktop entry, icon, systemd user unit,
+and two PASE udev rules. They do not enable autostart or restart an existing
+daemon during an upgrade. Reconnect the PASE USB cable after installation,
+launch the application once, and enable autostart in Settings only if wanted.
+
+The committed Arch PKGBUILD intentionally accepts only a local release source
+archive with an explicit checksum. From a clean release checkout, build it
+with:
+
+```fish
+mkdir -p dist/source
+packaging/scripts/create-source-archive.sh dist/source
+set version (string trim < VERSION)
+set archive packaging/arch/tryx-panorama-manager-$version.tar.xz
+cp dist/source/tryx-panorama-manager-$version.tar.xz $archive
+set -lx TRYX_LOCAL_SOURCE_SHA256 (sha256sum $archive | cut -d ' ' -f 1)
+pushd packaging/arch
+makepkg --cleanbuild --check
+popd
+```
 
 ## Requirements
 
 **Build:**
-- Qt6 (Core, Gui, Widgets)
+- Qt6 (Core, D-Bus, Gui, Network, Widgets)
 - C++17 compiler
 - qmake6
+- Qt6 translation tools with `lrelease`
 - protoc and the matching full C++ protobuf development runtime
 - libudev development files
 - libusb 1.0 development files
+- systemd development metadata
 
 Fedora build dependencies:
 
 ```fish
-sudo dnf install -y qt6-qtbase-devel qt6-linguist protobuf-compiler protobuf-devel systemd-devel libusb1-devel
+sudo dnf install -y gcc-c++ git make dbus-daemon pkgconf-pkg-config qt6-qtbase-devel qt6-linguist protobuf-compiler protobuf-devel systemd-devel libusb1-devel
 ```
 
+Ubuntu 24.04 and Linux Mint 22 build dependencies:
+
+```fish
+sudo apt install build-essential dbus-user-session git libprotobuf-dev libsystemd-dev libudev-dev libusb-1.0-0-dev pkg-config protobuf-compiler qmake6 qt6-base-dev qt6-l10n-tools
+```
+
+Arch Linux build dependencies:
+
+```fish
+sudo pacman -S --needed base-devel dbus git libusb protobuf qt6-base qt6-tools systemd
+```
+
+The qmake guard requires the protobuf compiler and C++ runtime to be from the
+same version. It treats an omitted trailing zero as formatting only, so
+`protoc 35.1` matches `libprotobuf 35.1.0`, while a real patch mismatch is
+still rejected.
+
 **Runtime:**
+- `ffmpeg` with the `libx264` encoder - media conversion
 - `adb` (android-tools) - legacy OTA file transfer and optional Rockchip reboot-to-loader
 - `unzip` - firmware package validation and extraction
 - `debugfs` (e2fsprogs) - Rockchip rootfs inspection
 - `upgrade_tool` - optional external Rockchip flashing backend for new KANALI firmware bundles
-- `ffmpeg` - media conversion
 - `glxinfo` (mesa-utils) - GPU name detection (optional)
 
 Fedora runtime dependencies:
@@ -129,7 +207,7 @@ sudo dnf install -y android-tools unzip e2fsprogs ffmpeg mesa-demos
 **Permissions:**
 - User must be in `dialout` group (or `uucp` on Arch) for serial access
 - New KANALI firmware exposes Panorama SE as USB printer-class `391a:1021`; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
-- Fedora's generic printer rule must not start CUPS `configure-printer` for this vendor protocol. The qmake install target places the supplied rule in `/usr/lib/udev/rules.d`; do not create a same-named override in `/etc/udev/rules.d`, because it would shadow packaged updates.
+- Fedora's generic printer rule must not start CUPS `configure-printer` for this vendor protocol. The qmake install target places an early access rule and a late printer-suppression rule in `/usr/lib/udev/rules.d`; do not create same-named overrides in `/etc/udev/rules.d`, because they would shadow packaged updates.
 
 ## Firmware Updates
 
@@ -159,7 +237,7 @@ Automatic firmware download is not enabled yet. KANALI uses SM2-encrypted reques
 ## Build
 
 ```fish
-git clone https://gitlab.com/dxvsi/tryx-panorama-linux.git; and cd tryx-panorama-linux
+git clone --branch production https://github.com/DXVSI/tryx-panorama-se-360-linux-gui.git tryx-panorama-current; and cd tryx-panorama-current
 qmake6 tryx-panorama.pro; and make -j(nproc)
 ./build/tryx-panorama-manager
 ```
@@ -168,7 +246,28 @@ System installation includes the binary, user service, PASE usbfs rule, desktop 
 
 ```fish
 sudo make install; and sudo udevadm control --reload-rules; and sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=391a --attr-match=idProduct=1021; and sudo udevadm settle --timeout=10
-systemctl --user daemon-reload; and systemctl --user enable tryx-panorama.service; and systemctl --user restart tryx-panorama.service; and systemctl --user is-active tryx-panorama.service
+systemctl --user daemon-reload; and systemctl --user start tryx-panorama.service; and systemctl --user is-active tryx-panorama.service
+```
+
+The command above is the first-install path. When updating an existing manual
+source installation, first finish or cancel every active media operation, then
+install the new files and restart the daemon explicitly:
+
+```fish
+sudo make install; and systemctl --user daemon-reload; and systemctl --user restart tryx-panorama.service; and systemctl --user is-active tryx-panorama.service
+```
+
+Native package upgrades deliberately do not force this restart because a
+package transaction cannot prove that another user's media operation is idle.
+
+The install target supplies a user preset that keeps autostart disabled by
+default. Enable it later from Settings or explicitly with
+`systemctl --user enable tryx-panorama.service`.
+
+The version command is safe to use without a graphical or D-Bus session:
+
+```fish
+./build/tryx-panorama-manager --version
 ```
 
 Offline printer-protocol tests do not access physical USB hardware:
@@ -194,7 +293,13 @@ src/
 include/panorama/    # Protocol headers
 protocol/wire-v1/    # Minimal project-owned protobuf wire schema
 tests/               # Offline protocol, transport and discovery tests
-packaging/           # udev rule for PASE permissions and CUPS exclusion
+debian/              # Ubuntu 24.04 and Linux Mint 22 package metadata
+packaging/
+  arch/              # Arch Linux PKGBUILD
+  rpm/               # Fedora RPM spec
+  metainfo/          # AppStream metadata
+  scripts/           # Release and package-content gates
+  *.rules            # PASE permissions and printer suppression
 ```
 
 ## Tested on

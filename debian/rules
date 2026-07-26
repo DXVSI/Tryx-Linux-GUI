@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	qmake6 tryx-panorama.pro
+
+override_dh_auto_test:
+	dbus-run-session -- $(MAKE) check
+
+override_dh_auto_install:
+	$(MAKE) INSTALL_ROOT=$(CURDIR)/debian/tryx-panorama-manager install
+	packaging/scripts/verify-package-contents.sh \
+		$(CURDIR)/debian/tryx-panorama-manager
+
+# Install is already handled by qmake. Debhelper compat 13 does not generate
+# start/restart snippets for user units. --no-enable keeps a fresh installation
+# disabled while preserving an explicit user enablement across upgrades.
+override_dh_installsystemduser:
+	dh_installsystemduser --no-enable

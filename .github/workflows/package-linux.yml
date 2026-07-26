@@ -1,0 +1,445 @@
+---
+name: Linux packages
+
+on:
+  pull_request:
+  push:
+    branches:
+      - production
+      - development
+      - "feature/**"
+      - "maintenance/**"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-packages-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  LC_ALL: C.UTF-8
+
+jobs:
+  rpm:
+    name: RPM / Fedora ${{ matrix.fedora }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - fedora: "43"
+            image: registry.fedoraproject.org/fedora@sha256:b1df059ba84f5ed169e245ee8dfd086925a8eba8e502994840cfe17ed75c6079
+          - fedora: "44"
+            image: registry.fedoraproject.org/fedora@sha256:a2383763c3f25bb4fd4f806d5d2d004ca02589c331e5e94235da1289eb7de633
+    container:
+      image: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install Fedora build tools
+        run: |
+          set -euo pipefail
+          dnf install -y \
+            appstream \
+            cpio \
+            dbus-daemon \
+            desktop-file-utils \
+            findutils \
+            gcc-c++ \
+            git \
+            gzip \
+            libusb1-devel \
+            make \
+            protobuf-compiler \
+            protobuf-devel \
+            qt6-linguist \
+            qt6-qtbase-devel \
+            qt6-rpm-macros \
+            rpm-build \
+            rpmlint \
+            shadow-utils \
+            systemd-devel \
+            systemd-rpm-macros \
+            systemd-udev \
+            xz
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify clean source and release contract
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain --untracked-files=all)"
+          packaging/scripts/check-release-contract.sh
+          if grep -R -n 'type="unfinished"' translations --include='*.ts'; then
+            echo "Qt translations contain unfinished entries" >&2
+            exit 1
+          fi
+
+      - name: Build and test RPM
+        id: package
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r\n' < VERSION)
+          rpm_topdir="$RUNNER_TEMP/rpmbuild"
+          mkdir -p \
+            "$rpm_topdir/BUILD" \
+            "$rpm_topdir/BUILDROOT" \
+            "$rpm_topdir/RPMS" \
+            "$rpm_topdir/SOURCES" \
+            "$rpm_topdir/SPECS" \
+            "$rpm_topdir/SRPMS"
+
+          packaging/scripts/create-source-archive.sh "$rpm_topdir/SOURCES"
+
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE" "$rpm_topdir"
+          runuser -u builder -- \
+            rpmbuild \
+              -ba \
+              --define "_topdir $rpm_topdir" \
+              packaging/rpm/tryx-panorama-manager.spec
+
+          rpm_file=$(find "$rpm_topdir/RPMS/x86_64" -maxdepth 1 -type f \
+            -name "tryx-panorama-manager-$version-1.fc${{ matrix.fedora }}.x86_64.rpm" \
+            -print -quit)
+          srpm_file=$(find "$rpm_topdir/SRPMS" -maxdepth 1 -type f \
+            -name "tryx-panorama-manager-$version-1.fc${{ matrix.fedora }}.src.rpm" \
+            -print -quit)
+          test -n "$rpm_file"
+          test -n "$srpm_file"
+
+          rpmlint \
+            packaging/rpm/tryx-panorama-manager.spec \
+            "$srpm_file" \
+            "$rpm_file"
+          rpm -qpl "$rpm_file"
+          test "$(rpm -qp --qf '%{VERSION}\n' "$rpm_file")" = "$version"
+
+          package_root="$RUNNER_TEMP/rpm-root"
+          package_cpio="$RUNNER_TEMP/tryx-panorama-manager.cpio"
+          mkdir -p "$package_root"
+          rpm2cpio "$rpm_file" > "$package_cpio"
+          (
+            cd "$package_root"
+            cpio -idm --quiet < "$package_cpio"
+          )
+          packaging/scripts/verify-package-contents.sh "$package_root"
+
+          mkdir -p dist
+          install -m 0644 "$rpm_file" "dist/$(basename "$rpm_file")"
+          if [[ "${{ matrix.fedora }}" == "44" ]]; then
+            install -m 0644 \
+              "$rpm_topdir/SOURCES/tryx-panorama-manager-$version.tar.xz" \
+              "dist/tryx-panorama-manager-$version.tar.xz"
+          fi
+          echo "file=dist/$(basename "$rpm_file")" >> "$GITHUB_OUTPUT"
+
+      - name: Install and smoke-test RPM
+        run: |
+          set -euo pipefail
+          dnf install -y \
+            "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-${{ matrix.fedora }}.noarch.rpm"
+          dnf install -y --allowerasing "${{ steps.package.outputs.file }}"
+          rpm -V tryx-panorama-manager
+          test "$(tryx-panorama-manager --version)" = \
+            "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
+          ldd /usr/bin/tryx-panorama-manager |
+            tee "$RUNNER_TEMP/tryx-panorama-manager.ldd"
+          if grep -q 'not found' "$RUNNER_TEMP/tryx-panorama-manager.ldd"; then
+            exit 1
+          fi
+          ffmpeg -hide_banner -encoders \
+            > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
+          grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
+          desktop-file-validate \
+            /usr/share/applications/tryx-panorama-manager.desktop
+          appstreamcli validate --no-net --strict \
+            /usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
+          systemd_runtime_dir="$RUNNER_TEMP/systemd-user-runtime"
+          install -d -m 0700 "$systemd_runtime_dir"
+          XDG_RUNTIME_DIR="$systemd_runtime_dir" systemd-analyze --user verify \
+            /usr/lib/systemd/user/tryx-panorama.service
+          udevadm verify \
+            /usr/lib/udev/rules.d/70-tryx-pase-access.rules \
+            /usr/lib/udev/rules.d/99-tryx-pase-printer.rules
+
+      - name: Upload Fedora package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tryx-rpm-f${{ matrix.fedora }}-${{ github.run_id }}
+          path: |
+            dist/*.rpm
+            dist/*.tar.xz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  deb:
+    name: DEB / Ubuntu 24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: ubuntu@sha256:52df9b1ee71626e0088f7d400d5c6b5f7bb916f8f0c82b474289a4ece6cf3faf
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install Ubuntu packaging tools
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            appstream \
+            build-essential \
+            ca-certificates \
+            dbus-daemon \
+            debhelper \
+            devscripts \
+            desktop-file-utils \
+            dpkg-dev \
+            git \
+            libprotobuf-dev \
+            libsystemd-dev \
+            libudev-dev \
+            libusb-1.0-0-dev \
+            lintian \
+            pkg-config \
+            protobuf-compiler \
+            qmake6 \
+            qt6-base-dev \
+            qt6-l10n-tools \
+            systemd \
+            systemd-dev \
+            udev \
+            xz-utils
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify clean source and release contract
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain --untracked-files=all)"
+          packaging/scripts/check-release-contract.sh
+          if grep -R -n 'type="unfinished"' translations --include='*.ts'; then
+            echo "Qt translations contain unfinished entries" >&2
+            exit 1
+          fi
+
+      - name: Install declared Debian build dependencies
+        run: |
+          set -euo pipefail
+          apt-get build-dep -y .
+
+      - name: Build and test DEB
+        id: package
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r\n' < VERSION)
+          source_dir="$RUNNER_TEMP/source"
+          build_parent="$RUNNER_TEMP/deb-build"
+          packaging/scripts/create-source-archive.sh "$source_dir"
+          mkdir -p "$build_parent"
+          tar -xJf \
+            "$source_dir/tryx-panorama-manager-$version.tar.xz" \
+            -C "$build_parent"
+
+          useradd --create-home builder
+          chown -R builder:builder "$build_parent"
+          pushd "$build_parent/tryx-panorama-manager-$version" >/dev/null
+          runuser -u builder -- dpkg-buildpackage -us -uc -b
+          popd >/dev/null
+
+          deb_file=$(find "$build_parent" -maxdepth 1 -type f \
+            -name "tryx-panorama-manager_${version}-1_amd64.deb" \
+            -print -quit)
+          changes_file=$(find "$build_parent" -maxdepth 1 -type f \
+            -name "tryx-panorama-manager_${version}-1_amd64.changes" \
+            -print -quit)
+          test -n "$deb_file"
+          test -n "$changes_file"
+
+          lintian --fail-on error "$changes_file"
+          dpkg-deb --contents "$deb_file"
+          test "$(dpkg-deb --field "$deb_file" Version)" = "$version-1"
+
+          package_root="$RUNNER_TEMP/deb-root"
+          mkdir -p "$package_root"
+          dpkg-deb --extract "$deb_file" "$package_root"
+          packaging/scripts/verify-package-contents.sh "$package_root"
+
+          mkdir -p dist
+          install -m 0644 "$deb_file" "dist/$(basename "$deb_file")"
+          echo "file=dist/$(basename "$deb_file")" >> "$GITHUB_OUTPUT"
+
+      - name: Install and smoke-test DEB
+        run: |
+          set -euo pipefail
+          apt-get install -y "./${{ steps.package.outputs.file }}"
+          dpkg --verify tryx-panorama-manager
+          test "$(tryx-panorama-manager --version)" = \
+            "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
+          ldd /usr/bin/tryx-panorama-manager |
+            tee "$RUNNER_TEMP/tryx-panorama-manager.ldd"
+          if grep -q 'not found' "$RUNNER_TEMP/tryx-panorama-manager.ldd"; then
+            exit 1
+          fi
+          ffmpeg -hide_banner -encoders \
+            > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
+          grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
+          desktop-file-validate \
+            /usr/share/applications/tryx-panorama-manager.desktop
+          appstreamcli validate --no-net --strict \
+            /usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
+          systemd_runtime_dir="$RUNNER_TEMP/systemd-user-runtime"
+          install -d -m 0700 "$systemd_runtime_dir"
+          XDG_RUNTIME_DIR="$systemd_runtime_dir" systemd-analyze --user verify \
+            /usr/lib/systemd/user/tryx-panorama.service
+          udevadm verify \
+            /usr/lib/udev/rules.d/70-tryx-pase-access.rules \
+            /usr/lib/udev/rules.d/99-tryx-pase-printer.rules
+
+      - name: Upload Ubuntu package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tryx-deb-ubuntu24.04-${{ github.run_id }}
+          path: dist/*.deb
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  arch:
+    name: Arch package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: archlinux@sha256:bf0af8920a0e70715207d9c4f463ebac321db72748db2b8a391b639696965d87
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install Arch build tools and dependencies
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            appstream \
+            dbus \
+            desktop-file-utils \
+            ffmpeg \
+            git \
+            hicolor-icon-theme \
+            libusb \
+            namcap \
+            protobuf \
+            qt6-base \
+            qt6-tools \
+            shadow \
+            systemd
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify clean source and release contract
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain --untracked-files=all)"
+          packaging/scripts/check-release-contract.sh
+          if grep -R -n 'type="unfinished"' translations --include='*.ts'; then
+            echo "Qt translations contain unfinished entries" >&2
+            exit 1
+          fi
+
+      - name: Build and test Arch package as an unprivileged user
+        id: package
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r\n' < VERSION)
+          archive="packaging/arch/tryx-panorama-manager-$version.tar.xz"
+          source_dir="$RUNNER_TEMP/source"
+          packaging/scripts/create-source-archive.sh "$source_dir"
+          install -m 0644 \
+            "$source_dir/tryx-panorama-manager-$version.tar.xz" \
+            "$archive"
+          archive_sha256=$(sha256sum "$archive" | awk '{print $1}')
+
+          useradd --create-home builder
+          chown -R builder:builder packaging/arch
+          pushd packaging/arch >/dev/null
+          runuser -u builder -- env \
+            TRYX_LOCAL_SOURCE_SHA256="$archive_sha256" \
+            makepkg --cleanbuild --check --noconfirm
+          popd >/dev/null
+
+          package_file=$(find packaging/arch -maxdepth 1 -type f \
+            -name "tryx-panorama-manager-$version-1-x86_64.pkg.tar.zst" \
+            -print -quit)
+          test -n "$package_file"
+
+          namcap packaging/arch/PKGBUILD
+          namcap "$package_file"
+          pacman -Qlp "$package_file"
+
+          package_root="$RUNNER_TEMP/arch-root"
+          mkdir -p "$package_root"
+          bsdtar -xf "$package_file" -C "$package_root"
+          packaging/scripts/verify-package-contents.sh "$package_root"
+
+          mkdir -p dist
+          install -m 0644 "$package_file" "dist/$(basename "$package_file")"
+          echo "file=dist/$(basename "$package_file")" >> "$GITHUB_OUTPUT"
+
+      - name: Install and smoke-test Arch package
+        run: |
+          set -euo pipefail
+          sed -i \
+            '\|^[[:space:]]*NoExtract.*usr/share/man|d' \
+            /etc/pacman.conf
+          pacman -U --noconfirm "${{ steps.package.outputs.file }}"
+          pacman -Qkk tryx-panorama-manager
+          test "$(tryx-panorama-manager --version)" = \
+            "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
+          ldd /usr/bin/tryx-panorama-manager |
+            tee "$RUNNER_TEMP/tryx-panorama-manager.ldd"
+          if grep -q 'not found' "$RUNNER_TEMP/tryx-panorama-manager.ldd"; then
+            exit 1
+          fi
+          ffmpeg -hide_banner -encoders \
+            > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
+          grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
+          desktop-file-validate \
+            /usr/share/applications/tryx-panorama-manager.desktop
+          appstreamcli validate --no-net --strict \
+            /usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
+          systemd_runtime_dir="$RUNNER_TEMP/systemd-user-runtime"
+          install -d -m 0700 "$systemd_runtime_dir"
+          XDG_RUNTIME_DIR="$systemd_runtime_dir" systemd-analyze --user verify \
+            /usr/lib/systemd/user/tryx-panorama.service
+          udevadm verify \
+            /usr/lib/udev/rules.d/70-tryx-pase-access.rules \
+            /usr/lib/udev/rules.d/99-tryx-pase-printer.rules
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tryx-arch-${{ github.run_id }}
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7

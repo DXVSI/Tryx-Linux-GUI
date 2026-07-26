@@ -445,7 +445,7 @@ private slots:
     void runtimeDisplayConfigDbusRoundTrip();
     void remoteDisplayStateRequiresStrictlyIncreasingRevision();
     void panoramaPageRestoresDisplayAndSplitState();
-    void panoramaPageOmitsPresetSurface();
+    void panoramaPageUsesUnifiedMediaLibrary();
     void panoramaBrightnessCoalescesUntilTransportReady();
     void paseRunConfigUsesWireLayout();
     void paseWaterfallFullScreenGeometry_data();
@@ -1233,7 +1233,7 @@ panoramaPageRestoresDisplayAndSplitState() {
 }
 
 void PrinterProtocolTests::
-panoramaPageOmitsPresetSurface() {
+panoramaPageUsesUnifiedMediaLibrary() {
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
     const QString sysRoot =
@@ -1268,21 +1268,46 @@ panoramaPageOmitsPresetSurface() {
     const TryxRuntimeMediaCatalogSnapshot catalog =
         manager->mediaCatalogSnapshot();
     QCOMPARE(catalog.entries.size(), 2);
+    const auto presetCatalogEntry = std::find_if(
+        catalog.entries.cbegin(), catalog.entries.cend(),
+        [&presetEntry](const TryxRuntimeMediaEntry &entry) {
+            return entry.name == presetEntry.name;
+        });
+    QVERIFY(presetCatalogEntry != catalog.entries.cend());
     const auto userCatalogEntry = std::find_if(
         catalog.entries.cbegin(), catalog.entries.cend(),
         [&userEntry](const TryxRuntimeMediaEntry &entry) {
             return entry.name == userEntry.name;
         });
     QVERIFY(userCatalogEntry != catalog.entries.cend());
-    QCOMPARE(page.fileList_->count(), 1);
-    QListWidgetItem *visibleItem = page.fileList_->item(0);
-    QVERIFY(visibleItem);
+    QCOMPARE(page.fileList_->count(), 2);
+    QListWidgetItem *presetItem = page.fileList_->item(0);
+    QVERIFY(presetItem);
     QCOMPARE(
-        visibleItem->data(Qt::UserRole).toString(),
+        presetItem->data(Qt::UserRole).toString(),
+        presetEntry.name);
+    QCOMPARE(
+        presetItem->data(Qt::UserRole + 2).toUInt(),
+        presetCatalogEntry->source);
+    QVERIFY(presetItem->data(Qt::UserRole + 3).toBool());
+    QVERIFY(!presetItem->data(Qt::UserRole + 6).toBool());
+    QCOMPARE(
+        presetItem->data(Qt::UserRole + 7).toString(),
+        QStringLiteral("Preset"));
+    presetItem->setSelected(true);
+    QCOMPARE(
+        page.selectedDeviceMediaNames(),
+        QStringList{presetEntry.name});
+    presetItem->setSelected(false);
+
+    QListWidgetItem *userItem = page.fileList_->item(1);
+    QVERIFY(userItem);
+    QCOMPARE(
+        userItem->data(Qt::UserRole).toString(),
         userEntry.name);
     constexpr int mediaSourceRole = Qt::UserRole + 2;
     QCOMPARE(
-        visibleItem->data(mediaSourceRole).toUInt(),
+        userItem->data(mediaSourceRole).toUInt(),
         userCatalogEntry->source);
 }
 

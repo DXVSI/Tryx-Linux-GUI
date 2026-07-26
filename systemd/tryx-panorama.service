@@ -1,6 +1,6 @@
 [Unit]
 Description=TRYX Panorama SE 360 Display Manager
-Documentation=https://github.com/fadli0029/reed-tpse
+Documentation=https://github.com/DXVSI/tryx-panorama-se-360-linux-gui
 PartOf=graphical-session.target
 After=graphical-session.target
 StartLimitIntervalSec=60

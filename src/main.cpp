@@ -19,6 +19,7 @@
 #include <QTimer>
 #include <QTranslator>
 #include <cstdlib>
+#include <cstdio>
 #include "devicemanager.h"
 #include "mainwindow.h"
 #include "runtimebridge.h"
@@ -43,8 +44,18 @@ bool daemonRequested(int argc, char *argv[]) {
     return false;
 }
 
+bool versionRequested(int argc, char *argv[]) {
+    for (int index = 1; index < argc; ++index) {
+        if (QString::fromLocal8Bit(argv[index]) == QStringLiteral("--version")) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void configureApplicationIdentity(QCoreApplication &app) {
     app.setApplicationName(QStringLiteral("TRYX Panorama Manager"));
+    app.setApplicationVersion(QStringLiteral(TRYX_APP_VERSION));
     app.setOrganizationName(QStringLiteral("DXVSI"));
 }
 
@@ -386,6 +397,11 @@ void applyLanguage(QCoreApplication &app, QTranslator &translator,
 } // namespace
 
 int main(int argc, char *argv[]) {
+    if (versionRequested(argc, argv)) {
+        std::fputs("tryx-panorama-manager " TRYX_APP_VERSION "\n", stdout);
+        return 0;
+    }
+
     // Suppress GStreamer device enumeration spam
     setenv("GST_DEBUG", "0", 0);
     setenv("PIPEWIRE_LOG_LEVEL", "0", 0);

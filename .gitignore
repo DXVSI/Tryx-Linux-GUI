@@ -11,6 +11,12 @@ Makefile
 moc_*.cpp
 moc_predefs.h
 tryx-panorama-manager
+*.rpm
+*.deb
+*.ddeb
+*.pkg.tar.zst
+*.src.tar.gz
+SHA256SUMS
 
 # Local documentation
 docs/

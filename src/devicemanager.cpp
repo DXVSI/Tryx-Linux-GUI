@@ -1080,7 +1080,7 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
     if (ffmpeg.isEmpty()) {
         emit failed(operationId,
-                    tr("ffmpeg not found. Install: sudo dnf install ffmpeg"),
+                    tr("ffmpeg not found. Install it with your system package manager"),
                     generation);
         return;
     }
@@ -1894,7 +1894,7 @@ void DeviceWorker::uploadMedia(const QString &localPath) {
     // Need to upload - convert if necessary
     if (panorama::Media::needs_conversion(path)) {
         if (!panorama::Media::is_ffmpeg_available()) {
-            emit error(tr("ffmpeg not found. Install: sudo dnf install ffmpeg"));
+            emit error(tr("ffmpeg not found. Install it with your system package manager"));
             return;
         }
         emit uploadProgress(tr("Converting to MP4..."));

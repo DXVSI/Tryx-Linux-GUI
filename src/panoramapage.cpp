@@ -1918,13 +1918,12 @@ void PanoramaPage::onMediaCatalogUpdated(
 
     int visibleEntryCount = 0;
     for (const TryxRuntimeMediaEntry &entry : snapshot.entries) {
-        if (entry.source == MEDIA_SOURCE_PRESET) {
-            continue;
-        }
         const QString sourceText =
-            entry.source == MEDIA_SOURCE_USER
-            ? tr("USER UPLOAD")
-            : tr("UNKNOWN ORIGIN");
+            entry.source == MEDIA_SOURCE_PRESET
+            ? tr("DEVICE PRESET")
+            : entry.source == MEDIA_SOURCE_USER
+                ? tr("USER UPLOAD")
+                : tr("UNKNOWN ORIGIN");
         const QString sizeText = entry.size >= 1024U * 1024U
             ? tr("%1 MB").arg(
                   QString::number(static_cast<double>(entry.size) /
