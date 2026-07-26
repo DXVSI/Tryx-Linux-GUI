@@ -127,6 +127,17 @@ sudo apt install ./tryx-panorama-manager_2.0.0-1_amd64.deb
 sudo pacman -U ./tryx-panorama-manager-2.0.0-1-x86_64.pkg.tar.zst
 ```
 
+These commands use the distribution package manager to resolve and download
+all mandatory runtime dependencies. Qt 6, Protobuf, libusb, and the other
+required shared libraries do not need to be installed manually. Use the
+commands above instead of `rpm -i` or `dpkg -i`, because those tools do not
+download missing dependencies.
+
+Optional helpers such as ADB, `unzip`, `debugfs`, `glxinfo`, and `lspci` may
+not be installed automatically. They are not required for basic PASE
+printer-class operation and are only used by the corresponding legacy
+firmware, archive inspection, or hardware detection features.
+
 For Fedora, follow the
 [RPM Fusion configuration instructions](https://rpmfusion.org/Configuration)
 before installing the RPM. Fedora's `ffmpeg-free` can provide an `ffmpeg`
