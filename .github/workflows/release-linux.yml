@@ -111,13 +111,15 @@ jobs:
           test "${#source_files[@]}" -eq 1
           test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 5
 
+          checksum_file="$RUNNER_TEMP/SHA256SUMS"
           (
             cd release-assets
             find . -maxdepth 1 -type f -printf '%P\0' |
               LC_ALL=C sort -z |
-              xargs -0 sha256sum > SHA256SUMS
+              xargs -0 sha256sum > "$checksum_file"
           )
-          test "$(wc -l < release-assets/SHA256SUMS)" -eq 5
+          test "$(wc -l < "$checksum_file")" -eq 5
+          mv "$checksum_file" release-assets/SHA256SUMS
           (
             cd release-assets
             sha256sum --check SHA256SUMS
