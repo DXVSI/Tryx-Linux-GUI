@@ -2,6 +2,25 @@
 
 Qt6 GUI application for managing TRYX Panorama AIO cooler displays on Linux.
 
+## Support the Project
+
+If TRYX Panorama Manager is useful to you, you can support continued development, protocol compatibility work, and testing on real hardware.
+
+### USDT on TON
+
+| Detail | Value |
+|--------|-------|
+| TON DNS | `fedora.ton` |
+| Network | `TON Mainnet` |
+| Token | `USD₮ (USDT Jetton)` |
+
+**Wallet address**
+
+`UQBO74LeYwNViA9MfdWPqfj4A5SkJ8vTcVG2uZzYzu9LFU-j`
+
+> [!IMPORTANT]
+> Send only USD₮ via TON Mainnet. Before confirming the transaction, verify that your wallet displays USD₮, not native TON. Do not use TRON, Ethereum, BNB Chain, or any other network.
+
 ## Supported and Planned Models
 
 Only models marked **Tested on real hardware** are verified by the maintainer. Other entries are community reports or roadmap targets and must not be treated as currently compatible.
@@ -183,25 +202,6 @@ packaging/           # udev rule for PASE permissions and CUPS exclusion
 | Distro | Kernel | CPU | GPU1 | GPU2 |
 |--------|--------|-----|------|------|
 | Fedora 44 | 7.1.3-200.fc44.x86_64 | AMD Ryzen 9 9950X3D | AMD Radeon RX 7900 XTX | AMD Radeon RX 7900 XTX |
-
-## Support the Project
-
-If TRYX Panorama Manager is useful to you, you can support continued development, protocol compatibility work, and testing on real hardware.
-
-### USDT on TON
-
-| Detail | Value |
-|--------|-------|
-| TON DNS | `fedora.ton` |
-| Network | `TON Mainnet` |
-| Token | `USD₮ (USDT Jetton)` |
-
-**Wallet address**
-
-`UQBO74LeYwNViA9MfdWPqfj4A5SkJ8vTcVG2uZzYzu9LFU-j`
-
-> [!IMPORTANT]
-> Send only USD₮ via TON Mainnet. Before confirming the transaction, verify that your wallet displays USD₮, not native TON. Do not use TRON, Ethereum, BNB Chain, or any other network.
 
 ## License
 
