@@ -118,13 +118,13 @@ Install a downloaded package with the package manager for your distribution:
 ```fish
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.0.0-1.fc44.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.0.1-1.fc44.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.0.0-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.0.1-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.0.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.0.1-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download

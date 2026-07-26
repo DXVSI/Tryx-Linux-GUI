@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.0.0
+Version:        2.0.1
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX Panorama cooler displays
 
@@ -113,5 +113,8 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx-panorama-manager.1*
 
 %changelog
+* Mon Jul 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.0.1-1
+- Fix checksum generation for native GitHub Release assets
+
 * Mon Jul 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.0.0-1
 - Add the first native Fedora package for the 2.0 release line

@@ -24,6 +24,7 @@
   <url type="bugtracker">https://github.com/DXVSI/tryx-panorama-se-360-linux-gui/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.0.1" type="stable" date="2026-07-27"/>
     <release version="2.0.0" type="stable" date="2026-07-27"/>
   </releases>
 </component>
