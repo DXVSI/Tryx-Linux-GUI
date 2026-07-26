@@ -1,11 +1,11 @@
 #include "panoramapage.h"
-#include "displaypage.h"
 #include "devicemanager.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QColorDialog>
+#include <QScrollArea>
 #include <QDateTime>
 #include <QFileDialog>
 #include <QDragEnterEvent>
@@ -15,19 +15,13 @@
 #include <QMessageBox>
 #include <QDir>
 #include <QFileInfo>
-#include <QCoreApplication>
 #include <QProcess>
 #include <QPixmap>
-#include <QMouseEvent>
-#include <QResizeEvent>
 #include <QFont>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QUuid>
-#include <memory>
 
-static const int TILE_WIDTH = 250;
-static const int TILE_IMG_HEIGHT = 140;
 static const QString THUMB_CACHE_DIR = "/tmp/tryx-panorama/thumbnails";
 static const int MEDIA_SIZE_ROLE = Qt::UserRole + 1;
 static const int MEDIA_SOURCE_ROLE = Qt::UserRole + 2;
@@ -36,26 +30,8 @@ static const int MEDIA_THUMBNAIL_KEY_ROLE = Qt::UserRole + 4;
 static const int MEDIA_MANAGED_ORIGIN_ROLE = Qt::UserRole + 5;
 static const int MEDIA_DELETE_ALLOWED_ROLE = Qt::UserRole + 6;
 static const int MEDIA_DELETE_BLOCK_REASON_ROLE = Qt::UserRole + 7;
-
-// Mapping from built-in video base names to device preset IDs
-static const QMap<QString, QString> PRESET_MAP = {
-    {"Cooling delivery",      "Pre-set 1: Cooling delivery"},
-    {"Migration",             "Pre-set 2: Migration"},
-    {"Quantum Time Capsule",  "Pre-set 3: Quantum time capsule"},
-    {"Exo-Ecologies",         "Pre-set 4: Exo-Ecologies"},
-    {"Racing",                "Pre-set 5: Racing"},
-    {"Shuttle",               "Pre-set 6: Shuttle"},
-    {"Gift of TRYX",          "Pre-set 7: Gift of TRYX"},
-};
-
-static const QMap<QString, QString> PRINTER_DEFAULT_PREVIEW_MAP = {
-    {"default_01.mp4.h264_2240x1080", "Cooling delivery.webm"},
-    {"default_02.mp4.h264_2240x1080", "Migration.webm"},
-    {"default_03.mp4.h264_2240x1080", "Exo-Ecologies.webm"},
-    {"default_04.mp4.h264_2240x1080", "Quantum Time Capsule.webm"},
-    {"default_05.mp4.h264_2240x1080", "Racing.webm"},
-    {"default_06.mp4.h264_2240x1080", "Shuttle.webm"},
-};
+static const quint32 MEDIA_SOURCE_USER = 1U;
+static const quint32 MEDIA_SOURCE_PRESET = 2U;
 
 PanoramaPage::PanoramaPage(DeviceManager *deviceMgr, QWidget *parent)
     : QWidget(parent), deviceMgr_(deviceMgr) {
@@ -152,78 +128,15 @@ PanoramaPage::PanoramaPage(DeviceManager *deviceMgr, QWidget *parent)
     updateActionAvailability();
 }
 
-QString PanoramaPage::builtinMediaDir() {
-    return DisplayPage::builtinMediaDir();
-}
-
-QString PanoramaPage::presetIdForName(const QString &name) {
-    return PRESET_MAP.value(name);
-}
-
-QPixmap PanoramaPage::extractThumbnail(const QString &videoPath, const QString &cachePath) {
-    if (QFileInfo::exists(cachePath)) {
-        return QPixmap(cachePath);
-    }
-    QDir().mkpath(QFileInfo(cachePath).absolutePath());
-
-    // Launch ffmpeg asynchronously to avoid blocking the GUI thread.
-    // The process is parented to this widget so it gets cleaned up automatically.
-    auto *proc = new QProcess(this);
-    proc->start("ffmpeg", {"-y", "-i", videoPath,
-                            "-vf", "select=eq(n\\,0),scale=384:-1",
-                            "-frames:v", "1", "-q:v", "5", cachePath});
-
-    // When the process finishes, find the matching tile and update its thumbnail
-    QString cachedPath = cachePath;
-    QString videoFilePath = videoPath;
-    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, cachedPath, videoFilePath, proc](int exitCode, QProcess::ExitStatus) {
-                proc->deleteLater();
-                if (exitCode == 0 && QFileInfo::exists(cachedPath)) {
-                    QPixmap thumb(cachedPath);
-                    // Find the tile matching this video and update its thumbnail
-                    for (auto *tile : presetTiles_) {
-                        if (tile->filePath() == videoFilePath) {
-                            tile->setThumbnail(thumb);
-                            break;
-                        }
-                    }
-                }
-            });
-
-    // Return empty pixmap immediately; tile will be updated when ffmpeg finishes
-    return {};
-}
-
 QString PanoramaPage::thumbnailCachePathForDeviceFile(const QString &fileName) const {
     QString key = QFileInfo(fileName).fileName();
     if (key.isEmpty()) {
         key = fileName;
     }
-    const QString defaultPreviewSource = PRINTER_DEFAULT_PREVIEW_MAP.value(key);
-    if (!defaultPreviewSource.isEmpty()) {
-        key += QStringLiteral("__") + defaultPreviewSource;
-    }
     key.replace(QLatin1Char(' '), QLatin1Char('_'));
     key.replace(QLatin1Char('/'), QLatin1Char('_'));
     key.replace(QLatin1Char('\\'), QLatin1Char('_'));
     return THUMB_CACHE_DIR + QLatin1Char('/') + key + QStringLiteral(".jpg");
-}
-
-QString PanoramaPage::builtinPreviewSourceForDeviceFile(const QString &fileName) const {
-    const QString mediaName =
-        PRINTER_DEFAULT_PREVIEW_MAP.value(QFileInfo(fileName).fileName());
-    if (mediaName.isEmpty()) {
-        return {};
-    }
-
-    const QString mediaDir = builtinMediaDir();
-    if (mediaDir.isEmpty()) {
-        return {};
-    }
-
-    const QString sourcePath = QDir(mediaDir).absoluteFilePath(mediaName);
-    return QFileInfo::exists(sourcePath) ? sourcePath : QString();
 }
 
 QString PanoramaPage::localPreviewSourceForDeviceFile(const QString &fileName) const {
@@ -322,42 +235,11 @@ void PanoramaPage::setupUi() {
 
     headerLayout->addStretch();
 
-    // Tab bar in header
-    tabBar_ = new QTabBar;
-    tabBar_->addTab(tr("Pre-set"));
-    tabBar_->addTab(tr("Customization"));
-    tabBar_->setStyleSheet(
-        "QTabBar::tab {"
-        "  background: transparent;"
-        "  color: #888;"
-        "  padding: 8px 20px;"
-        "  border: none;"
-        "  font-size: 13px;"
-        "}"
-        "QTabBar::tab:selected {"
-        "  color: #fff;"
-        "  border-bottom: 2px solid #6c5ce7;"
-        "}"
-        "QTabBar::tab:hover {"
-        "  color: #ccc;"
-        "}");
-    headerLayout->addWidget(tabBar_);
-    headerLayout->addStretch();
-
     mainLayout->addWidget(headerWidget);
-
-    // Tab stack
-    tabStack_ = new QStackedWidget;
-
-    auto *presetWidget = new QWidget;
-    setupPresetTab(presetWidget);
-    tabStack_->addWidget(presetWidget);
 
     auto *customWidget = new QWidget;
     setupCustomizationTab(customWidget);
-    tabStack_->addWidget(customWidget);
-
-    mainLayout->addWidget(tabStack_, 1);
+    mainLayout->addWidget(customWidget, 1);
 
     operationPanel_ = new QFrame;
     operationPanel_->setStyleSheet(
@@ -397,174 +279,6 @@ void PanoramaPage::setupUi() {
 
     // Display settings panel at bottom
     setupDisplaySettings();
-
-    connect(tabBar_, &QTabBar::currentChanged, this, &PanoramaPage::onTabChanged);
-}
-
-void PanoramaPage::onTabChanged(int index) {
-    tabStack_->setCurrentIndex(index);
-}
-
-void PanoramaPage::setupPresetTab(QWidget *parent) {
-    auto *scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setStyleSheet("QScrollArea { border: none; }");
-
-    auto *scrollWidget = new QWidget;
-    auto *layout = new QVBoxLayout(scrollWidget);
-    layout->setSpacing(16);
-    layout->setContentsMargins(20, 16, 20, 16);
-
-    // Built-in media carousel
-    auto *mediaLabel = new QLabel(tr("Built-in Media Library"));
-    QFont mlFont = mediaLabel->font();
-    mlFont.setPointSize(12);
-    mlFont.setBold(true);
-    mediaLabel->setFont(mlFont);
-    mediaLabel->setStyleSheet("color: #fff;");
-    layout->addWidget(mediaLabel);
-
-    // Video preview via QVideoSink -> QLabel (no native window, works on Wayland)
-    previewLabel_ = new QLabel;
-    previewLabel_->setFixedSize(420, 200);
-    previewLabel_->setAlignment(Qt::AlignCenter);
-    previewLabel_->setStyleSheet("background: #000; border-radius: 8px; border: none;");
-    previewLabel_->hide();
-    layout->addWidget(previewLabel_, 0, Qt::AlignCenter);
-
-    presetGridWidget_ = new QWidget;
-    presetGrid_ = new QGridLayout(presetGridWidget_);
-    presetGrid_->setSpacing(8);
-    presetGrid_->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(presetGridWidget_);
-
-    loadBuiltinMedia();
-
-    // System Information Display
-    auto *siLabel = new QLabel(tr("System Information Display | Select up to 3 items"));
-    QFont siFont = siLabel->font();
-    siFont.setPointSize(11);
-    siFont.setBold(true);
-    siLabel->setFont(siFont);
-    siLabel->setStyleSheet("color: #fff; margin-top: 8px;");
-    layout->addWidget(siLabel);
-
-    struct MetricDef {
-        const char *displayName;
-        QString protocolLabel;
-        QString unit;
-    };
-
-    QList<MetricDef> defs = {
-        {QT_TR_NOOP("CPU Temperature"),        "CPU Temperature",        "°C"},
-        {QT_TR_NOOP("CPU Frequency"),          "CPU Frequency",          "MHZ"},
-        {QT_TR_NOOP("CPU Usage"),              "CPU Usage",              "%"},
-        {QT_TR_NOOP("CPU Power"),              "CPU Power",              "W"},
-        {QT_TR_NOOP("GPU Temperature"),        "GPU Temperature",        "°C"},
-        {QT_TR_NOOP("GPU Frequency"),          "GPU Frequency",          "MHZ"},
-        {QT_TR_NOOP("GPU Usage"),              "GPU Usage",              "%"},
-        {QT_TR_NOOP("GPU Power"),              "GPU Power",              "W"},
-        {QT_TR_NOOP("Memory Frequency"),       "Memory Frequency",       "MHZ"},
-        {QT_TR_NOOP("Memory Usage"),           "Memory Usage",           "%"},
-        {QT_TR_NOOP("Date&Time"),              "Date&Time",              ""},
-    };
-
-    auto *metricsGrid = new QGridLayout;
-    metricsGrid->setSpacing(4);
-    int row = 0, col = 0;
-    for (const auto &def : defs) {
-        auto *cb = new QCheckBox(tr(def.displayName));
-        cb->setStyleSheet("color: #ccc;");
-        metricsGrid->addWidget(cb, row, col);
-
-        MetricOption opt;
-        opt.checkbox = cb;
-        opt.label = def.protocolLabel;
-        opt.unit = def.unit;
-        metricOptions_.append(opt);
-
-        connect(cb, &QCheckBox::toggled, this, &PanoramaPage::onMetricToggled);
-
-        col++;
-        if (col >= 4) { col = 0; row++; }
-    }
-    layout->addLayout(metricsGrid);
-
-    selectionCountLabel_ = new QLabel(tr("Selected: 0 / 3"));
-    selectionCountLabel_->setStyleSheet("color: #888;");
-    layout->addWidget(selectionCountLabel_);
-
-    // Display settings controls (position, color, align, badges)
-    auto *controlsLayout = new QHBoxLayout;
-    controlsLayout->setSpacing(12);
-
-    auto *positionLabel = new QLabel(tr("Position:"));
-    controlsLayout->addWidget(positionLabel);
-    positionCombo_ = new QComboBox;
-    positionCombo_->addItem(tr("Top"), "Top");
-    positionCombo_->addItem(tr("Center"), "Center");
-    positionCombo_->addItem(tr("Bottom"), "Bottom");
-    controlsLayout->addWidget(positionCombo_);
-    positionLabel->hide();
-    positionCombo_->hide();
-
-    controlsLayout->addWidget(new QLabel(tr("Align:")));
-    alignCombo_ = new QComboBox;
-    alignCombo_->addItem(tr("Left"), "Left");
-    alignCombo_->addItem(tr("Center"), "Center");
-    alignCombo_->addItem(tr("Right"), "Right");
-    controlsLayout->addWidget(alignCombo_);
-
-    textColorBtn_ = new QPushButton(tr("Color"));
-    textColorBtn_->setObjectName(
-        QStringLiteral("presetTextColorButton"));
-    textColorBtn_->setStyleSheet("background-color: #DCDCDC; color: #000; padding: 4px 12px;");
-    textColorBtn_->setMaximumWidth(80);
-    connect(textColorBtn_, &QPushButton::clicked, this, &PanoramaPage::onChooseTextColor);
-    controlsLayout->addWidget(textColorBtn_);
-
-    cbCpuBadge_ = new QCheckBox(tr("CPU Badge"));
-    cbCpuBadge_->setObjectName(
-        QStringLiteral("presetCpuBadgeCheckBox"));
-    cbCpuBadge_->setStyleSheet("color: #ccc;");
-    cbGpuBadge_ = new QCheckBox(tr("GPU Badge"));
-    cbGpuBadge_->setObjectName(
-        QStringLiteral("presetGpuBadgeCheckBox"));
-    cbGpuBadge_->setStyleSheet("color: #ccc;");
-    controlsLayout->addWidget(cbCpuBadge_);
-    controlsLayout->addWidget(cbGpuBadge_);
-
-    controlsLayout->addStretch();
-    layout->addLayout(controlsLayout);
-
-    // Save button
-    auto *sendLayout = new QHBoxLayout;
-    sendLayout->addStretch();
-
-    presetSaveBtn_ = new QPushButton(tr("Save"));
-    presetSaveBtn_->setMinimumHeight(36);
-    presetSaveBtn_->setMinimumWidth(120);
-    presetSaveBtn_->setStyleSheet(
-        "QPushButton { background: #00b894; color: white; border: none; border-radius: 4px; padding: 8px 24px; font-weight: bold; font-size: 13px; }"
-        "QPushButton:hover { background: #00a381; }");
-    connect(presetSaveBtn_, &QPushButton::clicked, this,
-            &PanoramaPage::onPresetSave);
-    sendLayout->addWidget(presetSaveBtn_);
-
-    layout->addLayout(sendLayout);
-
-    metricsStatusLabel_ = new QLabel("");
-    metricsStatusLabel_->setStyleSheet("color: #888;");
-    layout->addWidget(metricsStatusLabel_);
-
-    layout->addStretch();
-
-    scroll->setWidget(scrollWidget);
-
-    auto *parentLayout = new QVBoxLayout(parent);
-    parentLayout->setContentsMargins(0, 0, 0, 0);
-    parentLayout->addWidget(scroll);
 }
 
 void PanoramaPage::setupCustomizationTab(QWidget *parent) {
@@ -676,6 +390,40 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
     metricsRow->addStretch();
     fsLayout->addLayout(metricsRow);
 
+    auto *overlayControls = new QHBoxLayout;
+    overlayControls->setSpacing(12);
+    overlayControls->addWidget(new QLabel(tr("Align:")));
+    alignCombo_ = new QComboBox;
+    alignCombo_->setObjectName(
+        QStringLiteral("customAlignComboBox"));
+    alignCombo_->addItem(tr("Left"), "Left");
+    alignCombo_->addItem(tr("Center"), "Center");
+    alignCombo_->addItem(tr("Right"), "Right");
+    overlayControls->addWidget(alignCombo_);
+
+    textColorBtn_ = new QPushButton(tr("Color"));
+    textColorBtn_->setObjectName(
+        QStringLiteral("customTextColorButton"));
+    textColorBtn_->setStyleSheet(
+        "background-color: #DCDCDC; color: #000; padding: 4px 12px;");
+    textColorBtn_->setMaximumWidth(80);
+    connect(textColorBtn_, &QPushButton::clicked, this,
+            &PanoramaPage::onChooseTextColor);
+    overlayControls->addWidget(textColorBtn_);
+
+    cbCpuBadge_ = new QCheckBox(tr("CPU Badge"));
+    cbCpuBadge_->setObjectName(
+        QStringLiteral("customCpuBadgeCheckBox"));
+    cbCpuBadge_->setStyleSheet("color: #ccc;");
+    cbGpuBadge_ = new QCheckBox(tr("GPU Badge"));
+    cbGpuBadge_->setObjectName(
+        QStringLiteral("customGpuBadgeCheckBox"));
+    cbGpuBadge_->setStyleSheet("color: #ccc;");
+    overlayControls->addWidget(cbCpuBadge_);
+    overlayControls->addWidget(cbGpuBadge_);
+    overlayControls->addStretch();
+    fsLayout->addLayout(overlayControls);
+
     layout->addWidget(fullScreenControls_);
 
     // --- Screen Splitting controls ---
@@ -770,6 +518,10 @@ void PanoramaPage::setupCustomizationTab(QWidget *parent) {
     actionLayout->addWidget(customSaveBtn_);
 
     layout->addLayout(actionLayout);
+
+    metricsStatusLabel_ = new QLabel;
+    metricsStatusLabel_->setStyleSheet("color: #888;");
+    layout->addWidget(metricsStatusLabel_);
 
     layout->addStretch();
 
@@ -885,155 +637,40 @@ void PanoramaPage::setupDisplaySettings() {
     }
 }
 
-void PanoramaPage::loadBuiltinMedia() {
-    presetTiles_.clear();
-    QString mediaDir = builtinMediaDir();
-    if (mediaDir.isEmpty()) return;
-
-    QDir().mkpath(THUMB_CACHE_DIR);
-
-    QDir dir(mediaDir);
-    QStringList filters = {"*.mp4", "*.webm", "*.mkv", "*.avi", "*.mov",
-                           "*.gif", "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp"};
-    auto entries = dir.entryInfoList(filters, QDir::Files, QDir::Name);
-
-    for (const auto &entry : entries) {
-        MediaEntry me;
-        me.filePath = entry.absoluteFilePath();
-        me.fileName = entry.completeBaseName();
-        me.format = entry.suffix().toUpper();
-        me.sizeBytes = entry.size();
-
-        auto *tile = new MediaTile(me, presetGridWidget_);
-        connect(tile, &MediaTile::clicked, this, &PanoramaPage::onTileClicked);
-
-        QString thumbName = entry.fileName().replace(' ', '_') + ".jpg";
-        QString thumbPath = THUMB_CACHE_DIR + "/" + thumbName;
-        QPixmap thumb = extractThumbnail(entry.absoluteFilePath(), thumbPath);
-        tile->setThumbnail(thumb);
-
-        // Add preset/upload badge overlay
-        QString baseName = entry.completeBaseName();
-        bool isPreset = !presetIdForName(baseName).isEmpty();
-        auto *badge = new QLabel(isPreset ? tr("PRESET") : tr("UPLOAD"), tile);
-        badge->setStyleSheet(isPreset
-            ? "background: #00b894; color: white; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: bold;"
-            : "background: #fdcb6e; color: #2d3436; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: bold;");
-        badge->move(4, 4);
-        badge->raise();
-
-        presetTiles_.append(tile);
-    }
-
-    rebuildPresetGrid();
-}
-
-void PanoramaPage::onTileClicked(MediaTile *tile) {
-    // Single selection for preset
-    if (selectedPresetTile_ && selectedPresetTile_ != tile) {
-        selectedPresetTile_->setSelected(false);
-    }
-    tile->setSelected(!tile->isSelected());
-    selectedPresetTile_ = tile->isSelected() ? tile : nullptr;
-
-    // Preview
-    if (previewPlayer_) {
-        previewPlayer_->stop();
-    }
-    previewLabel_->hide();
-
-    if (selectedPresetTile_) {
-        QString path = selectedPresetTile_->filePath();
-        QString ext = path.section('.', -1).toLower();
-        if (ext == "mp4" || ext == "webm" || ext == "mkv" || ext == "avi" || ext == "mov") {
-            ensurePreviewPlayer();
-            previewLabel_->show();
-            previewPlayer_->setSource(QUrl::fromLocalFile(path));
-            previewPlayer_->setLoops(QMediaPlayer::Infinite);
-            previewPlayer_->play();
-        } else {
-            QPixmap thumb = selectedPresetTile_->thumbnail();
-            if (!thumb.isNull()) {
-                previewLabel_->setPixmap(QPixmap::fromImage(
-                    thumb.toImage().scaled(previewLabel_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation)));
-                previewLabel_->show();
-            }
-        }
-    }
-}
-
-void PanoramaPage::ensurePreviewPlayer() {
-    if (previewPlayer_) {
+void PanoramaPage::onChooseTextColor() {
+    const QColor color =
+        QColorDialog::getColor(textColor_, this, tr("Text Color"));
+    if (!color.isValid()) {
         return;
     }
-
-    previewPlayer_ = new QMediaPlayer(this);
-    previewSink_ = new QVideoSink(this);
-    previewPlayer_->setVideoOutput(previewSink_);
-    connect(previewSink_, &QVideoSink::videoFrameChanged, this,
-            [this](const QVideoFrame &frame) {
-                QVideoFrame mappedFrame = frame;
-                if (!mappedFrame.map(QVideoFrame::ReadOnly)) {
-                    return;
-                }
-                const QImage image = mappedFrame.toImage();
-                mappedFrame.unmap();
-                if (!image.isNull()) {
-                    previewLabel_->setPixmap(QPixmap::fromImage(
-                        image.scaled(previewLabel_->size(),
-                                     Qt::KeepAspectRatio,
-                                     Qt::SmoothTransformation)));
-                }
-            });
-}
-
-void PanoramaPage::onMetricToggled() {
-    int count = 0;
-    for (const auto &opt : metricOptions_) {
-        if (opt.checkbox->isChecked()) count++;
-    }
-
-    selectionCountLabel_->setText(tr("Selected: %1 / 3").arg(count));
-
-    for (auto &opt : metricOptions_) {
-        if (!opt.checkbox->isChecked()) {
-            const bool sensorAvailable =
-                !deviceMgr_->isPrinterClassDevicePresent() ||
-                availablePrinterMetrics_.isEmpty() ||
-                availablePrinterMetrics_.contains(opt.label);
-            opt.checkbox->setEnabled(count < 3 && sensorAvailable);
-        }
-    }
-}
-
-void PanoramaPage::onChooseTextColor() {
-    QColor color = QColorDialog::getColor(textColor_, this, tr("Text Color"));
-    if (color.isValid()) {
-        textColor_ = color;
-        textColorBtn_->setStyleSheet(
-            QString("background-color: %1; color: %2; padding: 4px 12px;")
-                .arg(color.name())
-                .arg(color.lightness() > 128 ? "#000" : "#fff"));
-    }
+    textColor_ = color;
+    textColorBtn_->setStyleSheet(
+        QStringLiteral(
+            "background-color: %1; color: %2; padding: 4px 12px;")
+            .arg(color.name())
+            .arg(color.lightness() > 128 ? QStringLiteral("#000")
+                                         : QStringLiteral("#fff")));
 }
 
 TryxRuntimeApplyRequest PanoramaPage::fullScreenApplyRequest(
     const QStringList &media, const QString &ratio,
     const QString &playMode, const QStringList &metrics,
-    const QString &presetId, bool replaceOverlay) const {
+    bool replaceOverlay) const {
     TryxRuntimeApplyRequest request;
     request.media = media;
     request.ratio = ratio;
     request.screenMode = QStringLiteral("Full Screen");
     request.playMode = playMode;
-    request.presetId = presetId;
     request.replaceOverlay = replaceOverlay;
     request.waterfallMode =
         cbWaterfallMode_ && cbWaterfallMode_->isChecked();
     if (replaceOverlay) {
+        const TryxRuntimeDisplayState state =
+            deviceMgr_->displayState();
         request.sysinfoLabels = metrics;
-        request.settingsPosition = positionCombo_
-            ? positionCombo_->currentData().toString()
+        request.settingsPosition =
+            state.valid && !state.settingsPosition.isEmpty()
+            ? state.settingsPosition
             : QStringLiteral("Top");
         request.settingsAlign = alignCombo_
             ? alignCombo_->currentData().toString()
@@ -1054,15 +691,15 @@ TryxRuntimeApplyRequest PanoramaPage::fullScreenApplyRequest(
 QString PanoramaPage::startPrinterApply(
     const QStringList &media, const QString &ratio,
     const QString &playMode, const QStringList &metrics,
-    const QString &presetId, bool updateMetrics) {
+    bool updateMetrics) {
     if (!deviceMgr_->isPrinterDisplaySessionActive()) {
         emit statusMessage(tr(
             "The PASE display session is not ready. Reconnect or power-cycle the device and wait for it to become active."));
         return {};
     }
     const TryxRuntimeApplyRequest request =
-        fullScreenApplyRequest(media, ratio, playMode, metrics,
-                               presetId, updateMetrics);
+        fullScreenApplyRequest(
+            media, ratio, playMode, metrics, updateMetrics);
     const QString operationId =
         deviceMgr_->queueApplyOperation(QString(), request, updateMetrics);
     const TryxRuntimeOperationInfo operation =
@@ -1075,154 +712,6 @@ QString PanoramaPage::startPrinterApply(
     }
     syncOperationPanel(deviceMgr_->operationSnapshot());
     return operationId;
-}
-
-void PanoramaPage::applyScreenConfig() {
-    QStringList labels;
-    for (const auto &opt : metricOptions_) {
-        if (opt.checkbox->isChecked()) {
-            labels << opt.label;
-        }
-    }
-
-    QStringList badges;
-    if (cbCpuBadge_->isChecked()) badges << "CPU Badge";
-    if (cbGpuBadge_->isChecked()) badges << "GPU Badge";
-
-    // Get selected media from preset tile, using device preset ID if available
-    QStringList media;
-    QString presetId;
-    if (selectedPresetTile_) {
-        QFileInfo fi(selectedPresetTile_->filePath());
-        QString baseName = fi.completeBaseName();
-        presetId = presetIdForName(baseName);
-        if (presetId.isEmpty()) {
-            if (deviceMgr_->isPrinterClassDevicePresent()) {
-                const QString localPath = selectedPresetTile_->filePath();
-                const TryxRuntimeApplyRequest request =
-                    fullScreenApplyRequest(
-                        {},
-                        ratioCombo_
-                            ? ratioCombo_->currentText()
-                            : QStringLiteral("2:1"),
-                        QStringLiteral("Single"), labels, QString(),
-                        true);
-                activeOperationId_ =
-                    deviceMgr_->queueEnsureMediaAndApplyOperation(
-                        QString(), localPath, request);
-                const TryxRuntimeOperationInfo operation =
-                    deviceMgr_->operationInfo(activeOperationId_);
-                if (operation.state != QStringLiteral("Failed") &&
-                    operation.state != QStringLiteral("Cancelled")) {
-                    printerMetricsOperationId_ = activeOperationId_;
-                    pendingPrinterMetrics_ = labels;
-                    uploadSourcePaths_.insert(activeOperationId_, localPath);
-                    emit statusMessage(
-                        tr("Checking and applying the selected media..."));
-                }
-                syncOperationPanel(deviceMgr_->operationSnapshot());
-                return;
-            }
-
-            // Non-preset file: upload to device via ADB first, then set config
-            QString localPath = selectedPresetTile_->filePath();
-            QString remoteName = fi.fileName();
-            media << remoteName;
-
-            fprintf(stderr, "[panorama] uploading '%s' to device...\n",
-                    remoteName.toStdString().c_str());
-            emit statusMessage(tr("Uploading %1...").arg(remoteName));
-
-            // Upload in background, set config after upload completes
-            auto conn = std::make_shared<QMetaObject::Connection>();
-            *conn = connect(deviceMgr_, &DeviceManager::mediaUploaded, this,
-                [this, labels, badges, conn](const QString &uploadedName) {
-                    disconnect(*conn);
-                    // Use actual uploaded filename (may be converted to .mp4)
-                    QStringList actualMedia;
-                    actualMedia << uploadedName;
-                    fprintf(stderr, "[panorama] upload done: '%s', setting screen config\n",
-                            uploadedName.toStdString().c_str());
-                    activeLegacyMetrics_ = labels;
-                    legacyMetricsStartPending_ = !labels.isEmpty();
-                    deviceMgr_->setScreenConfig(
-                        actualMedia,
-                        ratioCombo_ ? ratioCombo_->currentText() : "2:1",
-                        "Full Screen", "Single", labels,
-                        positionCombo_->currentData().toString(),
-                        textColor_.name(),
-                        alignCombo_->currentData().toString(),
-                        badges, 0, QString()
-                    );
-                    emit statusMessage(tr("Configuration applied"));
-                });
-
-            auto errConn = std::make_shared<QMetaObject::Connection>();
-            *errConn = connect(deviceMgr_, &DeviceManager::deviceError, this,
-                [this, conn, errConn](const QString &msg) {
-                    disconnect(*conn);
-                    disconnect(*errConn);
-                    fprintf(stderr, "[panorama] upload failed: %s\n",
-                            msg.toStdString().c_str());
-                    emit statusMessage(tr("Upload failed: %1").arg(msg));
-                });
-
-            deviceMgr_->uploadMedia(localPath);
-            return;  // Config will be set after upload completes
-        }
-    }
-
-    fprintf(stderr, "[panorama] save: preset='%s' media=%lld metrics=%lld\n",
-            presetId.toStdString().c_str(), (long long)media.size(), (long long)labels.size());
-
-    if (deviceMgr_->isPrinterClassDevicePresent()) {
-        if (!deviceMgr_->isPrinterDisplaySessionActive()) {
-            emit statusMessage(tr(
-                "The PASE display session is not ready. Reconnect or power-cycle the device and wait for it to become active."));
-            return;
-        }
-        if (presetId.isEmpty() && media.isEmpty()) {
-            const TryxRuntimeApplyRequest request =
-                fullScreenApplyRequest(
-                    {},
-                    ratioCombo_
-                        ? ratioCombo_->currentText()
-                        : QStringLiteral("2:1"),
-                    QStringLiteral("Single"), labels, QString(),
-                    true);
-            const QString operationId =
-                deviceMgr_->queueApplyOperation(QString(), request, true);
-            const TryxRuntimeOperationInfo operation =
-                deviceMgr_->operationInfo(operationId);
-            if (operation.state != QStringLiteral("Failed") &&
-                operation.state != QStringLiteral("Cancelled")) {
-                printerMetricsOperationId_ = operationId;
-                pendingPrinterMetrics_ = labels;
-            }
-            syncOperationPanel(deviceMgr_->operationSnapshot());
-            return;
-        }
-        startPrinterApply(media,
-                          ratioCombo_ ? ratioCombo_->currentText()
-                                      : QStringLiteral("2:1"),
-                          QStringLiteral("Single"), labels, presetId);
-    } else {
-        activeLegacyMetrics_ = labels;
-        legacyMetricsStartPending_ = !labels.isEmpty();
-        deviceMgr_->setScreenConfig(
-            media,
-            ratioCombo_ ? ratioCombo_->currentText() : "2:1",
-            "Full Screen",
-            "Single",
-            labels,
-            positionCombo_->currentData().toString(),
-            textColor_.name(),
-            alignCombo_->currentData().toString(),
-            badges,
-            0,
-            presetId
-        );
-    }
 }
 
 void PanoramaPage::setUploadBusy(bool busy) {
@@ -1247,9 +736,6 @@ void PanoramaPage::updateActionAvailability() {
     refreshBtn_->setEnabled(actionsEnabled && !refreshPending_);
     setDisplayBtn_->setEnabled(actionsEnabled);
     customSaveBtn_->setEnabled(actionsEnabled);
-    if (presetSaveBtn_) {
-        presetSaveBtn_->setEnabled(actionsEnabled);
-    }
     retryBtn_->setEnabled(actionsEnabled && !retryOperationId_.isEmpty());
     cancelBtn_->setEnabled(uploadBusy_ && !activeOperationId_.isEmpty());
     brightnessSlider_->setEnabled(
@@ -1482,25 +968,19 @@ void PanoramaPage::syncOperationPanel(
 void PanoramaPage::savePageState() {
     QSettings settings("tryx-panorama", "PanoramaPage");
 
-    // Save selected preset tile name
-    if (selectedPresetTile_) {
-        QFileInfo fi(selectedPresetTile_->filePath());
-        settings.setValue("preset/selectedName", fi.completeBaseName());
-    } else {
-        settings.remove("preset/selectedName");
-    }
+    settings.remove(QStringLiteral("preset/selectedName"));
+    settings.remove(QStringLiteral("preset/selectedRemoteId"));
+    settings.remove(QStringLiteral("display/position"));
 
-    // Save checked metrics
     QStringList checkedMetrics;
-    for (const auto &opt : metricOptions_) {
-        if (opt.checkbox->isChecked()) {
-            checkedMetrics << opt.label;
+    for (const QCheckBox *checkbox : customMetricCheckboxes_) {
+        if (checkbox->isChecked()) {
+            checkedMetrics.append(
+                checkbox->property("protocolLabel").toString());
         }
     }
     settings.setValue("metrics/checked", checkedMetrics);
 
-    // Save display settings
-    settings.setValue("display/position", positionCombo_->currentData().toString());
     settings.setValue("display/align", alignCombo_->currentData().toString());
     settings.setValue("display/textColor", textColor_.name());
     settings.setValue("display/cpuBadge", cbCpuBadge_->isChecked());
@@ -1516,34 +996,20 @@ void PanoramaPage::savePageState() {
 void PanoramaPage::restorePageState() {
     QSettings settings("tryx-panorama", "PanoramaPage");
 
-    // Restore selected preset tile
-    QString savedName = settings.value("preset/selectedName").toString();
-    if (!savedName.isEmpty()) {
-        for (auto *tile : presetTiles_) {
-            QFileInfo fi(tile->filePath());
-            if (fi.completeBaseName() == savedName) {
-                tile->setSelected(true);
-                selectedPresetTile_ = tile;
-                break;
-            }
-        }
-    }
+    settings.remove(QStringLiteral("preset/selectedName"));
+    settings.remove(QStringLiteral("preset/selectedRemoteId"));
+    settings.remove(QStringLiteral("display/position"));
 
-    // Restore checked metrics
-    QStringList checkedMetrics = settings.value("metrics/checked").toStringList();
+    const QStringList checkedMetrics =
+        settings.value("metrics/checked").toStringList();
     if (!checkedMetrics.isEmpty()) {
-        for (auto &opt : metricOptions_) {
-            opt.checkbox->setChecked(checkedMetrics.contains(opt.label));
+        for (QCheckBox *checkbox : customMetricCheckboxes_) {
+            checkbox->setChecked(checkedMetrics.contains(
+                checkbox->property("protocolLabel").toString()));
         }
-        // Trigger count update
-        onMetricToggled();
+        updateCustomMetricsButton();
     }
 
-    // Restore display settings
-    if (settings.contains("display/position")) {
-        int idx = positionCombo_->findData(settings.value("display/position").toString());
-        if (idx >= 0) positionCombo_->setCurrentIndex(idx);
-    }
     if (settings.contains("display/align")) {
         int idx = alignCombo_->findData(settings.value("display/align").toString());
         if (idx >= 0) alignCombo_->setCurrentIndex(idx);
@@ -1579,29 +1045,6 @@ void PanoramaPage::restorePageState() {
     }
 }
 
-void PanoramaPage::onPresetSave() {
-    applyScreenConfig();
-    if (deviceMgr_->isPrinterClassDevicePresent()) {
-        savePageState();
-        return;
-    }
-
-    // Auto-start metrics sending after Save (like KANALI)
-    QStringList labels;
-    for (const auto &opt : metricOptions_) {
-        if (opt.checkbox->isChecked()) {
-            labels << opt.label;
-        }
-    }
-
-    // Persist current page state
-    savePageState();
-
-    if (labels.isEmpty() || !deviceMgr_->isPrinterClassDevicePresent()) {
-        emit statusMessage(tr("Configuration applied"));
-    }
-}
-
 void PanoramaPage::startMetrics() {
     QStringList labels;
     if (deviceMgr_->isPrinterClassDevicePresent()) {
@@ -1609,9 +1052,10 @@ void PanoramaPage::startMetrics() {
     } else if (!activeLegacyMetrics_.isEmpty()) {
         labels = activeLegacyMetrics_;
     } else {
-        for (const auto &opt : metricOptions_) {
-            if (opt.checkbox->isChecked()) {
-                labels << opt.label;
+        for (const QCheckBox *checkbox : customMetricCheckboxes_) {
+            if (checkbox->isChecked()) {
+                labels.append(
+                    checkbox->property("protocolLabel").toString());
             }
         }
     }
@@ -1712,9 +1156,12 @@ void PanoramaPage::onSendMetrics() {
             ? activeLegacyMetrics_
             : [&]() {
               QStringList result;
-              for (const auto &option : metricOptions_) {
-                  if (option.checkbox->isChecked()) {
-                      result << option.label;
+              for (const QCheckBox *checkbox :
+                   customMetricCheckboxes_) {
+                  if (checkbox->isChecked()) {
+                      result.append(
+                          checkbox->property(
+                              "protocolLabel").toString());
                   }
               }
               return result;
@@ -1762,36 +1209,6 @@ void PanoramaPage::onUploadClicked() {
             setUploadBusy(true);
             deviceMgr_->uploadMedia(path);
         }
-    }
-}
-
-void PanoramaPage::onUploadBuiltinClicked() {
-    // Upload selected preset tile to device
-    if (!selectedPresetTile_) {
-        emit statusMessage(tr("Select a video from the library"));
-        return;
-    }
-
-    pendingUploadSourcePath_ = selectedPresetTile_->filePath();
-    if (deviceMgr_->isPrinterClassDevicePresent()) {
-        if (!deviceMgr_->isPrinterDisplaySessionActive()) {
-            emit statusMessage(tr(
-                "The PASE display session is not ready. Reconnect or power-cycle the device and wait for it to become active."));
-            return;
-        }
-        activeOperationId_ = deviceMgr_->queueUploadOperation(
-            QString(), pendingUploadSourcePath_, false);
-        const TryxRuntimeOperationInfo operation =
-            deviceMgr_->operationInfo(activeOperationId_);
-        if (operation.state != QStringLiteral("Failed") &&
-            operation.state != QStringLiteral("Cancelled")) {
-            uploadSourcePaths_.insert(activeOperationId_,
-                                      pendingUploadSourcePath_);
-        }
-        syncOperationPanel(deviceMgr_->operationSnapshot());
-    } else {
-        setUploadBusy(true);
-        deviceMgr_->uploadMedia(pendingUploadSourcePath_);
     }
 }
 
@@ -1922,8 +1339,7 @@ void PanoramaPage::onCustomSave() {
             if (media.isEmpty()) {
                 const TryxRuntimeApplyRequest request =
                     fullScreenApplyRequest(
-                        {}, ratio, playMode, metrics, QString(),
-                        true);
+                        {}, ratio, playMode, metrics, true);
                 const QString operationId =
                     deviceMgr_->queueApplyOperation(
                         QString(), request, true);
@@ -1945,15 +1361,24 @@ void PanoramaPage::onCustomSave() {
             }
             activeLegacyMetrics_ = metrics;
             legacyMetricsStartPending_ = !metrics.isEmpty();
+            QStringList badges;
+            if (cbCpuBadge_->isChecked()) {
+                badges.append(QStringLiteral("CPU Badge"));
+            }
+            if (cbGpuBadge_->isChecked()) {
+                badges.append(QStringLiteral("GPU Badge"));
+            }
             deviceMgr_->setScreenConfig(media, ratio, "Full Screen", playMode,
-                                        metrics, "Top", "#FFFFFF", "Left",
-                                        {}, 0);
+                                        metrics, "Top", textColor_.name(),
+                                        alignCombo_->currentData().toString(),
+                                        badges, 0);
         }
 
         if (!deviceMgr_->isPrinterClassDevicePresent()) {
             emit statusMessage(tr("Full Screen configuration applied"));
         }
     }
+    savePageState();
 }
 
 void PanoramaPage::onFileListContextMenu(const QPoint &pos) {
@@ -1999,8 +1424,7 @@ void PanoramaPage::onFileListContextMenu(const QPoint &pos) {
             QString ratio = ratioCombo_->currentText();
             QString playMode = playModeCombo_->currentData().toString();
             if (deviceMgr_->isPrinterClassDevicePresent()) {
-                startPrinterApply(media, ratio, playMode, {}, QString(),
-                                  false);
+                startPrinterApply(media, ratio, playMode, {}, false);
             } else {
                 deviceMgr_->setScreenConfig(media, ratio, "Full Screen",
                                             playMode);
@@ -2365,18 +1789,12 @@ void PanoramaPage::onDisplayStateUpdated(
         }
     }
     activePrinterMetrics_ = allMetrics;
-    for (auto &option : metricOptions_) {
-        const QSignalBlocker blocker(option.checkbox);
-        option.checkbox->setChecked(
-            leftMetrics.contains(option.label));
-    }
     for (QCheckBox *checkbox : customMetricCheckboxes_) {
         const QString label =
             checkbox->property("protocolLabel").toString();
         const QSignalBlocker blocker(checkbox);
         checkbox->setChecked(leftMetrics.contains(label));
     }
-    onMetricToggled();
     updateCustomMetricsButton();
 
     {
@@ -2390,12 +1808,6 @@ void PanoramaPage::onDisplayStateUpdated(
         cbGpuBadge_->setChecked(
             state.settingsBadges.contains(
                 QStringLiteral("GPU Badge")));
-    }
-    const int positionIndex =
-        positionCombo_->findData(state.settingsPosition);
-    if (positionIndex >= 0) {
-        const QSignalBlocker blocker(positionCombo_);
-        positionCombo_->setCurrentIndex(positionIndex);
     }
     const int alignmentIndex =
         alignCombo_->findData(state.settingsAlign);
@@ -2445,22 +1857,6 @@ void PanoramaPage::onDisplayStateUpdated(
     }
     selectDisplayMedia(state.media);
 
-    if (!state.media.isEmpty()) {
-        QString previewName = PRINTER_DEFAULT_PREVIEW_MAP.value(
-            QFileInfo(state.media.constFirst()).fileName());
-        if (!previewName.isEmpty()) {
-            previewName = QFileInfo(previewName).completeBaseName();
-            for (MediaTile *tile : presetTiles_) {
-                const bool selected =
-                    QFileInfo(tile->filePath()).completeBaseName() ==
-                    previewName;
-                tile->setSelected(selected);
-                if (selected) {
-                    selectedPresetTile_ = tile;
-                }
-            }
-        }
-    }
     updateActionAvailability();
 }
 
@@ -2501,11 +1897,8 @@ void PanoramaPage::onMediaListUpdated(const QStringList &files) {
         item->setSelected(selectedNames.contains(f));
 
         if (!QFileInfo::exists(thumbPath)) {
-            QString sourcePath = builtinPreviewSourceForDeviceFile(f);
-            if (sourcePath.isEmpty()) {
-                sourcePath = localPreviewSourceForDeviceFile(f);
-            }
-            cacheThumbnailForDeviceFile(f, sourcePath);
+            cacheThumbnailForDeviceFile(
+                f, localPreviewSourceForDeviceFile(f));
         }
     }
     if (deviceMgr_->displayState().valid) {
@@ -2523,10 +1916,15 @@ void PanoramaPage::onMediaCatalogUpdated(
     fileList_->clear();
     QDir().mkpath(THUMB_CACHE_DIR);
 
+    int visibleEntryCount = 0;
     for (const TryxRuntimeMediaEntry &entry : snapshot.entries) {
-        const QString sourceText = entry.source == 2U
-            ? tr("PRESET")
-            : tr("UPLOAD");
+        if (entry.source == MEDIA_SOURCE_PRESET) {
+            continue;
+        }
+        const QString sourceText =
+            entry.source == MEDIA_SOURCE_USER
+            ? tr("USER UPLOAD")
+            : tr("UNKNOWN ORIGIN");
         const QString sizeText = entry.size >= 1024U * 1024U
             ? tr("%1 MB").arg(
                   QString::number(static_cast<double>(entry.size) /
@@ -2551,15 +1949,10 @@ void PanoramaPage::onMediaCatalogUpdated(
         item->setTextAlignment(Qt::AlignCenter);
 
         QString thumbnailPath;
-        if (!entry.thumbnailKey.isEmpty()) {
+        if (entry.source == MEDIA_SOURCE_USER && entry.managedOrigin &&
+            !entry.thumbnailKey.isEmpty()) {
             thumbnailPath = deviceMgr_->mediaThumbnailPath(
                 entry.thumbnailKey);
-        }
-        const QString builtinPreview = entry.source == 2U
-            ? builtinPreviewSourceForDeviceFile(entry.name)
-            : QString();
-        if (thumbnailPath.isEmpty() && !builtinPreview.isEmpty()) {
-            thumbnailPath = thumbnailCachePathForDeviceFile(entry.name);
         }
         QPixmap pix(thumbnailPath);
         if (!pix.isNull()) {
@@ -2573,11 +1966,7 @@ void PanoramaPage::onMediaCatalogUpdated(
         }
         fileList_->addItem(item);
         item->setSelected(selectedNames.contains(entry.name));
-
-        if (entry.thumbnailKey.isEmpty() && !builtinPreview.isEmpty() &&
-            !QFileInfo::exists(thumbnailPath)) {
-            cacheThumbnailForDeviceFile(entry.name, builtinPreview);
-        }
+        ++visibleEntryCount;
     }
     if (deviceMgr_->displayState().valid) {
         onDisplayStateUpdated(deviceMgr_->displayState());
@@ -2585,7 +1974,7 @@ void PanoramaPage::onMediaCatalogUpdated(
         updateActionAvailability();
     }
     emit statusMessage(
-        tr("Files on device: %1").arg(snapshot.entries.size()));
+        tr("Files on device: %1").arg(visibleEntryCount));
 }
 
 void PanoramaPage::onMediaUploaded(const QString &filename) {
@@ -2650,17 +2039,12 @@ void PanoramaPage::onMetricsStateUpdated(
     if (state.deviceSerial.trimmed().isEmpty()) {
         activePrinterMetrics_.clear();
         availablePrinterMetrics_.clear();
-        for (auto &option : metricOptions_) {
-            const QSignalBlocker blocker(option.checkbox);
-            option.checkbox->setChecked(false);
-        }
         for (QCheckBox *checkbox : customMetricCheckboxes_) {
             const QSignalBlocker blocker(checkbox);
             checkbox->setChecked(false);
             checkbox->setEnabled(true);
         }
         splitConfigWidget_->setAvailableMetrics({});
-        onMetricToggled();
         updateCustomMetricsButton();
         metricsTimer_->stop();
         if (metricsRunning_) {
@@ -2680,10 +2064,6 @@ void PanoramaPage::onMetricsStateUpdated(
     availablePrinterMetrics_ = state.availableMetrics;
     splitConfigWidget_->setAvailableMetrics(state.availableMetrics);
 
-    for (auto &option : metricOptions_) {
-        const QSignalBlocker blocker(option.checkbox);
-        option.checkbox->setChecked(state.metrics.contains(option.label));
-    }
     for (QCheckBox *checkbox : customMetricCheckboxes_) {
         const QString label =
             checkbox->property("protocolLabel").toString();
@@ -2703,7 +2083,6 @@ void PanoramaPage::onMetricsStateUpdated(
         QString("background-color: %1; color: %2; padding: 4px 12px;")
             .arg(textColor_.name())
             .arg(textColor_.lightness() > 128 ? "#000" : "#fff"));
-    onMetricToggled();
     savePageState();
 
     metricsTimer_->stop();
@@ -2817,36 +2196,5 @@ void PanoramaPage::dropEvent(QDropEvent *event) {
             }
             break;
         }
-    }
-}
-
-int PanoramaPage::calculateGridColumns() const {
-    int availableWidth = presetGridWidget_ ? presetGridWidget_->width() : 810;
-    int cols = availableWidth / 270;
-    return qMax(2, cols);
-}
-
-void PanoramaPage::rebuildPresetGrid() {
-    // Remove all widgets from grid without deleting them
-    while (presetGrid_->count() > 0) {
-        presetGrid_->takeAt(0);
-    }
-
-    int columns = calculateGridColumns();
-    int row = 0, col = 0;
-    for (auto *tile : presetTiles_) {
-        presetGrid_->addWidget(tile, row, col);
-        col++;
-        if (col >= columns) {
-            col = 0;
-            row++;
-        }
-    }
-}
-
-void PanoramaPage::resizeEvent(QResizeEvent *event) {
-    QWidget::resizeEvent(event);
-    if (!presetTiles_.isEmpty()) {
-        rebuildPresetGrid();
     }
 }

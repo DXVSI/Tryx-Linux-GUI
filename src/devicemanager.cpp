@@ -32,6 +32,7 @@
 #include <fstream>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
 #include <utility>
 #include <fcntl.h>
 #include <sys/eventfd.h>
@@ -43,7 +44,7 @@
 namespace {
 
 constexpr int kMaxPrinterKeepaliveWriteRetries = 3;
-constexpr int kMaxPrinterSessionRecoveryAttempts = 3;
+constexpr int kPrinterKeepaliveRetryBackoffMs = 500;
 constexpr int kMaxTerminalOperationHistory = 32;
 constexpr int kRetryCacheFormatVersion = 9;
 constexpr int kMediaCatalogFormatVersion = 2;
@@ -59,6 +60,91 @@ constexpr qint64 kMaxSourceMediaBytes = 8LL * 1024LL * 1024LL * 1024LL;
 constexpr int kMediaPreparationDeadlineMs = 15 * 60 * 1000;
 constexpr int kThumbnailPreparationDeadlineMs = 2 * 60 * 1000;
 constexpr qint64 kFileTransmitChunkSize = 0x40000;
+
+struct PrinterProcessClock {
+    PrinterProcessClock() {
+        timer.start();
+    }
+
+    QElapsedTimer timer;
+};
+
+qint64 printerMonotonicMilliseconds() {
+    static const PrinterProcessClock clock;
+    return clock.timer.elapsed();
+}
+
+QString printerStructuredValue(QString value) {
+    value.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    value.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    value.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
+    value.replace(QLatin1Char('\r'), QStringLiteral("\\r"));
+    return QStringLiteral("\"") + value + QStringLiteral("\"");
+}
+
+QString printerOverlayLeaseModeName(PrinterOverlayLeaseMode mode) {
+    switch (mode) {
+    case PrinterOverlayLeaseMode::PingAndOverlayLease:
+        return QStringLiteral("ping-and-overlay-lease");
+    case PrinterOverlayLeaseMode::PingOnly:
+        return QStringLiteral("ping-only");
+    }
+    return QStringLiteral("unknown");
+}
+
+QString printerKeepaliveOutcomeName(
+    PrinterProtocol::KeepaliveOutcome outcome) {
+    switch (outcome) {
+    case PrinterProtocol::KeepaliveOutcome::Sent:
+        return QStringLiteral("sent");
+    case PrinterProtocol::KeepaliveOutcome::RetryableFailure:
+        return QStringLiteral("retryable-failure");
+    case PrinterProtocol::KeepaliveOutcome::FatalFailure:
+        return QStringLiteral("fatal-failure");
+    }
+    return QStringLiteral("unknown");
+}
+
+QString printerDiscoveryStateName(
+    PrinterProtocol::DiscoveryState state) {
+    switch (state) {
+    case PrinterProtocol::DiscoveryState::Absent:
+        return QStringLiteral("absent");
+    case PrinterProtocol::DiscoveryState::RockchipGadget391a0006:
+        return QStringLiteral("rockchip-gadget-391a-0006");
+    case PrinterProtocol::DiscoveryState::Enumerating391a1021:
+        return QStringLiteral("enumerating-391a-1021");
+    case PrinterProtocol::DiscoveryState::Ready:
+        return QStringLiteral("ready");
+    case PrinterProtocol::DiscoveryState::PermissionDenied:
+        return QStringLiteral("permission-denied");
+    case PrinterProtocol::DiscoveryState::Ambiguous:
+        return QStringLiteral("ambiguous");
+    case PrinterProtocol::DiscoveryState::MonitoringUnavailable:
+        return QStringLiteral("monitoring-unavailable");
+    }
+    return QStringLiteral("unknown");
+}
+
+void logPrinterLifecycleEvent(
+    const QString &eventName, quint64 generation,
+    std::initializer_list<QPair<QString, QString>> fields = {}) {
+    QStringList parts{
+        QStringLiteral("tryx_lifecycle"),
+        QStringLiteral("event=") + printerStructuredValue(eventName),
+        QStringLiteral("utc=") +
+            printerStructuredValue(
+                QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)),
+        QStringLiteral("monotonic_ms=") +
+            QString::number(printerMonotonicMilliseconds()),
+        QStringLiteral("generation=") + QString::number(generation)
+    };
+    for (const auto &field : fields) {
+        parts.append(field.first + QLatin1Char('=') +
+                     printerStructuredValue(field.second));
+    }
+    qInfo().noquote() << parts.join(QLatin1Char(' '));
+}
 
 QString generatedPrinterMediaName(const QString &extension) {
     const QString cleanExtension = extension.startsWith(QLatin1Char('.'))
@@ -1467,6 +1553,14 @@ void DeviceWorker::updatePrinterGenerationGate(quint64 generation,
     }
 }
 
+void DeviceWorker::setPrinterOverlayLeaseMode(
+    PrinterOverlayLeaseMode mode) {
+    printerOverlayLeaseMode_ = mode;
+    if (mode == PrinterOverlayLeaseMode::PingOnly) {
+        printerOverlayLeaseRefreshNext_ = false;
+    }
+}
+
 void DeviceWorker::cancelPrinterOperation(const QString &operationId) {
     if (operationId.isEmpty()) {
         return;
@@ -1972,7 +2066,16 @@ void DeviceWorker::configurePrinterDevice(const QString &devicePath,
     foregroundPrinterOperationId_.clear();
     printerOverlayConfig_ = {};
     configuredPrinterGeneration_ = generation;
+    printerSessionElapsedTimer_.start();
     drainAllPrinterCancellations();
+    logPrinterLifecycleEvent(
+        QStringLiteral("endpoint_configured"), generation,
+        {
+            {QStringLiteral("device_path"), devicePath},
+            {QStringLiteral("serial"), printerDeviceSerial_},
+            {QStringLiteral("lease_mode"),
+             printerOverlayLeaseModeName(printerOverlayLeaseMode_)}
+        });
 }
 
 void DeviceWorker::restorePrinterOverlay(
@@ -1985,8 +2088,9 @@ void DeviceWorker::restorePrinterOverlay(
     printerOverlayConfig_ = overlay;
     if (printerSessionState_ == PrinterSessionState::Active &&
         paseOverlayHasContent(printerOverlayConfig_)) {
-        printerSessionState_ =
-            PrinterSessionState::AwaitingOverlayActivation;
+        transitionPrinterSessionState(
+            PrinterSessionState::AwaitingOverlayActivation,
+            QStringLiteral("overlay_activation_pending"));
         printerOverlayActivationPending_ = true;
         printerOverlayLeaseRefreshNext_ = false;
         printerMetricsTimer_->stop();
@@ -2040,6 +2144,7 @@ void DeviceWorker::clearPrinterDevice(quint64 generation) {
     foregroundPrinterOperationId_.clear();
     printerOverlayConfig_ = {};
     configuredPrinterGeneration_ = generation;
+    printerSessionElapsedTimer_.invalidate();
     drainAllPrinterCancellations();
 }
 
@@ -2115,29 +2220,8 @@ void DeviceWorker::refreshPrinterMediaList(const QString &devicePath,
     }
     context.maintainKeepalive = true;
 
-    PrinterProtocol::MediaListResult result =
+    const PrinterProtocol::MediaListResult result =
         printerProtocol_->readMediaList(devicePath, context);
-    if (!result.success &&
-        printerGenerationIsCurrent(generation) &&
-        !printerOperationIsCancelled(operationId)) {
-        const QString firstReadError = result.error;
-        context.maintainKeepalive = false;
-        schedulePrinterSessionRecovery(firstReadError, generation);
-        emit printerUploadProgress(
-            tr("Retrying the read-only printer FileList once after session recovery..."),
-            generation);
-
-        QString recoveryError;
-        if (ensurePrinterSession(devicePath, generation, context,
-                                 &recoveryError)) {
-            context.maintainKeepalive = true;
-            result = printerProtocol_->readMediaList(devicePath, context);
-        } else {
-            result.error = recoveryError.isEmpty()
-                ? firstReadError
-                : recoveryError;
-        }
-    }
     if (!result.success) {
         schedulePrinterSessionRecovery(result.error, generation);
         emit printerMediaListFailed(
@@ -2310,11 +2394,11 @@ void DeviceWorker::applyPrinterMedia(const QString &devicePath,
         return;
     }
     if (!ensurePrinterSession(devicePath, generation, context, &errorMessage)) {
-        schedulePrinterSessionRecovery(errorMessage, generation);
         emit printerApplyFinished(
             operationId, mediaFile, false, updateMetrics,
             PrinterProtocol::MutationOutcome::NotStarted,
             errorMessage, generation);
+        schedulePrinterSessionRecovery(errorMessage, generation);
         return;
     }
     context.maintainKeepalive = true;
@@ -2377,24 +2461,36 @@ void DeviceWorker::applyPrinterMedia(const QString &devicePath,
     if (!printerProtocol_->applyPaseConfiguration(
             devicePath, applyConfig, &errorMessage, context,
             &mutationDetails, &appliedState)) {
+        qWarning().noquote()
+            << QStringLiteral(
+                   "PASE apply failed: operation=%1 generation=%2 stage=%3 outcome=%4 screen_mode=%5 media_count=%6 error=%7")
+                   .arg(operationId)
+                   .arg(generation)
+                   .arg(mutationDetails.stage)
+                   .arg(static_cast<int>(mutationDetails.outcome))
+                   .arg(applyConfig.screenMode)
+                   .arg(applyConfig.media.size())
+                   .arg(errorMessage);
         if (mutationDetails.outcome ==
             PrinterProtocol::MutationOutcome::VerificationFailed) {
             emit printerDisplayStateReady(
                 appliedState, generation);
         }
-        if (mutationDetails.outcome !=
+        const bool requiresSessionRecovery =
+            mutationDetails.outcome !=
                 PrinterProtocol::MutationOutcome::VerificationFailed &&
             mutationDetails.outcome !=
-                PrinterProtocol::MutationOutcome::Rejected) {
-            schedulePrinterSessionRecovery(
-                errorMessage, generation);
-        }
+                PrinterProtocol::MutationOutcome::Rejected;
         emit printerApplyFinished(
             operationId, mediaFile, false, rebuildOverlay,
             mutationDetails.outcome,
             tr("Failed to apply printer-class configuration: %1")
                 .arg(errorMessage),
             generation);
+        if (requiresSessionRecovery) {
+            schedulePrinterSessionRecovery(
+                errorMessage, generation);
+        }
         return;
     }
 
@@ -2575,6 +2671,8 @@ void DeviceWorker::updatePrinterOverlayInitialMetrics(
 void DeviceWorker::startPrinterDisplaySession(const QString &devicePath,
                                               quint64 generation) {
     if (printerSessionState_ == PrinterSessionState::Active ||
+        printerSessionState_ ==
+            PrinterSessionState::AwaitingProtocolReadiness ||
         printerSessionState_ == PrinterSessionState::Starting ||
         printerSessionState_ ==
             PrinterSessionState::AwaitingOverlayActivation ||
@@ -2591,8 +2689,9 @@ void DeviceWorker::retryPrinterSessionStart() {
     if (printerSessionState_ != PrinterSessionState::Recovering) {
         return;
     }
-    attemptPrinterSessionStart(printerDevicePath_,
-                               configuredPrinterGeneration_);
+    markPrinterSessionLost(
+        tr("Automatic same-generation PASE bootstrap retry is disabled; physically reconnect the device before continuing"),
+        configuredPrinterGeneration_);
 }
 
 void DeviceWorker::attemptPrinterSessionStart(const QString &devicePath,
@@ -2613,22 +2712,11 @@ void DeviceWorker::attemptPrinterSessionStart(const QString &devicePath,
                 PrinterSessionState::AwaitingOverlayActivation) {
             return;
         }
-        if (printerSessionRecoveryAttempt_ <
-            kMaxPrinterSessionRecoveryAttempts) {
-            ++printerSessionRecoveryAttempt_;
-            printerSessionState_ = PrinterSessionState::Recovering;
-            emit printerUploadProgress(
-                tr("PASE display session recovery %1/%2: %3")
-                    .arg(printerSessionRecoveryAttempt_)
-                    .arg(kMaxPrinterSessionRecoveryAttempts)
-                    .arg(errorMessage),
-                generation);
-            printerRecoveryTimer_->start(0);
-            return;
-        }
         markPrinterSessionLost(
-            tr("PASE display session did not recover after %1 attempts and no persistent USB transport failure was detected; reconnect the device")
-                .arg(kMaxPrinterSessionRecoveryAttempts),
+            errorMessage.isEmpty()
+                ? tr("PASE display session bootstrap failed; physically reconnect the device before continuing")
+                : tr("PASE display session bootstrap failed: %1. Physically reconnect the device before continuing")
+                      .arg(errorMessage),
             generation);
         return;
     }
@@ -2647,14 +2735,38 @@ void DeviceWorker::sendPrinterKeepalive() {
     QString errorMessage;
     if (!preparePrinterOperation(printerDevicePath_, generation, QString(),
                                  &context, &errorMessage)) {
-        stopPrinterSession();
+        if (printerGenerationIsCurrent(generation)) {
+            markPrinterSessionLost(
+                tr("PASE keepalive was cancelled before a safe write could start"),
+                generation);
+        } else {
+            stopPrinterSession();
+        }
         return;
     }
 
     const bool refreshOverlayLease =
         printerSessionState_ == PrinterSessionState::Active &&
+        printerOverlayLeaseMode_ ==
+            PrinterOverlayLeaseMode::PingAndOverlayLease &&
         printerOverlayLeaseRefreshNext_ &&
         paseOverlayHasContent(printerOverlayConfig_);
+    const QString commandClass =
+        printerSessionState_ ==
+                PrinterSessionState::AwaitingOverlayActivation
+            ? QStringLiteral("post-bootstrap-ping")
+            : (refreshOverlayLease
+                   ? QStringLiteral("overlay-lease")
+                   : QStringLiteral("ping"));
+    logPrinterLifecycleEvent(
+        QStringLiteral("command_started"), generation,
+        {
+            {QStringLiteral("command_class"), commandClass},
+            {QStringLiteral("session_state"),
+             printerSessionStateName(printerSessionState_)},
+            {QStringLiteral("retry_attempt"),
+             QString::number(printerKeepaliveRetryCount_)}
+        });
     const PrinterProtocol::KeepaliveOutcome outcome =
         refreshOverlayLease
             ? printerProtocol_->sendDisplayKeepalive(
@@ -2662,11 +2774,21 @@ void DeviceWorker::sendPrinterKeepalive() {
                   &printerOverlayConfig_)
             : printerProtocol_->sendKeepalive(
                   printerDevicePath_, &errorMessage, context);
+    logPrinterLifecycleEvent(
+        QStringLiteral("command_completed"), generation,
+        {
+            {QStringLiteral("command_class"), commandClass},
+            {QStringLiteral("outcome"),
+             printerKeepaliveOutcomeName(outcome)},
+            {QStringLiteral("retry_attempt"),
+             QString::number(printerKeepaliveRetryCount_)}
+        });
     if (!printerGenerationIsCurrent(generation)) {
         stopPrinterSession();
         return;
     }
     if (outcome == PrinterProtocol::KeepaliveOutcome::RetryableFailure &&
+        printerSessionState_ == PrinterSessionState::Active &&
         printerGenerationIsCurrent(generation) &&
         printerKeepaliveRetryCount_ < kMaxPrinterKeepaliveWriteRetries) {
         ++printerKeepaliveRetryCount_;
@@ -2677,10 +2799,21 @@ void DeviceWorker::sendPrinterKeepalive() {
                 .arg(errorMessage),
             generation);
         printerKeepaliveTimer_->start(
-            0);
+            qMin(2000, kPrinterKeepaliveRetryBackoffMs *
+                           printerKeepaliveRetryCount_));
         return;
     }
     if (outcome != PrinterProtocol::KeepaliveOutcome::Sent) {
+        if (printerSessionState_ ==
+            PrinterSessionState::AwaitingOverlayActivation) {
+            markPrinterSessionLost(
+                errorMessage.isEmpty()
+                    ? tr("PASE overlay recovery stopped because the mandatory post-bootstrap keepalive failed")
+                    : tr("PASE overlay recovery stopped because the mandatory post-bootstrap keepalive failed: %1")
+                          .arg(errorMessage),
+                generation);
+            return;
+        }
         const QString stoppedMessage =
             outcome == PrinterProtocol::KeepaliveOutcome::RetryableFailure
             ? (refreshOverlayLease
@@ -2692,14 +2825,6 @@ void DeviceWorker::sendPrinterKeepalive() {
                    ? tr("PASE overlay lease refresh stopped: %1")
                    : tr("Printer-class keepalive stopped: %1"))
                   .arg(errorMessage);
-        if (printerSessionState_ ==
-            PrinterSessionState::AwaitingOverlayActivation) {
-            markPrinterSessionLost(
-                tr("PASE overlay recovery stopped because the post-bootstrap keepalive failed: %1")
-                    .arg(stoppedMessage),
-                generation);
-            return;
-        }
         if (refreshOverlayLease) {
             markPrinterSessionLost(
                 tr("PASE overlay lease could not be refreshed safely: %1")
@@ -2708,7 +2833,6 @@ void DeviceWorker::sendPrinterKeepalive() {
             return;
         }
         schedulePrinterSessionRecovery(stoppedMessage, generation);
-        emit printerOperationError(stoppedMessage, generation);
         return;
     }
     const bool recovered = printerKeepaliveRetryCount_ > 0;
@@ -2717,7 +2841,9 @@ void DeviceWorker::sendPrinterKeepalive() {
         activateRestoredPrinterOverlay(generation);
         return;
     }
-    if (paseOverlayHasContent(printerOverlayConfig_)) {
+    if (printerOverlayLeaseMode_ ==
+            PrinterOverlayLeaseMode::PingAndOverlayLease &&
+        paseOverlayHasContent(printerOverlayConfig_)) {
         printerOverlayLeaseRefreshNext_ =
             !printerOverlayLeaseRefreshNext_;
     } else {
@@ -2792,7 +2918,9 @@ bool DeviceWorker::ensurePrinterSession(
         }
         return false;
     }
-    if (printerSessionState_ == PrinterSessionState::Starting) {
+    if (printerSessionState_ ==
+            PrinterSessionState::AwaitingProtocolReadiness ||
+        printerSessionState_ == PrinterSessionState::Starting) {
         if (errorMessage) {
             *errorMessage = tr("Printer-class display session is already starting");
         }
@@ -2805,24 +2933,81 @@ bool DeviceWorker::ensurePrinterSession(
         }
         return false;
     }
-
-    // Foreground work that arrives while a queued recovery is pending takes
-    // synchronous ownership of the same recovery attempt. The worker thread
-    // remains the sole transport owner, and stopping the single-shot timer
-    // prevents a stale queued retry from observing the recovered session.
-    if (printerSessionState_ == PrinterSessionState::Recovering &&
-        printerRecoveryTimer_) {
-        printerRecoveryTimer_->stop();
+    if (printerSessionState_ == PrinterSessionState::Recovering) {
+        if (errorMessage) {
+            *errorMessage = tr(
+                "Automatic same-generation PASE bootstrap retry is disabled");
+        }
+        return false;
     }
 
-    printerSessionState_ = PrinterSessionState::Starting;
+    transitionPrinterSessionState(
+        PrinterSessionState::AwaitingProtocolReadiness,
+        QStringLiteral("protocol_readiness_started"));
     printerKeepaliveTimer_->stop();
+    printerMetricsTimer_->stop();
     emit printerUploadProgress(tr("Starting PASE display session..."), generation);
+    PrinterProtocol::OperationContext sessionContext = context;
+    sessionContext.onReadinessProbeRetry =
+        [this, generation](
+            const PrinterProtocol::ReadinessRetryInfo &retry) {
+            if (generation != configuredPrinterGeneration_ ||
+                !printerGenerationIsCurrent(generation) ||
+                printerSessionState_ !=
+                    PrinterSessionState::AwaitingProtocolReadiness) {
+                return;
+            }
+            logPrinterLifecycleEvent(
+                QStringLiteral(
+                    "readiness_probe_safely_retried"),
+                generation,
+                {
+                    {QStringLiteral("command_class"),
+                     QStringLiteral("device-info")},
+                    {QStringLiteral("retry_attempt"),
+                     QString::number(retry.attempt)},
+                    {QStringLiteral("expected_bytes"),
+                     QString::number(retry.expectedBytes)},
+                    {QStringLiteral("actual_bytes"),
+                     QString::number(retry.actualBytes)},
+                    {QStringLiteral("transfer_status"),
+                     retry.transferStatus},
+                    {QStringLiteral("backoff_ms"),
+                     QString::number(retry.backoffMs)},
+                    {QStringLiteral("elapsed_ms"),
+                     QString::number(retry.elapsedMs)}
+                });
+        };
+    sessionContext.onDeviceInfoReady = [this, generation]() {
+        if (generation != configuredPrinterGeneration_ ||
+            !printerGenerationIsCurrent(generation) ||
+            printerSessionState_ !=
+                PrinterSessionState::AwaitingProtocolReadiness) {
+            return;
+        }
+        transitionPrinterSessionState(
+            PrinterSessionState::Starting,
+            QStringLiteral("device_info_confirmed"));
+    };
     const PrinterProtocol::Result sessionResult =
-        printerProtocol_->startDisplaySession(devicePath, context);
+        printerProtocol_->startDisplaySession(devicePath,
+                                              sessionContext);
     if (!sessionResult.success) {
         const bool persistentFailure =
             printerProtocol_->persistentUsbInputFailure();
+        logPrinterLifecycleEvent(
+            QStringLiteral("readiness_failed"), generation,
+            {
+                {QStringLiteral("failure_class"),
+                 persistentFailure
+                     ? QStringLiteral("persistent-input-transport")
+                     : QStringLiteral("bootstrap-failed")},
+                {QStringLiteral("elapsed_ms"),
+                 printerSessionElapsedTimer_.isValid()
+                     ? QString::number(
+                           printerSessionElapsedTimer_.elapsed())
+                     : QStringLiteral("-1")}
+            });
         if (persistentFailure) {
             const QString persistentMessage = tr(
                 "The PASE USB interface stopped responding after persistent input transport errors. Software USB reset is disabled; fully power-cycle or physically reconnect PASE before continuing.");
@@ -2851,27 +3036,62 @@ bool DeviceWorker::ensurePrinterSession(
         }
         return false;
     }
+    if (printerSessionState_ != PrinterSessionState::Starting) {
+        logPrinterLifecycleEvent(
+            QStringLiteral("readiness_failed"), generation,
+            {
+                {QStringLiteral("failure_class"),
+                 QStringLiteral(
+                     "device-info-not-confirmed")},
+                {QStringLiteral("elapsed_ms"),
+                 printerSessionElapsedTimer_.isValid()
+                     ? QString::number(
+                           printerSessionElapsedTimer_.elapsed())
+                     : QStringLiteral("-1")}
+            });
+        stopPrinterSession();
+        if (errorMessage) {
+            *errorMessage = tr(
+                "PASE bootstrap completed without an exact DeviceInfo readiness confirmation");
+        }
+        return false;
+    }
+    logPrinterLifecycleEvent(
+        QStringLiteral("bootstrap_completed"), generation,
+        {
+            {QStringLiteral("session_state"),
+             printerSessionStateName(printerSessionState_)},
+            {QStringLiteral("elapsed_ms"),
+             printerSessionElapsedTimer_.isValid()
+                 ? QString::number(printerSessionElapsedTimer_.elapsed())
+                 : QStringLiteral("-1")}
+        });
 
     printerSessionRecoveryAttempt_ = 0;
-    if (paseOverlayHasContent(printerOverlayConfig_)) {
-        printerSessionState_ =
-            PrinterSessionState::AwaitingOverlayActivation;
-        printerOverlayActivationPending_ = true;
-        printerOverlayLeaseRefreshNext_ = false;
-        restartPrinterKeepaliveAfterActivity();
-        emit printerUploadProgress(
-            tr("PASE protocol session is ready; waiting for a confirmed keepalive before restoring the overlay"),
-            generation);
-        return allowPendingOverlayActivation;
-    }
-    printerSessionState_ = PrinterSessionState::Active;
-    printerOverlayActivationPending_ = false;
+    transitionPrinterSessionState(
+        PrinterSessionState::AwaitingOverlayActivation,
+        QStringLiteral("post_bootstrap_ping_pending"));
+    printerOverlayActivationPending_ = true;
     printerOverlayLeaseRefreshNext_ = false;
-    restartPrinterKeepaliveAfterActivity();
-    startPrinterMetrics();
-    emit printerSessionStarted(generation);
-    emit printerUploadProgress(tr("PASE display session is active"), generation);
-    return true;
+    printerKeepaliveRetryCount_ = 0;
+    emit printerUploadProgress(
+        tr("PASE protocol session is ready; waiting for a confirmed keepalive before restoring the overlay"),
+        generation);
+    if (allowPendingOverlayActivation) {
+        restartPrinterKeepaliveAfterActivity();
+        return true;
+    }
+
+    sendPrinterKeepalive();
+    if (printerSessionState_ == PrinterSessionState::Active) {
+        return true;
+    }
+    if (errorMessage) {
+        *errorMessage = printerSessionState_ == PrinterSessionState::Lost
+            ? tr("The mandatory post-bootstrap PASE keepalive failed")
+            : tr("The mandatory post-bootstrap PASE keepalive did not activate the display session");
+    }
+    return false;
 }
 
 bool DeviceWorker::printerGenerationIsCurrent(quint64 generation) const {
@@ -2903,11 +3123,60 @@ void DeviceWorker::drainAllPrinterCancellations() {
     drainPrinterCancellation(printerOperationCancellationFd_);
 }
 
+QString DeviceWorker::printerSessionStateName(
+    PrinterSessionState state) {
+    switch (state) {
+    case PrinterSessionState::Passive:
+        return QStringLiteral("passive");
+    case PrinterSessionState::AwaitingProtocolReadiness:
+        return QStringLiteral("awaiting-protocol-readiness");
+    case PrinterSessionState::Starting:
+        return QStringLiteral("starting");
+    case PrinterSessionState::AwaitingOverlayActivation:
+        return QStringLiteral("awaiting-overlay-activation");
+    case PrinterSessionState::Active:
+        return QStringLiteral("active");
+    case PrinterSessionState::Recovering:
+        return QStringLiteral("recovering");
+    case PrinterSessionState::Lost:
+        return QStringLiteral("lost");
+    }
+    return QStringLiteral("unknown");
+}
+
+void DeviceWorker::transitionPrinterSessionState(
+    PrinterSessionState state, const QString &eventName) {
+    const PrinterSessionState previous = printerSessionState_;
+    printerSessionState_ = state;
+    logPrinterLifecycleEvent(
+        eventName, configuredPrinterGeneration_,
+        {
+            {QStringLiteral("state_from"),
+             printerSessionStateName(previous)},
+            {QStringLiteral("state_to"),
+             printerSessionStateName(state)},
+            {QStringLiteral("lease_mode"),
+             printerOverlayLeaseModeName(printerOverlayLeaseMode_)},
+            {QStringLiteral("device_path"), printerDevicePath_},
+            {QStringLiteral("serial"), printerDeviceSerial_},
+            {QStringLiteral("recovery_attempt"),
+             QString::number(printerSessionRecoveryAttempt_)},
+            {QStringLiteral("elapsed_ms"),
+             printerSessionElapsedTimer_.isValid()
+                 ? QString::number(printerSessionElapsedTimer_.elapsed())
+                 : QStringLiteral("-1")}
+        });
+}
+
 void DeviceWorker::stopPrinterSession() {
     const bool notifyStopped =
         printerSessionState_ != PrinterSessionState::Passive;
     const quint64 stoppedGeneration = configuredPrinterGeneration_;
-    printerSessionState_ = PrinterSessionState::Passive;
+    if (notifyStopped) {
+        transitionPrinterSessionState(
+            PrinterSessionState::Passive,
+            QStringLiteral("display_session_stopped"));
+    }
     printerOverlayActivationPending_ = false;
     printerOverlayLeaseRefreshNext_ = false;
     printerKeepaliveRetryCount_ = 0;
@@ -2947,23 +3216,17 @@ void DeviceWorker::schedulePrinterSessionRecovery(
         markPrinterSessionLost(persistentMessage, generation);
         return;
     }
-    const bool canRecover = printerGenerationIsCurrent(generation) &&
-                            generation == configuredPrinterGeneration_ &&
-                            !printerDevicePath_.isEmpty();
-    stopPrinterSession();
-    if (!canRecover || !printerGenerationIsCurrent(generation)) {
+    if (!printerGenerationIsCurrent(generation) ||
+        generation != configuredPrinterGeneration_ ||
+        printerDevicePath_.isEmpty()) {
         return;
     }
-
-    printerSessionRecoveryAttempt_ = 0;
-    printerSessionState_ = PrinterSessionState::Recovering;
-    emit printerUploadProgress(
+    markPrinterSessionLost(
         reason.isEmpty()
-            ? tr("Recovering the PASE display session after an operation failure...")
-            : tr("Recovering the PASE display session after an operation failure: %1")
+            ? tr("The PASE display session stopped after an operation failure; physically reconnect the device before continuing")
+            : tr("The PASE display session stopped after an operation failure: %1. Physically reconnect the device before continuing")
                   .arg(reason),
         generation);
-    printerRecoveryTimer_->start(0);
 }
 
 void DeviceWorker::restartPrinterKeepaliveAfterActivity() {
@@ -2989,49 +3252,80 @@ void DeviceWorker::activateRestoredPrinterOverlay(
     }
 
     printerOverlayActivationPending_ = false;
-    QStringList labels;
-    QStringList values;
-    QStringList units;
-    collectCurrentPrinterMetrics(&labels, &values, &units);
-    updatePrinterOverlayInitialMetrics(labels, values, units);
-    hydratePaseBadgeText(
-        &printerOverlayConfig_, printerSystemMonitor_);
+    const bool restoreOverlay =
+        paseOverlayHasContent(printerOverlayConfig_);
+    logPrinterLifecycleEvent(
+        QStringLiteral("overlay_activation_started"), generation,
+        {
+            {QStringLiteral("overlay_present"),
+             restoreOverlay ? QStringLiteral("true")
+                            : QStringLiteral("false")}
+        });
+    if (restoreOverlay) {
+        QStringList labels;
+        QStringList values;
+        QStringList units;
+        collectCurrentPrinterMetrics(&labels, &values, &units);
+        updatePrinterOverlayInitialMetrics(labels, values, units);
+        hydratePaseBadgeText(
+            &printerOverlayConfig_, printerSystemMonitor_);
 
-    PrinterProtocol::OperationContext context;
-    QString errorMessage;
-    if (!preparePrinterOperation(printerDevicePath_, generation,
-                                 QString(), &context,
-                                 &errorMessage)) {
-        markPrinterSessionLost(
-            tr("PASE overlay restoration was cancelled because the USB generation changed"),
-            generation);
-        return;
-    }
+        PrinterProtocol::OperationContext context;
+        QString errorMessage;
+        if (!preparePrinterOperation(printerDevicePath_, generation,
+                                     QString(), &context,
+                                     &errorMessage)) {
+            markPrinterSessionLost(
+                tr("PASE overlay restoration was cancelled because the USB generation changed"),
+                generation);
+            return;
+        }
 
-    PrinterProtocol::MutationDetails mutationDetails;
-    if (!printerProtocol_->configurePaseOverlay(
-            printerDevicePath_, printerOverlayConfig_,
-            &errorMessage, context, &mutationDetails)) {
-        const QString failure = errorMessage.isEmpty()
-            ? tr("PASE overlay restoration failed")
-            : tr("PASE overlay restoration failed: %1")
-                  .arg(errorMessage);
-        markPrinterSessionLost(failure, generation);
-        return;
+        PrinterProtocol::MutationDetails mutationDetails;
+        if (!printerProtocol_->configurePaseOverlay(
+                printerDevicePath_, printerOverlayConfig_,
+                &errorMessage, context, &mutationDetails)) {
+            logPrinterLifecycleEvent(
+                QStringLiteral("overlay_activation_completed"),
+                generation,
+                {
+                    {QStringLiteral("outcome"),
+                     QStringLiteral("failed")}
+                });
+            const QString failure = errorMessage.isEmpty()
+                ? tr("PASE overlay restoration failed")
+                : tr("PASE overlay restoration failed: %1")
+                      .arg(errorMessage);
+            markPrinterSessionLost(failure, generation);
+            return;
+        }
     }
 
     if (!printerGenerationIsCurrent(generation) ||
         generation != configuredPrinterGeneration_) {
         return;
     }
-    printerSessionState_ = PrinterSessionState::Active;
+    logPrinterLifecycleEvent(
+        QStringLiteral("overlay_activation_completed"), generation,
+        {
+            {QStringLiteral("outcome"),
+             QStringLiteral("succeeded")},
+            {QStringLiteral("overlay_present"),
+             restoreOverlay ? QStringLiteral("true")
+                            : QStringLiteral("false")}
+        });
+    transitionPrinterSessionState(
+        PrinterSessionState::Active,
+        QStringLiteral("display_session_active"));
     printerSessionRecoveryAttempt_ = 0;
     printerKeepaliveRetryCount_ = 0;
     printerOverlayLeaseRefreshNext_ = false;
     startPrinterMetrics();
     emit printerSessionStarted(generation);
     emit printerUploadProgress(
-        tr("PASE display session and overlay are active"),
+        restoreOverlay
+            ? tr("PASE display session and overlay are active")
+            : tr("PASE display session is active"),
         generation);
     restartPrinterKeepaliveAfterActivity();
     emit printerTransportReady(generation);
@@ -3045,7 +3339,9 @@ void DeviceWorker::markPrinterSessionLost(
         return;
     }
     stopPrinterSession();
-    printerSessionState_ = PrinterSessionState::Lost;
+    transitionPrinterSessionState(
+        PrinterSessionState::Lost,
+        QStringLiteral("display_session_lost"));
     printerOverlayActivationPending_ = false;
     const QString message = reason.isEmpty()
         ? tr("The PASE display session is lost until a new USB endpoint generation appears")
@@ -3086,6 +3382,24 @@ DeviceManager::DeviceManager(bool remoteMode, QObject *parent)
 
 DeviceManager *DeviceManager::createRemote(QObject *parent) {
     return new DeviceManager(true, parent);
+}
+
+void DeviceManager::setPrinterOverlayLeaseMode(
+    PrinterOverlayLeaseMode mode) {
+    printerOverlayLeaseMode_ = mode;
+    if (!worker_) {
+        return;
+    }
+    if (worker_->thread() == QThread::currentThread()) {
+        worker_->setPrinterOverlayLeaseMode(mode);
+        return;
+    }
+    QMetaObject::invokeMethod(
+        worker_,
+        [worker = worker_, mode]() {
+            worker->setPrinterOverlayLeaseMode(mode);
+        },
+        Qt::QueuedConnection);
 }
 
 void DeviceManager::initializeRemote() {
@@ -3901,6 +4215,54 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
     qRegisterMetaType<TryxRuntimeMediaCatalogSnapshot>();
     qRegisterMetaType<TryxRuntimeDisplayState>();
 
+    QString overlayLeaseConfigStatus =
+        QStringLiteral("test-default");
+    if (startPrinterMonitor) {
+        std::error_code configPathError;
+        const bool configFileExists = std::filesystem::exists(
+            panorama::ConfigManager::get_config_path(),
+            configPathError);
+        const auto config = panorama::ConfigManager::load_config();
+        if (!config) {
+            overlayLeaseConfigStatus =
+                QStringLiteral("unreadable-or-invalid");
+            qWarning().noquote()
+                << "Invalid TRYX config.json; using"
+                << printerOverlayLeaseModeName(
+                       PrinterOverlayLeaseMode::
+                           PingAndOverlayLease)
+                << "for the PASE overlay lease mode";
+        } else if (config->pase_overlay_lease_mode ==
+                   "ping-only") {
+            printerOverlayLeaseMode_ =
+                PrinterOverlayLeaseMode::PingOnly;
+            overlayLeaseConfigStatus =
+                configFileExists && !configPathError
+                    ? QStringLiteral("loaded")
+                    : QStringLiteral("default-no-config");
+        } else {
+            printerOverlayLeaseMode_ =
+                PrinterOverlayLeaseMode::PingAndOverlayLease;
+            overlayLeaseConfigStatus =
+                configFileExists && !configPathError
+                    ? QStringLiteral("loaded")
+                    : QStringLiteral("default-no-config");
+        }
+    }
+    setPrinterOverlayLeaseMode(printerOverlayLeaseMode_);
+    if (startPrinterMonitor) {
+        logPrinterLifecycleEvent(
+            QStringLiteral("overlay_lease_mode_selected"),
+            printerGeneration_,
+            {
+                {QStringLiteral("lease_mode"),
+                 printerOverlayLeaseModeName(
+                     printerOverlayLeaseMode_)},
+                {QStringLiteral("config_status"),
+                 overlayLeaseConfigStatus}
+            });
+    }
+
     worker_->moveToThread(&workerThread_);
     connect(&workerThread_, &QThread::finished, worker_, &QObject::deleteLater);
     printerMediaPreparer_->moveToThread(&printerPreparationThread_);
@@ -4010,6 +4372,28 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     emit uploadStatus(printerMutationUnavailableStatusText());
                     return;
                 }
+                const QString sysfsPath =
+                    printerSnapshot_.devices.size() == 1
+                        ? printerSnapshot_.devices.first().sysfsPath
+                        : QString();
+                logPrinterLifecycleEvent(
+                    QStringLiteral("recovery_completed"), generation,
+                    {
+                        {QStringLiteral("sysfs_path"), sysfsPath},
+                        {QStringLiteral("serial"),
+                         printerDeviceSerial_.trimmed()},
+                        {QStringLiteral("disconnect_count"),
+                         QString::number(printerDisconnectCount_)},
+                        {QStringLiteral("elapsed_ms"),
+                         printerGenerationElapsedTimer_.isValid()
+                             ? QString::number(
+                                   printerGenerationElapsedTimer_
+                                       .elapsed())
+                             : QStringLiteral("-1")},
+                        {QStringLiteral("lease_mode"),
+                         printerOverlayLeaseModeName(
+                             printerOverlayLeaseMode_)}
+                    });
                 printerDisplaySessionLost_ = false;
                 printerSessionLossRemovalObserved_ = false;
                 setPrinterDisplaySessionActive(true);
@@ -5410,6 +5794,27 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
             this, &DeviceManager::handlePrinterSnapshot);
     connect(printerMonitor_, &PrinterDeviceMonitor::currentEndpointRemoved,
             this, [this]() {
+                ++printerDisconnectCount_;
+                const QString sysfsPath =
+                    printerSnapshot_.devices.size() == 1
+                        ? printerSnapshot_.devices.first().sysfsPath
+                        : QString();
+                const QString serial =
+                    printerSnapshot_.devices.size() == 1
+                        ? printerSnapshot_.devices.first().serial.trimmed()
+                        : printerDeviceSerial_.trimmed();
+                logPrinterLifecycleEvent(
+                    QStringLiteral("endpoint_removed"),
+                    printerGeneration_,
+                    {
+                        {QStringLiteral("sysfs_path"), sysfsPath},
+                        {QStringLiteral("serial"), serial},
+                        {QStringLiteral("disconnect_count"),
+                         QString::number(printerDisconnectCount_)},
+                        {QStringLiteral("lease_mode"),
+                         printerOverlayLeaseModeName(
+                             printerOverlayLeaseMode_)}
+                    });
                 if (printerRecoveryRequired_ &&
                     isPrinterClassDevicePresent()) {
                     printerRecoveryRemovalObserved_ = true;
@@ -5648,6 +6053,7 @@ void DeviceManager::handlePrinterSnapshot(
         tr("Printer-class operation stopped because the USB connection changed"));
     printerSnapshot_ = snapshot;
     ++printerGeneration_;
+    printerGenerationElapsedTimer_.start();
     emit requestCancelPrinterPreparation(printerGeneration_);
     if (wasPrinterConnected) {
         emit printerOperationsCancelled();
@@ -5656,6 +6062,44 @@ void DeviceManager::handlePrinterSnapshot(
                        snapshot.devices.size() == 1;
     const bool endpointSelected = ready &&
                                   (autoConnectMode_ || wasPrinterConnected);
+    const QString snapshotSysfsPath = snapshot.devices.size() == 1
+        ? snapshot.devices.first().sysfsPath
+        : QString();
+    const QString snapshotSerial = snapshot.devices.size() == 1
+        ? snapshot.devices.first().serial.trimmed()
+        : QString();
+    logPrinterLifecycleEvent(
+        QStringLiteral("physical_generation_changed"),
+        printerGeneration_,
+        {
+            {QStringLiteral("discovery_state"),
+             printerDiscoveryStateName(snapshot.state)},
+            {QStringLiteral("sysfs_path"), snapshotSysfsPath},
+            {QStringLiteral("serial"), snapshotSerial},
+            {QStringLiteral("endpoint_selected"),
+             endpointSelected ? QStringLiteral("true")
+                              : QStringLiteral("false")},
+            {QStringLiteral("disconnect_count"),
+             QString::number(printerDisconnectCount_)},
+            {QStringLiteral("lease_mode"),
+             printerOverlayLeaseModeName(
+                 printerOverlayLeaseMode_)}
+        });
+    if (ready) {
+        logPrinterLifecycleEvent(
+            QStringLiteral("endpoint_discovered"),
+            printerGeneration_,
+            {
+                {QStringLiteral("sysfs_path"),
+                 snapshotSysfsPath},
+                {QStringLiteral("serial"), snapshotSerial},
+                {QStringLiteral("endpoint_selected"),
+                 endpointSelected ? QStringLiteral("true")
+                                  : QStringLiteral("false")},
+                {QStringLiteral("disconnect_count"),
+                 QString::number(printerDisconnectCount_)}
+            });
+    }
     const bool retryCacheValidationComplete =
         pendingRetryValidationId_.isEmpty();
     const bool sessionLossAllowsSession =
@@ -5798,6 +6242,7 @@ void DeviceManager::connectDevice(const QString &port) {
             cancelForegroundForGenerationChange(
                 tr("Printer-class connection was restarted"));
             ++printerGeneration_;
+            printerGenerationElapsedTimer_.start();
             emit requestCancelPrinterPreparation(printerGeneration_);
             const bool retryCacheValidationComplete =
                 pendingRetryValidationId_.isEmpty();

@@ -9,18 +9,12 @@
 #include <QDropEvent>
 #include <QMimeData>
 #include <QMessageBox>
-#include <QDir>
-#include <QFileInfo>
-#include <QCoreApplication>
-#include <QProcess>
 #include <QPixmap>
 #include <QMouseEvent>
 #include <QSignalBlocker>
 
 static const int TILE_WIDTH = 200;
 static const int TILE_IMG_HEIGHT = 100;
-static const int GRID_COLUMNS = 3;
-static const QString THUMB_CACHE_DIR = "/tmp/tryx-panorama/thumbnails";
 
 // --- MediaTile ---
 
@@ -50,7 +44,8 @@ MediaTile::MediaTile(const MediaEntry &entry, QWidget *parent)
     nameLabel_->setMaximumWidth(TILE_WIDTH - 8);
     layout->addWidget(nameLabel_);
 
-    double sizeMB = entry_.sizeBytes / (1024.0 * 1024.0);
+    const double sizeMB =
+        static_cast<double>(entry_.sizeBytes) / (1024.0 * 1024.0);
     infoLabel_ = new QLabel(QString("%1 MB  %2").arg(sizeMB, 0, 'f', 1).arg(entry_.format));
     infoLabel_->setAlignment(Qt::AlignCenter);
     QFont infoFont = infoLabel_->font();
@@ -75,6 +70,19 @@ void MediaTile::setThumbnail(const QPixmap &pix) {
                                           Qt::SmoothTransformation));
         imageLabel_->setText({});
     }
+}
+
+void MediaTile::setNeutralPlaceholder(const QString &text) {
+    thumb_ = {};
+    imageLabel_->setPixmap({});
+    imageLabel_->setText(text);
+    imageLabel_->setWordWrap(true);
+    imageLabel_->setStyleSheet(
+        "background: #20202c;"
+        "border: 1px solid #3d3d4d;"
+        "border-radius: 4px;"
+        "color: #9a9aaa;"
+        "padding: 8px;");
 }
 
 void MediaTile::mousePressEvent(QMouseEvent *event) {
@@ -141,55 +149,11 @@ DisplayPage::DisplayPage(DeviceManager *deviceMgr, QWidget *parent)
             });
 }
 
-QString DisplayPage::builtinMediaDir() {
-    QString appDir = QCoreApplication::applicationDirPath();
-    QStringList candidates = {
-        QStringLiteral("/usr/share/tryx-panorama-manager/media"),
-        QDir::cleanPath(appDir +
-                        QStringLiteral("/../share/tryx-panorama-manager/media")),
-        appDir + "/../media",
-        appDir + "/media",
-    };
-    for (const auto &path : candidates) {
-        QDir dir(path);
-        if (dir.exists() && !dir.isEmpty()) {
-            return dir.absolutePath();
-        }
-    }
-    return {};
-}
-
 void DisplayPage::setupUi() {
     setAcceptDrops(true);
 
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(12);
-
-    // Built-in TRYX media library - thumbnail grid
-    auto *builtinGroup = new QGroupBox(tr("TRYX Media Library"));
-    auto *builtinOuterLayout = new QVBoxLayout(builtinGroup);
-
-    builtinScrollArea_ = new QScrollArea;
-    builtinScrollArea_->setWidgetResizable(true);
-    builtinScrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    builtinScrollArea_->setMinimumHeight(200);
-    builtinScrollArea_->setMaximumHeight(380);
-    builtinScrollArea_->setStyleSheet("QScrollArea { border: none; }");
-
-    builtinGridWidget_ = new QWidget;
-    builtinGrid_ = new QGridLayout(builtinGridWidget_);
-    builtinGrid_->setSpacing(8);
-    builtinGrid_->setContentsMargins(4, 4, 4, 4);
-    builtinScrollArea_->setWidget(builtinGridWidget_);
-
-    builtinOuterLayout->addWidget(builtinScrollArea_);
-
-    uploadBuiltinBtn_ = new QPushButton(tr("Upload selected to device"));
-    builtinOuterLayout->addWidget(uploadBuiltinBtn_);
-    mainLayout->addWidget(builtinGroup);
-
-    connect(uploadBuiltinBtn_, &QPushButton::clicked, this, &DisplayPage::onUploadBuiltinClicked);
-    loadBuiltinMedia();
 
     // Drop zone
     dropZone_ = new QLabel(tr("Drag a file here\n(MP4, GIF, JPG, PNG)"));
@@ -277,101 +241,6 @@ void DisplayPage::setupUi() {
     mainLayout->addLayout(optionsLayout);
 
     mainLayout->addStretch();
-}
-
-QPixmap DisplayPage::extractThumbnail(const QString &videoPath, const QString &cachePath) {
-    // Check cache first
-    if (QFileInfo::exists(cachePath)) {
-        return QPixmap(cachePath);
-    }
-
-    QDir().mkpath(QFileInfo(cachePath).absolutePath());
-
-    QProcess proc;
-    proc.start("ffmpeg", {"-y", "-i", videoPath,
-                          "-vf", "select=eq(n\\,0),scale=384:-1",
-                          "-frames:v", "1",
-                          "-q:v", "5",
-                          cachePath});
-    proc.waitForFinished(5000);
-
-    if (proc.exitCode() == 0 && QFileInfo::exists(cachePath)) {
-        return QPixmap(cachePath);
-    }
-    return {};
-}
-
-void DisplayPage::loadBuiltinMedia() {
-    tiles_.clear();
-    QString mediaDir = builtinMediaDir();
-    if (mediaDir.isEmpty()) return;
-
-    QDir().mkpath(THUMB_CACHE_DIR);
-
-    QDir dir(mediaDir);
-    QStringList filters = {"*.mp4", "*.webm", "*.mkv", "*.avi", "*.mov",
-                           "*.gif", "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp"};
-    auto entries = dir.entryInfoList(filters, QDir::Files, QDir::Name);
-
-    int row = 0, col = 0;
-    for (const auto &entry : entries) {
-        MediaEntry me;
-        me.filePath = entry.absoluteFilePath();
-        me.fileName = entry.completeBaseName();
-        me.format = entry.suffix().toUpper();
-        me.sizeBytes = entry.size();
-
-        auto *tile = new MediaTile(me, builtinGridWidget_);
-        connect(tile, &MediaTile::clicked, this, &DisplayPage::onTileClicked);
-
-        // Extract thumbnail (cached)
-        QString thumbName = entry.fileName().replace(' ', '_') + ".jpg";
-        QString thumbPath = THUMB_CACHE_DIR + "/" + thumbName;
-        QPixmap thumb = extractThumbnail(entry.absoluteFilePath(), thumbPath);
-        tile->setThumbnail(thumb);
-
-        builtinGrid_->addWidget(tile, row, col);
-        tiles_.append(tile);
-
-        col++;
-        if (col >= GRID_COLUMNS) {
-            col = 0;
-            row++;
-        }
-    }
-}
-
-void DisplayPage::onTileClicked(MediaTile *tile) {
-    tile->setSelected(!tile->isSelected());
-}
-
-void DisplayPage::onUploadBuiltinClicked() {
-    QStringList selected;
-    for (auto *tile : tiles_) {
-        if (tile->isSelected()) {
-            selected << tile->filePath();
-        }
-    }
-
-    if (selected.isEmpty()) {
-        emit statusMessage(tr("Select files from the media library"));
-        return;
-    }
-    if (deviceMgr_->isPrinterClassDevicePresent() && selected.size() > 1) {
-        emit statusMessage(tr("Upload one media file at a time on printer-class firmware."));
-        return;
-    }
-
-    setUploadBusy(true);
-
-    for (const auto &path : selected) {
-        if (deviceMgr_->isPrinterClassDevicePresent()) {
-            activeOperationId_ =
-                deviceMgr_->queueUploadOperation(QString(), path, false);
-        } else {
-            deviceMgr_->uploadMedia(path);
-        }
-    }
 }
 
 void DisplayPage::onUploadClicked() {
@@ -610,7 +479,6 @@ void DisplayPage::setUploadBusy(bool busy) {
     uploadBusy_ = busy;
     progressBar_->setVisible(busy);
     uploadBtn_->setEnabled(!busy);
-    uploadBuiltinBtn_->setEnabled(!busy);
     refreshBtn_->setEnabled(!busy);
     setDisplayBtn_->setEnabled(!busy);
     if (!busy) {

@@ -14,9 +14,11 @@
 class QSocketNotifier;
 struct udev;
 struct udev_monitor;
-namespace Tryx {
-namespace Config {
-class UserConfigPb;
+namespace panorama {
+namespace wire {
+namespace v1 {
+class UserConfiguration;
+}
 }
 }
 
@@ -108,10 +110,22 @@ public:
         QList<MediaFile> files;
     };
 
+    struct ReadinessRetryInfo {
+        int attempt = 0;
+        qint64 expectedBytes = 0;
+        qint64 actualBytes = 0;
+        int elapsedMs = 0;
+        int backoffMs = 0;
+        QString transferStatus;
+    };
+
     struct OperationContext {
         int cancellationFd = -1;
         std::function<bool()> isCancelled;
         bool maintainKeepalive = false;
+        std::function<void()> onDeviceInfoReady;
+        std::function<void(const ReadinessRetryInfo &)>
+            onReadinessProbeRetry;
     };
 
     enum class KeepaliveOutcome {
@@ -330,6 +344,8 @@ public:
     void setFileTransmitDataWriteTimeoutForTesting(int timeoutMs);
     void setFileTransmitResponseTimeoutForTesting(int timeoutMs);
     void setPersistentUsbInputFailureForTesting(bool persistent);
+    void setBootstrapZeroByteWriteFailuresForTesting(int failureCount);
+    QList<qint64> bootstrapReadinessAttemptOffsetsForTesting() const;
     bool sendPaseRunConfigForTesting(
         const QString &devicePath, const PaseOverlayConfig &overlay,
         QString *errorMessage, const OperationContext &context);
@@ -347,7 +363,7 @@ public:
 private:
     bool sendUserConfigWithOutcome(
         const QString &devicePath,
-        const Tryx::Config::UserConfigPb &userConfig,
+        const panorama::wire::v1::UserConfiguration &userConfig,
         QString *errorMessage,
         const OperationContext &context,
         MutationDetails *mutationDetails = nullptr);

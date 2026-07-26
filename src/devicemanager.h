@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QHash>
 #include <QDeadlineTimer>
+#include <QElapsedTimer>
 #include <QJsonObject>
 #include <QMutex>
 #include <QString>
@@ -27,6 +28,11 @@ class QProcess;
 class QDBusInterface;
 class QDBusServiceWatcher;
 class SystemMonitor;
+
+enum class PrinterOverlayLeaseMode {
+    PingAndOverlayLease,
+    PingOnly
+};
 
 class PrinterMediaPreparer : public QObject {
     Q_OBJECT
@@ -148,6 +154,7 @@ public:
     void updatePrinterGenerationGate(quint64 generation, bool endpointReady);
     void cancelPrinterOperation(const QString &operationId);
     void clearPrinterOperationCancellation(const QString &operationId);
+    void setPrinterOverlayLeaseMode(PrinterOverlayLeaseMode mode);
 
 #ifdef TRYX_PROTOCOL_TESTING
     void adoptPrinterFileDescriptorForTesting(int fd,
@@ -305,6 +312,7 @@ private slots:
 private:
     enum class PrinterSessionState {
         Passive,
+        AwaitingProtocolReadiness,
         Starting,
         AwaitingOverlayActivation,
         Active,
@@ -324,6 +332,9 @@ private:
     bool printerOperationIsCancelled(const QString &operationId) const;
     static void drainPrinterCancellation(int cancellationFd);
     void drainAllPrinterCancellations();
+    static QString printerSessionStateName(PrinterSessionState state);
+    void transitionPrinterSessionState(PrinterSessionState state,
+                                       const QString &eventName);
     void restartPrinterKeepaliveAfterActivity();
     void activateRestoredPrinterOverlay(quint64 generation);
     void markPrinterSessionLost(const QString &reason,
@@ -361,6 +372,9 @@ private:
     int printerSessionRecoveryAttempt_ = 0;
     bool printerOverlayActivationPending_ = false;
     bool printerOverlayLeaseRefreshNext_ = false;
+    PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
+        PrinterOverlayLeaseMode::PingAndOverlayLease;
+    QElapsedTimer printerSessionElapsedTimer_;
     QString foregroundPrinterOperationId_;
     PrinterProtocol::PaseOverlayConfig printerOverlayConfig_;
 };
@@ -381,6 +395,7 @@ public:
         return printerDisplaySessionActive_;
     }
     bool isRemote() const { return remoteMode_; }
+    void setPrinterOverlayLeaseMode(PrinterOverlayLeaseMode mode);
     bool hasTypedMediaCatalog() const {
         return isPrinterClassDevicePresent() &&
                (!remoteMode_ || remoteTypedMediaCatalogAvailable_);
@@ -781,6 +796,10 @@ private:
     QString printerDeviceSerial_;
     QString printerSessionResumeSerial_;
     quint64 printerGeneration_ = 0;
+    QElapsedTimer printerGenerationElapsedTimer_;
+    quint64 printerDisconnectCount_ = 0;
+    PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
+        PrinterOverlayLeaseMode::PingAndOverlayLease;
     quint64 remoteServiceEpoch_ = 0;
     quint64 remoteRevision_ = 0;
     quint64 remoteOperationRevision_ = 0;

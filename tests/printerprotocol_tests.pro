@@ -1,4 +1,4 @@
-QT += core dbus gui widgets multimedia testlib
+QT += core dbus gui widgets testlib
 
 CONFIG += c++17 console testcase link_pkgconfig
 CONFIG -= app_bundle
@@ -19,16 +19,12 @@ DESTDIR = $$PWD/../build/tests
 OBJECTS_DIR = $$PWD/../build/tests/obj
 MOC_DIR = $$PWD/../build/tests/moc
 
-PROTO_DIR = $$PWD/../proto/kanali-2.3.1
+PROTO_DIR = $$PWD/../protocol/wire-v1
 PROTO_GEN_DIR = $$PWD/../build/tests/generated/proto
 PROTO_FILES = \
-    $$PROTO_DIR/cooler.proto \
-    $$PROTO_DIR/lv_gui.proto \
-    $$PROTO_DIR/media_header.proto \
-    $$PROTO_DIR/sys_config.proto \
-    $$PROTO_DIR/user_config.proto \
-    $$PROTO_DIR/usb_protocol.proto \
-    $$PROTO_DIR/kanali_protocol.proto
+    $$PROTO_DIR/configuration.proto \
+    $$PROTO_DIR/overlay.proto \
+    $$PROTO_DIR/transport.proto
 
 INCLUDEPATH += $$PWD/../src $$PWD/../include $$PROTO_GEN_DIR
 DEPENDPATH += $$PROTO_GEN_DIR

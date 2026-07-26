@@ -1,4 +1,4 @@
-QT += core dbus gui widgets multimedia network
+QT += core dbus gui widgets network
 
 CONFIG += c++17 lrelease embed_translations link_pkgconfig
 TARGET = tryx-panorama-manager
@@ -18,17 +18,13 @@ LRELEASE_DIR = build/i18n
 
 INCLUDEPATH += $$PWD/include
 
-# KANALI 2.3.1 protobuf schema recovered from the active UDB backend.
-PROTO_DIR = $$PWD/proto/kanali-2.3.1
+# Minimal, independently named schema for the confirmed PASE wire contract.
+PROTO_DIR = $$PWD/protocol/wire-v1
 PROTO_GEN_DIR = $$PWD/build/generated/proto
 PROTO_FILES = \
-    $$PROTO_DIR/cooler.proto \
-    $$PROTO_DIR/lv_gui.proto \
-    $$PROTO_DIR/media_header.proto \
-    $$PROTO_DIR/sys_config.proto \
-    $$PROTO_DIR/user_config.proto \
-    $$PROTO_DIR/usb_protocol.proto \
-    $$PROTO_DIR/kanali_protocol.proto
+    $$PROTO_DIR/configuration.proto \
+    $$PROTO_DIR/overlay.proto \
+    $$PROTO_DIR/transport.proto
 
 INCLUDEPATH += $$PROTO_GEN_DIR
 DEPENDPATH += $$PROTO_GEN_DIR
@@ -52,7 +48,7 @@ protobuf_source.dependency_type = TYPE_C
 QMAKE_EXTRA_COMPILERS += protobuf_header protobuf_source
 
 protocol_tests.target = check
-protocol_tests.commands = cd $$shell_path($$PWD/tests) && $$QMAKE_QMAKE printerprotocol_tests.pro && $(MAKE) && $$shell_path($$PWD/build/tests/printerprotocol-tests)
+protocol_tests.commands = sh $$shell_path($$PWD/tests/check_no_bundled_video.sh) && cd $$shell_path($$PWD/tests) && $$QMAKE_QMAKE printerprotocol_tests.pro && $(MAKE) && $$shell_path($$PWD/build/tests/printerprotocol-tests)
 QMAKE_EXTRA_TARGETS += protocol_tests
 
 # Build output
@@ -104,8 +100,8 @@ RESOURCES += resources/resources.qrc
 DISTFILES += \
     packaging/99-tryx-pase-printer.rules \
     packaging/tryx-panorama-manager.desktop \
-    systemd/tryx-panorama.service
-DISTFILES += media/*
+    systemd/tryx-panorama.service \
+    tests/check_no_bundled_video.sh
 
 unix {
     SYSTEMD_USER_UNIT_DIR = $$system(pkg-config --variable=systemduserunitdir systemd)
@@ -120,8 +116,6 @@ unix {
     tryx_desktop_entry.files = packaging/tryx-panorama-manager.desktop
     tryx_icon.path = /usr/share/icons/hicolor/256x256/apps
     tryx_icon.files = resources/tryx-panorama.png
-    tryx_media.path = /usr/share/tryx-panorama-manager
-    tryx_media.files = media
     INSTALLS += target pase_udev_rule tryx_systemd_user_unit \
-        tryx_desktop_entry tryx_icon tryx_media
+        tryx_desktop_entry tryx_icon
 }

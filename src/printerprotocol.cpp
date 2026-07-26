@@ -1,7 +1,8 @@
 #include "printerprotocol.h"
 
-#include "usb_protocol.pb.h"
-#include "user_config.pb.h"
+#include "transport.pb.h"
+#include "configuration.pb.h"
+#include "overlay.pb.h"
 
 #include <QDir>
 #include <QCoreApplication>
@@ -34,7 +35,7 @@
 namespace {
 
 constexpr qsizetype kFileTransmitChunkSize = 0x40000;
-constexpr int kFileTransmitDataWriteTimeoutMs = 15000;
+constexpr int kTransferChunkWriteTimeoutMs = 15000;
 constexpr int kFileTransmitResponseTimeoutMs = 30000;
 constexpr qint64 kMaxMediaUploadSize = 500LL * 1024LL * 1024LL;
 constexpr quint16 kTryxVendorId = 0x391a;
@@ -47,7 +48,11 @@ constexpr int kQueuedResponseDrainTimeoutMs = 250;
 constexpr int kPrinterKeepaliveIntervalMs = 2000;
 constexpr int kPrinterKeepaliveWriteTimeoutMs = 2000;
 constexpr int kUdbBootstrapWriteTimeoutMs = 2000;
-constexpr int kMaxUdbBootstrapAttempts = 3;
+constexpr int kDeviceInformationReadinessDeadlineMs = 20000;
+constexpr int kDeviceInformationReadinessInitialBackoffMs = 500;
+constexpr int kDeviceInformationReadinessMaximumBackoffMs = 2000;
+constexpr int kIdempotentQueryMaximumAttempts = 2;
+constexpr int kIdempotentQueryRetryBackoffMs = 250;
 constexpr int kMaxInFlightKeepaliveWriteRetries = 3;
 constexpr qsizetype kMaxFrameResynchronizationBytes = 64 * 1024;
 constexpr int kLibusbEventSliceMs = 50;
@@ -1720,7 +1725,7 @@ bool validatePrinterEndpoint(const QString &devicePath, int openFd,
     return true;
 }
 
-QString normalizedMediaName(const Tryx::Config::MediaFilePb &media) {
+QString normalizedMediaName(const panorama::wire::v1::MediaEntry &media) {
     QString name = QString::fromStdString(media.file_path()).trimmed();
     if (name.isEmpty()) {
         return {};
@@ -1784,16 +1789,15 @@ bool isSafeUploadFileName(const QString &fileName) {
     return false;
 }
 
-QString transmitStatusText(Tryx::USBProtocol::FileTransmitStatusPb::enFileTransStatus status) {
-    using Status = Tryx::USBProtocol::FileTransmitStatusPb::enFileTransStatus;
+QString transmitStatusText(panorama::wire::v1::TransferStatus::Code status) {
     switch (status) {
-    case Status::FileTransmitStatusPb_enFileTransStatus_OK:
+    case panorama::wire::v1::TransferStatus::OK:
         return QObject::tr("OK");
-    case Status::FileTransmitStatusPb_enFileTransStatus_SpaceNotEnough:
+    case panorama::wire::v1::TransferStatus::SPACE_NOT_ENOUGH:
         return QObject::tr("not enough device storage");
-    case Status::FileTransmitStatusPb_enFileTransStatus_FileError:
+    case panorama::wire::v1::TransferStatus::FILE_ERROR:
         return QObject::tr("file error");
-    case Status::FileTransmitStatusPb_enFileTransStatus_CRCFail:
+    case panorama::wire::v1::TransferStatus::CHECKSUM_FAILURE:
         return QObject::tr("CRC check failed");
     default:
         break;
@@ -2087,7 +2091,9 @@ public:
     explicit Impl(int transactionTimeoutMs, int deviceInfoReadyTimeoutMs,
                   int fileTransmitResponseTimeoutMs)
         : transactionTimeoutMs_(qMax(1, transactionTimeoutMs)),
-          deviceInfoReadyTimeoutMs_(qMax(1, deviceInfoReadyTimeoutMs)),
+          deviceInfoReadyTimeoutMs_(
+              qBound(1, deviceInfoReadyTimeoutMs,
+                     kDeviceInformationReadinessDeadlineMs)),
           fileTransmitResponseTimeoutMs_(
               qMax(1, fileTransmitResponseTimeoutMs)),
           nextTrackId_(QRandomGenerator::global()->generate64()) {
@@ -2153,6 +2159,15 @@ public:
     void setFileTransmitResponseTimeoutForTesting(int timeoutMs) {
         fileTransmitResponseTimeoutMs_ = qMax(1, timeoutMs);
     }
+
+    void setBootstrapZeroByteWriteFailuresForTesting(int failureCount) {
+        bootstrapZeroByteWriteFailuresForTesting_ =
+            qMax(0, failureCount);
+    }
+
+    QList<qint64> bootstrapReadinessAttemptOffsetsForTesting() const {
+        return bootstrapReadinessAttemptOffsetsForTesting_;
+    }
 #endif
 
     quint64 allocateTrackId() {
@@ -2166,9 +2181,9 @@ public:
         return trackId;
     }
 
-    bool execute(Tryx::USBProtocol::ReqPackagePb *request,
-                 Tryx::USBProtocol::RspPackagePb::BodyCase expectedBody,
-                 Tryx::USBProtocol::RspPackagePb *response,
+    bool execute(panorama::wire::v1::Request *request,
+                 panorama::wire::v1::Response::BodyCase expectedBody,
+                 panorama::wire::v1::Response *response,
                  const QString &devicePath,
                  const OperationContext &context,
                  QString *errorMessage,
@@ -2222,7 +2237,7 @@ public:
         if (!ensureOpen(devicePath, errorMessage)) {
             return false;
         }
-        // Headerless KANALI commands, such as metric updates, may still produce
+        // Headerless wire commands, such as metric updates, may still produce
         // framed acknowledgements. No request is in flight yet, so every
         // complete response already queued here is stale and can be discarded
         // without changing the outcome of the new tracked transaction. The
@@ -2268,7 +2283,7 @@ public:
                     candidate.size() > PrinterFrameCodec::MaxPayloadSize) {
                     return false;
                 }
-                Tryx::USBProtocol::RspPackagePb parsed;
+                panorama::wire::v1::Response parsed;
                 return parsed.ParseFromArray(
                            candidate.constData(),
                            static_cast<int>(candidate.size())) &&
@@ -2280,7 +2295,7 @@ public:
                        (parsed.body_case() == expectedBody ||
                         (acceptHeaderOnlySuccess &&
                          parsed.body_case() ==
-                             Tryx::USBProtocol::RspPackagePb::BODY_NOT_SET));
+                             panorama::wire::v1::Response::BODY_NOT_SET));
             };
 
         const int responseTimeoutMs =
@@ -2337,7 +2352,7 @@ public:
                 return false;
             }
 
-            Tryx::USBProtocol::RspPackagePb parsed;
+            panorama::wire::v1::Response parsed;
             if (!parsed.ParseFromArray(payload.constData(),
                                        static_cast<int>(payload.size()))) {
                 if (errorMessage) {
@@ -2350,9 +2365,9 @@ public:
                 return false;
             }
 
-            if (parsed.body_case() == Tryx::USBProtocol::RspPackagePb::kTestData ||
-                (parsed.body_case() == Tryx::USBProtocol::RspPackagePb::kPong &&
-                 expectedBody != Tryx::USBProtocol::RspPackagePb::kPong)) {
+            if (parsed.body_case() == panorama::wire::v1::Response::kAsynchronousEvent ||
+                (parsed.body_case() == panorama::wire::v1::Response::kPong &&
+                 expectedBody != panorama::wire::v1::Response::kPong)) {
                 ++skippedFrames;
                 skippedResponseBytes += payload.size() + 8;
                 continue;
@@ -2374,7 +2389,7 @@ public:
                 continue;
             }
             if (parsed.has_error() &&
-                parsed.error().code() != Tryx::USBProtocol::ErrorPb::Success) {
+                parsed.error().code() != panorama::wire::v1::ProtocolError::SUCCESS) {
                 if (outcome) {
                     *outcome = TransactionOutcome::Rejected;
                 }
@@ -2390,7 +2405,7 @@ public:
             if (parsed.body_case() != expectedBody &&
                 !(acceptHeaderOnlySuccess &&
                   parsed.body_case() ==
-                      Tryx::USBProtocol::RspPackagePb::BODY_NOT_SET)) {
+                      panorama::wire::v1::Response::BODY_NOT_SET)) {
                 if (errorMessage) {
                     *errorMessage = QObject::tr("TRYX response body %1 does not match expected body %2")
                                         .arg(static_cast<int>(parsed.body_case()))
@@ -2425,11 +2440,106 @@ public:
                 ? TransactionOutcome::InvalidResponse
                 : TransactionOutcome::AcknowledgementTimeout;
         }
+        const bool matchingResponseTimeout =
+            skippedFrames <= kMaxSkippedResponseFrames &&
+            skippedResponseBytes <= kMaxSkippedResponseBytes;
+        if (!(matchingResponseTimeout &&
+              preserveConnectionOnCleanTimeout)) {
+            closeDevice();
+        }
+        return false;
+    }
+
+    bool executeUserConfigurationQueryWithRetry(
+        panorama::wire::v1::Request *request,
+        panorama::wire::v1::Response *response,
+        const QString &devicePath,
+        const OperationContext &context,
+        QString *errorMessage,
+        const QString &queryName) {
+        if (!request ||
+            request->body_case() !=
+                panorama::wire::v1::Request::
+                    kUserConfigurationQuery) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral(
+                    "Only TRYX user configuration reads may use the bounded query retry");
+            }
+            return false;
+        }
+        constexpr auto expectedBody =
+            panorama::wire::v1::Response::
+                kUserConfiguration;
+        for (int attempt = 1;
+             attempt <= kIdempotentQueryMaximumAttempts;
+             ++attempt) {
+            const bool retryAvailable =
+                attempt < kIdempotentQueryMaximumAttempts;
+            TransactionOutcome outcome =
+                TransactionOutcome::NotSent;
+            QString attemptError;
+            if (response) {
+                response->Clear();
+            }
+            if (execute(
+                    request, expectedBody, response, devicePath,
+                    context, &attemptError, &outcome,
+                    TransactionProfile::Default,
+                    retryAvailable)) {
+                if (errorMessage) {
+                    errorMessage->clear();
+                }
+                return true;
+            }
+
+            if (retryAvailable &&
+                outcome ==
+                    TransactionOutcome::AcknowledgementTimeout &&
+                isCancelled(context)) {
+                closeDevice();
+                setCancelledError(errorMessage);
+                return false;
+            }
+            if (!retryAvailable ||
+                outcome !=
+                    TransactionOutcome::AcknowledgementTimeout) {
+                if (errorMessage) {
+                    *errorMessage = attemptError;
+                }
+                return false;
+            }
+
+            qWarning().noquote()
+                << QStringLiteral(
+                       "TRYX idempotent query matching-response timeout; retrying: query=%1 attempt=%2 max_attempts=%3 expected_body=%4 backoff_ms=%5 error=%6")
+                       .arg(queryName)
+                       .arg(attempt)
+                       .arg(kIdempotentQueryMaximumAttempts)
+                       .arg(static_cast<int>(expectedBody))
+                       .arg(kIdempotentQueryRetryBackoffMs)
+                       .arg(attemptError);
+
+            QString backoffError;
+            if (!waitForReadinessBackoff(
+                    kIdempotentQueryRetryBackoffMs, context,
+                    &backoffError)) {
+                closeDevice();
+                if (errorMessage) {
+                    *errorMessage = backoffError;
+                }
+                return false;
+            }
+        }
+
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "TRYX idempotent query retry budget was exhausted");
+        }
         closeDevice();
         return false;
     }
 
-    bool writeOnly(const Tryx::USBProtocol::ReqPackagePb &request,
+    bool writeOnly(const panorama::wire::v1::Request &request,
                    const QString &devicePath,
                    const OperationContext &context,
                    QString *errorMessage) {
@@ -2461,7 +2571,7 @@ public:
             return false;
         }
         // Keep at most the current optional acknowledgement in flight. This is
-        // required for the one-way KANALI metric path, whose replies otherwise
+        // required for the one-way metric path, whose replies otherwise
         // accumulate ahead of the next tracked request. The encoded request is
         // ready before the bounded drain can arm the request-scoped IN transfer.
         if (!drainKeepaliveResponses(context, errorMessage)) {
@@ -2481,7 +2591,7 @@ public:
     }
 
     bool writeTrackedOnly(
-        Tryx::USBProtocol::ReqPackagePb *request,
+        panorama::wire::v1::Request *request,
         const QString &devicePath,
         const OperationContext &context,
         QString *errorMessage,
@@ -2570,7 +2680,7 @@ public:
                 TransactionOutcome::SentOutcomeUnknown;
         }
 
-        // KANALI treats RunConfig as a setter. A matching Dummy response is
+        // The peer treats layout updates as setters. A matching acknowledgement is
         // optional, so successful completion is defined by the complete USB
         // OUT transfer. Consume at most one promptly available optional
         // response, but do not require it.
@@ -2587,142 +2697,76 @@ public:
 
     bool bootstrapSession(const QString &devicePath,
                           const OperationContext &context,
-                          Tryx::USBProtocol::RspPackagePb *deviceInfoResponse,
+                          panorama::wire::v1::Response *deviceInfoResponse,
                           QString *errorMessage) {
-        Tryx::USBProtocol::ReqPackagePb deviceInfoRequest;
+        panorama::wire::v1::Request deviceInfoRequest;
         deviceInfoRequest.mutable_header()->set_version(1);
-        deviceInfoRequest.mutable_get_device_info()->set_dummy("NA");
+        deviceInfoRequest.mutable_device_information_query()->set_dummy("NA");
 
-        Tryx::USBProtocol::ReqPackagePb sysConfigRequest;
+        panorama::wire::v1::Request sysConfigRequest;
         sysConfigRequest.mutable_header()->set_version(1);
-        sysConfigRequest.mutable_get_sys_config()->set_dummy("NA");
+        sysConfigRequest.mutable_system_configuration_query()->set_dummy("NA");
 
-        Tryx::USBProtocol::ReqPackagePb deviceAuthRequest;
+        panorama::wire::v1::Request deviceAuthRequest;
         deviceAuthRequest.mutable_header()->set_version(1);
-        deviceAuthRequest.mutable_get_device_auth()->set_key(1);
+        deviceAuthRequest.mutable_device_authentication_query()->set_key(1);
 
-        struct BootstrapExchange {
-            const Tryx::USBProtocol::ReqPackagePb *request;
-            Tryx::USBProtocol::RspPackagePb::BodyCase expectedBody;
-            int responseTimeoutMs;
-            bool retryAfterCleanResponseTimeout;
-        };
-        const BootstrapExchange exchanges[] = {
-            {&deviceInfoRequest,
-             Tryx::USBProtocol::RspPackagePb::kDeviceInfo,
-             deviceInfoReadyTimeoutMs_, false},
-            {&sysConfigRequest,
-             Tryx::USBProtocol::RspPackagePb::kSysConfig,
-             transactionTimeoutMs_, true},
-            {&deviceAuthRequest,
-             Tryx::USBProtocol::RspPackagePb::kDeviceAuth,
-             transactionTimeoutMs_, true}
-        };
-        for (const BootstrapExchange &exchange : exchanges) {
-            std::string serializedRequest;
-            if (!exchange.request->SerializeToString(&serializedRequest) ||
-                serializedRequest.size() >
-                    static_cast<size_t>(PrinterFrameCodec::MaxPayloadSize)) {
-                if (errorMessage) {
-                    *errorMessage = QObject::tr(
-                        "Failed to serialize bounded TRYX session bootstrap request");
+        const auto makeBootstrapFrame =
+            [errorMessage](const panorama::wire::v1::Request &request) {
+                std::string serializedRequest;
+                if (!request.SerializeToString(&serializedRequest) ||
+                    serializedRequest.size() >
+                        static_cast<size_t>(
+                            PrinterFrameCodec::MaxPayloadSize)) {
+                    if (errorMessage) {
+                        *errorMessage = QObject::tr(
+                            "Failed to serialize bounded TRYX session bootstrap request");
+                    }
+                    return QByteArray();
                 }
-                closeDevice();
-                return false;
-            }
-
-            const QByteArray frame = PrinterFrameCodec::encode(QByteArray(
-                serializedRequest.data(),
-                static_cast<qsizetype>(serializedRequest.size())));
-            if (frame.isEmpty()) {
-                if (errorMessage) {
+                const QByteArray frame = PrinterFrameCodec::encode(
+                    QByteArray(
+                        serializedRequest.data(),
+                        static_cast<qsizetype>(
+                            serializedRequest.size())));
+                if (frame.isEmpty() && errorMessage) {
                     *errorMessage = QObject::tr(
                         "Failed to create the bounded TRYX session bootstrap frame");
                 }
-                closeDevice();
-                return false;
-            }
+                return frame;
+            };
 
-            QString lastRetryableError;
-            bool exchangeComplete = false;
-            int attemptsUsed = 0;
-            for (int attempt = 1; attempt <= kMaxUdbBootstrapAttempts;
-                 ++attempt) {
-                attemptsUsed = attempt;
-                if (isCancelled(context)) {
-                    setCancelledError(errorMessage);
-                    closeDevice();
-                    return false;
-                }
-                if (!ensureOpen(devicePath, errorMessage)) {
-                    return false;
-                }
-                if (!drainKeepaliveResponses(context, errorMessage)) {
-                    closeDevice();
-                    return false;
-                }
-
-                qsizetype writtenBytes = 0;
-                WriteFailureKind writeFailure = WriteFailureKind::None;
-                if (!writeAll(frame, context,
-                              qMin(transactionTimeoutMs_,
-                                   kUdbBootstrapWriteTimeoutMs),
-                              errorMessage, &writtenBytes, &writeFailure)) {
-                    if (writeFailure == WriteFailureKind::RetryableNoWrite &&
-                        attempt < kMaxUdbBootstrapAttempts) {
-                        lastRetryableError = errorMessage
-                            ? *errorMessage
-                            : QString();
-                        continue;
-                    }
-                    if (writeFailure == WriteFailureKind::RetryableNoWrite) {
-                        lastRetryableError = errorMessage
-                            ? *errorMessage
-                            : QString();
-                        break;
-                    }
-                    closeDevice();
-                    return false;
-                }
-
-                // WinUSB has independent reader and writer paths. With usblp,
-                // a response may have to be consumed before the endpoint
-                // becomes writable for the next bootstrap frame. Preserve UDB
-                // command order and use each response as the next write barrier.
+        const auto readExactBootstrapResponse =
+            [this, &context, errorMessage](
+                panorama::wire::v1::Response::BodyCase expectedBody,
+                int timeoutMs,
+                panorama::wire::v1::Response *result) {
                 QElapsedTimer responseTimer;
                 responseTimer.start();
                 int skippedFrames = 0;
                 qsizetype skippedResponseBytes = 0;
-                bool retryExchange = false;
-                while (responseTimer.elapsed() < exchange.responseTimeoutMs &&
+                while (responseTimer.elapsed() < timeoutMs &&
                        skippedFrames <= kMaxSkippedResponseFrames &&
-                       skippedResponseBytes <= kMaxSkippedResponseBytes) {
-                    const int remaining = exchange.responseTimeoutMs -
-                                          static_cast<int>(responseTimer.elapsed());
+                       skippedResponseBytes <=
+                           kMaxSkippedResponseBytes) {
+                    const int remaining =
+                        timeoutMs -
+                        static_cast<int>(responseTimer.elapsed());
                     QByteArray payload;
-                    bool cleanResponseTimeout = false;
-                    if (!readFrame(&payload, context, qMax(1, remaining),
-                                   errorMessage, &cleanResponseTimeout)) {
-                        if (cleanResponseTimeout && !isCancelled(context)) {
-                            lastRetryableError = errorMessage
-                                ? *errorMessage
-                                : QString();
-                            retryExchange =
-                                exchange.retryAfterCleanResponseTimeout;
-                            break;
-                        }
-                        closeDevice();
+                    if (!readFrame(
+                            &payload, context, qMax(1, remaining),
+                            errorMessage)) {
                         return false;
                     }
 
-                    Tryx::USBProtocol::RspPackagePb response;
+                    panorama::wire::v1::Response response;
                     if (!response.ParseFromArray(
-                            payload.constData(), static_cast<int>(payload.size()))) {
+                            payload.constData(),
+                            static_cast<int>(payload.size()))) {
                         if (errorMessage) {
                             *errorMessage = QObject::tr(
                                 "Failed to parse a TRYX session bootstrap response");
                         }
-                        closeDevice();
                         return false;
                     }
                     const bool expectedBootstrapHeader =
@@ -2738,9 +2782,9 @@ public:
                     const bool headerlessAsynchronousResponse =
                         !response.has_header() &&
                         (response.body_case() ==
-                             Tryx::USBProtocol::RspPackagePb::kPong ||
+                             panorama::wire::v1::Response::kPong ||
                          response.body_case() ==
-                             Tryx::USBProtocol::RspPackagePb::kTestData);
+                             panorama::wire::v1::Response::kAsynchronousEvent);
                     if (staleTrackedResponse ||
                         headerlessAsynchronousResponse) {
                         ++skippedFrames;
@@ -2752,75 +2796,251 @@ public:
                             *errorMessage = QObject::tr(
                                 "TRYX session bootstrap response has an unexpected header");
                         }
-                        closeDevice();
                         return false;
                     }
                     if (response.has_error() &&
                         response.error().code() !=
-                            Tryx::USBProtocol::ErrorPb::Success) {
+                            panorama::wire::v1::ProtocolError::SUCCESS) {
                         if (errorMessage) {
-                            const QString why = QString::fromStdString(
-                                                    response.error().why()).trimmed();
+                            const QString why =
+                                QString::fromStdString(
+                                    response.error().why()).trimmed();
                             *errorMessage = why.isEmpty()
                                 ? QObject::tr(
                                       "TRYX device rejected the session bootstrap with error %1")
-                                      .arg(static_cast<int>(response.error().code()))
+                                      .arg(static_cast<int>(
+                                          response.error().code()))
                                 : why;
                         }
-                        closeDevice();
                         return false;
                     }
-                    if (response.body_case() != exchange.expectedBody) {
-                        ++skippedFrames;
-                        skippedResponseBytes += payload.size() + 8;
-                        continue;
+                    if (response.body_case() != expectedBody) {
+                        if (errorMessage) {
+                            *errorMessage = QObject::tr(
+                                "TRYX session bootstrap response body %1 does not match expected body %2")
+                                                .arg(static_cast<int>(
+                                                    response.body_case()))
+                                                .arg(static_cast<int>(
+                                                    expectedBody));
+                        }
+                        return false;
                     }
-
-                    if (exchange.expectedBody ==
-                            Tryx::USBProtocol::RspPackagePb::kDeviceInfo &&
-                        deviceInfoResponse) {
-                        *deviceInfoResponse = response;
+                    if (result) {
+                        *result = std::move(response);
                     }
-                    exchangeComplete = true;
-                    break;
+                    return true;
                 }
 
-                if (exchangeComplete) {
-                    break;
+                if (errorMessage) {
+                    *errorMessage =
+                        (skippedFrames > kMaxSkippedResponseFrames ||
+                         skippedResponseBytes >
+                             kMaxSkippedResponseBytes)
+                        ? QObject::tr(
+                              "Too many unrelated TRYX session bootstrap response frames")
+                        : QObject::tr(
+                              "Timed out waiting for an exact TRYX session bootstrap response");
                 }
-                if (skippedFrames > kMaxSkippedResponseFrames ||
-                    skippedResponseBytes > kMaxSkippedResponseBytes) {
-                    if (errorMessage) {
-                        *errorMessage = QObject::tr(
-                            "Too many unrelated TRYX session bootstrap response frames");
-                    }
+                return false;
+            };
+
+        QElapsedTimer readinessTimer;
+        readinessTimer.start();
+#ifdef TRYX_PROTOCOL_TESTING
+        bootstrapReadinessAttemptOffsetsForTesting_.clear();
+#endif
+        if (!ensureOpen(devicePath, errorMessage)) {
+            return false;
+        }
+        if (!drainKeepaliveResponses(context, errorMessage)) {
+            closeDevice();
+            return false;
+        }
+
+        const QByteArray deviceInfoFrame =
+            makeBootstrapFrame(deviceInfoRequest);
+        if (deviceInfoFrame.isEmpty()) {
+            closeDevice();
+            return false;
+        }
+
+        int deviceInfoAttempts = 0;
+        int retryBackoffMs =
+            kDeviceInformationReadinessInitialBackoffMs;
+        QString lastDeviceInfoError;
+        bool deviceInfoReady = false;
+        while (readinessTimer.elapsed() <
+               deviceInfoReadyTimeoutMs_) {
+            if (isCancelled(context)) {
+                setCancelledError(errorMessage);
+                closeDevice();
+                return false;
+            }
+            ++deviceInfoAttempts;
+#ifdef TRYX_PROTOCOL_TESTING
+            bootstrapReadinessAttemptOffsetsForTesting_.append(
+                readinessTimer.elapsed());
+#endif
+
+            const int writeBudgetMs = std::min(
+                {transactionTimeoutMs_,
+                 kUdbBootstrapWriteTimeoutMs,
+                 qMax(1, deviceInfoReadyTimeoutMs_ -
+                             static_cast<int>(
+                                 readinessTimer.elapsed()))});
+            qsizetype writtenBytes = 0;
+            WriteFailureKind writeFailure =
+                WriteFailureKind::None;
+            bool writeSucceeded = false;
+#ifdef TRYX_PROTOCOL_TESTING
+            if (bootstrapZeroByteWriteFailuresForTesting_ > 0) {
+                --bootstrapZeroByteWriteFailuresForTesting_;
+                if (errorMessage) {
+                    *errorMessage = QObject::tr(
+                        "Simulated confirmed zero-byte TRYX DeviceInfo OUT");
+                }
+                writeFailure =
+                    WriteFailureKind::RetryableNoWrite;
+            } else {
+#endif
+                writeSucceeded = writeAll(
+                    deviceInfoFrame, context, writeBudgetMs,
+                    errorMessage, &writtenBytes, &writeFailure);
+#ifdef TRYX_PROTOCOL_TESTING
+            }
+#endif
+
+            if (!writeSucceeded) {
+                const bool confirmedZeroByteOut =
+                    writtenBytes == 0 &&
+                    writeFailure ==
+                        WriteFailureKind::RetryableNoWrite &&
+                    !isCancelled(context);
+                if (!confirmedZeroByteOut) {
                     closeDevice();
                     return false;
                 }
-                if (!retryExchange) {
-                    if (lastRetryableError.isEmpty() && errorMessage) {
-                        *errorMessage = QObject::tr(
-                            "Timed out waiting for an expected TRYX session bootstrap response");
-                        lastRetryableError = *errorMessage;
-                    }
+
+                lastDeviceInfoError =
+                    errorMessage ? *errorMessage : QString();
+                const int remainingMs =
+                    deviceInfoReadyTimeoutMs_ -
+                    static_cast<int>(readinessTimer.elapsed());
+                if (remainingMs <= 0) {
                     break;
                 }
-                if (retryExchange && attempt < kMaxUdbBootstrapAttempts) {
-                    continue;
+                const int boundedBackoffMs =
+                    qMin(retryBackoffMs, remainingMs);
+                if (context.onReadinessProbeRetry) {
+                    ReadinessRetryInfo retryInfo;
+                    retryInfo.attempt = deviceInfoAttempts;
+                    retryInfo.expectedBytes = deviceInfoFrame.size();
+                    retryInfo.actualBytes = writtenBytes;
+                    retryInfo.elapsedMs =
+                        static_cast<int>(readinessTimer.elapsed());
+                    retryInfo.backoffMs = boundedBackoffMs;
+                    retryInfo.transferStatus =
+                        lastDeviceInfoError;
+                    context.onReadinessProbeRetry(retryInfo);
                 }
-                break;
+                if (!waitForReadinessBackoff(
+                        boundedBackoffMs, context,
+                        errorMessage)) {
+                    closeDevice();
+                    return false;
+                }
+                retryBackoffMs = qMin(
+                    retryBackoffMs * 2,
+                    kDeviceInformationReadinessMaximumBackoffMs);
+                continue;
             }
 
-            if (!exchangeComplete) {
+            const int responseBudgetMs =
+                deviceInfoReadyTimeoutMs_ -
+                static_cast<int>(readinessTimer.elapsed());
+            panorama::wire::v1::Response response;
+            const bool exactDeviceInfoReceived =
+                responseBudgetMs > 0 &&
+                readExactBootstrapResponse(
+                    panorama::wire::v1::Response::kDeviceInformation,
+                    responseBudgetMs, &response);
+            if (!exactDeviceInfoReceived) {
+                const QString terminalError =
+                    errorMessage ? *errorMessage : QString();
                 closeDevice();
                 if (errorMessage) {
                     *errorMessage = QObject::tr(
-                        "TRYX session bootstrap did not become ready after %1 attempts: %2")
-                        .arg(attemptsUsed)
-                        .arg(lastRetryableError);
+                        "TRYX DeviceInfo readiness failed after %1 attempts: %2")
+                                            .arg(deviceInfoAttempts)
+                                            .arg(terminalError);
                 }
                 return false;
             }
+            if (deviceInfoResponse) {
+                *deviceInfoResponse = std::move(response);
+            }
+            deviceInfoReady = true;
+            if (context.onDeviceInfoReady) {
+                context.onDeviceInfoReady();
+            }
+            break;
+        }
+
+        if (!deviceInfoReady) {
+            closeDevice();
+            if (errorMessage) {
+                *errorMessage = QObject::tr(
+                    "TRYX DeviceInfo readiness did not become ready after %1 attempts within %2 ms: %3")
+                                        .arg(deviceInfoAttempts)
+                                        .arg(deviceInfoReadyTimeoutMs_)
+                                        .arg(lastDeviceInfoError);
+            }
+            return false;
+        }
+
+        const auto executeBootstrapExchangeOnce =
+            [this, &context, errorMessage,
+             &makeBootstrapFrame,
+             &readExactBootstrapResponse](
+                const panorama::wire::v1::Request &request,
+                panorama::wire::v1::Response::BodyCase expectedBody) {
+                if (isCancelled(context)) {
+                    setCancelledError(errorMessage);
+                    return false;
+                }
+                if (!drainKeepaliveResponses(
+                        context, errorMessage)) {
+                    return false;
+                }
+                const QByteArray frame =
+                    makeBootstrapFrame(request);
+                if (frame.isEmpty()) {
+                    return false;
+                }
+                qsizetype writtenBytes = 0;
+                WriteFailureKind writeFailure =
+                    WriteFailureKind::None;
+                if (!writeAll(
+                        frame, context,
+                        qMin(transactionTimeoutMs_,
+                             kUdbBootstrapWriteTimeoutMs),
+                        errorMessage, &writtenBytes,
+                        &writeFailure)) {
+                    return false;
+                }
+                return readExactBootstrapResponse(
+                    expectedBody, transactionTimeoutMs_,
+                    nullptr);
+            };
+
+        if (!executeBootstrapExchangeOnce(
+                sysConfigRequest,
+                panorama::wire::v1::Response::kSystemConfiguration) ||
+            !executeBootstrapExchangeOnce(
+                deviceAuthRequest,
+                panorama::wire::v1::Response::kDeviceAuthentication)) {
+            closeDevice();
+            return false;
         }
         return true;
     }
@@ -2842,7 +3062,7 @@ public:
                 : KeepaliveOutcome::RetryableFailure;
         }
 
-        // KANALI 2.3.1 UDB emits periodic liveness commands as untracked,
+        // The observed peer emits periodic liveness commands as untracked,
         // write-only requests. Drain an optional response to the previous
         // command before sending the next one so asynchronous replies cannot
         // accumulate ahead of a later tracked transaction.
@@ -2870,7 +3090,7 @@ public:
     }
 
     KeepaliveOutcome sendPeriodicRequest(
-        const Tryx::USBProtocol::ReqPackagePb &request,
+        const panorama::wire::v1::Request &request,
         const QString &devicePath, const OperationContext &context,
         QString *errorMessage) {
         std::string serializedRequest;
@@ -2924,7 +3144,7 @@ public:
         if (!openEndpoint(devicePath, errorMessage)) {
             return false;
         }
-        // KANALI/UDB does not issue Printer Class GET_PORT_STATUS. The PASE
+        // The observed peer does not issue Printer Class GET_PORT_STATUS. PASE
         // implementation returns IO, PIPE and TIMEOUT intermittently even
         // while its protocol service is usable. Descriptor validation,
         // physical identity and a successful interface claim establish the
@@ -3170,6 +3390,54 @@ private:
         return WaitResult::Ready;
     }
 
+    bool waitForReadinessBackoff(
+        int delayMs, const OperationContext &context,
+        QString *errorMessage) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < delayMs) {
+            if (isCancelled(context)) {
+                setCancelledError(errorMessage);
+                return false;
+            }
+
+            const int remaining =
+                delayMs - static_cast<int>(timer.elapsed());
+            const int waitMs = context.isCancelled
+                ? qMin(remaining, kPollCancellationSliceMs)
+                : remaining;
+            pollfd cancellationDescriptor{};
+            nfds_t descriptorCount = 0;
+            if (context.cancellationFd >= 0) {
+                cancellationDescriptor.fd = context.cancellationFd;
+                cancellationDescriptor.events = POLLIN;
+                descriptorCount = 1;
+            }
+            const int pollResult = ::poll(
+                descriptorCount == 0 ? nullptr : &cancellationDescriptor,
+                descriptorCount, qMax(1, waitMs));
+            if (pollResult < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                if (errorMessage) {
+                    *errorMessage = QObject::tr(
+                        "TRYX readiness backoff poll failed: %1")
+                                        .arg(systemErrorText(errno));
+                }
+                return false;
+            }
+            if (isCancelled(context) ||
+                (descriptorCount == 1 &&
+                 (cancellationDescriptor.revents &
+                  (POLLIN | POLLERR | POLLHUP | POLLNVAL)) != 0)) {
+                setCancelledError(errorMessage);
+                return false;
+            }
+        }
+        return true;
+    }
+
     bool writeAll(const QByteArray &data, const OperationContext &context,
                   int timeoutMs, QString *errorMessage,
                   qsizetype *writtenBytes = nullptr,
@@ -3289,7 +3557,7 @@ private:
     }
 
     QByteArray makeKeepaliveFrame(QString *errorMessage) const {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         request.mutable_header();
         request.mutable_ping()->set_payload("hello?");
 
@@ -3412,7 +3680,7 @@ private:
             }
             if (decodeStatus == PrinterFrameCodec::DecodeStatus::FrameReady) {
                 if (trackedResponseId != 0) {
-                    Tryx::USBProtocol::RspPackagePb response;
+                    panorama::wire::v1::Response response;
                     if (response.ParseFromArray(
                             payload.constData(),
                             static_cast<int>(payload.size())) &&
@@ -3422,7 +3690,7 @@ private:
                             trackedResponseId) {
                         if (response.has_error() &&
                             response.error().code() !=
-                                Tryx::USBProtocol::ErrorPb::Success) {
+                                panorama::wire::v1::ProtocolError::SUCCESS) {
                             if (outcome) {
                                 *outcome =
                                     TransactionOutcome::Rejected;
@@ -3449,13 +3717,13 @@ private:
                     }
                 }
                 if (waitForOptionalResponse) {
-                    Tryx::USBProtocol::RspPackagePb response;
+                    panorama::wire::v1::Response response;
                     if (response.ParseFromArray(
                             payload.constData(),
                             static_cast<int>(payload.size())) &&
                         response.has_error() &&
                         response.error().code() !=
-                            Tryx::USBProtocol::ErrorPb::Success) {
+                            panorama::wire::v1::ProtocolError::SUCCESS) {
                         if (outcome) {
                             *outcome =
                                 TransactionOutcome::Rejected;
@@ -3959,7 +4227,7 @@ private:
     int fd_ = -1;
     int transactionTimeoutMs_ = 3000;
     int fileTransmitDataWriteTimeoutMs_ =
-        kFileTransmitDataWriteTimeoutMs;
+        kTransferChunkWriteTimeoutMs;
     int deviceInfoReadyTimeoutMs_ = 30000;
     int fileTransmitResponseTimeoutMs_ =
         kFileTransmitResponseTimeoutMs;
@@ -3970,13 +4238,16 @@ private:
     bool persistentUsbInputFailureLatched_ = false;
 #ifdef TRYX_PROTOCOL_TESTING
     bool unframedRecoveryEligibleForTesting_ = false;
+    int bootstrapZeroByteWriteFailuresForTesting_ = 0;
+    QList<qint64> bootstrapReadinessAttemptOffsetsForTesting_;
 #endif
     QElapsedTimer lastOutboundTimer_;
 };
 
 PrinterProtocol::PrinterProtocol()
     : impl_(std::make_unique<Impl>(
-          3000, 30000, kFileTransmitResponseTimeoutMs)) {}
+          3000, kDeviceInformationReadinessDeadlineMs,
+          kFileTransmitResponseTimeoutMs)) {}
 
 PrinterProtocol::PrinterProtocol(int transactionTimeoutMs)
     : impl_(std::make_unique<Impl>(transactionTimeoutMs,
@@ -4007,7 +4278,7 @@ namespace {
 
 PrinterProtocol::DeviceInfo makePrinterDeviceInfo(
     const QString &devicePath,
-    const Tryx::USBProtocol::DeviceInfoPb &deviceInfo) {
+    const panorama::wire::v1::DeviceInformation &deviceInfo) {
     PrinterProtocol::DeviceInfo info;
     info.devicePath = devicePath;
     const PrinterProtocol::DiscoverySnapshot snapshot = PrinterProtocol::discover();
@@ -4085,20 +4356,20 @@ QList<const PaseMetricDefinition *> paseSelectedMetrics(
     return selected;
 }
 
-Tryx::LVGui::LabelGroupPb::enTextAlign paseTextAlign(
+panorama::wire::v1::OverlayGroup::TextAlignment paseTextAlign(
     const QString &alignment) {
     if (alignment.compare(QStringLiteral("Center"),
                           Qt::CaseInsensitive) == 0) {
-        return Tryx::LVGui::LabelGroupPb::Center;
+        return panorama::wire::v1::OverlayGroup::ALIGN_CENTER;
     }
     if (alignment.compare(QStringLiteral("Right"),
                           Qt::CaseInsensitive) == 0) {
-        return Tryx::LVGui::LabelGroupPb::Right;
+        return panorama::wire::v1::OverlayGroup::ALIGN_RIGHT;
     }
-    return Tryx::LVGui::LabelGroupPb::Left;
+    return panorama::wire::v1::OverlayGroup::ALIGN_LEFT;
 }
 
-void configurePaseLabel(Tryx::LVGui::LabelPb *label, quint32 id,
+void configurePaseLabel(panorama::wire::v1::OverlayLabel *label, quint32 id,
                         quint32 line, qint32 gapLeft, quint32 size,
                         quint32 color, const QString &text) {
     label->set_label_id(id);
@@ -4131,13 +4402,13 @@ PaseBadgeColors paseBadgeColors(const QString &text) {
     return {0x004A4A4AU, 0x00707070U};
 }
 
-void configurePaseBadge(Tryx::LVGui::LabelPb *label, quint32 id,
+void configurePaseBadge(panorama::wire::v1::OverlayLabel *label, quint32 id,
                         qint32 gapLeft, const QString &text) {
     const PaseBadgeColors colors = paseBadgeColors(text);
     label->set_label_id(id);
     label->set_gap_left(gapLeft);
     label->set_background(
-        Tryx::LVGui::LabelPb::BackGround_GardientHorizontal);
+        panorama::wire::v1::OverlayLabel::BACKGROUND_GRADIENT_HORIZONTAL);
     label->set_background_color(colors.background);
     label->set_gradient_color(colors.gradient);
     label->set_text_font("roboto-regular");
@@ -4153,7 +4424,7 @@ bool paseAreaHasContent(
 }
 
 void appendPaseOverlayArea(
-    Tryx::Config::RunConfigPb *runConfig,
+    panorama::wire::v1::OverlayLayout *runConfig,
     const PrinterProtocol::PaseOverlayConfig &overlay,
     const PrinterProtocol::PaseOverlayAreaConfig &area,
     bool rightArea) {
@@ -4173,7 +4444,7 @@ void appendPaseOverlayArea(
     const int groupIdOffset = rightArea ? 100 : 0;
     const auto alignment = paseTextAlign(area.alignment);
     const qint32 titleGap =
-        alignment == Tryx::LVGui::LabelGroupPb::Left ? 13 : 0;
+        alignment == panorama::wire::v1::OverlayGroup::ALIGN_LEFT ? 13 : 0;
     const QList<const PaseMetricDefinition *> selected =
         paseSelectedMetrics(area);
     const int metricCount = selected.size();
@@ -4318,9 +4589,9 @@ void appendPaseOverlayArea(
     }
 }
 
-Tryx::Config::RunConfigPb buildPaseRunConfig(
+panorama::wire::v1::OverlayLayout buildPaseRunConfig(
     const PrinterProtocol::PaseOverlayConfig &overlay) {
-    Tryx::Config::RunConfigPb runConfig;
+    panorama::wire::v1::OverlayLayout runConfig;
     appendPaseOverlayArea(&runConfig, overlay, overlay.left, false);
     if (overlay.dualMode) {
         appendPaseOverlayArea(&runConfig, overlay, overlay.right, true);
@@ -4328,7 +4599,7 @@ Tryx::Config::RunConfigPb buildPaseRunConfig(
     return runConfig;
 }
 
-void addPaseLabelUpdate(Tryx::LVGui::BatchGroupLabelUpdatePb *batch,
+void addPaseLabelUpdate(panorama::wire::v1::MetricBatch *batch,
                         quint32 groupId, quint32 labelId,
                         const QString &text) {
     auto *groupUpdate = batch->add_label_groups();
@@ -4342,7 +4613,7 @@ void addPaseLabelUpdate(Tryx::LVGui::BatchGroupLabelUpdatePb *batch,
 
 PrinterProtocol::Result PrinterProtocol::startDisplaySession(
     const QString &devicePath, const OperationContext &context) {
-    Tryx::USBProtocol::RspPackagePb bootstrapResponse;
+    panorama::wire::v1::Response bootstrapResponse;
     QString error;
     if (!impl_->openSessionTransport(devicePath, context, &error)) {
         return {false, error, {}};
@@ -4356,32 +4627,32 @@ PrinterProtocol::Result PrinterProtocol::startDisplaySession(
         return {false, error, {}};
     }
     const DeviceInfo deviceInfo = makePrinterDeviceInfo(
-        devicePath, bootstrapResponse.device_info());
+        devicePath, bootstrapResponse.device_information());
     impl_->closeDisplayActivationCycle();
     return {true, {}, deviceInfo};
 }
 
 PrinterProtocol::Result PrinterProtocol::readDeviceInfo(
     const QString &devicePath, const OperationContext &context) {
-    Tryx::USBProtocol::ReqPackagePb request;
-    request.mutable_get_device_info();
-    Tryx::USBProtocol::RspPackagePb response;
+    panorama::wire::v1::Request request;
+    request.mutable_device_information_query();
+    panorama::wire::v1::Response response;
     QString error;
-    if (!impl_->execute(&request, Tryx::USBProtocol::RspPackagePb::kDeviceInfo,
+    if (!impl_->execute(&request, panorama::wire::v1::Response::kDeviceInformation,
                         &response, devicePath, context, &error)) {
         return {false, error, {}};
     }
 
-    return {true, {}, makePrinterDeviceInfo(devicePath, response.device_info())};
+    return {true, {}, makePrinterDeviceInfo(devicePath, response.device_information())};
 }
 
 PrinterProtocol::MediaListResult PrinterProtocol::readMediaList(
     const QString &devicePath, const OperationContext &context) {
-    Tryx::USBProtocol::ReqPackagePb request;
-    request.mutable_get_file_list();
-    Tryx::USBProtocol::RspPackagePb response;
+    panorama::wire::v1::Request request;
+    request.mutable_media_catalog_query();
+    panorama::wire::v1::Response response;
     QString error;
-    if (!impl_->execute(&request, Tryx::USBProtocol::RspPackagePb::kFileList,
+    if (!impl_->execute(&request, panorama::wire::v1::Response::kMediaCatalog,
                         &response, devicePath, context, &error)) {
         return {false, error, {}};
     }
@@ -4395,8 +4666,8 @@ PrinterProtocol::MediaListResult PrinterProtocol::readMediaList(
             }
         }
     };
-    appendFiles(response.file_list().media_file_list(), MediaSource::User);
-    appendFiles(response.file_list().preset_file_list(), MediaSource::Preset);
+    appendFiles(response.media_catalog().media_file_list(), MediaSource::User);
+    appendFiles(response.media_catalog().preset_file_list(), MediaSource::Preset);
     return {true, {}, files};
 }
 
@@ -4506,13 +4777,13 @@ PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
             return result;
         }
 
-        Tryx::USBProtocol::ReqPackagePb configRequest;
-        configRequest.mutable_get_user_config();
-        Tryx::USBProtocol::RspPackagePb configResponse;
+        panorama::wire::v1::Request configRequest;
+        configRequest.mutable_user_configuration_query();
+        panorama::wire::v1::Response configResponse;
         QString configError;
         if (!impl_->execute(
                 &configRequest,
-                Tryx::USBProtocol::RspPackagePb::kUserConfig,
+                panorama::wire::v1::Response::kUserConfiguration,
                 &configResponse, devicePath, context, &configError)) {
             result.outcome = MutationOutcome::NotStarted;
             result.error = QObject::tr(
@@ -4520,8 +4791,8 @@ PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
                                .arg(target, configError);
             return result;
         }
-        const Tryx::Config::UserConfigPb &config =
-            configResponse.user_config();
+        const panorama::wire::v1::UserConfiguration &config =
+            configResponse.user_configuration();
         QStringList references;
         if (config.has_poweron_config()) {
             references.append(normalizedReference(
@@ -4576,16 +4847,16 @@ PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
             progress(QStringLiteral("Deleting"), target,
                      index, fileNames.size());
         }
-        Tryx::USBProtocol::ReqPackagePb removeRequest;
-        auto *remove = removeRequest.mutable_file_remove();
+        panorama::wire::v1::Request removeRequest;
+        auto *remove = removeRequest.mutable_file_removal();
         remove->set_file_name(target.toStdString());
         remove->set_file_type("media");
-        Tryx::USBProtocol::RspPackagePb removeResponse;
+        panorama::wire::v1::Response removeResponse;
         QString removeError;
         Impl::TransactionOutcome transactionOutcome =
             Impl::TransactionOutcome::NotSent;
         const bool acknowledged = impl_->execute(
-            &removeRequest, Tryx::USBProtocol::RspPackagePb::kDummyMsg,
+            &removeRequest, panorama::wire::v1::Response::kAcknowledgement,
             &removeResponse, devicePath, context, &removeError,
             &transactionOutcome, Impl::TransactionProfile::Default,
             true, true);
@@ -4804,22 +5075,22 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
         }
     }
     const auto checkStatus = [errorMessage](
-        const Tryx::USBProtocol::FileTransmitStatusPb &status) {
-        if (status.file_trans_status() == Tryx::USBProtocol::FileTransmitStatusPb::OK) {
+        const panorama::wire::v1::TransferStatus &status) {
+        if (status.status() == panorama::wire::v1::TransferStatus::OK) {
             return true;
         }
         if (errorMessage) {
             *errorMessage = QObject::tr("File transfer failed: %1")
-                                .arg(transmitStatusText(status.file_trans_status()));
+                                .arg(transmitStatusText(status.status()));
         }
         return false;
     };
 
-    Tryx::USBProtocol::ReqPackagePb beginRequest;
-    auto *begin = beginRequest.mutable_file_transmit_begin();
+    panorama::wire::v1::Request beginRequest;
+    auto *begin = beginRequest.mutable_transfer_begin();
     begin->set_file_name(remoteFileName.toStdString());
     begin->set_file_size(static_cast<quint32>(declaredSize));
-    Tryx::USBProtocol::RspPackagePb response;
+    panorama::wire::v1::Response response;
     Impl::TransactionOutcome transactionOutcome =
         Impl::TransactionOutcome::NotSent;
     const quint64 transferTrackId = impl_->allocateTrackId();
@@ -4827,7 +5098,7 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
         mutationDetails->stage = QStringLiteral("Beginning");
     }
     if (!impl_->execute(&beginRequest,
-                        Tryx::USBProtocol::RspPackagePb::kFileTransmitBeginStatus,
+                        panorama::wire::v1::Response::kTransferBeginStatus,
                         &response, devicePath, context, errorMessage,
                         &transactionOutcome,
                         Impl::TransactionProfile::FileTransmit,
@@ -4845,7 +5116,7 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
         impl_->closeDevice();
         return false;
     }
-    if (!checkStatus(response.file_transmit_begin_status())) {
+    if (!checkStatus(response.transfer_begin_status())) {
         if (mutationDetails) {
             mutationDetails->outcome = MutationOutcome::Rejected;
         }
@@ -4879,13 +5150,13 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
             return false;
         }
 
-        Tryx::USBProtocol::ReqPackagePb dataRequest;
-        dataRequest.mutable_file_transmit_data()->set_file_data(
+        panorama::wire::v1::Request dataRequest;
+        dataRequest.mutable_transfer_chunk()->set_file_data(
             chunk.constData(), static_cast<size_t>(chunk.size()));
         response.Clear();
         transactionOutcome = Impl::TransactionOutcome::NotSent;
         if (!impl_->execute(&dataRequest,
-                            Tryx::USBProtocol::RspPackagePb::kFileTransmitDataStatus,
+                            panorama::wire::v1::Response::kTransferChunkStatus,
                             &response, devicePath, context, errorMessage,
                             &transactionOutcome,
                             Impl::TransactionProfile::FileTransmit,
@@ -4901,7 +5172,7 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
             impl_->closeDevice();
             return false;
         }
-        if (!checkStatus(response.file_transmit_data_status())) {
+        if (!checkStatus(response.transfer_chunk_status())) {
             impl_->closeDevice();
             return false;
         }
@@ -4924,17 +5195,17 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
         return false;
     }
 
-    Tryx::USBProtocol::ReqPackagePb endRequest;
-    auto *end = endRequest.mutable_file_transmit_end();
+    panorama::wire::v1::Request endRequest;
+    auto *end = endRequest.mutable_transfer_end();
     end->set_file_type("media");
-    end->set_crc(0);
+    end->set_checksum(0);
     response.Clear();
     if (mutationDetails) {
         mutationDetails->stage = QStringLiteral("Ending");
     }
     transactionOutcome = Impl::TransactionOutcome::NotSent;
     if (!impl_->execute(&endRequest,
-                        Tryx::USBProtocol::RspPackagePb::kFileTransmitEndStatus,
+                        panorama::wire::v1::Response::kTransferEndStatus,
                         &response, devicePath, context, errorMessage,
                         &transactionOutcome,
                         Impl::TransactionProfile::FileTransmit,
@@ -4966,7 +5237,7 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
         impl_->closeDevice();
         return false;
     }
-    if (!checkStatus(response.file_transmit_end_status())) {
+    if (!checkStatus(response.transfer_end_status())) {
         impl_->closeDevice();
         return false;
     }
@@ -5015,16 +5286,17 @@ PrinterProtocol::PaseDisplayStateResult
 PrinterProtocol::readPaseDisplayState(
     const QString &devicePath, const OperationContext &context) {
     PaseDisplayStateResult result;
-    Tryx::USBProtocol::ReqPackagePb request;
-    request.mutable_get_user_config();
-    Tryx::USBProtocol::RspPackagePb response;
-    if (!impl_->execute(&request,
-                        Tryx::USBProtocol::RspPackagePb::kUserConfig,
-                        &response, devicePath, context, &result.error)) {
+    panorama::wire::v1::Request request;
+    request.mutable_user_configuration_query();
+    panorama::wire::v1::Response response;
+    if (!impl_->executeUserConfigurationQueryWithRetry(
+            &request,
+            &response, devicePath, context, &result.error,
+            QStringLiteral("user-configuration-state"))) {
         return result;
     }
 
-    const Tryx::Config::UserConfigPb &config = response.user_config();
+    const panorama::wire::v1::UserConfiguration &config = response.user_configuration();
     if (!config.has_display_config() || !config.has_work_config()) {
         result.error = QObject::tr(
             "TRYX user configuration is missing display or work configuration");
@@ -5045,7 +5317,7 @@ PrinterProtocol::readPaseDisplayState(
             config.standby_config().media_file());
     }
     switch (work.media_mode()) {
-    case Tryx::Config::WorkConfigPb::MediaMode_Dual:
+    case panorama::wire::v1::WorkConfiguration::MEDIA_DUAL:
         result.state.screenMode = QStringLiteral("Screen Splitting");
         result.state.playMode = QStringLiteral("Single");
         result.state.media = {
@@ -5054,24 +5326,24 @@ PrinterProtocol::readPaseDisplayState(
             QString::fromStdString(
                 work.dual_mode_right_media_file())};
         break;
-    case Tryx::Config::WorkConfigPb::MediaMode_Kaleidoscope:
+    case panorama::wire::v1::WorkConfiguration::MEDIA_KALEIDOSCOPE:
         result.state.screenMode = QStringLiteral("Kaleidoscope");
         result.state.playMode = QStringLiteral("Single");
         result.state.media = {
             QString::fromStdString(
                 work.kaleidoscope_media_file())};
         break;
-    case Tryx::Config::WorkConfigPb::MediaMode_Single:
+    case panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE:
     default:
         result.state.screenMode = QStringLiteral("Full Screen");
         switch (work.loop_mode()) {
-        case Tryx::Config::WorkConfigPb::LoopMode_All:
+        case panorama::wire::v1::WorkConfiguration::LOOP_ALL:
             result.state.playMode = QStringLiteral("Loop");
             break;
-        case Tryx::Config::WorkConfigPb::LoopMode_Rand:
+        case panorama::wire::v1::WorkConfiguration::LOOP_RANDOM:
             result.state.playMode = QStringLiteral("Shuffle");
             break;
-        case Tryx::Config::WorkConfigPb::LoopMode_Single:
+        case panorama::wire::v1::WorkConfiguration::LOOP_SINGLE:
         default:
             result.state.playMode = QStringLiteral("Single");
             break;
@@ -5181,21 +5453,23 @@ bool PrinterProtocol::applyPaseConfiguration(
         return false;
     }
 
-    Tryx::USBProtocol::ReqPackagePb getRequest;
-    getRequest.mutable_get_user_config();
-    Tryx::USBProtocol::RspPackagePb getResponse;
+    panorama::wire::v1::Request getRequest;
+    getRequest.mutable_user_configuration_query();
+    panorama::wire::v1::Response getResponse;
     if (mutationDetails) {
         mutationDetails->stage = QStringLiteral("ReadingConfig");
     }
-    if (!impl_->execute(&getRequest, Tryx::USBProtocol::RspPackagePb::kUserConfig,
-                        &getResponse, devicePath, context, errorMessage)) {
+    if (!impl_->executeUserConfigurationQueryWithRetry(
+            &getRequest,
+            &getResponse, devicePath, context, errorMessage,
+            QStringLiteral("user-configuration-preflight"))) {
         if (mutationDetails && operationIsCancelled(context)) {
             mutationDetails->outcome = MutationOutcome::Cancelled;
         }
         return false;
     }
 
-    Tryx::Config::UserConfigPb userConfig = getResponse.user_config();
+    panorama::wire::v1::UserConfiguration userConfig = getResponse.user_configuration();
     if (config.mediaPresent && !userConfig.has_work_config()) {
         if (errorMessage) {
             *errorMessage = QObject::tr(
@@ -5221,26 +5495,26 @@ bool PrinterProtocol::applyPaseConfiguration(
         if (config.screenMode ==
             QStringLiteral("Screen Splitting")) {
             workConfig->set_media_mode(
-                Tryx::Config::WorkConfigPb::MediaMode_Dual);
+                panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
             workConfig->set_loop_mode(
-                Tryx::Config::WorkConfigPb::LoopMode_Single);
+                panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
             workConfig->set_dual_mode_left_media_file(
                 config.media.at(0).toStdString());
             workConfig->set_dual_mode_right_media_file(
                 config.media.at(1).toStdString());
         } else {
             workConfig->set_media_mode(
-                Tryx::Config::WorkConfigPb::MediaMode_Single);
+                panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
             if (config.playMode == QStringLiteral("Loop")) {
                 workConfig->set_loop_mode(
-                    Tryx::Config::WorkConfigPb::LoopMode_All);
+                    panorama::wire::v1::WorkConfiguration::LOOP_ALL);
             } else if (
                 config.playMode == QStringLiteral("Shuffle")) {
                 workConfig->set_loop_mode(
-                    Tryx::Config::WorkConfigPb::LoopMode_Rand);
+                    panorama::wire::v1::WorkConfiguration::LOOP_RANDOM);
             } else {
                 workConfig->set_loop_mode(
-                    Tryx::Config::WorkConfigPb::LoopMode_Single);
+                    panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
             }
             workConfig->set_single_mode_media_file(
                 config.media.constFirst().toStdString());
@@ -5393,8 +5667,8 @@ bool PrinterProtocol::sendPaseMetricBatch(
         return true;
     }
 
-    Tryx::USBProtocol::ReqPackagePb request;
-    auto *batch = request.mutable_batch_group_label_update();
+    panorama::wire::v1::Request request;
+    auto *batch = request.mutable_metric_batch();
     const QDateTime now = QDateTime::currentDateTime();
     const auto appendArea =
         [batch, &labels, &values, &units, &now](
@@ -5466,18 +5740,18 @@ bool PrinterProtocol::setBrightness(const QString &devicePath, int brightness,
 
 bool PrinterProtocol::sendUserConfigWithOutcome(
     const QString &devicePath,
-    const Tryx::Config::UserConfigPb &userConfig,
+    const panorama::wire::v1::UserConfiguration &userConfig,
     QString *errorMessage,
     const OperationContext &context,
     MutationDetails *mutationDetails) {
     if (mutationDetails) {
         mutationDetails->stage = QStringLiteral("WritingConfig");
     }
-    Tryx::USBProtocol::ReqPackagePb request;
-    *request.mutable_user_config() = userConfig;
-    Tryx::USBProtocol::RspPackagePb response;
+    panorama::wire::v1::Request request;
+    *request.mutable_user_configuration() = userConfig;
+    panorama::wire::v1::Response response;
     Impl::TransactionOutcome outcome = Impl::TransactionOutcome::NotSent;
-    if (impl_->execute(&request, Tryx::USBProtocol::RspPackagePb::kDummyMsg,
+    if (impl_->execute(&request, panorama::wire::v1::Response::kAcknowledgement,
                        &response, devicePath, context, errorMessage, &outcome)) {
         if (mutationDetails) {
             mutationDetails->outcome = MutationOutcome::PartialOrUnknown;
@@ -5566,15 +5840,15 @@ bool PrinterProtocol::activateAcceptedConfig(
         return false;
     }
     if (mutationDetails) {
-        // UserConfigPb was already acknowledged before RunConfig was sent.
+        // UserConfiguration was already acknowledged before the layout was sent.
         // A cancellation or transport loss at this boundary cannot prove that
         // activation did not happen, so it must never be reported as a clean
         // cancellation that would be safe to replay automatically.
         mutationDetails->outcome = MutationOutcome::PartialOrUnknown;
     }
 
-    // UserConfigPb already received a successful acknowledgement. KANALI 2.3.1
-    // exposes no transaction or rollback primitive, so another write would be
+    // UserConfiguration already received a successful acknowledgement. The
+    // wire contract exposes no transaction or rollback primitive, so another write would be
     // an unsafe best-effort mutation, especially after a connection epoch
     // change. Close the uncertain session and report the partial boundary.
     impl_->closeDevice();
@@ -5594,11 +5868,11 @@ bool PrinterProtocol::sendRunConfigTrigger(const QString &devicePath,
                                            const OperationContext &context,
                                            const PaseOverlayConfig *overlay,
                                            MutationDetails *mutationDetails) {
-    Tryx::USBProtocol::ReqPackagePb request;
+    panorama::wire::v1::Request request;
     if (overlay) {
-        *request.mutable_run_config() = buildPaseRunConfig(*overlay);
+        *request.mutable_overlay_layout() = buildPaseRunConfig(*overlay);
     } else {
-        request.mutable_run_config();
+        request.mutable_overlay_layout();
     }
     Impl::TransactionOutcome transactionOutcome =
         Impl::TransactionOutcome::NotSent;
@@ -5643,16 +5917,16 @@ PrinterProtocol::KeepaliveOutcome PrinterProtocol::sendDisplayKeepalive(
     const QString &devicePath, QString *errorMessage,
     const OperationContext &context,
     const PaseOverlayConfig *overlay) {
-    Tryx::USBProtocol::ReqPackagePb request;
-    // Match KANALI/UDB 2.3.1: periodic RunConfig is an untracked setter. UDB
-    // waits only for the USB OUT completion and handles an optional Dummy in
+    panorama::wire::v1::Request request;
+    // Match the observed peer: a periodic layout update is an untracked setter.
+    // The peer waits only for USB OUT completion and handles an optional acknowledgement in
     // its shared asynchronous reader. Bootstrap and configuration mutations
     // use the tracked request path and still require their exact response.
     request.mutable_header();
     if (overlay) {
-        *request.mutable_run_config() = buildPaseRunConfig(*overlay);
+        *request.mutable_overlay_layout() = buildPaseRunConfig(*overlay);
     } else {
-        request.mutable_run_config();
+        request.mutable_overlay_layout();
     }
     return impl_->sendPeriodicRequest(request, devicePath, context,
                                       errorMessage);
@@ -5666,10 +5940,10 @@ int PrinterProtocol::millisecondsUntilKeepalive() const {
 bool PrinterProtocol::trackedPingForTesting(
     const QString &devicePath, QString *payload, QString *errorMessage,
     const OperationContext &context) {
-    Tryx::USBProtocol::ReqPackagePb request;
+    panorama::wire::v1::Request request;
     request.mutable_ping()->set_payload("hello?");
-    Tryx::USBProtocol::RspPackagePb response;
-    if (!impl_->execute(&request, Tryx::USBProtocol::RspPackagePb::kPong,
+    panorama::wire::v1::Response response;
+    if (!impl_->execute(&request, panorama::wire::v1::Response::kPong,
                         &response, devicePath, context, errorMessage)) {
         return false;
     }
@@ -5698,6 +5972,16 @@ void PrinterProtocol::setFileTransmitResponseTimeoutForTesting(int timeoutMs) {
 void PrinterProtocol::setPersistentUsbInputFailureForTesting(
     bool persistent) {
     impl_->setPersistentUsbInputFailureForTesting(persistent);
+}
+
+void PrinterProtocol::setBootstrapZeroByteWriteFailuresForTesting(
+    int failureCount) {
+    impl_->setBootstrapZeroByteWriteFailuresForTesting(failureCount);
+}
+
+QList<qint64>
+PrinterProtocol::bootstrapReadinessAttemptOffsetsForTesting() const {
+    return impl_->bootstrapReadinessAttemptOffsetsForTesting();
 }
 
 bool PrinterProtocol::sendPaseRunConfigForTesting(

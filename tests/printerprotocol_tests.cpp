@@ -6,11 +6,12 @@
 #include "runtimebridge.h"
 #include "systemmonitor.h"
 #include "panoramapage.h"
+#include "displaypage.h"
 #include "splitconfig.h"
 
-#include "kanali_protocol.pb.h"
-#include "usb_protocol.pb.h"
-#include "user_config.pb.h"
+#include "overlay.pb.h"
+#include "transport.pb.h"
+#include "configuration.pb.h"
 
 #include <QCryptographicHash>
 #include <QApplication>
@@ -18,12 +19,14 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QTabBar>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/unknown_field_set.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -134,7 +137,7 @@ bool readFrameFd(int fd, QByteArray *payload, QString *errorMessage,
     return false;
 }
 
-bool readRequest(int fd, Tryx::USBProtocol::ReqPackagePb *request,
+bool readRequest(int fd, panorama::wire::v1::Request *request,
                  QString *errorMessage, int timeoutMs = kPeerTimeoutMs,
                  QByteArray *persistentBuffer = nullptr) {
     QByteArray payload;
@@ -144,7 +147,7 @@ bool readRequest(int fd, Tryx::USBProtocol::ReqPackagePb *request,
            request->ParseFromArray(payload.constData(), static_cast<int>(payload.size()));
 }
 
-bool writeResponse(int fd, const Tryx::USBProtocol::RspPackagePb &response,
+bool writeResponse(int fd, const panorama::wire::v1::Response &response,
                    QString *errorMessage) {
     std::string serialized;
     if (!response.SerializeToString(&serialized)) {
@@ -158,8 +161,67 @@ bool writeResponse(int fd, const Tryx::USBProtocol::RspPackagePb &response,
                       errorMessage);
 }
 
+bool waitForPeerClosureWithoutPayload(
+    int fd, int timeoutMs, QString *errorMessage) {
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        pollfd descriptor{};
+        descriptor.fd = fd;
+        descriptor.events = POLLIN;
+        const int remaining =
+            timeoutMs - static_cast<int>(timer.elapsed());
+        const int pollResult =
+            ::poll(&descriptor, 1, qMax(1, remaining));
+        if (pollResult < 0 && errno == EINTR) {
+            continue;
+        }
+        if (pollResult < 0) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral(
+                    "peer closure poll failed");
+            }
+            return false;
+        }
+        if (pollResult == 0) {
+            break;
+        }
+
+        char byte = 0;
+        const ssize_t received =
+            ::recv(
+                fd, &byte, sizeof(byte),
+                MSG_DONTWAIT | MSG_PEEK);
+        if (received > 0) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral(
+                    "unexpected request before peer transport closure");
+            }
+            return false;
+        }
+        if (received == 0 ||
+            (descriptor.revents &
+             (POLLHUP | POLLERR | POLLNVAL)) != 0) {
+            return true;
+        }
+        if (errno != EAGAIN && errno != EWOULDBLOCK &&
+            errno != EINTR) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral(
+                    "peer closure read failed");
+            }
+            return false;
+        }
+    }
+    if (errorMessage) {
+        *errorMessage = QStringLiteral(
+            "peer transport remained open");
+    }
+    return false;
+}
+
 bool writeUnframedResponse(
-    int fd, const Tryx::USBProtocol::RspPackagePb &response,
+    int fd, const panorama::wire::v1::Response &response,
     QString *errorMessage) {
     std::string serialized;
     if (!response.SerializeToString(&serialized)) {
@@ -176,9 +238,9 @@ bool writeUnframedResponse(
         errorMessage);
 }
 
-Tryx::USBProtocol::RspPackagePb baseResponse(
-    const Tryx::USBProtocol::ReqPackagePb &request, qint64 trackOffset = 0) {
-    Tryx::USBProtocol::RspPackagePb response;
+panorama::wire::v1::Response baseResponse(
+    const panorama::wire::v1::Request &request, qint64 trackOffset = 0) {
+    panorama::wire::v1::Response response;
     response.mutable_header()->set_version(1);
     response.mutable_header()->set_track_id(
         static_cast<quint64>(static_cast<qint64>(request.header().track_id()) + trackOffset));
@@ -188,10 +250,10 @@ Tryx::USBProtocol::RspPackagePb baseResponse(
 
 bool serveUdbBootstrap(int fd, QString *errorMessage,
                        QByteArray *persistentBuffer = nullptr) {
-    const QList<Tryx::USBProtocol::ReqPackagePb::BodyCase> expectedBodies = {
-        Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo,
-        Tryx::USBProtocol::ReqPackagePb::kGetSysConfig,
-        Tryx::USBProtocol::ReqPackagePb::kGetDeviceAuth
+    const QList<panorama::wire::v1::Request::BodyCase> expectedBodies = {
+        panorama::wire::v1::Request::kDeviceInformationQuery,
+        panorama::wire::v1::Request::kSystemConfigurationQuery,
+        panorama::wire::v1::Request::kDeviceAuthenticationQuery
     };
     const QList<QByteArray> expectedFrames = {
         QByteArray::fromHex("545259580b0000000a020801a206040a024e41"),
@@ -207,7 +269,7 @@ bool serveUdbBootstrap(int fd, QString *errorMessage,
                          receiveBuffer)) {
             return false;
         }
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!request.ParseFromArray(payload.constData(),
                                     static_cast<int>(payload.size()))) {
             if (errorMessage) {
@@ -253,14 +315,14 @@ bool serveUdbBootstrap(int fd, QString *errorMessage,
 
         auto response = baseResponse(request);
         if (index == 0) {
-            auto *deviceInfo = response.mutable_device_info();
+            auto *deviceInfo = response.mutable_device_information();
             deviceInfo->set_product_name("PANORAMA SE");
             deviceInfo->set_firmware_version("test-firmware");
             deviceInfo->set_serial_number("test-serial");
         } else if (index == 1) {
-            response.mutable_sys_config();
+            response.mutable_system_configuration();
         } else {
-            response.mutable_device_auth()->set_auth("test-auth");
+            response.mutable_device_authentication()->set_auth("test-auth");
         }
         if (!writeResponse(fd, response, errorMessage)) {
             return false;
@@ -383,22 +445,29 @@ private slots:
     void runtimeDisplayConfigDbusRoundTrip();
     void remoteDisplayStateRequiresStrictlyIncreasingRevision();
     void panoramaPageRestoresDisplayAndSplitState();
+    void panoramaPageOmitsPresetSurface();
     void panoramaBrightnessCoalescesUntilTransportReady();
-    void paseRunConfigUsesKanaliLayout();
+    void paseRunConfigUsesWireLayout();
     void paseWaterfallFullScreenGeometry_data();
     void paseWaterfallFullScreenGeometry();
     void paseWaterfallSplitGeometryAndIndependentStyles();
     void paseSplitApplyBuildsDualUserConfigAndBadges();
+    void paseApplyRetriesDroppedReadOnlyConfigResponse_data();
+    void paseApplyRetriesDroppedReadOnlyConfigResponse();
+    void paseApplyReadOnlyRetryCancellationSendsNoMutation();
+    void paseApplyReadOnlyRetryBudgetIsBounded();
+    void paseApplyMismatchedReadOnlyResponseDoesNotRetry();
     void paseReadbackMismatchIsVerificationFailure();
     void runConfigRejectionIsVerificationFailureAndKeepsTransport();
     void verificationFailureKeepsHealthySessionActive();
+    void applyFailureResultPrecedesSessionLoss();
     void lateRunConfigDummyDoesNotBreakReadback();
     void paseDisplayMutationMatrix_data();
     void paseDisplayMutationMatrix();
     void readPaseDisplayStateDecodesDualConfiguration();
     void standalonePaseMetricsConfigurationIsAcknowledged();
     void displayKeepalivePreservesPaseOverlayValues();
-    void paseMetricBatchMatchesHeaderlessKanaliFrame();
+    void paseMetricBatchMatchesHeaderlessWireFrame();
     void metricBatchExplicitErrorIsRejected();
     void metricBatchResponsesAreDrainedBeforeTrackedRequest();
     void daemonMetricsBatchRunsWithoutGui();
@@ -434,9 +503,9 @@ private slots:
     void finalizationUnknownDoesNotAdoptReplacementDevice();
     void finalizationUnknownRestartAutoReconcilesWithoutRetry();
     void finalizationReconciliationMissSurvivesRestartAsFreshNameRetry();
+    void applyPreflightTimeoutPreservesNotStartedBeforeSessionLoss();
     void generationChangeWaitsForStructuredApplyOutcome();
-    void schemaCriticalFieldsMatchUdb231();
-    void schemaSourcesMatchUdb231Snapshot();
+    void wireCriticalGoldenFixtures();
     void unknownFieldsSurviveMutation();
     void discoveryStateSequence();
     void productionEndpointValidationWithOfflineSysfs();
@@ -468,7 +537,9 @@ private slots:
     void udbSessionBootstrapRejectsUnboundedStaleResponses();
     void udbSessionDeviceInfoReadinessTimeoutSendsOnce();
     void udbSessionBootstrapPartialResponseIsTerminal();
-    void udbSessionBootstrapRetriesOnlyCurrentExchange();
+    void udbSessionDeviceInfoRetriesConfirmedZeroByteOutWithBackoff();
+    void udbSessionDeviceInfoCancellationDuringBackoffIsTerminal();
+    void udbSessionBootstrapSendsPostReadinessExchangesOnce();
     void udbKeepaliveUsesExactUntrackedFrame();
     void udbKeepaliveDrainsOptionalPong();
     void udbKeepaliveZeroByteWriteFailureIsRetryable();
@@ -1059,11 +1130,11 @@ panoramaPageRestoresDisplayAndSplitState() {
     auto *splitScreen = page.findChild<QRadioButton *>(
         QStringLiteral("splitScreenRadioButton"));
     auto *cpuBadge = page.findChild<QCheckBox *>(
-        QStringLiteral("presetCpuBadgeCheckBox"));
+        QStringLiteral("customCpuBadgeCheckBox"));
     auto *gpuBadge = page.findChild<QCheckBox *>(
-        QStringLiteral("presetGpuBadgeCheckBox"));
+        QStringLiteral("customGpuBadgeCheckBox"));
     auto *colorButton = page.findChild<QPushButton *>(
-        QStringLiteral("presetTextColorButton"));
+        QStringLiteral("customTextColorButton"));
     auto *splitConfig =
         page.findChild<SplitConfigWidget *>();
     QVERIFY(brightness);
@@ -1159,6 +1230,60 @@ panoramaPageRestoresDisplayAndSplitState() {
              QStringLiteral("Left"));
     QCOMPARE(splitConfig->playMode(),
              QStringLiteral("Single"));
+}
+
+void PrinterProtocolTests::
+panoramaPageOmitsPresetSurface() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("dev"));
+    QDir().mkpath(sysRoot);
+    QDir().mkpath(devRoot);
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    PanoramaPage page(manager.get());
+    QVERIFY(page.findChildren<QTabBar *>().isEmpty());
+    QVERIFY(!page.findChild<QWidget *>(
+        QStringLiteral("presetCpuBadgeCheckBox")));
+    QVERIFY(page.findChild<QCheckBox *>(
+        QStringLiteral("customCpuBadgeCheckBox")));
+
+    const QString presetId =
+        QStringLiteral("device-preset.h264");
+    PrinterProtocol::MediaFile presetEntry;
+    presetEntry.name = presetId;
+    presetEntry.source = PrinterProtocol::MediaSource::Preset;
+    presetEntry.readOnly = true;
+    PrinterProtocol::MediaFile userEntry = presetEntry;
+    userEntry.name = QStringLiteral("user-upload.h264");
+    userEntry.source = PrinterProtocol::MediaSource::User;
+    userEntry.readOnly = false;
+    manager->updateMediaCatalog({presetEntry, userEntry});
+
+    const TryxRuntimeMediaCatalogSnapshot catalog =
+        manager->mediaCatalogSnapshot();
+    QCOMPARE(catalog.entries.size(), 2);
+    const auto userCatalogEntry = std::find_if(
+        catalog.entries.cbegin(), catalog.entries.cend(),
+        [&userEntry](const TryxRuntimeMediaEntry &entry) {
+            return entry.name == userEntry.name;
+        });
+    QVERIFY(userCatalogEntry != catalog.entries.cend());
+    QCOMPARE(page.fileList_->count(), 1);
+    QListWidgetItem *visibleItem = page.fileList_->item(0);
+    QVERIFY(visibleItem);
+    QCOMPARE(
+        visibleItem->data(Qt::UserRole).toString(),
+        userEntry.name);
+    constexpr int mediaSourceRole = Qt::UserRole + 2;
+    QCOMPARE(
+        visibleItem->data(mediaSourceRole).toUInt(),
+        userCatalogEntry->source);
 }
 
 void PrinterProtocolTests::
@@ -1339,7 +1464,7 @@ panoramaBrightnessCoalescesUntilTransportReady() {
     QCOMPARE(slider->value(), 80);
 }
 
-void PrinterProtocolTests::paseRunConfigUsesKanaliLayout() {
+void PrinterProtocolTests::paseRunConfigUsesWireLayout() {
     int sockets[2] = {-1, -1};
     QString socketError;
     QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
@@ -1347,14 +1472,14 @@ void PrinterProtocolTests::paseRunConfigUsesKanaliLayout() {
     PrinterProtocol protocol;
     protocol.adoptFileDescriptorForTesting(
         sockets[0], QStringLiteral("/dev/usb/lp-pase-layout"));
-    Tryx::USBProtocol::ReqPackagePb captured;
+    panorama::wire::v1::Request captured;
     QString peerError;
     std::thread peer([&]() {
         if (!readRequest(sockets[1], &captured, &peerError)) {
             return;
         }
         auto response = baseResponse(captured);
-        response.mutable_dummy_msg();
+        response.mutable_acknowledgement();
         writeResponse(sockets[1], response, &peerError);
     });
 
@@ -1372,15 +1497,15 @@ void PrinterProtocolTests::paseRunConfigUsesKanaliLayout() {
     QVERIFY2(sent, qPrintable(error));
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
     QCOMPARE(captured.body_case(),
-             Tryx::USBProtocol::ReqPackagePb::kRunConfig);
-    QCOMPARE(captured.run_config().label_groups_size(), 1);
-    const auto &group = captured.run_config().label_groups(0);
+             panorama::wire::v1::Request::kOverlayLayout);
+    QCOMPARE(captured.overlay_layout().label_groups_size(), 1);
+    const auto &group = captured.overlay_layout().label_groups(0);
     QCOMPARE(group.group_id(), 100U);
     QCOMPARE(group.group_x(), 60U);
     QCOMPARE(group.group_y(), 440U);
     QCOMPARE(group.group_width(), 2120U);
     QCOMPARE(group.group_height(), 160U);
-    QCOMPARE(group.text_align(), Tryx::LVGui::LabelGroupPb::Left);
+    QCOMPARE(group.text_align(), panorama::wire::v1::OverlayGroup::ALIGN_LEFT);
     QCOMPARE(group.line_gap(), -10);
     QCOMPARE(group.labels_size(), 3);
     QCOMPARE(group.labels(0).label_id(), 101U);
@@ -1428,7 +1553,7 @@ paseWaterfallFullScreenGeometry() {
         QStringLiteral("/dev/usb/lp-pase-waterfall-full");
     protocol.adoptFileDescriptorForTesting(
         sockets[0], endpoint);
-    Tryx::USBProtocol::ReqPackagePb captured;
+    panorama::wire::v1::Request captured;
     QString peerError;
     std::thread peer([&]() {
         if (!readRequest(
@@ -1436,7 +1561,7 @@ paseWaterfallFullScreenGeometry() {
             return;
         }
         auto response = baseResponse(captured);
-        response.mutable_dummy_msg();
+        response.mutable_acknowledgement();
         writeResponse(sockets[1], response, &peerError);
     });
 
@@ -1460,18 +1585,18 @@ paseWaterfallFullScreenGeometry() {
 
     QVERIFY2(sent, qPrintable(error));
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
-    QCOMPARE(captured.run_config().label_groups_size(), 2);
+    QCOMPARE(captured.overlay_layout().label_groups_size(), 2);
     const auto &metric =
-        captured.run_config().label_groups(0);
+        captured.overlay_layout().label_groups(0);
     const auto &badge =
-        captured.run_config().label_groups(1);
+        captured.overlay_layout().label_groups(1);
     QCOMPARE(metric.group_id(), 100U);
     QCOMPARE(metric.group_x(), 60U);
     QCOMPARE(metric.group_y(), metricY);
     QCOMPARE(metric.group_width(), 950U);
     QCOMPARE(metric.group_height(), 160U);
     QCOMPARE(metric.text_align(),
-             Tryx::LVGui::LabelGroupPb::Right);
+             panorama::wire::v1::OverlayGroup::ALIGN_RIGHT);
     QCOMPARE(metric.labels(0).text_color(),
              0xFF0000U);
     QCOMPARE(badge.group_id(), 300U);
@@ -1479,7 +1604,7 @@ paseWaterfallFullScreenGeometry() {
     QCOMPARE(badge.group_y(), badgeY);
     QCOMPARE(badge.group_width(), 970U);
     QCOMPARE(badge.text_align(),
-             Tryx::LVGui::LabelGroupPb::Right);
+             panorama::wire::v1::OverlayGroup::ALIGN_RIGHT);
 }
 
 void PrinterProtocolTests::
@@ -1494,7 +1619,7 @@ paseWaterfallSplitGeometryAndIndependentStyles() {
         QStringLiteral("/dev/usb/lp-pase-waterfall-split");
     protocol.adoptFileDescriptorForTesting(
         sockets[0], endpoint);
-    Tryx::USBProtocol::ReqPackagePb captured;
+    panorama::wire::v1::Request captured;
     QString peerError;
     std::thread peer([&]() {
         if (!readRequest(
@@ -1502,7 +1627,7 @@ paseWaterfallSplitGeometryAndIndependentStyles() {
             return;
         }
         auto response = baseResponse(captured);
-        response.mutable_dummy_msg();
+        response.mutable_acknowledgement();
         writeResponse(sockets[1], response, &peerError);
     });
 
@@ -1538,10 +1663,10 @@ paseWaterfallSplitGeometryAndIndependentStyles() {
 
     QVERIFY2(sent, qPrintable(error));
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
-    const auto &run = captured.run_config();
+    const auto &run = captured.overlay_layout();
     QCOMPARE(run.label_groups_size(), 4);
     const auto findGroup = [&run](quint32 groupId)
-        -> const Tryx::LVGui::LabelGroupPb * {
+        -> const panorama::wire::v1::OverlayGroup * {
         for (int index = 0;
              index < run.label_groups_size(); ++index) {
             if (run.label_groups(index).group_id() ==
@@ -1564,27 +1689,27 @@ paseWaterfallSplitGeometryAndIndependentStyles() {
     QCOMPARE(leftMetric->group_y(), 1560U);
     QCOMPARE(leftMetric->group_width(), 950U);
     QCOMPARE(leftMetric->text_align(),
-             Tryx::LVGui::LabelGroupPb::Right);
+             panorama::wire::v1::OverlayGroup::ALIGN_RIGHT);
     QCOMPARE(leftMetric->labels(0).text_color(),
              0xFF0000U);
     QCOMPARE(leftBadge->group_x(), 70U);
     QCOMPARE(leftBadge->group_y(), 1190U);
     QCOMPARE(leftBadge->group_width(), 970U);
     QCOMPARE(leftBadge->text_align(),
-             Tryx::LVGui::LabelGroupPb::Right);
+             panorama::wire::v1::OverlayGroup::ALIGN_RIGHT);
 
     QCOMPARE(rightMetric->group_x(), 60U);
     QCOMPARE(rightMetric->group_y(), 440U);
     QCOMPARE(rightMetric->group_width(), 950U);
     QCOMPARE(rightMetric->text_align(),
-             Tryx::LVGui::LabelGroupPb::Left);
+             panorama::wire::v1::OverlayGroup::ALIGN_LEFT);
     QCOMPARE(rightMetric->labels(0).text_color(),
              0x00FF00U);
     QCOMPARE(rightBadge->group_x(), 70U);
     QCOMPARE(rightBadge->group_y(), 70U);
     QCOMPARE(rightBadge->group_width(), 970U);
     QCOMPARE(rightBadge->text_align(),
-             Tryx::LVGui::LabelGroupPb::Left);
+             panorama::wire::v1::OverlayGroup::ALIGN_LEFT);
 }
 
 void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
@@ -1593,20 +1718,20 @@ void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
     QVERIFY2(createSocketPair(sockets, &socketError),
              qPrintable(socketError));
 
-    Tryx::USBProtocol::ReqPackagePb capturedUserConfig;
-    Tryx::USBProtocol::ReqPackagePb capturedRunConfig;
+    panorama::wire::v1::Request capturedUserConfig;
+    panorama::wire::v1::Request capturedRunConfig;
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest, &peerError) ||
             getRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "split apply did not read user config");
             return;
         }
         auto getResponse = baseResponse(getRequest);
-        auto *userConfig = getResponse.mutable_user_config();
+        auto *userConfig = getResponse.mutable_user_configuration();
         userConfig->mutable_display_config()
             ->set_backlight_brightness(55);
         userConfig->mutable_work_config()
@@ -1620,13 +1745,13 @@ void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
         if (!readRequest(sockets[1], &capturedUserConfig,
                          &peerError) ||
             capturedUserConfig.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kUserConfig) {
+                panorama::wire::v1::Request::kUserConfiguration) {
             peerError = QStringLiteral(
                 "split apply did not send user config");
             return;
         }
         auto userResponse = baseResponse(capturedUserConfig);
-        userResponse.mutable_dummy_msg();
+        userResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], userResponse, &peerError)) {
             return;
         }
@@ -1634,25 +1759,25 @@ void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
         if (!readRequest(sockets[1], &capturedRunConfig,
                          &peerError) ||
             capturedRunConfig.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral(
                 "split apply did not send run config");
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb readbackRequest;
+        panorama::wire::v1::Request readbackRequest;
         if (!readRequest(sockets[1], &readbackRequest,
                          &peerError) ||
             readbackRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "split apply did not verify user config");
             return;
         }
         auto readbackResponse =
             baseResponse(readbackRequest);
-        *readbackResponse.mutable_user_config() =
-            capturedUserConfig.user_config();
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
         writeResponse(
             sockets[1], readbackResponse, &peerError);
     });
@@ -1692,11 +1817,11 @@ void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
 
     QVERIFY2(applied, qPrintable(error));
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
-    const auto &work = capturedUserConfig.user_config().work_config();
+    const auto &work = capturedUserConfig.user_configuration().work_config();
     QCOMPARE(work.media_mode(),
-             Tryx::Config::WorkConfigPb::MediaMode_Dual);
+             panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
     QCOMPARE(work.loop_mode(),
-             Tryx::Config::WorkConfigPb::LoopMode_Single);
+             panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
     QCOMPARE(QString::fromStdString(
                  work.dual_mode_left_media_file()),
              QStringLiteral("left.h264"));
@@ -1707,10 +1832,10 @@ void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
              QStringLiteral("Screen Splitting"));
     QCOMPARE(appliedState.media, config.media);
 
-    const auto &run = capturedRunConfig.run_config();
+    const auto &run = capturedRunConfig.overlay_layout();
     QCOMPARE(run.label_groups_size(), 4);
     const auto findGroup = [&run](quint32 groupId)
-        -> const Tryx::LVGui::LabelGroupPb * {
+        -> const panorama::wire::v1::OverlayGroup * {
         for (int index = 0; index < run.label_groups_size(); ++index) {
             if (run.label_groups(index).group_id() == groupId) {
                 return &run.label_groups(index);
@@ -1731,13 +1856,508 @@ void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
     QCOMPARE(leftBadge->labels_size(), 1);
     QCOMPARE(leftBadge->labels(0).label_id(), 301U);
     QCOMPARE(leftBadge->labels(0).background(),
-             Tryx::LVGui::LabelPb::BackGround_GardientHorizontal);
+             panorama::wire::v1::OverlayLabel::BACKGROUND_GRADIENT_HORIZONTAL);
     QCOMPARE(leftBadge->labels(0).background_color(), 0x00A92F2CU);
     QCOMPARE(leftBadge->labels(0).gradient_color(), 0x00CB6236U);
     QCOMPARE(rightBadge->labels_size(), 1);
     QCOMPARE(rightBadge->labels(0).label_id(), 402U);
     QCOMPARE(rightBadge->labels(0).background_color(), 0x00629A00U);
     QCOMPARE(rightBadge->labels(0).gradient_color(), 0x0079AB51U);
+}
+
+void PrinterProtocolTests::
+paseApplyRetriesDroppedReadOnlyConfigResponse_data() {
+    QTest::addColumn<bool>("dropPreflightResponse");
+    QTest::addColumn<bool>("sendLateDroppedResponse");
+    QTest::addColumn<bool>("sendLateBeforeRetryRequest");
+
+    QTest::newRow("preflight-clean-timeout")
+        << true << false << false;
+    QTest::newRow("preflight-late-after-retry")
+        << true << true << false;
+    QTest::newRow("preflight-late-during-backoff")
+        << true << true << true;
+    QTest::newRow("verification-clean-timeout")
+        << false << false << false;
+}
+
+void PrinterProtocolTests::
+paseApplyRetriesDroppedReadOnlyConfigResponse() {
+    QFETCH(bool, dropPreflightResponse);
+    QFETCH(bool, sendLateDroppedResponse);
+    QFETCH(bool, sendLateBeforeRetryRequest);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    quint64 droppedTrackId = 0;
+    quint64 retryTrackId = 0;
+    int userConfigurationWrites = 0;
+    int overlayWrites = 0;
+    QString peerError;
+    std::thread peer([&]() {
+        const auto writeInitialConfiguration =
+            [&](const panorama::wire::v1::Request &request) {
+                auto response = baseResponse(request);
+                auto *configuration =
+                    response.mutable_user_configuration();
+                configuration->mutable_display_config()
+                    ->set_backlight_brightness(55);
+                auto *work =
+                    configuration->mutable_work_config();
+                work->set_media_mode(
+                    panorama::wire::v1::WorkConfiguration::
+                        MEDIA_SINGLE);
+                work->set_loop_mode(
+                    panorama::wire::v1::WorkConfiguration::
+                        LOOP_SINGLE);
+                work->set_single_mode_media_file(
+                    "old.h264");
+                return writeResponse(
+                    sockets[1], response, &peerError);
+            };
+
+        panorama::wire::v1::Request preflightRequest;
+        if (!readRequest(
+                sockets[1], &preflightRequest, &peerError) ||
+            preflightRequest.body_case() !=
+                panorama::wire::v1::Request::
+                    kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "missing first user configuration preflight");
+            return;
+        }
+
+        if (dropPreflightResponse) {
+            droppedTrackId =
+                preflightRequest.header().track_id();
+            if (sendLateBeforeRetryRequest) {
+                QElapsedTimer delay;
+                delay.start();
+                while (delay.elapsed() < 175) {
+                    const int remaining =
+                        175 - static_cast<int>(
+                                  delay.elapsed());
+                    const int result =
+                        ::poll(
+                            nullptr, 0,
+                            qMax(1, remaining));
+                    if (result < 0 && errno != EINTR) {
+                        peerError = QStringLiteral(
+                            "late response delay failed");
+                        return;
+                    }
+                }
+                if (!writeInitialConfiguration(
+                        preflightRequest)) {
+                    return;
+                }
+            }
+            panorama::wire::v1::Request retryRequest;
+            if (!readRequest(
+                    sockets[1], &retryRequest, &peerError) ||
+                retryRequest.body_case() !=
+                    panorama::wire::v1::Request::
+                        kUserConfigurationQuery) {
+                peerError = QStringLiteral(
+                    "missing retried user configuration preflight");
+                return;
+            }
+            retryTrackId = retryRequest.header().track_id();
+            if (sendLateDroppedResponse &&
+                !sendLateBeforeRetryRequest &&
+                !writeInitialConfiguration(preflightRequest)) {
+                return;
+            }
+            if (!writeInitialConfiguration(retryRequest)) {
+                return;
+            }
+        } else if (!writeInitialConfiguration(
+                       preflightRequest)) {
+            return;
+        }
+
+        panorama::wire::v1::Request userRequest;
+        if (!readRequest(
+                sockets[1], &userRequest, &peerError) ||
+            userRequest.body_case() !=
+                panorama::wire::v1::Request::
+                    kUserConfiguration) {
+            peerError = QStringLiteral(
+                "missing single user configuration mutation");
+            return;
+        }
+        ++userConfigurationWrites;
+        auto acknowledgement = baseResponse(userRequest);
+        acknowledgement.mutable_acknowledgement();
+        if (!writeResponse(
+                sockets[1], acknowledgement, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request overlayRequest;
+        if (!readRequest(
+                sockets[1], &overlayRequest, &peerError) ||
+            overlayRequest.body_case() !=
+                panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral(
+                "missing single overlay activation");
+            return;
+        }
+        ++overlayWrites;
+
+        const auto writeAppliedConfiguration =
+            [&](const panorama::wire::v1::Request &request) {
+                auto response = baseResponse(request);
+                *response.mutable_user_configuration() =
+                    userRequest.user_configuration();
+                return writeResponse(
+                    sockets[1], response, &peerError);
+            };
+
+        panorama::wire::v1::Request verificationRequest;
+        if (!readRequest(
+                sockets[1], &verificationRequest,
+                &peerError) ||
+            verificationRequest.body_case() !=
+                panorama::wire::v1::Request::
+                    kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "missing first user configuration verification");
+            return;
+        }
+
+        if (!dropPreflightResponse) {
+            droppedTrackId =
+                verificationRequest.header().track_id();
+            panorama::wire::v1::Request retryRequest;
+            if (!readRequest(
+                    sockets[1], &retryRequest, &peerError) ||
+                retryRequest.body_case() !=
+                    panorama::wire::v1::Request::
+                        kUserConfigurationQuery) {
+                peerError = QStringLiteral(
+                    "missing retried user configuration verification");
+                return;
+            }
+            retryTrackId = retryRequest.header().track_id();
+            if (!writeAppliedConfiguration(retryRequest)) {
+                return;
+            }
+        } else {
+            if (!writeAppliedConfiguration(verificationRequest)) {
+                return;
+            }
+        }
+    });
+
+    PrinterProtocol protocol(75);
+    const QString devicePath =
+        QStringLiteral(
+            "/dev/usb/lp-pase-idempotent-query-retry");
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], devicePath);
+
+    PrinterProtocol::PaseApplyConfig config;
+    config.media = {
+        QStringLiteral("left.h264"),
+        QStringLiteral("right.h264")};
+    config.screenMode =
+        QStringLiteral("Screen Splitting");
+    config.playMode = QStringLiteral("Single");
+    config.mediaPresent = true;
+    config.replaceOverlay = true;
+    config.overlay.dualMode = true;
+
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    PrinterProtocol::PaseDisplayState appliedState;
+    const bool applied =
+        protocol.applyPaseConfiguration(
+            devicePath, config, &error,
+            PrinterProtocol::OperationContext{},
+            &mutation, &appliedState);
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(applied, qPrintable(error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(droppedTrackId != 0);
+    QVERIFY(retryTrackId != 0);
+    QVERIFY(droppedTrackId != retryTrackId);
+    QCOMPARE(userConfigurationWrites, 1);
+    QCOMPARE(overlayWrites, 1);
+    QCOMPARE(
+        mutation.outcome,
+        PrinterProtocol::MutationOutcome::Succeeded);
+    QCOMPARE(appliedState.screenMode,
+             QStringLiteral("Screen Splitting"));
+    QCOMPARE(appliedState.media, config.media);
+}
+
+void PrinterProtocolTests::
+paseApplyReadOnlyRetryCancellationSendsNoMutation() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+    const int cancellationFd =
+        ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    QVERIFY(cancellationFd >= 0);
+
+    int queryCount = 0;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(
+                sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::
+                    kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "missing user configuration query before retry cancellation");
+            return;
+        }
+        ++queryCount;
+
+        QElapsedTimer delay;
+        delay.start();
+        while (delay.elapsed() < 150) {
+            const int remaining =
+                150 - static_cast<int>(delay.elapsed());
+            const int result =
+                ::poll(nullptr, 0, qMax(1, remaining));
+            if (result < 0 && errno != EINTR) {
+                peerError = QStringLiteral(
+                    "retry cancellation delay failed");
+                return;
+            }
+        }
+
+        const uint64_t cancellationValue = 1;
+        if (::write(
+                cancellationFd, &cancellationValue,
+                sizeof(cancellationValue)) !=
+            static_cast<ssize_t>(
+                sizeof(cancellationValue))) {
+            peerError = QStringLiteral(
+                "failed to cancel read-only retry backoff");
+            return;
+        }
+
+        if (!waitForPeerClosureWithoutPayload(
+                sockets[1], 600, &peerError)) {
+            return;
+        }
+    });
+
+    PrinterProtocol protocol(75);
+    const QString devicePath =
+        QStringLiteral(
+            "/dev/usb/lp-pase-idempotent-query-cancel");
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], devicePath);
+
+    PrinterProtocol::PaseApplyConfig config;
+    config.media = {
+        QStringLiteral("left.h264"),
+        QStringLiteral("right.h264")};
+    config.screenMode =
+        QStringLiteral("Screen Splitting");
+    config.playMode = QStringLiteral("Single");
+    config.mediaPresent = true;
+
+    PrinterProtocol::OperationContext context;
+    context.cancellationFd = cancellationFd;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const bool applied =
+        protocol.applyPaseConfiguration(
+            devicePath, config, &error, context,
+            &mutation);
+
+    peer.join();
+    ::close(cancellationFd);
+    ::close(sockets[1]);
+
+    QVERIFY(!applied);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(queryCount, 1);
+    QCOMPARE(
+        mutation.stage,
+        QStringLiteral("ReadingConfig"));
+    QCOMPARE(
+        mutation.outcome,
+        PrinterProtocol::MutationOutcome::Cancelled);
+    QVERIFY(error.contains(
+        QStringLiteral("cancel"), Qt::CaseInsensitive));
+    QVERIFY(elapsed.elapsed() < 1000);
+}
+
+void PrinterProtocolTests::
+paseApplyReadOnlyRetryBudgetIsBounded() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    int queryCount = 0;
+    quint64 firstTrackId = 0;
+    quint64 secondTrackId = 0;
+    QString peerError;
+    std::thread peer([&]() {
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(
+                    sockets[1], &request, &peerError) ||
+                request.body_case() !=
+                    panorama::wire::v1::Request::
+                        kUserConfigurationQuery) {
+                peerError = QStringLiteral(
+                    "missing bounded read-only query attempt %1")
+                                .arg(attempt + 1);
+                return;
+            }
+            ++queryCount;
+            if (attempt == 0) {
+                firstTrackId =
+                    request.header().track_id();
+            } else {
+                secondTrackId =
+                    request.header().track_id();
+            }
+        }
+
+        if (!waitForPeerClosureWithoutPayload(
+                sockets[1], 600, &peerError)) {
+            return;
+        }
+    });
+
+    PrinterProtocol protocol(75);
+    const QString devicePath =
+        QStringLiteral(
+            "/dev/usb/lp-pase-idempotent-query-budget");
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], devicePath);
+
+    PrinterProtocol::PaseApplyConfig config;
+    config.media = {
+        QStringLiteral("left.h264"),
+        QStringLiteral("right.h264")};
+    config.screenMode =
+        QStringLiteral("Screen Splitting");
+    config.playMode = QStringLiteral("Single");
+    config.mediaPresent = true;
+
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const bool applied =
+        protocol.applyPaseConfiguration(
+            devicePath, config, &error,
+            PrinterProtocol::OperationContext{},
+            &mutation);
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY(!applied);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(queryCount, 2);
+    QVERIFY(firstTrackId != 0);
+    QVERIFY(secondTrackId != 0);
+    QVERIFY(firstTrackId != secondTrackId);
+    QCOMPARE(
+        mutation.stage,
+        QStringLiteral("ReadingConfig"));
+    QCOMPARE(
+        mutation.outcome,
+        PrinterProtocol::MutationOutcome::NotStarted);
+    QVERIFY(error.contains(
+        QStringLiteral("Timed out"), Qt::CaseInsensitive));
+    QVERIFY(elapsed.elapsed() < 1500);
+}
+
+void PrinterProtocolTests::
+paseApplyMismatchedReadOnlyResponseDoesNotRetry() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    int queryCount = 0;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(
+                sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::
+                    kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "missing query before mismatched response");
+            return;
+        }
+        ++queryCount;
+        auto response = baseResponse(request);
+        response.mutable_acknowledgement();
+        if (!writeResponse(
+                sockets[1], response, &peerError)) {
+            return;
+        }
+
+        if (!waitForPeerClosureWithoutPayload(
+                sockets[1], 600, &peerError)) {
+            return;
+        }
+    });
+
+    PrinterProtocol protocol(75);
+    const QString devicePath =
+        QStringLiteral(
+            "/dev/usb/lp-pase-idempotent-query-invalid");
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], devicePath);
+
+    PrinterProtocol::PaseApplyConfig config;
+    config.media = {
+        QStringLiteral("left.h264"),
+        QStringLiteral("right.h264")};
+    config.screenMode =
+        QStringLiteral("Screen Splitting");
+    config.playMode = QStringLiteral("Single");
+    config.mediaPresent = true;
+
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool applied =
+        protocol.applyPaseConfiguration(
+            devicePath, config, &error,
+            PrinterProtocol::OperationContext{},
+            &mutation);
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY(!applied);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(queryCount, 1);
+    QCOMPARE(
+        mutation.stage,
+        QStringLiteral("ReadingConfig"));
+    QCOMPARE(
+        mutation.outcome,
+        PrinterProtocol::MutationOutcome::NotStarted);
+    QVERIFY(error.contains(
+        QStringLiteral("does not match"),
+        Qt::CaseInsensitive));
 }
 
 void PrinterProtocolTests::paseReadbackMismatchIsVerificationFailure() {
@@ -1748,18 +2368,18 @@ void PrinterProtocolTests::paseReadbackMismatchIsVerificationFailure() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest,
                          &peerError) ||
             getRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "verification test did not read initial user config");
             return;
         }
         auto getResponse = baseResponse(getRequest);
         auto *initial =
-            getResponse.mutable_user_config();
+            getResponse.mutable_user_configuration();
         initial->mutable_display_config()
             ->set_backlight_brightness(50);
         initial->mutable_standby_config()
@@ -1767,9 +2387,9 @@ void PrinterProtocolTests::paseReadbackMismatchIsVerificationFailure() {
         auto *initialWork =
             initial->mutable_work_config();
         initialWork->set_media_mode(
-            Tryx::Config::WorkConfigPb::MediaMode_Single);
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
         initialWork->set_loop_mode(
-            Tryx::Config::WorkConfigPb::LoopMode_Single);
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
         initialWork->set_single_mode_media_file(
             "old.h264");
         if (!writeResponse(sockets[1], getResponse,
@@ -1777,37 +2397,37 @@ void PrinterProtocolTests::paseReadbackMismatchIsVerificationFailure() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb userRequest;
+        panorama::wire::v1::Request userRequest;
         if (!readRequest(sockets[1], &userRequest,
                          &peerError) ||
             userRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kUserConfig) {
+                panorama::wire::v1::Request::kUserConfiguration) {
             peerError = QStringLiteral(
                 "verification test did not write user config");
             return;
         }
         auto userResponse = baseResponse(userRequest);
-        userResponse.mutable_dummy_msg();
+        userResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], userResponse,
                            &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runRequest;
+        panorama::wire::v1::Request runRequest;
         if (!readRequest(sockets[1], &runRequest,
                          &peerError) ||
             runRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral(
                 "verification test did not write run config");
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb readbackRequest;
+        panorama::wire::v1::Request readbackRequest;
         if (!readRequest(sockets[1], &readbackRequest,
                          &peerError) ||
             readbackRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "verification test did not request readback");
             return;
@@ -1815,7 +2435,7 @@ void PrinterProtocolTests::paseReadbackMismatchIsVerificationFailure() {
         auto readbackResponse =
             baseResponse(readbackRequest);
         auto *readback =
-            readbackResponse.mutable_user_config();
+            readbackResponse.mutable_user_configuration();
         readback->mutable_display_config()
             ->set_backlight_brightness(50);
         readback->mutable_standby_config()
@@ -1823,9 +2443,9 @@ void PrinterProtocolTests::paseReadbackMismatchIsVerificationFailure() {
         auto *readbackWork =
             readback->mutable_work_config();
         readbackWork->set_media_mode(
-            Tryx::Config::WorkConfigPb::MediaMode_Single);
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
         readbackWork->set_loop_mode(
-            Tryx::Config::WorkConfigPb::LoopMode_Single);
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
         readbackWork->set_single_mode_media_file(
             "old.h264");
         writeResponse(
@@ -1880,30 +2500,30 @@ runConfigRejectionIsVerificationFailureAndKeepsTransport() {
     QVERIFY2(createSocketPair(sockets, &socketError),
              qPrintable(socketError));
 
-    Tryx::USBProtocol::ReqPackagePb capturedUserConfig;
+    panorama::wire::v1::Request capturedUserConfig;
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(
                 sockets[1], &getRequest, &peerError) ||
             getRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "RunConfig rejection test did not read user config");
             return;
         }
         auto getResponse = baseResponse(getRequest);
         auto *initial =
-            getResponse.mutable_user_config();
+            getResponse.mutable_user_configuration();
         initial->mutable_display_config()
             ->set_backlight_brightness(50);
         initial->mutable_standby_config()
             ->set_media_file("standby.h264");
         auto *work = initial->mutable_work_config();
         work->set_media_mode(
-            Tryx::Config::WorkConfigPb::MediaMode_Single);
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
         work->set_loop_mode(
-            Tryx::Config::WorkConfigPb::LoopMode_Single);
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
         work->set_single_mode_media_file("old.h264");
         if (!writeResponse(
                 sockets[1], getResponse, &peerError)) {
@@ -1914,31 +2534,31 @@ runConfigRejectionIsVerificationFailureAndKeepsTransport() {
                 sockets[1], &capturedUserConfig,
                 &peerError) ||
             capturedUserConfig.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kUserConfig) {
+                panorama::wire::v1::Request::kUserConfiguration) {
             peerError = QStringLiteral(
                 "RunConfig rejection test did not write user config");
             return;
         }
         auto userResponse =
             baseResponse(capturedUserConfig);
-        userResponse.mutable_dummy_msg();
+        userResponse.mutable_acknowledgement();
         if (!writeResponse(
                 sockets[1], userResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runRequest;
+        panorama::wire::v1::Request runRequest;
         if (!readRequest(
                 sockets[1], &runRequest, &peerError) ||
             runRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral(
                 "RunConfig rejection test did not receive activation");
             return;
         }
         auto runResponse = baseResponse(runRequest);
         runResponse.mutable_error()->set_code(
-            Tryx::USBProtocol::ErrorPb::Fail);
+            panorama::wire::v1::ProtocolError::FAILURE);
         runResponse.mutable_error()->set_why(
             "overlay rejected");
         if (!writeResponse(
@@ -1946,37 +2566,37 @@ runConfigRejectionIsVerificationFailureAndKeepsTransport() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb readbackRequest;
+        panorama::wire::v1::Request readbackRequest;
         if (!readRequest(
                 sockets[1], &readbackRequest, &peerError) ||
             readbackRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "RunConfig rejection test did not read back user config");
             return;
         }
         auto readbackResponse =
             baseResponse(readbackRequest);
-        *readbackResponse.mutable_user_config() =
-            capturedUserConfig.user_config();
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
         if (!writeResponse(
                 sockets[1], readbackResponse,
                 &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb fileListRequest;
+        panorama::wire::v1::Request fileListRequest;
         if (!readRequest(
                 sockets[1], &fileListRequest, &peerError) ||
             fileListRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             peerError = QStringLiteral(
                 "RunConfig rejection closed a healthy transport");
             return;
         }
         auto fileListResponse =
             baseResponse(fileListRequest);
-        fileListResponse.mutable_file_list();
+        fileListResponse.mutable_media_catalog();
         writeResponse(
             sockets[1], fileListResponse, &peerError);
     });
@@ -2028,21 +2648,21 @@ verificationFailureKeepsHealthySessionActive() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest,
                          &peerError)) {
             return;
         }
         auto getResponse = baseResponse(getRequest);
         auto *initial =
-            getResponse.mutable_user_config();
+            getResponse.mutable_user_configuration();
         initial->mutable_display_config();
         auto *initialWork =
             initial->mutable_work_config();
         initialWork->set_media_mode(
-            Tryx::Config::WorkConfigPb::MediaMode_Single);
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
         initialWork->set_loop_mode(
-            Tryx::Config::WorkConfigPb::LoopMode_Single);
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
         initialWork->set_single_mode_media_file(
             "old.h264");
         if (!writeResponse(sockets[1], getResponse,
@@ -2050,25 +2670,25 @@ verificationFailureKeepsHealthySessionActive() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb userRequest;
+        panorama::wire::v1::Request userRequest;
         if (!readRequest(sockets[1], &userRequest,
                          &peerError)) {
             return;
         }
         auto userResponse = baseResponse(userRequest);
-        userResponse.mutable_dummy_msg();
+        userResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], userResponse,
                            &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runRequest;
+        panorama::wire::v1::Request runRequest;
         if (!readRequest(sockets[1], &runRequest,
                          &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb readbackRequest;
+        panorama::wire::v1::Request readbackRequest;
         if (!readRequest(sockets[1], &readbackRequest,
                          &peerError)) {
             return;
@@ -2076,14 +2696,14 @@ verificationFailureKeepsHealthySessionActive() {
         auto readbackResponse =
             baseResponse(readbackRequest);
         auto *readback =
-            readbackResponse.mutable_user_config();
+            readbackResponse.mutable_user_configuration();
         readback->mutable_display_config();
         auto *readbackWork =
             readback->mutable_work_config();
         readbackWork->set_media_mode(
-            Tryx::Config::WorkConfigPb::MediaMode_Single);
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
         readbackWork->set_loop_mode(
-            Tryx::Config::WorkConfigPb::LoopMode_Single);
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
         readbackWork->set_single_mode_media_file(
             "old.h264");
         writeResponse(
@@ -2141,6 +2761,104 @@ verificationFailureKeepsHealthySessionActive() {
     QVERIFY(!worker.printerRecoveryTimer_->isActive());
 }
 
+void PrinterProtocolTests::
+applyFailureResultPrecedesSessionLoss() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    int queryCount = 0;
+    QString peerError;
+    std::thread peer([&]() {
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(
+                    sockets[1], &request, &peerError) ||
+                request.body_case() !=
+                    panorama::wire::v1::Request::
+                        kUserConfigurationQuery) {
+                peerError = QStringLiteral(
+                    "missing read-only apply query %1 before session loss")
+                                .arg(attempt + 1);
+                return;
+            }
+            ++queryCount;
+        }
+    });
+
+    constexpr quint64 generation = 45;
+    const QString endpoint =
+        QStringLiteral("test-endpoint");
+    DeviceWorker worker;
+    worker.updatePrinterGenerationGate(generation, true);
+    worker.configurePrinterDevice(
+        endpoint, QStringLiteral("test-serial"),
+        generation);
+    worker.printerProtocol_ =
+        std::make_unique<PrinterProtocol>(75);
+    worker.adoptPrinterFileDescriptorForTesting(
+        sockets[0], endpoint);
+    worker.printerSessionState_ =
+        DeviceWorker::PrinterSessionState::Active;
+
+    QStringList terminalEvents;
+    connect(
+        &worker, &DeviceWorker::printerApplyFinished,
+        &worker,
+        [&terminalEvents](
+            const QString &, const QString &, bool, bool,
+            PrinterProtocol::MutationOutcome,
+            const QString &, quint64) {
+            terminalEvents.append(
+                QStringLiteral("apply-finished"));
+        });
+    connect(
+        &worker, &DeviceWorker::printerSessionLost,
+        &worker,
+        [&terminalEvents](quint64) {
+            terminalEvents.append(
+                QStringLiteral("session-lost"));
+        });
+    QSignalSpy applySpy(
+        &worker, &DeviceWorker::printerApplyFinished);
+    QSignalSpy lostSpy(
+        &worker, &DeviceWorker::printerSessionLost);
+
+    TryxRuntimeApplyRequest request;
+    request.media = {
+        QStringLiteral("left.h264"),
+        QStringLiteral("right.h264")};
+    request.screenMode =
+        QStringLiteral("Screen Splitting");
+    request.playMode = QStringLiteral("Single");
+    worker.applyPrinterMedia(
+        endpoint, QString(), request, false,
+        QStringLiteral(
+            "45454545-4545-4545-8545-454545454545"),
+        generation);
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(queryCount, 2);
+    QCOMPARE(applySpy.count(), 1);
+    QCOMPARE(lostSpy.count(), 1);
+    QCOMPARE(
+        qvariant_cast<PrinterProtocol::MutationOutcome>(
+            applySpy.first().at(4)),
+        PrinterProtocol::MutationOutcome::NotStarted);
+    QCOMPARE(
+        terminalEvents,
+        QStringList({
+            QStringLiteral("apply-finished"),
+            QStringLiteral("session-lost")}));
+    QCOMPARE(
+        worker.printerSessionState_,
+        DeviceWorker::PrinterSessionState::Lost);
+}
+
 void PrinterProtocolTests::lateRunConfigDummyDoesNotBreakReadback() {
     int sockets[2] = {-1, -1};
     QString socketError;
@@ -2149,14 +2867,14 @@ void PrinterProtocolTests::lateRunConfigDummyDoesNotBreakReadback() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest,
                          &peerError)) {
             return;
         }
         auto getResponse = baseResponse(getRequest);
         auto *initial =
-            getResponse.mutable_user_config();
+            getResponse.mutable_user_configuration();
         initial->mutable_display_config();
         initial->mutable_standby_config();
         initial->mutable_work_config()
@@ -2166,43 +2884,43 @@ void PrinterProtocolTests::lateRunConfigDummyDoesNotBreakReadback() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb userRequest;
+        panorama::wire::v1::Request userRequest;
         if (!readRequest(sockets[1], &userRequest,
                          &peerError)) {
             return;
         }
         auto userResponse = baseResponse(userRequest);
-        userResponse.mutable_dummy_msg();
+        userResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], userResponse,
                            &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runRequest;
+        panorama::wire::v1::Request runRequest;
         if (!readRequest(sockets[1], &runRequest,
                          &peerError)) {
             return;
         }
-        Tryx::USBProtocol::ReqPackagePb readbackRequest;
+        panorama::wire::v1::Request readbackRequest;
         if (!readRequest(sockets[1], &readbackRequest,
                          &peerError) ||
             readbackRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "late Dummy test did not receive readback request");
             return;
         }
 
         auto lateDummy = baseResponse(runRequest);
-        lateDummy.mutable_dummy_msg();
+        lateDummy.mutable_acknowledgement();
         if (!writeResponse(sockets[1], lateDummy,
                            &peerError)) {
             return;
         }
         auto readbackResponse =
             baseResponse(readbackRequest);
-        *readbackResponse.mutable_user_config() =
-            userRequest.user_config();
+        *readbackResponse.mutable_user_configuration() =
+            userRequest.user_configuration();
         writeResponse(
             sockets[1], readbackResponse, &peerError);
     });
@@ -2261,19 +2979,19 @@ void PrinterProtocolTests::paseDisplayMutationMatrix() {
     QVERIFY2(createSocketPair(sockets, &socketError),
              qPrintable(socketError));
 
-    Tryx::USBProtocol::ReqPackagePb capturedUserConfig;
+    panorama::wire::v1::Request capturedUserConfig;
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest, &peerError) ||
             getRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "display mutation did not read user config");
             return;
         }
         auto getResponse = baseResponse(getRequest);
-        auto *userConfig = getResponse.mutable_user_config();
+        auto *userConfig = getResponse.mutable_user_configuration();
         auto *display = userConfig->mutable_display_config();
         display->set_backlight_enable(true);
         display->set_backlight_brightness(21);
@@ -2285,9 +3003,9 @@ void PrinterProtocolTests::paseDisplayMutationMatrix() {
         standby->set_media_file("keep-standby.h264");
         auto *work = userConfig->mutable_work_config();
         work->set_media_mode(
-            Tryx::Config::WorkConfigPb::MediaMode_Single);
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
         work->set_loop_mode(
-            Tryx::Config::WorkConfigPb::LoopMode_All);
+            panorama::wire::v1::WorkConfiguration::LOOP_ALL);
         work->set_single_mode_media_file("keep-media.h264");
         userConfig->GetReflection()
             ->MutableUnknownFields(userConfig)
@@ -2299,45 +3017,45 @@ void PrinterProtocolTests::paseDisplayMutationMatrix() {
         if (!readRequest(sockets[1], &capturedUserConfig,
                          &peerError) ||
             capturedUserConfig.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kUserConfig) {
+                panorama::wire::v1::Request::kUserConfiguration) {
             peerError = QStringLiteral(
                 "display mutation did not send user config");
             return;
         }
         auto userResponse = baseResponse(capturedUserConfig);
-        userResponse.mutable_dummy_msg();
+        userResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], userResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runRequest;
+        panorama::wire::v1::Request runRequest;
         if (!readRequest(sockets[1], &runRequest, &peerError) ||
             runRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral(
                 "display mutation did not activate run config");
             return;
         }
         auto runResponse = baseResponse(runRequest);
-        runResponse.mutable_dummy_msg();
+        runResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], runResponse,
                            &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb readbackRequest;
+        panorama::wire::v1::Request readbackRequest;
         if (!readRequest(sockets[1], &readbackRequest,
                          &peerError) ||
             readbackRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "display mutation did not verify user config");
             return;
         }
         auto readbackResponse =
             baseResponse(readbackRequest);
-        *readbackResponse.mutable_user_config() =
-            capturedUserConfig.user_config();
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
         writeResponse(
             sockets[1], readbackResponse, &peerError);
     });
@@ -2365,7 +3083,7 @@ void PrinterProtocolTests::paseDisplayMutationMatrix() {
 
     QVERIFY2(applied, qPrintable(error));
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
-    const auto &userConfig = capturedUserConfig.user_config();
+    const auto &userConfig = capturedUserConfig.user_configuration();
     QCOMPARE(userConfig.display_config().backlight_enable(), false);
     QCOMPARE(userConfig.display_config().backlight_brightness(), 68U);
     QCOMPARE(userConfig.display_config().mirror(), false);
@@ -2402,16 +3120,16 @@ void PrinterProtocolTests::readPaseDisplayStateDecodesDualConfiguration() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "display-state read did not request user config");
             return;
         }
         auto response = baseResponse(request);
-        auto *userConfig = response.mutable_user_config();
+        auto *userConfig = response.mutable_user_configuration();
         auto *display = userConfig->mutable_display_config();
         display->set_backlight_enable(true);
         display->set_backlight_brightness(83);
@@ -2422,9 +3140,9 @@ void PrinterProtocolTests::readPaseDisplayStateDecodesDualConfiguration() {
         standby->set_media_file("standby.h264");
         auto *work = userConfig->mutable_work_config();
         work->set_media_mode(
-            Tryx::Config::WorkConfigPb::MediaMode_Dual);
+            panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
         work->set_loop_mode(
-            Tryx::Config::WorkConfigPb::LoopMode_Single);
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
         work->set_dual_mode_left_media_file("left.h264");
         work->set_dual_mode_right_media_file("right.h264");
         writeResponse(sockets[1], response, &peerError);
@@ -2466,14 +3184,14 @@ void PrinterProtocolTests::standalonePaseMetricsConfigurationIsAcknowledged() {
     const QString devicePath =
         QStringLiteral("/dev/usb/lp-pase-metrics-config");
     protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
-    Tryx::USBProtocol::ReqPackagePb captured;
+    panorama::wire::v1::Request captured;
     QString peerError;
     std::thread peer([&]() {
         if (!readRequest(sockets[1], &captured, &peerError)) {
             return;
         }
         auto response = baseResponse(captured);
-        response.mutable_dummy_msg();
+        response.mutable_acknowledgement();
         writeResponse(sockets[1], response, &peerError);
     });
 
@@ -2495,11 +3213,11 @@ void PrinterProtocolTests::standalonePaseMetricsConfigurationIsAcknowledged() {
              PrinterProtocol::MutationOutcome::Succeeded);
     QCOMPARE(mutation.stage, QStringLiteral("ActivatingMetricsLayout"));
     QCOMPARE(captured.body_case(),
-             Tryx::USBProtocol::ReqPackagePb::kRunConfig);
-    QCOMPARE(captured.run_config().label_groups_size(), 1);
-    const auto &group = captured.run_config().label_groups(0);
+             panorama::wire::v1::Request::kOverlayLayout);
+    QCOMPARE(captured.overlay_layout().label_groups_size(), 1);
+    const auto &group = captured.overlay_layout().label_groups(0);
     QCOMPARE(group.group_id(), 103U);
-    QCOMPARE(group.text_align(), Tryx::LVGui::LabelGroupPb::Right);
+    QCOMPARE(group.text_align(), panorama::wire::v1::OverlayGroup::ALIGN_RIGHT);
     QCOMPARE(group.labels_size(), 3);
     QCOMPARE(group.labels(0).label_id(), 110U);
     QCOMPARE(group.labels(1).label_id(), 111U);
@@ -2515,14 +3233,14 @@ void PrinterProtocolTests::displayKeepalivePreservesPaseOverlayValues() {
     PrinterProtocol protocol;
     protocol.adoptFileDescriptorForTesting(
         sockets[0], QStringLiteral("/dev/usb/lp-pase-keepalive"));
-    Tryx::USBProtocol::ReqPackagePb captured;
+    panorama::wire::v1::Request captured;
     QString peerError;
     std::thread peer([&]() {
         if (!readRequest(sockets[1], &captured, &peerError)) {
             return;
         }
         auto response = baseResponse(captured);
-        response.mutable_dummy_msg();
+        response.mutable_acknowledgement();
         writeResponse(sockets[1], response, &peerError);
     });
 
@@ -2542,9 +3260,9 @@ void PrinterProtocolTests::displayKeepalivePreservesPaseOverlayValues() {
 
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
     QCOMPARE(captured.body_case(),
-             Tryx::USBProtocol::ReqPackagePb::kRunConfig);
-    QCOMPARE(captured.run_config().label_groups_size(), 1);
-    const auto &group = captured.run_config().label_groups(0);
+             panorama::wire::v1::Request::kOverlayLayout);
+    QCOMPARE(captured.overlay_layout().label_groups_size(), 1);
+    const auto &group = captured.overlay_layout().label_groups(0);
     QCOMPARE(group.labels_size(), 3);
     QCOMPARE(QString::fromStdString(group.labels(1).text()),
              QStringLiteral("56"));
@@ -2552,7 +3270,7 @@ void PrinterProtocolTests::displayKeepalivePreservesPaseOverlayValues() {
              QStringLiteral("°C"));
 }
 
-void PrinterProtocolTests::paseMetricBatchMatchesHeaderlessKanaliFrame() {
+void PrinterProtocolTests::paseMetricBatchMatchesHeaderlessWireFrame() {
     int sockets[2] = {-1, -1};
     QString socketError;
     QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
@@ -2560,7 +3278,7 @@ void PrinterProtocolTests::paseMetricBatchMatchesHeaderlessKanaliFrame() {
     PrinterProtocol protocol;
     protocol.adoptFileDescriptorForTesting(
         sockets[0], QStringLiteral("/dev/usb/lp-pase-batch"));
-    Tryx::USBProtocol::ReqPackagePb captured;
+    panorama::wire::v1::Request captured;
     QString peerError;
     std::thread peer([&]() {
         readRequest(sockets[1], &captured, &peerError);
@@ -2581,7 +3299,7 @@ void PrinterProtocolTests::paseMetricBatchMatchesHeaderlessKanaliFrame() {
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
     QVERIFY(!captured.has_header());
     QCOMPARE(captured.body_case(),
-             Tryx::USBProtocol::ReqPackagePb::kBatchGroupLabelUpdate);
+             panorama::wire::v1::Request::kMetricBatch);
     std::string serialized;
     QVERIFY(captured.SerializeToString(&serialized));
     const QByteArray actual(serialized.data(),
@@ -2599,18 +3317,18 @@ void PrinterProtocolTests::metricBatchExplicitErrorIsRejected() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::
-                    kBatchGroupLabelUpdate) {
+                panorama::wire::v1::Request::
+                    kMetricBatch) {
             peerError = QStringLiteral(
                 "metric error test did not receive a batch update");
             return;
         }
-        Tryx::USBProtocol::RspPackagePb response;
+        panorama::wire::v1::Response response;
         response.mutable_error()->set_code(
-            Tryx::USBProtocol::ErrorPb::Fail);
+            panorama::wire::v1::ProtocolError::FAILURE);
         response.mutable_error()->set_why(
             "label group is unavailable");
         writeResponse(sockets[1], response, &peerError);
@@ -2653,21 +3371,21 @@ void PrinterProtocolTests::metricBatchResponsesAreDrainedBeforeTrackedRequest() 
         QByteArray requestBuffer;
         for (int index = 0; index < kMetricResponseCount; ++index) {
             QByteArray payload;
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readFrameFd(sockets[1], &payload, &peerError,
                              kPeerTimeoutMs, &requestBuffer) ||
                 !request.ParseFromArray(payload.constData(),
                                         static_cast<int>(payload.size())) ||
                 request.body_case() !=
-                    Tryx::USBProtocol::ReqPackagePb::kBatchGroupLabelUpdate) {
+                    panorama::wire::v1::Request::kMetricBatch) {
                 if (peerError.isEmpty()) {
                     peerError = QStringLiteral(
                         "expected metric batch request %1").arg(index);
                 }
                 return;
             }
-            Tryx::USBProtocol::RspPackagePb response;
-            response.mutable_dummy_msg();
+            panorama::wire::v1::Response response;
+            response.mutable_acknowledgement();
             if (!writeResponse(sockets[1], response, &peerError)) {
                 return;
             }
@@ -2681,13 +3399,13 @@ void PrinterProtocolTests::metricBatchResponsesAreDrainedBeforeTrackedRequest() 
         }
 
         QByteArray trackedPayload;
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readFrameFd(sockets[1], &trackedPayload, &peerError,
                          kPeerTimeoutMs, &requestBuffer) ||
             !request.ParseFromArray(
                 trackedPayload.constData(),
                 static_cast<int>(trackedPayload.size())) ||
-            request.body_case() != Tryx::USBProtocol::ReqPackagePb::kPing) {
+            request.body_case() != panorama::wire::v1::Request::kPing) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "tracked request did not follow metric response burst");
@@ -2770,7 +3488,7 @@ void PrinterProtocolTests::daemonMetricsBatchRunsWithoutGui() {
     worker.printerOverlayConfig_.left.metrics = {
         QStringLiteral("Date&Time")};
 
-    Tryx::USBProtocol::ReqPackagePb captured;
+    panorama::wire::v1::Request captured;
     QString peerError;
     std::thread peer([&]() {
         readRequest(sockets[1], &captured, &peerError);
@@ -2786,16 +3504,16 @@ void PrinterProtocolTests::daemonMetricsBatchRunsWithoutGui() {
     QCOMPARE(sentSpy.first().at(0).toULongLong(), generation);
     QVERIFY(!captured.has_header());
     QCOMPARE(captured.body_case(),
-             Tryx::USBProtocol::ReqPackagePb::kBatchGroupLabelUpdate);
-    QCOMPARE(captured.batch_group_label_update().label_groups_size(), 2);
-    QCOMPARE(captured.batch_group_label_update().label_groups(0).group_id(),
+             panorama::wire::v1::Request::kMetricBatch);
+    QCOMPARE(captured.metric_batch().label_groups_size(), 2);
+    QCOMPARE(captured.metric_batch().label_groups(0).group_id(),
              110U);
-    QCOMPARE(captured.batch_group_label_update()
+    QCOMPARE(captured.metric_batch()
                  .label_groups(0)
                  .label_texts(0)
                  .label_id(),
              131U);
-    QCOMPARE(captured.batch_group_label_update()
+    QCOMPARE(captured.metric_batch()
                  .label_groups(1)
                  .label_texts(0)
                  .label_id(),
@@ -5768,6 +6486,148 @@ void PrinterProtocolTests::
     QVERIFY(uploadSpy.first().at(2).toString() != remoteName);
 }
 
+void PrinterProtocolTests::
+applyPreflightTimeoutPreservesNotStartedBeforeSessionLoss() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    const QString usbName = QStringLiteral("1-1");
+    const QString lpName = QStringLiteral("lp0");
+    QVERIFY(createUsbDevice(sysRoot, usbName, "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, usbName, lpName));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+    const QString endpoint =
+        QDir(devRoot).filePath(
+            QStringLiteral("usb/") + lpName);
+    DeviceWorker *worker = manager->worker_;
+    QVERIFY(QMetaObject::invokeMethod(
+        worker,
+        [worker, fd = sockets[0], endpoint]() {
+            worker->printerProtocol_ =
+                std::make_unique<PrinterProtocol>(75);
+            worker->adoptPrinterFileDescriptorForTesting(
+                fd, endpoint);
+            worker->printerSessionState_ =
+                DeviceWorker::PrinterSessionState::Active;
+        },
+        Qt::BlockingQueuedConnection));
+    manager->printerDisplaySessionActive_ = true;
+    manager->printerDisplaySessionLost_ = false;
+
+    int queryCount = 0;
+    quint64 firstTrackId = 0;
+    quint64 secondTrackId = 0;
+    QString peerError;
+    std::thread peer([&]() {
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(
+                    sockets[1], &request, &peerError) ||
+                request.body_case() !=
+                    panorama::wire::v1::Request::
+                        kUserConfigurationQuery ||
+                !request.has_header() ||
+                request.header().track_id() == 0) {
+                if (peerError.isEmpty()) {
+                    peerError = QStringLiteral(
+                        "missing manager apply preflight query %1")
+                                    .arg(attempt + 1);
+                }
+                return;
+            }
+            ++queryCount;
+            if (attempt == 0) {
+                firstTrackId = request.header().track_id();
+            } else {
+                secondTrackId = request.header().track_id();
+            }
+        }
+
+        pollfd descriptor{};
+        descriptor.fd = sockets[1];
+        descriptor.events = POLLIN;
+        const int pollResult =
+            ::poll(&descriptor, 1, kPeerTimeoutMs);
+        if (pollResult <= 0) {
+            peerError = pollResult == 0
+                ? QStringLiteral(
+                      "manager apply transport remained open after timeout")
+                : QStringLiteral(
+                      "failed to inspect manager apply transport");
+            return;
+        }
+        if ((descriptor.revents & POLLIN) != 0) {
+            char byte = 0;
+            const ssize_t received =
+                ::recv(
+                    sockets[1], &byte, sizeof(byte),
+                    MSG_DONTWAIT | MSG_PEEK);
+            if (received > 0) {
+                peerError = QStringLiteral(
+                    "manager apply sent a mutation after preflight timeout");
+            }
+        }
+    });
+
+    TryxRuntimeApplyRequest request;
+    request.media = {
+        QStringLiteral("left.mp4.h264_2240x1080"),
+        QStringLiteral("right.mp4.h264_2240x1080")};
+    request.ratio = QStringLiteral("2:1");
+    request.screenMode =
+        QStringLiteral("Screen Splitting");
+    request.playMode = QStringLiteral("Single");
+    const QString operationId =
+        QStringLiteral(
+            "76767676-7676-4676-8676-767676767676");
+    const QString queuedOperationId =
+        manager->queueApplyOperation(operationId, request);
+
+    QElapsedTimer terminalTimer;
+    terminalTimer.start();
+    while ((manager->operationInfo(operationId).state !=
+                QStringLiteral("Failed") ||
+            !manager->printerDisplaySessionLost_) &&
+           terminalTimer.elapsed() < kPeerTimeoutMs * 2) {
+        QCoreApplication::processEvents(
+            QEventLoop::AllEvents, 10);
+    }
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(queuedOperationId, operationId);
+    QCOMPARE(queryCount, 2);
+    QVERIFY(firstTrackId != 0);
+    QVERIFY(secondTrackId != 0);
+    QVERIFY(firstTrackId != secondTrackId);
+    const TryxRuntimeOperationInfo info =
+        manager->operationInfo(operationId);
+    QCOMPARE(info.state, QStringLiteral("Failed"));
+    QCOMPARE(info.errorCategory,
+             QStringLiteral("NotStarted"));
+    QVERIFY(info.retryMode.isEmpty());
+    QVERIFY(manager->activeOperationInfo().id.isEmpty());
+    QVERIFY(!manager->operations_.value(operationId)
+                 .deviceChangePending);
+    QVERIFY(manager->printerDisplaySessionLost_);
+}
+
 void PrinterProtocolTests::generationChangeWaitsForStructuredApplyOutcome() {
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
@@ -5821,49 +6681,158 @@ void PrinterProtocolTests::generationChangeWaitsForStructuredApplyOutcome() {
     QVERIFY(manager->activeOperationInfo().id.isEmpty());
 }
 
-void PrinterProtocolTests::schemaCriticalFieldsMatchUdb231() {
-    const auto *requestDescriptor = Tryx::USBProtocol::ReqPackagePb::descriptor();
-    QCOMPARE(requestDescriptor->FindFieldByName("file_remove")->number(), 403);
-    QCOMPARE(requestDescriptor->FindFieldByName("sys_ctl_exec")->number(), 450);
-    QCOMPARE(requestDescriptor->FindFieldByName("media_push_end")->number(), 409);
-
-    const auto *trackField = Tryx::USBProtocol::HeaderPb::descriptor()
-                                 ->FindFieldByName("track_id");
-    QCOMPARE(trackField->cpp_type(),
-             google::protobuf::FieldDescriptor::CPPTYPE_UINT64);
-    QCOMPARE(Tryx::USBProtocol::SysCtlExecPb::Reboot, 2);
-    QCOMPARE(Tryx::USBProtocol::SysCtlExecPb::Reset, 6);
-    QCOMPARE(Tryx::KanaliProtocol::PackagePb::descriptor()
-                 ->FindFieldByName("test_data")->number(), 987);
-}
-
-void PrinterProtocolTests::schemaSourcesMatchUdb231Snapshot() {
-    const QString schemaRoot = QFINDTESTDATA("../proto/kanali-2.3.1");
-    QVERIFY2(!schemaRoot.isEmpty(), "KANALI schema directory was not found");
-    const QStringList schemaFiles = {
-        QStringLiteral("cooler.proto"),
-        QStringLiteral("lv_gui.proto"),
-        QStringLiteral("media_header.proto"),
-        QStringLiteral("sys_config.proto"),
-        QStringLiteral("user_config.proto"),
-        QStringLiteral("usb_protocol.proto"),
-        QStringLiteral("kanali_protocol.proto")
+void PrinterProtocolTests::wireCriticalGoldenFixtures() {
+    const auto serializedHex = [](const auto &message) {
+        return QByteArray::fromStdString(message.SerializeAsString()).toHex();
     };
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    for (const QString &fileName : schemaFiles) {
-        QFile file(QDir(schemaRoot).filePath(fileName));
-        QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
-        hash.addData(fileName.toUtf8());
-        hash.addData(QByteArrayView("\0", 1));
-        hash.addData(file.readAll());
-        hash.addData(QByteArrayView("\0", 1));
-    }
-    QCOMPARE(hash.result().toHex(),
-             QByteArray("dc54eb21679a9c7b28e1044a49b03e9f4809c87231ad4040d0ed47078786c990"));
+
+    panorama::wire::v1::Request bootstrap;
+    bootstrap.mutable_header()->set_version(1);
+    bootstrap.mutable_device_information_query()->set_dummy("NA");
+    QCOMPARE(serializedHex(bootstrap),
+             QByteArray("0a020801a206040a024e41"));
+
+    panorama::wire::v1::Request ping;
+    ping.mutable_header()->set_version(1);
+    ping.mutable_header()->set_track_id(42);
+    ping.mutable_ping()->set_payload("hello?");
+    QCOMPARE(serializedHex(ping),
+             QByteArray("0a040801102a52080a0668656c6c6f3f"));
+
+    panorama::wire::v1::Request removal;
+    removal.mutable_header()->set_version(1);
+    removal.mutable_header()->set_track_id(42);
+    removal.mutable_file_removal()->set_file_name("clip.mp4");
+    removal.mutable_file_removal()->set_file_type("media");
+    QCOMPARE(
+        serializedHex(removal),
+        QByteArray("0a040801102a9a19110a08636c69702e6d703412056d65646961"));
+
+    panorama::wire::v1::Request transferBegin;
+    transferBegin.mutable_header()->set_track_id(17);
+    transferBegin.mutable_transfer_begin()->set_file_name("clip.mp4");
+    transferBegin.mutable_transfer_begin()->set_file_size(123456);
+    QCOMPARE(
+        serializedHex(transferBegin),
+        QByteArray("0a02101182190e0a08636c69702e6d703410c0c407"));
+
+    panorama::wire::v1::Request transferData;
+    transferData.mutable_header()->set_track_id(17);
+    transferData.mutable_transfer_chunk()->set_file_data("abc");
+    QCOMPARE(serializedHex(transferData),
+             QByteArray("0a0210118a19050a03616263"));
+
+    panorama::wire::v1::Request transferEnd;
+    transferEnd.mutable_header()->set_track_id(17);
+    transferEnd.mutable_transfer_end()->set_file_type("media");
+    transferEnd.mutable_transfer_end()->set_checksum(0);
+    QCOMPARE(serializedHex(transferEnd),
+             QByteArray("0a0210119219070a056d65646961"));
+
+    panorama::wire::v1::Request metricBatch;
+    auto *metricGroup =
+        metricBatch.mutable_metric_batch()->add_label_groups();
+    metricGroup->set_group_id(100);
+    auto *metricLabel = metricGroup->add_label_texts();
+    metricLabel->set_label_id(101);
+    metricLabel->set_text("42");
+    QCOMPARE(serializedHex(metricBatch),
+             QByteArray("e2120c0a0a08641206086512023432"));
+
+    panorama::wire::v1::Request layout;
+    layout.mutable_header();
+    auto *layoutGroup = layout.mutable_overlay_layout()->add_label_groups();
+    layoutGroup->set_group_id(100);
+    layoutGroup->set_group_x(60);
+    layoutGroup->set_group_y(100);
+    layoutGroup->set_group_width(1000);
+    layoutGroup->set_group_height(160);
+    layoutGroup->set_text_align(
+        panorama::wire::v1::OverlayGroup::ALIGN_LEFT);
+    layoutGroup->set_line_gap(-10);
+    auto *layoutLabel = layoutGroup->add_labels();
+    layoutLabel->set_label_id(101);
+    layoutLabel->set_line(1);
+    layoutLabel->set_gap_left(-3);
+    layoutLabel->set_text_font("roboto-regular");
+    layoutLabel->set_text_size(30);
+    layoutLabel->set_text_color(14474460);
+    layoutLabel->set_text("CPU");
+    QCOMPARE(
+        serializedHex(layout),
+        QByteArray(
+            "0a00ca0c360a340864103c186420e80728a001300138134222086510012005"
+            "420e726f626f746f2d726567756c6172481e50dcb9f3065a03435055"));
+
+    panorama::wire::v1::Request userConfiguration;
+    userConfiguration.mutable_header()->set_version(1);
+    userConfiguration.mutable_header()->set_track_id(7);
+    auto *configuration = userConfiguration.mutable_user_configuration();
+    configuration->mutable_standby_config()->set_enable(true);
+    configuration->mutable_standby_config()->set_media_file("standby.h264");
+    configuration->mutable_work_config()->set_media_mode(
+        panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
+    configuration->mutable_work_config()->set_loop_mode(
+        panorama::wire::v1::WorkConfiguration::LOOP_RANDOM);
+    configuration->mutable_work_config()->set_dual_mode_left_media_file(
+        "left.h264");
+    configuration->mutable_work_config()->set_dual_mode_right_media_file(
+        "right.h264");
+    configuration->mutable_display_config()->set_backlight_enable(true);
+    configuration->mutable_display_config()->set_backlight_brightness(77);
+    configuration->mutable_display_config()->set_mirror(true);
+    configuration->mutable_display_config()->set_ui_rotation(90);
+    configuration->mutable_display_config()->set_media_rotation(180);
+    QCOMPARE(
+        serializedHex(userConfiguration),
+        QByteArray(
+            "0a0408011007c20c3c12100801120c7374616e6462792e683236341a1b080110"
+            "0222096c6566742e683236342a0a72696768742e683236342a0b0801104d1801"
+            "205a28b401"));
+
+    panorama::wire::v1::Response mediaCatalog;
+    mediaCatalog.mutable_header()->set_version(1);
+    mediaCatalog.mutable_header()->set_track_id(8);
+    auto *userMedia = mediaCatalog.mutable_media_catalog()->add_media_file_list();
+    userMedia->set_file_path("/userdata/a");
+    userMedia->set_file_ext(".mp4");
+    userMedia->set_file_size(123);
+    auto *presetMedia =
+        mediaCatalog.mutable_media_catalog()->add_preset_file_list();
+    presetMedia->set_file_path("default_x");
+    presetMedia->set_file_ext(".mp4");
+    presetMedia->set_file_size(456);
+    presetMedia->set_read_only(true);
+    QCOMPARE(
+        serializedHex(mediaCatalog),
+        QByteArray(
+            "0a0408011008ba1f2f0a150a0b2f75736572646174612f6112042e6d703418"
+            "7b12160a0964656661756c745f7812042e6d703418c8032001"));
+
+    panorama::wire::v1::Response error;
+    error.mutable_header()->set_version(1);
+    error.mutable_header()->set_track_id(9);
+    error.mutable_error()->set_code(
+        panorama::wire::v1::ProtocolError::FAILURE);
+    error.mutable_error()->set_why("rejected");
+    QCOMPARE(serializedHex(error),
+             QByteArray("0a0408011009120c0801120872656a6563746564"));
+
+    panorama::wire::v1::Response transferStatus;
+    transferStatus.mutable_header()->set_track_id(17);
+    transferStatus.mutable_transfer_end_status()->set_status(
+        panorama::wire::v1::TransferStatus::CHECKSUM_FAILURE);
+    QCOMPARE(serializedHex(transferStatus),
+             QByteArray("0a0210119232020803"));
+
+    panorama::wire::v1::Response asynchronousEvent;
+    asynchronousEvent.mutable_asynchronous_event()->set_play_finished(true);
+    QCOMPARE(serializedHex(asynchronousEvent),
+             QByteArray("da3d020801"));
 }
 
 void PrinterProtocolTests::unknownFieldsSurviveMutation() {
-    Tryx::Config::UserConfigPb original;
+    panorama::wire::v1::UserConfiguration original;
     original.mutable_work_config()->set_single_mode_media_file("old.h264");
     original.GetReflection()->MutableUnknownFields(&original)->AddVarint(99, 123456);
     auto *workUnknown = original.mutable_work_config()
@@ -5873,13 +6842,13 @@ void PrinterProtocolTests::unknownFieldsSurviveMutation() {
 
     std::string fixture;
     QVERIFY(original.SerializeToString(&fixture));
-    Tryx::Config::UserConfigPb parsed;
+    panorama::wire::v1::UserConfiguration parsed;
     QVERIFY(parsed.ParseFromString(fixture));
     parsed.mutable_work_config()->set_single_mode_media_file("new.h264");
 
     std::string roundTrip;
     QVERIFY(parsed.SerializeToString(&roundTrip));
-    Tryx::Config::UserConfigPb verified;
+    panorama::wire::v1::UserConfiguration verified;
     QVERIFY(verified.ParseFromString(roundTrip));
     QCOMPARE(QString::fromStdString(
                  verified.work_config().single_mode_media_file()),
@@ -6220,21 +7189,21 @@ void PrinterProtocolTests::samePathReenumerationCancelsOldGeneration() {
                                &requestBuffer)) {
             return;
         }
-        Tryx::USBProtocol::ReqPackagePb sessionRequest;
+        panorama::wire::v1::Request sessionRequest;
         if (!readRequest(sockets[1], &sessionRequest, &peerError,
                          kPeerTimeoutMs, &requestBuffer) ||
             sessionRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral("same-path test did not receive session start");
             return;
         }
         auto sessionResponse = baseResponse(sessionRequest);
-        sessionResponse.mutable_dummy_msg();
+        sessionResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], sessionResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         bool deviceInfoReceived = false;
         for (int index = 0; index < 8; ++index) {
             if (!readRequest(sockets[1], &request, &peerError,
@@ -6242,12 +7211,12 @@ void PrinterProtocolTests::samePathReenumerationCancelsOldGeneration() {
                 return;
             }
             if (request.body_case() ==
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo) {
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
                 deviceInfoReceived = true;
                 break;
             }
             if (request.body_case() ==
-                Tryx::USBProtocol::ReqPackagePb::kPing) {
+                panorama::wire::v1::Request::kPing) {
                 auto response = baseResponse(request);
                 response.mutable_pong()->set_payload(
                     request.ping().payload());
@@ -6257,9 +7226,9 @@ void PrinterProtocolTests::samePathReenumerationCancelsOldGeneration() {
                 continue;
             }
             if (request.body_case() ==
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
                 auto response = baseResponse(request);
-                auto *userConfig = response.mutable_user_config();
+                auto *userConfig = response.mutable_user_configuration();
                 userConfig->mutable_display_config()
                     ->set_backlight_brightness(75);
                 userConfig->mutable_work_config()
@@ -6271,9 +7240,9 @@ void PrinterProtocolTests::samePathReenumerationCancelsOldGeneration() {
                 continue;
             }
             if (request.body_case() !=
-                    Tryx::USBProtocol::ReqPackagePb::kRunConfig &&
+                    panorama::wire::v1::Request::kOverlayLayout &&
                 request.body_case() !=
-                    Tryx::USBProtocol::ReqPackagePb::kBatchGroupLabelUpdate) {
+                    panorama::wire::v1::Request::kMetricBatch) {
                 peerError = QStringLiteral(
                     "same-path test received request body %1 before device info")
                                 .arg(static_cast<int>(request.body_case()));
@@ -7338,9 +8307,9 @@ void PrinterProtocolTests::typedPingTransaction() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
-            request.body_case() != Tryx::USBProtocol::ReqPackagePb::kPing ||
+            request.body_case() != panorama::wire::v1::Request::kPing ||
             request.ping().payload() != "hello?") {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral("unexpected ping request");
@@ -7373,7 +8342,7 @@ void PrinterProtocolTests::unframedTrackedResponseAfterTransportError() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError)) {
             return;
         }
@@ -7406,7 +8375,7 @@ void PrinterProtocolTests::unframedTrackedResponseRequiresTransportError() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError)) {
             return;
         }
@@ -7436,7 +8405,7 @@ void PrinterProtocolTests::unframedWrongTrackOrBodyDoesNotBypassMatching() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb firstRequest;
+        panorama::wire::v1::Request firstRequest;
         if (!readRequest(sockets[1], &firstRequest, &peerError)) {
             return;
         }
@@ -7449,12 +8418,12 @@ void PrinterProtocolTests::unframedWrongTrackOrBodyDoesNotBypassMatching() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb secondRequest;
+        panorama::wire::v1::Request secondRequest;
         if (!readRequest(sockets[1], &secondRequest, &peerError)) {
             return;
         }
         auto wrongBody = baseResponse(secondRequest);
-        wrongBody.mutable_dummy_msg();
+        wrongBody.mutable_acknowledgement();
         auto secondExpected = baseResponse(secondRequest);
         secondExpected.mutable_pong()->set_payload("second-ok");
         writeUnframedResponse(sockets[1], wrongBody, &peerError);
@@ -7497,11 +8466,11 @@ void PrinterProtocolTests::udbSessionBootstrapUsesExactSequence() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runConfigRequest;
+        panorama::wire::v1::Request runConfigRequest;
         if (!readRequest(sockets[1], &runConfigRequest, &peerError,
                          kPeerTimeoutMs, &requestBuffer) ||
             runConfigRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig ||
+                panorama::wire::v1::Request::kOverlayLayout ||
             !runConfigRequest.has_header() ||
             runConfigRequest.header().track_id() == 0) {
             if (peerError.isEmpty()) {
@@ -7511,7 +8480,7 @@ void PrinterProtocolTests::udbSessionBootstrapUsesExactSequence() {
             return;
         }
         auto response = baseResponse(runConfigRequest);
-        response.mutable_dummy_msg();
+        response.mutable_acknowledgement();
         writeResponse(sockets[1], response, &peerError);
     });
 
@@ -7542,7 +8511,7 @@ void PrinterProtocolTests::udbSessionBootstrapWaitsForLateDeviceInfo() {
     std::thread peer([&]() {
         const QByteArray expectedDeviceInfoFrame = QByteArray::fromHex(
             "545259580b0000000a020801a206040a024e41");
-        Tryx::USBProtocol::ReqPackagePb deviceInfoRequest;
+        panorama::wire::v1::Request deviceInfoRequest;
         QByteArray payload;
         if (!readFrameFd(sockets[1], &payload, &peerError) ||
             PrinterFrameCodec::encode(payload) != expectedDeviceInfoFrame ||
@@ -7572,7 +8541,7 @@ void PrinterProtocolTests::udbSessionBootstrapWaitsForLateDeviceInfo() {
         }
 
         auto deviceInfoResponse = baseResponse(deviceInfoRequest);
-        auto *deviceInfo = deviceInfoResponse.mutable_device_info();
+        auto *deviceInfo = deviceInfoResponse.mutable_device_information();
         deviceInfo->set_product_name("PANORAMA SE");
         deviceInfo->set_firmware_version("late-firmware");
         deviceInfo->set_serial_number("late-serial");
@@ -7580,44 +8549,44 @@ void PrinterProtocolTests::udbSessionBootstrapWaitsForLateDeviceInfo() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb sysConfigRequest;
+        panorama::wire::v1::Request sysConfigRequest;
         if (!readRequest(sockets[1], &sysConfigRequest, &peerError) ||
             sysConfigRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetSysConfig) {
+                panorama::wire::v1::Request::kSystemConfigurationQuery) {
             peerError = QStringLiteral(
                 "late readiness did not continue with SysConfig");
             return;
         }
         auto sysConfigResponse = baseResponse(sysConfigRequest);
-        sysConfigResponse.mutable_sys_config();
+        sysConfigResponse.mutable_system_configuration();
         if (!writeResponse(sockets[1], sysConfigResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb authRequest;
+        panorama::wire::v1::Request authRequest;
         if (!readRequest(sockets[1], &authRequest, &peerError) ||
             authRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceAuth) {
+                panorama::wire::v1::Request::kDeviceAuthenticationQuery) {
             peerError = QStringLiteral(
                 "late readiness did not continue with DeviceAuth");
             return;
         }
         auto authResponse = baseResponse(authRequest);
-        authResponse.mutable_device_auth()->set_auth("ok");
+        authResponse.mutable_device_authentication()->set_auth("ok");
         if (!writeResponse(sockets[1], authResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runConfigRequest;
+        panorama::wire::v1::Request runConfigRequest;
         if (!readRequest(sockets[1], &runConfigRequest, &peerError) ||
             runConfigRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral(
                 "late readiness did not continue with one RunConfig");
             return;
         }
         auto runConfigResponse = baseResponse(runConfigRequest);
-        runConfigResponse.mutable_dummy_msg();
+        runConfigResponse.mutable_acknowledgement();
         writeResponse(sockets[1], runConfigResponse, &peerError);
     });
 
@@ -7657,10 +8626,10 @@ void PrinterProtocolTests::udbSessionBootstrapResynchronizesAfterStaleTail() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb deviceInfoRequest;
+        panorama::wire::v1::Request deviceInfoRequest;
         if (!readRequest(sockets[1], &deviceInfoRequest, &peerError) ||
             deviceInfoRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo) {
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "resynchronization test did not receive DeviceInfo");
@@ -7669,7 +8638,7 @@ void PrinterProtocolTests::udbSessionBootstrapResynchronizesAfterStaleTail() {
         }
 
         auto deviceInfoResponse = baseResponse(deviceInfoRequest);
-        auto *deviceInfo = deviceInfoResponse.mutable_device_info();
+        auto *deviceInfo = deviceInfoResponse.mutable_device_information();
         deviceInfo->set_product_name("PANORAMA SE");
         deviceInfo->set_firmware_version("resynchronized-firmware");
         deviceInfo->set_serial_number("resynchronized-serial");
@@ -7688,7 +8657,7 @@ void PrinterProtocolTests::udbSessionBootstrapResynchronizesAfterStaleTail() {
 
         const auto respondToBootstrap = [&](auto expectedBody,
                                             auto populateResponse) {
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readRequest(sockets[1], &request, &peerError) ||
                 request.body_case() != expectedBody) {
                 if (peerError.isEmpty()) {
@@ -7703,19 +8672,19 @@ void PrinterProtocolTests::udbSessionBootstrapResynchronizesAfterStaleTail() {
         };
 
         if (!respondToBootstrap(
-                Tryx::USBProtocol::ReqPackagePb::kGetSysConfig,
-                [](Tryx::USBProtocol::RspPackagePb *response) {
-                    response->mutable_sys_config();
+                panorama::wire::v1::Request::kSystemConfigurationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_system_configuration();
                 }) ||
             !respondToBootstrap(
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceAuth,
-                [](Tryx::USBProtocol::RspPackagePb *response) {
-                    response->mutable_device_auth()->set_auth("ok");
+                panorama::wire::v1::Request::kDeviceAuthenticationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_device_authentication()->set_auth("ok");
                 }) ||
             !respondToBootstrap(
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig,
-                [](Tryx::USBProtocol::RspPackagePb *response) {
-                    response->mutable_dummy_msg();
+                panorama::wire::v1::Request::kOverlayLayout,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_acknowledgement();
                 })) {
             return;
         }
@@ -7745,10 +8714,10 @@ void PrinterProtocolTests::udbSessionBootstrapSkipsStaleTrackedResponse() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb deviceInfoRequest;
+        panorama::wire::v1::Request deviceInfoRequest;
         if (!readRequest(sockets[1], &deviceInfoRequest, &peerError) ||
             deviceInfoRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo) {
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "stale-response bootstrap did not receive DeviceInfo");
@@ -7760,12 +8729,12 @@ void PrinterProtocolTests::udbSessionBootstrapSkipsStaleTrackedResponse() {
         // previous transport epoch. It is valid protobuf, but it does not
         // belong to the fixed track-zero bootstrap exchange.
         auto staleTracked = baseResponse(deviceInfoRequest, 77);
-        staleTracked.mutable_file_list();
+        staleTracked.mutable_media_catalog();
         if (!writeResponse(sockets[1], staleTracked, &peerError)) {
             return;
         }
         for (int index = 0; index < 40; ++index) {
-            Tryx::USBProtocol::RspPackagePb headerlessPong;
+            panorama::wire::v1::Response headerlessPong;
             headerlessPong.mutable_pong()->set_payload(
                 QStringLiteral("late-pong-%1").arg(index).toStdString());
             if (!writeResponse(sockets[1], headerlessPong, &peerError)) {
@@ -7774,7 +8743,7 @@ void PrinterProtocolTests::udbSessionBootstrapSkipsStaleTrackedResponse() {
         }
 
         auto deviceInfoResponse = baseResponse(deviceInfoRequest);
-        auto *deviceInfo = deviceInfoResponse.mutable_device_info();
+        auto *deviceInfo = deviceInfoResponse.mutable_device_information();
         deviceInfo->set_product_name("PANORAMA SE");
         deviceInfo->set_firmware_version("stale-skipped-firmware");
         deviceInfo->set_serial_number("stale-skipped-serial");
@@ -7783,7 +8752,7 @@ void PrinterProtocolTests::udbSessionBootstrapSkipsStaleTrackedResponse() {
         }
 
         const auto respond = [&](auto expectedBody, auto populateResponse) {
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readRequest(sockets[1], &request, &peerError) ||
                 request.body_case() != expectedBody) {
                 if (peerError.isEmpty()) {
@@ -7798,19 +8767,19 @@ void PrinterProtocolTests::udbSessionBootstrapSkipsStaleTrackedResponse() {
         };
 
         if (!respond(
-                Tryx::USBProtocol::ReqPackagePb::kGetSysConfig,
-                [](Tryx::USBProtocol::RspPackagePb *response) {
-                    response->mutable_sys_config();
+                panorama::wire::v1::Request::kSystemConfigurationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_system_configuration();
                 }) ||
             !respond(
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceAuth,
-                [](Tryx::USBProtocol::RspPackagePb *response) {
-                    response->mutable_device_auth()->set_auth("ok");
+                panorama::wire::v1::Request::kDeviceAuthenticationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_device_authentication()->set_auth("ok");
                 }) ||
             !respond(
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig,
-                [](Tryx::USBProtocol::RspPackagePb *response) {
-                    response->mutable_dummy_msg();
+                panorama::wire::v1::Request::kOverlayLayout,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_acknowledgement();
                 })) {
             return;
         }
@@ -7841,10 +8810,10 @@ void PrinterProtocolTests::udbSessionBootstrapRejectsUnboundedStaleResponses() {
     int deviceInfoRequestCount = 0;
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo) {
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "bounded stale-response test did not receive DeviceInfo");
@@ -7853,7 +8822,7 @@ void PrinterProtocolTests::udbSessionBootstrapRejectsUnboundedStaleResponses() {
         }
         ++deviceInfoRequestCount;
         for (int index = 0; index < 257; ++index) {
-            Tryx::USBProtocol::RspPackagePb pong;
+            panorama::wire::v1::Response pong;
             pong.mutable_pong()->set_payload("stale");
             if (!writeResponse(sockets[1], pong, &peerError)) {
                 return;
@@ -7885,10 +8854,10 @@ void PrinterProtocolTests::udbSessionDeviceInfoReadinessTimeoutSendsOnce() {
     int deviceInfoRequestCount = 0;
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo) {
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "bounded readiness test did not receive DeviceInfo");
@@ -7939,10 +8908,10 @@ void PrinterProtocolTests::udbSessionBootstrapPartialResponseIsTerminal() {
     int deviceInfoRequestCount = 0;
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo) {
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
             peerError = QStringLiteral(
                 "partial bootstrap test did not receive DeviceInfo");
             return;
@@ -7950,7 +8919,7 @@ void PrinterProtocolTests::udbSessionBootstrapPartialResponseIsTerminal() {
         ++deviceInfoRequestCount;
 
         auto response = baseResponse(request);
-        response.mutable_device_info()->set_product_name("PANORAMA SE");
+        response.mutable_device_information()->set_product_name("PANORAMA SE");
         std::string serialized;
         if (!response.SerializeToString(&serialized)) {
             peerError = QStringLiteral(
@@ -8005,7 +8974,208 @@ void PrinterProtocolTests::udbSessionBootstrapPartialResponseIsTerminal() {
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
 }
 
-void PrinterProtocolTests::udbSessionBootstrapRetriesOnlyCurrentExchange() {
+void PrinterProtocolTests::
+udbSessionDeviceInfoRetriesConfirmedZeroByteOutWithBackoff() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    int deviceInfoRequestCount = 0;
+    int sysConfigRequestCount = 0;
+    int authRequestCount = 0;
+    int runConfigRequestCount = 0;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request deviceInfoRequest;
+        if (!readRequest(
+                sockets[1], &deviceInfoRequest,
+                &peerError, 3000) ||
+            deviceInfoRequest.body_case() !=
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
+            peerError = QStringLiteral(
+                "zero-byte readiness retry did not send DeviceInfo");
+            return;
+        }
+        ++deviceInfoRequestCount;
+        auto deviceInfoResponse =
+            baseResponse(deviceInfoRequest);
+        auto *deviceInfo =
+            deviceInfoResponse.mutable_device_information();
+        deviceInfo->set_product_name("PANORAMA SE");
+        deviceInfo->set_firmware_version(
+            "zero-byte-retry-firmware");
+        if (!writeResponse(
+                sockets[1], deviceInfoResponse,
+                &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request sysConfigRequest;
+        if (!readRequest(
+                sockets[1], &sysConfigRequest,
+                &peerError) ||
+            sysConfigRequest.body_case() !=
+                panorama::wire::v1::Request::kSystemConfigurationQuery) {
+            peerError = QStringLiteral(
+                "zero-byte readiness retry did not send SysConfig");
+            return;
+        }
+        ++sysConfigRequestCount;
+        auto sysConfigResponse =
+            baseResponse(sysConfigRequest);
+        sysConfigResponse.mutable_system_configuration();
+        if (!writeResponse(
+                sockets[1], sysConfigResponse,
+                &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request authRequest;
+        if (!readRequest(
+                sockets[1], &authRequest,
+                &peerError) ||
+            authRequest.body_case() !=
+                panorama::wire::v1::Request::kDeviceAuthenticationQuery) {
+            peerError = QStringLiteral(
+                "zero-byte readiness retry did not send DeviceAuth");
+            return;
+        }
+        ++authRequestCount;
+        auto authResponse = baseResponse(authRequest);
+        authResponse.mutable_device_authentication()->set_auth("ok");
+        if (!writeResponse(
+                sockets[1], authResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request runConfigRequest;
+        if (!readRequest(
+                sockets[1], &runConfigRequest,
+                &peerError) ||
+            runConfigRequest.body_case() !=
+                panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral(
+                "zero-byte readiness retry did not send RunConfig");
+            return;
+        }
+        ++runConfigRequestCount;
+        auto runConfigResponse =
+            baseResponse(runConfigRequest);
+        runConfigResponse.mutable_acknowledgement();
+        writeResponse(
+            sockets[1], runConfigResponse, &peerError);
+    });
+
+    PrinterProtocol protocol(100, 1900);
+    protocol.setBootstrapZeroByteWriteFailuresForTesting(2);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("test-endpoint"));
+    QList<PrinterProtocol::ReadinessRetryInfo> retries;
+    PrinterProtocol::OperationContext context;
+    context.onReadinessProbeRetry =
+        [&retries](
+            const PrinterProtocol::ReadinessRetryInfo &retry) {
+            retries.append(retry);
+        };
+    const PrinterProtocol::Result result =
+        protocol.startDisplaySession(
+            QStringLiteral("test-endpoint"), context);
+    const QList<qint64> attemptOffsets =
+        protocol.bootstrapReadinessAttemptOffsetsForTesting();
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(deviceInfoRequestCount, 1);
+    QCOMPARE(sysConfigRequestCount, 1);
+    QCOMPARE(authRequestCount, 1);
+    QCOMPARE(runConfigRequestCount, 1);
+    QCOMPARE(attemptOffsets.size(), 3);
+    QVERIFY(attemptOffsets.at(0) < 100);
+    QVERIFY(attemptOffsets.at(1) - attemptOffsets.at(0) >= 450);
+    QVERIFY(attemptOffsets.at(1) - attemptOffsets.at(0) < 800);
+    QVERIFY(attemptOffsets.at(2) - attemptOffsets.at(1) >= 950);
+    QVERIFY(attemptOffsets.at(2) - attemptOffsets.at(1) < 1300);
+    QCOMPARE(retries.size(), 2);
+    QCOMPARE(retries.at(0).attempt, 1);
+    QCOMPARE(retries.at(0).expectedBytes,
+             static_cast<qint64>(19));
+    QCOMPARE(retries.at(0).actualBytes,
+             static_cast<qint64>(0));
+    QCOMPARE(retries.at(0).backoffMs, 500);
+    QVERIFY(retries.at(0).transferStatus.contains(
+        QStringLiteral("zero-byte"),
+        Qt::CaseInsensitive));
+    QCOMPARE(retries.at(1).attempt, 2);
+    QCOMPARE(retries.at(1).expectedBytes,
+             static_cast<qint64>(19));
+    QCOMPARE(retries.at(1).actualBytes,
+             static_cast<qint64>(0));
+    QCOMPARE(retries.at(1).backoffMs, 1000);
+    QVERIFY(retries.at(1).elapsedMs >=
+            retries.at(0).elapsedMs);
+    QCOMPARE(
+        result.deviceInfo.firmwareVersion,
+        QStringLiteral("zero-byte-retry-firmware"));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+void PrinterProtocolTests::
+udbSessionDeviceInfoCancellationDuringBackoffIsTerminal() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+    int cancellationPipe[2] = {-1, -1};
+    QVERIFY(::pipe2(
+                cancellationPipe,
+                O_CLOEXEC | O_NONBLOCK) == 0);
+
+    std::thread cancel([&]() {
+        ::poll(nullptr, 0, 100);
+        const char signal = 1;
+        ::write(cancellationPipe[1], &signal, 1);
+    });
+
+    PrinterProtocol protocol(100, 2000);
+    protocol.setBootstrapZeroByteWriteFailuresForTesting(1);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("test-endpoint"));
+    PrinterProtocol::OperationContext context;
+    context.cancellationFd = cancellationPipe[0];
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const PrinterProtocol::Result result =
+        protocol.startDisplaySession(
+            QStringLiteral("test-endpoint"), context);
+    const qint64 elapsedMs = elapsed.elapsed();
+    const QList<qint64> attemptOffsets =
+        protocol.bootstrapReadinessAttemptOffsetsForTesting();
+
+    cancel.join();
+    ::close(cancellationPipe[0]);
+    ::close(cancellationPipe[1]);
+
+    char unexpected = 0;
+    const ssize_t received = ::recv(
+        sockets[1], &unexpected, sizeof(unexpected),
+        MSG_DONTWAIT);
+    ::close(sockets[1]);
+
+    QVERIFY(!result.success);
+    QVERIFY(result.error.contains(
+        QStringLiteral("cancelled"),
+        Qt::CaseInsensitive));
+    QCOMPARE(attemptOffsets.size(), 1);
+    QVERIFY(elapsedMs >= 50);
+    QVERIFY(elapsedMs < 450);
+    QCOMPARE(received, static_cast<ssize_t>(0));
+}
+
+void PrinterProtocolTests::
+udbSessionBootstrapSendsPostReadinessExchangesOnce() {
     int sockets[2] = {-1, -1};
     QString socketError;
     QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
@@ -8014,97 +9184,95 @@ void PrinterProtocolTests::udbSessionBootstrapRetriesOnlyCurrentExchange() {
     int sysConfigRequestCount = 0;
     int authRequestCount = 0;
     int runConfigRequestCount = 0;
+    std::atomic<int> deviceInfoReadyCallbackCount{0};
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb deviceInfoRequest;
+        panorama::wire::v1::Request deviceInfoRequest;
         if (!readRequest(sockets[1], &deviceInfoRequest, &peerError) ||
             deviceInfoRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo) {
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
             peerError = QStringLiteral(
-                "current-exchange retry did not receive DeviceInfo");
+                "single bootstrap did not receive DeviceInfo");
             return;
         }
         ++deviceInfoRequestCount;
         auto deviceInfoResponse = baseResponse(deviceInfoRequest);
-        auto *deviceInfo = deviceInfoResponse.mutable_device_info();
+        auto *deviceInfo = deviceInfoResponse.mutable_device_information();
         deviceInfo->set_product_name("PANORAMA SE");
         deviceInfo->set_firmware_version("exchange-firmware");
         if (!writeResponse(sockets[1], deviceInfoResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb firstSysConfigRequest;
-        if (!readRequest(sockets[1], &firstSysConfigRequest, &peerError) ||
-            firstSysConfigRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetSysConfig) {
+        panorama::wire::v1::Request sysConfigRequest;
+        if (!readRequest(sockets[1], &sysConfigRequest, &peerError) ||
+            sysConfigRequest.body_case() !=
+                panorama::wire::v1::Request::kSystemConfigurationQuery) {
             peerError = QStringLiteral(
-                "current-exchange retry did not receive first SysConfig");
+                "single bootstrap did not receive SysConfig");
+            return;
+        }
+        if (deviceInfoReadyCallbackCount.load() != 1) {
+            peerError = QStringLiteral(
+                "DeviceInfo readiness callback did not precede SysConfig");
             return;
         }
         ++sysConfigRequestCount;
-
-        Tryx::USBProtocol::ReqPackagePb secondSysConfigRequest;
-        if (!readRequest(sockets[1], &secondSysConfigRequest, &peerError) ||
-            secondSysConfigRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetSysConfig) {
-            peerError = QStringLiteral(
-                "current-exchange retry did not repeat SysConfig");
-            return;
-        }
-        ++sysConfigRequestCount;
-
-        auto lateSysConfigResponse = baseResponse(firstSysConfigRequest);
-        lateSysConfigResponse.mutable_sys_config();
-        auto duplicateSysConfigResponse = baseResponse(secondSysConfigRequest);
-        duplicateSysConfigResponse.mutable_sys_config();
-        if (!writeResponse(sockets[1], lateSysConfigResponse, &peerError) ||
-            !writeResponse(sockets[1], duplicateSysConfigResponse, &peerError)) {
+        auto sysConfigResponse = baseResponse(sysConfigRequest);
+        sysConfigResponse.mutable_system_configuration();
+        if (!writeResponse(
+                sockets[1], sysConfigResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb authRequest;
+        panorama::wire::v1::Request authRequest;
         if (!readRequest(sockets[1], &authRequest, &peerError) ||
             authRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetDeviceAuth) {
+                panorama::wire::v1::Request::kDeviceAuthenticationQuery) {
             peerError = QStringLiteral(
-                "current-exchange retry did not continue with DeviceAuth");
+                "single bootstrap did not receive DeviceAuth");
             return;
         }
         ++authRequestCount;
         auto authResponse = baseResponse(authRequest);
-        authResponse.mutable_device_auth()->set_auth("ok");
+        authResponse.mutable_device_authentication()->set_auth("ok");
         if (!writeResponse(sockets[1], authResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runConfigRequest;
+        panorama::wire::v1::Request runConfigRequest;
         if (!readRequest(sockets[1], &runConfigRequest, &peerError) ||
             runConfigRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral(
-                "current-exchange retry did not continue with RunConfig");
+                "single bootstrap did not continue with RunConfig");
             return;
         }
         ++runConfigRequestCount;
         auto runConfigResponse = baseResponse(runConfigRequest);
-        runConfigResponse.mutable_dummy_msg();
+        runConfigResponse.mutable_acknowledgement();
         writeResponse(sockets[1], runConfigResponse, &peerError);
     });
 
     PrinterProtocol protocol(100);
     protocol.adoptFileDescriptorForTesting(sockets[0],
                                            QStringLiteral("test-endpoint"));
+    PrinterProtocol::OperationContext context;
+    context.onDeviceInfoReady = [&]() {
+        deviceInfoReadyCallbackCount.fetch_add(1);
+    };
     const PrinterProtocol::Result result = protocol.startDisplaySession(
-        QStringLiteral("test-endpoint"), {});
+        QStringLiteral("test-endpoint"), context);
 
     peer.join();
     ::close(sockets[1]);
 
     QVERIFY2(result.success, qPrintable(result.error));
     QCOMPARE(deviceInfoRequestCount, 1);
-    QCOMPARE(sysConfigRequestCount, 2);
+    QCOMPARE(sysConfigRequestCount, 1);
     QCOMPARE(authRequestCount, 1);
     QCOMPARE(runConfigRequestCount, 1);
+    QCOMPARE(deviceInfoReadyCallbackCount.load(), 1);
     QCOMPARE(result.deviceInfo.firmwareVersion,
              QStringLiteral("exchange-firmware"));
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
@@ -8129,11 +9297,11 @@ void PrinterProtocolTests::udbKeepaliveUsesExactUntrackedFrame() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!request.ParseFromArray(payload.constData(),
                                     static_cast<int>(payload.size())) ||
             !request.has_header() || request.header().ByteSizeLong() != 0 ||
-            request.body_case() != Tryx::USBProtocol::ReqPackagePb::kPing ||
+            request.body_case() != panorama::wire::v1::Request::kPing ||
             request.ping().payload() != "hello?") {
             peerError = QStringLiteral("invalid untracked keepalive protobuf");
         }
@@ -8160,27 +9328,27 @@ void PrinterProtocolTests::udbKeepaliveDrainsOptionalPong() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb firstRequest;
+        panorama::wire::v1::Request firstRequest;
         if (!readRequest(sockets[1], &firstRequest, &peerError) ||
             !firstRequest.has_header() ||
             firstRequest.header().ByteSizeLong() != 0 ||
-            firstRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kPing) {
+            firstRequest.body_case() != panorama::wire::v1::Request::kPing) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral("missing first UDB keepalive");
             }
             return;
         }
 
-        Tryx::USBProtocol::RspPackagePb response;
+        panorama::wire::v1::Response response;
         response.mutable_header();
         response.mutable_pong()->set_payload("Hey!");
         if (!writeResponse(sockets[1], response, &peerError)) {
             return;
         }
-        Tryx::USBProtocol::RspPackagePb staleResponse;
+        panorama::wire::v1::Response staleResponse;
         staleResponse.mutable_header()->set_version(1);
         staleResponse.mutable_header()->set_track_id(999);
-        staleResponse.mutable_dummy_msg()->set_dummy("stale");
+        staleResponse.mutable_acknowledgement()->set_dummy("stale");
         if (!writeResponse(sockets[1], staleResponse, &peerError)) {
             return;
         }
@@ -8191,11 +9359,11 @@ void PrinterProtocolTests::udbKeepaliveDrainsOptionalPong() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb secondRequest;
+        panorama::wire::v1::Request secondRequest;
         if (!readRequest(sockets[1], &secondRequest, &peerError) ||
             !secondRequest.has_header() ||
             secondRequest.header().ByteSizeLong() != 0 ||
-            secondRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kPing) {
+            secondRequest.body_case() != panorama::wire::v1::Request::kPing) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral("missing second UDB keepalive");
             }
@@ -8281,14 +9449,14 @@ void PrinterProtocolTests::displayKeepaliveIsWriteDrivenAndDrainsOptionalAck() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb firstRequest;
+        panorama::wire::v1::Request firstRequest;
         if (!readRequest(sockets[1], &firstRequest, &peerError) ||
             !firstRequest.has_header() ||
             firstRequest.header().version() != 0 ||
             firstRequest.header().track_id() != 0 ||
             firstRequest.header().payload_crc32() != 0 ||
             firstRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "first display keepalive did not match UDB RunConfig");
@@ -8296,7 +9464,7 @@ void PrinterProtocolTests::displayKeepaliveIsWriteDrivenAndDrainsOptionalAck() {
             return;
         }
         auto firstResponse = baseResponse(firstRequest);
-        firstResponse.mutable_dummy_msg();
+        firstResponse.mutable_acknowledgement();
         std::string serializedResponse;
         if (!firstResponse.SerializeToString(&serializedResponse)) {
             peerError = QStringLiteral(
@@ -8318,14 +9486,14 @@ void PrinterProtocolTests::displayKeepaliveIsWriteDrivenAndDrainsOptionalAck() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb secondRequest;
+        panorama::wire::v1::Request secondRequest;
         if (!readRequest(sockets[1], &secondRequest, &peerError) ||
             !secondRequest.has_header() ||
             secondRequest.header().version() != 0 ||
             secondRequest.header().track_id() != 0 ||
             secondRequest.header().payload_crc32() != 0 ||
             secondRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "second display keepalive did not preserve the connection");
@@ -8414,10 +9582,10 @@ void PrinterProtocolTests::displayKeepaliveMalformedResponseIsDiscarded() {
     QVERIFY(responseReadyFd >= 0);
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "display keepalive did not send RunConfig");
@@ -8437,10 +9605,10 @@ void PrinterProtocolTests::displayKeepaliveMalformedResponseIsDiscarded() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb secondRequest;
+        panorama::wire::v1::Request secondRequest;
         if (!readRequest(sockets[1], &secondRequest, &peerError) ||
             secondRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "second display keepalive did not preserve the connection");
@@ -8485,10 +9653,10 @@ void PrinterProtocolTests::displayKeepaliveIncompleteResponseIsDiscarded() {
     QVERIFY(responseReadyFd >= 0);
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb firstRequest;
+        panorama::wire::v1::Request firstRequest;
         if (!readRequest(sockets[1], &firstRequest, &peerError) ||
             firstRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "first display keepalive did not send RunConfig");
@@ -8509,10 +9677,10 @@ void PrinterProtocolTests::displayKeepaliveIncompleteResponseIsDiscarded() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb secondRequest;
+        panorama::wire::v1::Request secondRequest;
         if (!readRequest(sockets[1], &secondRequest, &peerError) ||
             secondRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "second display keepalive did not preserve the connection");
@@ -8555,12 +9723,12 @@ void PrinterProtocolTests::notificationBeforeExpectedResponse() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError)) {
             return;
         }
         auto notification = baseResponse(request);
-        notification.mutable_test_data()->set_play_finished(true);
+        notification.mutable_asynchronous_event()->set_play_finished(true);
         if (!writeResponse(sockets[1], notification, &peerError)) {
             return;
         }
@@ -8590,24 +9758,24 @@ void PrinterProtocolTests::headerlessPongBeforeTrackedResponseIsSkipped() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral("missing tracked file-list request");
             }
             return;
         }
 
-        Tryx::USBProtocol::RspPackagePb latePong;
+        panorama::wire::v1::Response latePong;
         latePong.mutable_pong()->set_payload("late");
         if (!writeResponse(sockets[1], latePong, &peerError)) {
             return;
         }
 
         auto response = baseResponse(request);
-        auto *file = response.mutable_file_list()->add_media_file_list();
+        auto *file = response.mutable_media_catalog()->add_media_file_list();
         file->set_file_path("/userdata/user/after-pong.png");
         file->set_file_ext(".h264_2240x1080");
         file->set_file_size(321);
@@ -8638,10 +9806,10 @@ void PrinterProtocolTests::boundedResponseBurstBeforeFileListIsSkipped() {
     int fileListRequestCount = 0;
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "bounded burst test did not receive FileList");
@@ -8650,14 +9818,14 @@ void PrinterProtocolTests::boundedResponseBurstBeforeFileListIsSkipped() {
         }
         ++fileListRequestCount;
         for (int index = 0; index < 40; ++index) {
-            Tryx::USBProtocol::RspPackagePb pong;
+            panorama::wire::v1::Response pong;
             pong.mutable_pong()->set_payload("queued-pong");
             if (!writeResponse(sockets[1], pong, &peerError)) {
                 return;
             }
         }
         auto response = baseResponse(request);
-        auto *file = response.mutable_file_list()->add_media_file_list();
+        auto *file = response.mutable_media_catalog()->add_media_file_list();
         file->set_file_path("/userdata/user/recovered.mp4");
         file->set_file_ext(".h264_2240x1080");
         file->set_file_size(4096);
@@ -8689,10 +9857,10 @@ void PrinterProtocolTests::slowTrackedResponseGetsInFlightKeepalive() {
     QString peerError;
     qint64 keepaliveDelayMs = -1;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral("missing slow file-list request");
             }
@@ -8701,11 +9869,11 @@ void PrinterProtocolTests::slowTrackedResponseGetsInFlightKeepalive() {
 
         QElapsedTimer idleTimer;
         idleTimer.start();
-        Tryx::USBProtocol::ReqPackagePb keepalive;
+        panorama::wire::v1::Request keepalive;
         if (!readRequest(sockets[1], &keepalive, &peerError, 3000) ||
             !keepalive.has_header() ||
             keepalive.header().ByteSizeLong() != 0 ||
-            keepalive.body_case() != Tryx::USBProtocol::ReqPackagePb::kPing ||
+            keepalive.body_case() != panorama::wire::v1::Request::kPing ||
             keepalive.ping().payload() != "hello?") {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral("missing in-flight UDB keepalive");
@@ -8715,7 +9883,7 @@ void PrinterProtocolTests::slowTrackedResponseGetsInFlightKeepalive() {
         keepaliveDelayMs = idleTimer.elapsed();
 
         auto response = baseResponse(request);
-        auto *file = response.mutable_file_list()->add_media_file_list();
+        auto *file = response.mutable_media_catalog()->add_media_file_list();
         file->set_file_path("/userdata/user/slow.png");
         file->set_file_ext(".h264_2240x1080");
         file->set_file_size(654);
@@ -8746,7 +9914,7 @@ void PrinterProtocolTests::unrelatedTrackIsSkipped() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError)) {
             return;
         }
@@ -8831,9 +9999,9 @@ void PrinterProtocolTests::cancellationFdInterruptsBlockedResponse() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
-            request.body_case() != Tryx::USBProtocol::ReqPackagePb::kPing) {
+            request.body_case() != panorama::wire::v1::Request::kPing) {
             peerError = QStringLiteral("peer did not receive ping before cancellation");
             return;
         }
@@ -8887,13 +10055,13 @@ void PrinterProtocolTests::userCancellationDoesNotInterruptSessionRecovery() {
 
     QString peerError;
     std::thread peer([&]() {
-        const QList<Tryx::USBProtocol::ReqPackagePb::BodyCase> expectedBodies = {
-            Tryx::USBProtocol::ReqPackagePb::kGetDeviceInfo,
-            Tryx::USBProtocol::ReqPackagePb::kGetSysConfig,
-            Tryx::USBProtocol::ReqPackagePb::kGetDeviceAuth
+        const QList<panorama::wire::v1::Request::BodyCase> expectedBodies = {
+            panorama::wire::v1::Request::kDeviceInformationQuery,
+            panorama::wire::v1::Request::kSystemConfigurationQuery,
+            panorama::wire::v1::Request::kDeviceAuthenticationQuery
         };
         for (int index = 0; index < expectedBodies.size(); ++index) {
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readRequest(sockets[1], &request, &peerError) ||
                 request.body_case() != expectedBodies.at(index)) {
                 if (peerError.isEmpty()) {
@@ -8930,24 +10098,24 @@ void PrinterProtocolTests::userCancellationDoesNotInterruptSessionRecovery() {
 
             auto response = baseResponse(request);
             if (index == 0) {
-                auto *deviceInfo = response.mutable_device_info();
+                auto *deviceInfo = response.mutable_device_information();
                 deviceInfo->set_product_name("PANORAMA SE");
                 deviceInfo->set_firmware_version("test-firmware");
                 deviceInfo->set_serial_number("test-serial");
             } else if (index == 1) {
-                response.mutable_sys_config();
+                response.mutable_system_configuration();
             } else {
-                response.mutable_device_auth()->set_auth("test-auth");
+                response.mutable_device_authentication()->set_auth("test-auth");
             }
             if (!writeResponse(sockets[1], response, &peerError)) {
                 return;
             }
         }
 
-        Tryx::USBProtocol::ReqPackagePb sessionRequest;
+        panorama::wire::v1::Request sessionRequest;
         if (!readRequest(sockets[1], &sessionRequest, &peerError) ||
             sessionRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral(
                     "recovery did not reach display-session activation");
@@ -8955,7 +10123,7 @@ void PrinterProtocolTests::userCancellationDoesNotInterruptSessionRecovery() {
             return;
         }
         auto sessionResponse = baseResponse(sessionRequest);
-        sessionResponse.mutable_dummy_msg();
+        sessionResponse.mutable_acknowledgement();
         writeResponse(sockets[1], sessionResponse, &peerError);
     });
 
@@ -9019,20 +10187,20 @@ void PrinterProtocolTests::typedFileListTransaction() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
-            request.body_case() != Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+            request.body_case() != panorama::wire::v1::Request::kMediaCatalogQuery) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral("unexpected file-list request");
             }
             return;
         }
         auto response = baseResponse(request);
-        auto *userFile = response.mutable_file_list()->add_media_file_list();
+        auto *userFile = response.mutable_media_catalog()->add_media_file_list();
         userFile->set_file_path("/userdata/user/custom.png");
         userFile->set_file_ext(".h264_2240x1080");
         userFile->set_file_size(1234);
-        auto *preset = response.mutable_file_list()->add_preset_file_list();
+        auto *preset = response.mutable_media_catalog()->add_preset_file_list();
         preset->set_file_path("/userdata/default/default_01.mp4.h264_2240x1080");
         preset->set_file_size(5678);
         preset->set_read_only(true);
@@ -9070,15 +10238,15 @@ void PrinterProtocolTests::deleteUserMediaLostAckReconcilesWithoutReplay() {
     QString peerError;
     int removeRequests = 0;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             peerError = QStringLiteral("missing delete preflight FileList");
             return;
         }
         auto listResponse = baseResponse(request);
-        auto *file = listResponse.mutable_file_list()->add_media_file_list();
+        auto *file = listResponse.mutable_media_catalog()->add_media_file_list();
         file->set_file_path("/userdata/user/delete-me.mp4");
         file->set_file_ext(".h264_2240x1080");
         file->set_file_size(6125);
@@ -9088,12 +10256,12 @@ void PrinterProtocolTests::deleteUserMediaLostAckReconcilesWithoutReplay() {
 
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("missing delete UserConfig preflight");
             return;
         }
         auto configResponse = baseResponse(request);
-        configResponse.mutable_user_config()->mutable_work_config()
+        configResponse.mutable_user_configuration()->mutable_work_config()
             ->set_single_mode_media_file("other.mp4.h264_2240x1080");
         if (!writeResponse(sockets[1], configResponse, &peerError)) {
             return;
@@ -9101,9 +10269,9 @@ void PrinterProtocolTests::deleteUserMediaLostAckReconcilesWithoutReplay() {
 
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kFileRemove ||
-            request.file_remove().file_name() != target.toStdString() ||
-            request.file_remove().file_type() != "media") {
+                panorama::wire::v1::Request::kFileRemoval ||
+            request.file_removal().file_name() != target.toStdString() ||
+            request.file_removal().file_type() != "media") {
             peerError = QStringLiteral("unexpected FileRemove contract");
             return;
         }
@@ -9112,13 +10280,13 @@ void PrinterProtocolTests::deleteUserMediaLostAckReconcilesWithoutReplay() {
         // read-only reconciliation, never a second FileRemove.
         if (!readRequest(sockets[1], &request, &peerError, 1000) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             peerError = QStringLiteral(
                 "missing FileList reconciliation after optional ACK timeout");
             return;
         }
         auto absentResponse = baseResponse(request);
-        absentResponse.mutable_file_list();
+        absentResponse.mutable_media_catalog();
         writeResponse(sockets[1], absentResponse, &peerError);
     });
 
@@ -9154,15 +10322,15 @@ void PrinterProtocolTests::deleteUserMediaAcceptsHeaderOnlySuccess() {
         QStringLiteral("header-only.mp4.h264_2240x1080");
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             peerError = QStringLiteral("missing header-only preflight");
             return;
         }
         auto listResponse = baseResponse(request);
-        auto *file = listResponse.mutable_file_list()->add_media_file_list();
+        auto *file = listResponse.mutable_media_catalog()->add_media_file_list();
         file->set_file_path("/userdata/user/header-only.mp4");
         file->set_file_ext(".h264_2240x1080");
         file->set_file_size(5000);
@@ -9171,19 +10339,19 @@ void PrinterProtocolTests::deleteUserMediaAcceptsHeaderOnlySuccess() {
         }
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("missing header-only config");
             return;
         }
         auto configResponse = baseResponse(request);
-        configResponse.mutable_user_config()->mutable_work_config()
+        configResponse.mutable_user_configuration()->mutable_work_config()
             ->set_single_mode_media_file("other.mp4.h264_2240x1080");
         if (!writeResponse(sockets[1], configResponse, &peerError)) {
             return;
         }
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kFileRemove) {
+                panorama::wire::v1::Request::kFileRemoval) {
             peerError = QStringLiteral("missing header-only FileRemove");
             return;
         }
@@ -9193,12 +10361,12 @@ void PrinterProtocolTests::deleteUserMediaAcceptsHeaderOnlySuccess() {
         }
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             peerError = QStringLiteral("missing header-only reconciliation");
             return;
         }
         auto absentResponse = baseResponse(request);
-        absentResponse.mutable_file_list();
+        absentResponse.mutable_media_catalog();
         writeResponse(sockets[1], absentResponse, &peerError);
     });
 
@@ -9227,15 +10395,15 @@ void PrinterProtocolTests::deleteUserMediaRejectsReferencedFileBeforeDispatch() 
         QStringLiteral("active.mp4.h264_2240x1080");
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             peerError = QStringLiteral("missing referenced-file FileList");
             return;
         }
         auto listResponse = baseResponse(request);
-        auto *file = listResponse.mutable_file_list()->add_media_file_list();
+        auto *file = listResponse.mutable_media_catalog()->add_media_file_list();
         file->set_file_path("/userdata/user/active.mp4");
         file->set_file_ext(".h264_2240x1080");
         file->set_file_size(4000);
@@ -9244,12 +10412,12 @@ void PrinterProtocolTests::deleteUserMediaRejectsReferencedFileBeforeDispatch() 
         }
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("missing referenced-file UserConfig");
             return;
         }
         auto configResponse = baseResponse(request);
-        configResponse.mutable_user_config()->mutable_poweron_config()
+        configResponse.mutable_user_configuration()->mutable_poweron_config()
             ->set_media_file(target.toStdString());
         if (!writeResponse(sockets[1], configResponse, &peerError)) {
             return;
@@ -9297,18 +10465,18 @@ void PrinterProtocolTests::deleteUserMediaRetainsUnknownAfterBoundedReconciliati
     QString peerError;
     int removeRequests = 0;
     std::thread peer([&]() {
-        const auto respondPresent = [&](const Tryx::USBProtocol::ReqPackagePb &request) {
+        const auto respondPresent = [&](const panorama::wire::v1::Request &request) {
             auto response = baseResponse(request);
-            auto *file = response.mutable_file_list()->add_media_file_list();
+            auto *file = response.mutable_media_catalog()->add_media_file_list();
             file->set_file_path("/userdata/user/slow-delete.mp4");
             file->set_file_ext(".h264_2240x1080");
             file->set_file_size(7000);
             return writeResponse(sockets[1], response, &peerError);
         };
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList ||
+                panorama::wire::v1::Request::kMediaCatalogQuery ||
             !respondPresent(request)) {
             if (peerError.isEmpty()) {
                 peerError = QStringLiteral("missing slow-delete preflight");
@@ -9317,32 +10485,32 @@ void PrinterProtocolTests::deleteUserMediaRetainsUnknownAfterBoundedReconciliati
         }
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("missing slow-delete config");
             return;
         }
         auto configResponse = baseResponse(request);
-        configResponse.mutable_user_config()->mutable_work_config()
+        configResponse.mutable_user_configuration()->mutable_work_config()
             ->set_single_mode_media_file("other.mp4.h264_2240x1080");
         if (!writeResponse(sockets[1], configResponse, &peerError)) {
             return;
         }
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kFileRemove) {
+                panorama::wire::v1::Request::kFileRemoval) {
             peerError = QStringLiteral("missing slow-delete FileRemove");
             return;
         }
         ++removeRequests;
         auto removeResponse = baseResponse(request);
-        removeResponse.mutable_dummy_msg();
+        removeResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], removeResponse, &peerError)) {
             return;
         }
         for (int attempt = 0; attempt < 4; ++attempt) {
             if (!readRequest(sockets[1], &request, &peerError) ||
                 request.body_case() !=
-                    Tryx::USBProtocol::ReqPackagePb::kGetFileList ||
+                    panorama::wire::v1::Request::kMediaCatalogQuery ||
                 !respondPresent(request)) {
                 if (peerError.isEmpty()) {
                     peerError = QStringLiteral(
@@ -9393,15 +10561,15 @@ void PrinterProtocolTests::deleteReconcileOnlyNeverDispatchesFileRemove() {
         QStringLiteral("pending.mp4.h264_2240x1080");
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
             peerError = QStringLiteral("reconcile-only did not read FileList");
             return;
         }
         auto response = baseResponse(request);
-        auto *file = response.mutable_file_list()->add_media_file_list();
+        auto *file = response.mutable_media_catalog()->add_media_file_list();
         file->set_file_path("/userdata/user/pending.mp4");
         file->set_file_ext(".h264_2240x1080");
         file->set_file_size(8000);
@@ -9595,7 +10763,7 @@ void PrinterProtocolTests::printerRefreshStartsSessionAndKeepalive() {
              (!activationSeen || fileListsSeen < 2 ||
               !pingKeepaliveSeen);
              ++requestCount) {
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             QString readError;
             if (!readRequest(sockets[1], &request, &readError,
                              kPeerTimeoutMs * 3, &requestBuffer)) {
@@ -9612,7 +10780,7 @@ void PrinterProtocolTests::printerRefreshStartsSessionAndKeepalive() {
 
             auto response = baseResponse(request);
             if (request.body_case() ==
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
                 if (!activationSeen) {
                     if (!request.has_header() ||
                         request.header().version() != 1 ||
@@ -9627,9 +10795,9 @@ void PrinterProtocolTests::printerRefreshStartsSessionAndKeepalive() {
                         "periodic keepalive repeated RunConfig instead of Ping");
                     return;
                 }
-                response.mutable_dummy_msg();
+                response.mutable_acknowledgement();
             } else if (request.body_case() ==
-                       Tryx::USBProtocol::ReqPackagePb::kGetFileList) {
+                       panorama::wire::v1::Request::kMediaCatalogQuery) {
                 if (!activationSeen || fileListsSeen >= 2) {
                     peerError = QStringLiteral(
                         "unexpected FileList request in display session");
@@ -9637,12 +10805,12 @@ void PrinterProtocolTests::printerRefreshStartsSessionAndKeepalive() {
                 }
                 ++fileListsSeen;
                 auto *file =
-                    response.mutable_file_list()->add_media_file_list();
+                    response.mutable_media_catalog()->add_media_file_list();
                 file->set_file_path("/userdata/user/session-test.png");
                 file->set_file_ext(".h264_2240x1080");
                 file->set_file_size(1234);
             } else if (request.body_case() ==
-                       Tryx::USBProtocol::ReqPackagePb::kPing) {
+                       panorama::wire::v1::Request::kPing) {
                 if (!activationSeen || !request.has_header() ||
                     request.header().ByteSizeLong() != 0 ||
                     request.ping().payload() != "hello?") {
@@ -9767,15 +10935,15 @@ runConfigErrorResponseRejectsSessionStart() {
                                &requestBuffer)) {
             return;
         }
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError,
                          kPeerTimeoutMs, &requestBuffer) ||
-            request.body_case() != Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+            request.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral("session failure test did not receive RunConfig");
             return;
         }
         auto response = baseResponse(request);
-        response.mutable_error()->set_code(Tryx::USBProtocol::ErrorPb::Fail);
+        response.mutable_error()->set_code(panorama::wire::v1::ProtocolError::FAILURE);
         response.mutable_error()->set_why("session rejected");
         if (!writeResponse(sockets[1], response, &peerError)) {
             return;
@@ -9826,12 +10994,12 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
                 sockets[1], &peerError, &requestBuffer)) {
             return;
         }
-        Tryx::USBProtocol::ReqPackagePb bootstrapRunRequest;
+        panorama::wire::v1::Request bootstrapRunRequest;
         if (!readRequest(
                 sockets[1], &bootstrapRunRequest, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             bootstrapRunRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral(
                 "restored overlay test did not receive bootstrap RunConfig");
             return;
@@ -9839,25 +11007,25 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
         if (!bootstrapRunRequest.has_header() ||
             bootstrapRunRequest.header().version() != 1 ||
             bootstrapRunRequest.header().track_id() == 0 ||
-            bootstrapRunRequest.run_config().label_groups_size() != 0) {
+            bootstrapRunRequest.overlay_layout().label_groups_size() != 0) {
             peerError = QStringLiteral(
                 "bootstrap RunConfig was not an empty tracked activation");
             return;
         }
         auto bootstrapRunResponse =
             baseResponse(bootstrapRunRequest);
-        bootstrapRunResponse.mutable_dummy_msg();
+        bootstrapRunResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], bootstrapRunResponse,
                            &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb keepaliveRequest;
+        panorama::wire::v1::Request keepaliveRequest;
         if (!readRequest(
                 sockets[1], &keepaliveRequest, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             keepaliveRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kPing ||
+                panorama::wire::v1::Request::kPing ||
             !keepaliveRequest.has_header() ||
             keepaliveRequest.header().ByteSizeLong() != 0 ||
             keepaliveRequest.ping().payload() != "hello?") {
@@ -9865,7 +11033,7 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
                 "restored overlay test did not receive the readiness Ping");
             return;
         }
-        Tryx::USBProtocol::RspPackagePb keepaliveResponse;
+        panorama::wire::v1::Response keepaliveResponse;
         keepaliveResponse.mutable_header();
         keepaliveResponse.mutable_pong()->set_payload("Hey!");
         if (!writeResponse(sockets[1], keepaliveResponse,
@@ -9873,12 +11041,12 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb overlayRunRequest;
+        panorama::wire::v1::Request overlayRunRequest;
         if (!readRequest(
                 sockets[1], &overlayRunRequest, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             overlayRunRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+                panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral(
                 "restored overlay test did not receive the full RunConfig");
             return;
@@ -9892,10 +11060,10 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
                 "restored overlay RunConfig was not a new tracked mutation");
             return;
         }
-        const auto &run = overlayRunRequest.run_config();
-        const Tryx::LVGui::LabelGroupPb *metricGroup =
+        const auto &run = overlayRunRequest.overlay_layout();
+        const panorama::wire::v1::OverlayGroup *metricGroup =
             nullptr;
-        const Tryx::LVGui::LabelGroupPb *badgeGroup =
+        const panorama::wire::v1::OverlayGroup *badgeGroup =
             nullptr;
         for (int index = 0;
              index < run.label_groups_size(); ++index) {
@@ -9944,25 +11112,25 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
             return;
         }
         auto runResponse = baseResponse(overlayRunRequest);
-        runResponse.mutable_dummy_msg();
+        runResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], runResponse,
                            &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb activePing;
+        panorama::wire::v1::Request activePing;
         if (!readRequest(
                 sockets[1], &activePing, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             activePing.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kPing ||
+                panorama::wire::v1::Request::kPing ||
             !activePing.has_header() ||
             activePing.header().ByteSizeLong() != 0) {
             peerError = QStringLiteral(
                 "active overlay session did not send Ping first");
             return;
         }
-        Tryx::USBProtocol::RspPackagePb activePong;
+        panorama::wire::v1::Response activePong;
         activePong.mutable_header();
         activePong.mutable_pong()->set_payload("Hey!");
         if (!writeResponse(sockets[1], activePong,
@@ -9970,22 +11138,22 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb overlayLease;
+        panorama::wire::v1::Request overlayLease;
         if (!readRequest(
                 sockets[1], &overlayLease, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             overlayLease.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig ||
+                panorama::wire::v1::Request::kOverlayLayout ||
             !overlayLease.has_header() ||
             overlayLease.header().ByteSizeLong() != 0 ||
-            overlayLease.run_config().label_groups_size() == 0) {
+            overlayLease.overlay_layout().label_groups_size() == 0) {
             peerError = QStringLiteral(
                 "active overlay session did not refresh the layout lease");
             return;
         }
-        Tryx::USBProtocol::RspPackagePb leaseResponse;
+        panorama::wire::v1::Response leaseResponse;
         leaseResponse.mutable_header();
-        leaseResponse.mutable_dummy_msg();
+        leaseResponse.mutable_acknowledgement();
         writeResponse(sockets[1], leaseResponse,
                       &peerError);
     });
@@ -10071,13 +11239,13 @@ restoredOverlayFailureBecomesLostWithoutReplay() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb bootstrapRunRequest;
+        panorama::wire::v1::Request bootstrapRunRequest;
         if (!readRequest(
                 sockets[1], &bootstrapRunRequest, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             bootstrapRunRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig ||
-            bootstrapRunRequest.run_config()
+                panorama::wire::v1::Request::kOverlayLayout ||
+            bootstrapRunRequest.overlay_layout()
                     .label_groups_size() != 0) {
             peerError = QStringLiteral(
                 "overlay failure test did not receive empty bootstrap RunConfig");
@@ -10085,23 +11253,23 @@ restoredOverlayFailureBecomesLostWithoutReplay() {
         }
         auto bootstrapResponse =
             baseResponse(bootstrapRunRequest);
-        bootstrapResponse.mutable_dummy_msg();
+        bootstrapResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], bootstrapResponse,
                            &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb keepaliveRequest;
+        panorama::wire::v1::Request keepaliveRequest;
         if (!readRequest(
                 sockets[1], &keepaliveRequest, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             keepaliveRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kPing) {
+                panorama::wire::v1::Request::kPing) {
             peerError = QStringLiteral(
                 "overlay failure test did not receive readiness Ping");
             return;
         }
-        Tryx::USBProtocol::RspPackagePb keepaliveResponse;
+        panorama::wire::v1::Response keepaliveResponse;
         keepaliveResponse.mutable_header();
         keepaliveResponse.mutable_pong()->set_payload("Hey!");
         if (!writeResponse(sockets[1], keepaliveResponse,
@@ -10109,13 +11277,13 @@ restoredOverlayFailureBecomesLostWithoutReplay() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb overlayRunRequest;
+        panorama::wire::v1::Request overlayRunRequest;
         if (!readRequest(
                 sockets[1], &overlayRunRequest, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             overlayRunRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig ||
-            overlayRunRequest.run_config()
+                panorama::wire::v1::Request::kOverlayLayout ||
+            overlayRunRequest.overlay_layout()
                     .label_groups_size() == 0) {
             peerError = QStringLiteral(
                 "overlay failure test did not receive full overlay RunConfig");
@@ -10125,7 +11293,7 @@ restoredOverlayFailureBecomesLostWithoutReplay() {
         auto rejectedResponse =
             baseResponse(overlayRunRequest);
         rejectedResponse.mutable_error()->set_code(
-            Tryx::USBProtocol::ErrorPb::Fail);
+            panorama::wire::v1::ProtocolError::FAILURE);
         rejectedResponse.mutable_error()->set_why(
             "overlay rejected");
         if (!writeResponse(sockets[1], rejectedResponse,
@@ -10221,21 +11389,21 @@ overlayLeaseRejectionBecomesLostWithoutRecovery() {
     QString peerError;
     int leaseCount = 0;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb request;
+        panorama::wire::v1::Request request;
         if (!readRequest(sockets[1], &request, &peerError) ||
             request.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kRunConfig ||
+                panorama::wire::v1::Request::kOverlayLayout ||
             !request.has_header() ||
             request.header().ByteSizeLong() != 0 ||
-            request.run_config().label_groups_size() == 0) {
+            request.overlay_layout().label_groups_size() == 0) {
             peerError = QStringLiteral(
                 "overlay lease rejection test did not receive an untracked layout");
             return;
         }
         ++leaseCount;
-        Tryx::USBProtocol::RspPackagePb response;
+        panorama::wire::v1::Response response;
         response.mutable_error()->set_code(
-            Tryx::USBProtocol::ErrorPb::Fail);
+            panorama::wire::v1::ProtocolError::FAILURE);
         response.mutable_error()->set_why(
             "renderer rejected overlay lease");
         writeResponse(sockets[1], response, &peerError);
@@ -10289,21 +11457,21 @@ void PrinterProtocolTests::applyMediaPreservesUnknownFields() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest, &peerError) ||
-            getRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+            getRequest.body_case() != panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("unexpected get-user-config request");
             return;
         }
         auto getResponse = baseResponse(getRequest);
-        auto *config = getResponse.mutable_user_config();
+        auto *config = getResponse.mutable_user_configuration();
         config->mutable_poweron_config()->set_media_file("keep-poweron.h264");
         config->mutable_display_config()->set_backlight_brightness(55);
         config->mutable_filter_config()->set_alpha(73);
         config->mutable_work_config()->set_media_mode(
-            Tryx::Config::WorkConfigPb::MediaMode_Dual);
+            panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
         config->mutable_work_config()->set_loop_mode(
-            Tryx::Config::WorkConfigPb::LoopMode_All);
+            panorama::wire::v1::WorkConfiguration::LOOP_ALL);
         config->mutable_work_config()->set_single_mode_media_file("old.h264");
         config->GetReflection()->MutableUnknownFields(config)->AddVarint(99, 123456);
         config->mutable_work_config()->GetReflection()
@@ -10313,17 +11481,17 @@ void PrinterProtocolTests::applyMediaPreservesUnknownFields() {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb applyRequest;
+        panorama::wire::v1::Request applyRequest;
         if (!readRequest(sockets[1], &applyRequest, &peerError) ||
-            applyRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kUserConfig) {
+            applyRequest.body_case() != panorama::wire::v1::Request::kUserConfiguration) {
             peerError = QStringLiteral("unexpected user-config apply request");
             return;
         }
-        const auto &applied = applyRequest.user_config();
+        const auto &applied = applyRequest.user_configuration();
         if (applied.work_config().media_mode() !=
-                Tryx::Config::WorkConfigPb::MediaMode_Single ||
+                panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE ||
             applied.work_config().loop_mode() !=
-                Tryx::Config::WorkConfigPb::LoopMode_Single ||
+                panorama::wire::v1::WorkConfiguration::LOOP_SINGLE ||
             applied.work_config().single_mode_media_file() != "new.h264" ||
             applied.poweron_config().media_file() != "keep-poweron.h264" ||
             applied.display_config().backlight_brightness() != 55 ||
@@ -10336,37 +11504,37 @@ void PrinterProtocolTests::applyMediaPreservesUnknownFields() {
             return;
         }
         auto applyResponse = baseResponse(applyRequest);
-        applyResponse.mutable_dummy_msg();
+        applyResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], applyResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runRequest;
+        panorama::wire::v1::Request runRequest;
         if (!readRequest(sockets[1], &runRequest, &peerError) ||
-            runRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+            runRequest.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral("unexpected run-config request");
             return;
         }
         auto runResponse = baseResponse(runRequest);
-        runResponse.mutable_dummy_msg();
+        runResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], runResponse,
                            &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb readbackRequest;
+        panorama::wire::v1::Request readbackRequest;
         if (!readRequest(sockets[1], &readbackRequest,
                          &peerError) ||
             readbackRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral(
                 "unexpected user-config readback request");
             return;
         }
         auto readbackResponse =
             baseResponse(readbackRequest);
-        *readbackResponse.mutable_user_config() =
-            applyRequest.user_config();
+        *readbackResponse.mutable_user_configuration() =
+            applyRequest.user_configuration();
         writeResponse(
             sockets[1], readbackResponse, &peerError);
     });
@@ -10391,27 +11559,27 @@ void PrinterProtocolTests::rejectedApplyDoesNotSendRunConfig() {
 
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest, &peerError) ||
-            getRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+            getRequest.body_case() != panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("unexpected get-user-config request");
             return;
         }
         auto getResponse = baseResponse(getRequest);
-        getResponse.mutable_user_config()->mutable_work_config()
+        getResponse.mutable_user_configuration()->mutable_work_config()
             ->set_single_mode_media_file("old.h264");
         if (!writeResponse(sockets[1], getResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb applyRequest;
+        panorama::wire::v1::Request applyRequest;
         if (!readRequest(sockets[1], &applyRequest, &peerError) ||
-            applyRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kUserConfig) {
+            applyRequest.body_case() != panorama::wire::v1::Request::kUserConfiguration) {
             peerError = QStringLiteral("unexpected user-config apply request");
             return;
         }
         auto applyResponse = baseResponse(applyRequest);
-        applyResponse.mutable_error()->set_code(Tryx::USBProtocol::ErrorPb::Fail);
+        applyResponse.mutable_error()->set_code(panorama::wire::v1::ProtocolError::FAILURE);
         applyResponse.mutable_error()->set_why("rejected apply");
         if (!writeResponse(sockets[1], applyResponse, &peerError)) {
             return;
@@ -10464,23 +11632,23 @@ void PrinterProtocolTests::userConfigOutcomeUnknownAfterFullSendIsPartial() {
     QString peerError;
     bool peerClosedEndpoint = false;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest, &peerError) ||
-            getRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+            getRequest.body_case() != panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("unexpected get-user-config request");
             return;
         }
         auto getResponse = baseResponse(getRequest);
-        getResponse.mutable_user_config()->mutable_work_config()
+        getResponse.mutable_user_configuration()->mutable_work_config()
             ->set_single_mode_media_file("old.h264");
         if (!writeResponse(sockets[1], getResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb applyRequest;
+        panorama::wire::v1::Request applyRequest;
         if (!readRequest(sockets[1], &applyRequest, &peerError) ||
-            applyRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kUserConfig ||
-            applyRequest.user_config().work_config().single_mode_media_file() !=
+            applyRequest.body_case() != panorama::wire::v1::Request::kUserConfiguration ||
+            applyRequest.user_configuration().work_config().single_mode_media_file() !=
                 "new.h264") {
             peerError = QStringLiteral("user configuration was not fully sent");
             return;
@@ -10571,36 +11739,36 @@ void PrinterProtocolTests::runConfigFailureAfterAcceptedUserConfigIsPartial() {
     QString peerError;
     bool peerClosedEndpoint = false;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest, &peerError) ||
-            getRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+            getRequest.body_case() != panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("unexpected get-user-config request");
             return;
         }
         auto getResponse = baseResponse(getRequest);
-        getResponse.mutable_user_config()->mutable_work_config()
+        getResponse.mutable_user_configuration()->mutable_work_config()
             ->set_single_mode_media_file("old.h264");
         if (!writeResponse(sockets[1], getResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb applyRequest;
+        panorama::wire::v1::Request applyRequest;
         if (!readRequest(sockets[1], &applyRequest, &peerError) ||
-            applyRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kUserConfig ||
-            applyRequest.user_config().work_config().single_mode_media_file() !=
+            applyRequest.body_case() != panorama::wire::v1::Request::kUserConfiguration ||
+            applyRequest.user_configuration().work_config().single_mode_media_file() !=
                 "new.h264") {
             peerError = QStringLiteral("unexpected user-config apply request");
             return;
         }
         auto applyResponse = baseResponse(applyRequest);
-        applyResponse.mutable_dummy_msg();
+        applyResponse.mutable_acknowledgement();
         if (!writeResponse(sockets[1], applyResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb runRequest;
+        panorama::wire::v1::Request runRequest;
         if (!readRequest(sockets[1], &runRequest, &peerError) ||
-            runRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kRunConfig) {
+            runRequest.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral("unexpected run-config request");
             return;
         }
@@ -10677,14 +11845,14 @@ void PrinterProtocolTests::incompleteUserConfigIsNotWritten() {
     QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb getRequest;
+        panorama::wire::v1::Request getRequest;
         if (!readRequest(sockets[1], &getRequest, &peerError) ||
-            getRequest.body_case() != Tryx::USBProtocol::ReqPackagePb::kGetUserConfig) {
+            getRequest.body_case() != panorama::wire::v1::Request::kUserConfigurationQuery) {
             peerError = QStringLiteral("unexpected get-user-config request");
             return;
         }
         auto response = baseResponse(getRequest);
-        response.mutable_user_config();
+        response.mutable_user_configuration();
         if (!writeResponse(sockets[1], response, &peerError)) {
             return;
         }
@@ -10986,15 +12154,15 @@ void PrinterProtocolTests::uploadIsResponseDriven() {
     quint64 transferTrackId = 0;
     quint64 nextTrackId = 0;
     std::thread peer([&]() {
-        const QList<Tryx::USBProtocol::ReqPackagePb::BodyCase> expected = {
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitBegin,
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitData,
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitData,
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitEnd,
-            Tryx::USBProtocol::ReqPackagePb::kPing
+        const QList<panorama::wire::v1::Request::BodyCase> expected = {
+            panorama::wire::v1::Request::kTransferBegin,
+            panorama::wire::v1::Request::kTransferChunk,
+            panorama::wire::v1::Request::kTransferChunk,
+            panorama::wire::v1::Request::kTransferEnd,
+            panorama::wire::v1::Request::kPing
         };
         for (int index = 0; index < expected.size(); ++index) {
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readRequest(sockets[1], &request, &peerError) ||
                 request.body_case() != expected.at(index)) {
                 if (peerError.isEmpty()) {
@@ -11036,33 +12204,33 @@ void PrinterProtocolTests::uploadIsResponseDriven() {
 
             auto response = baseResponse(request);
             if (index == 0) {
-                if (request.file_transmit_begin().file_name() !=
+                if (request.transfer_begin().file_name() !=
                         "test.png.h264_2240x1080" ||
-                    request.file_transmit_begin().file_size() !=
+                    request.transfer_begin().file_size() !=
                         static_cast<quint32>(contents.size())) {
                     peerError = QStringLiteral("invalid upload begin fields");
                     return;
                 }
-                response.mutable_file_transmit_begin_status()->set_file_trans_status(
-                    Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_begin_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
             } else if (index < 3) {
                 const size_t expectedSize = index == 1
                     ? static_cast<size_t>(0x40000)
                     : static_cast<size_t>(contents.size() - 0x40000);
-                if (request.file_transmit_data().file_data().size() != expectedSize) {
+                if (request.transfer_chunk().file_data().size() != expectedSize) {
                     peerError = QStringLiteral("invalid upload chunk size");
                     return;
                 }
-                response.mutable_file_transmit_data_status()->set_file_trans_status(
-                    Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_chunk_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
             } else if (index == 3) {
-                if (request.file_transmit_end().file_type() != "media" ||
-                    request.file_transmit_end().crc() != 0) {
+                if (request.transfer_end().file_type() != "media" ||
+                    request.transfer_end().checksum() != 0) {
                     peerError = QStringLiteral("invalid upload end fields");
                     return;
                 }
-                response.mutable_file_transmit_end_status()->set_file_trans_status(
-                    Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_end_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
             } else {
                 response.mutable_pong()->set_payload(
                     request.ping().payload());
@@ -11171,40 +12339,40 @@ void PrinterProtocolTests::uploadDataUsesDedicatedWriteDeadline() {
                 ::close(timerFd);
             }
 
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readRequest(sockets[1], &request, &peerError)) {
                 return;
             }
             auto response = baseResponse(request);
             if (index == 0) {
                 if (request.body_case() !=
-                    Tryx::USBProtocol::ReqPackagePb::kFileTransmitBegin) {
+                    panorama::wire::v1::Request::kTransferBegin) {
                     peerError = QStringLiteral("missing upload begin request");
                     return;
                 }
-                response.mutable_file_transmit_begin_status()
-                    ->set_file_trans_status(
-                        Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_begin_status()
+                    ->set_status(
+                        panorama::wire::v1::TransferStatus::OK);
             } else if (index == requestCount - 1) {
                 if (request.body_case() !=
-                    Tryx::USBProtocol::ReqPackagePb::kFileTransmitEnd) {
+                    panorama::wire::v1::Request::kTransferEnd) {
                     peerError = QStringLiteral("missing upload end request");
                     return;
                 }
-                response.mutable_file_transmit_end_status()
-                    ->set_file_trans_status(
-                        Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_end_status()
+                    ->set_status(
+                        panorama::wire::v1::TransferStatus::OK);
             } else {
                 if (request.body_case() !=
-                        Tryx::USBProtocol::ReqPackagePb::kFileTransmitData ||
-                    request.file_transmit_data().file_data().size() !=
+                        panorama::wire::v1::Request::kTransferChunk ||
+                    request.transfer_chunk().file_data().size() !=
                         static_cast<size_t>(0x40000)) {
                     peerError = QStringLiteral("invalid upload data request");
                     return;
                 }
-                response.mutable_file_transmit_data_status()
-                    ->set_file_trans_status(
-                        Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_chunk_status()
+                    ->set_status(
+                        panorama::wire::v1::TransferStatus::OK);
             }
             if (!writeResponse(sockets[1], response, &peerError)) {
                 return;
@@ -11253,7 +12421,7 @@ void PrinterProtocolTests::uploadWaitsForDelayedBoundaryAckWithIdleKeepalive() {
         constexpr int delayedRequestIndex = 17;
         constexpr int requestCount = 19;
         for (int index = 0; index < requestCount; ++index) {
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readRequest(sockets[1], &request, &peerError,
                              kPeerTimeoutMs * 2)) {
                 return;
@@ -11303,12 +12471,12 @@ void PrinterProtocolTests::uploadWaitsForDelayedBoundaryAckWithIdleKeepalive() {
                     ::close(timerFd);
                     return;
                 }
-                Tryx::USBProtocol::ReqPackagePb keepalive;
+                panorama::wire::v1::Request keepalive;
                 if (!readRequest(sockets[1], &keepalive, &peerError) ||
                     !keepalive.has_header() ||
                     keepalive.header().ByteSizeLong() != 0 ||
                     keepalive.body_case() !=
-                        Tryx::USBProtocol::ReqPackagePb::kPing ||
+                        panorama::wire::v1::Request::kPing ||
                     keepalive.ping().payload() != "hello?") {
                     if (peerError.isEmpty()) {
                         peerError = QStringLiteral(
@@ -11350,36 +12518,36 @@ void PrinterProtocolTests::uploadWaitsForDelayedBoundaryAckWithIdleKeepalive() {
             auto response = baseResponse(request);
             if (index == 0) {
                 if (request.body_case() !=
-                    Tryx::USBProtocol::ReqPackagePb::kFileTransmitBegin) {
+                    panorama::wire::v1::Request::kTransferBegin) {
                     peerError = QStringLiteral(
                         "missing delayed upload begin");
                     return;
                 }
-                response.mutable_file_transmit_begin_status()
-                    ->set_file_trans_status(
-                        Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_begin_status()
+                    ->set_status(
+                        panorama::wire::v1::TransferStatus::OK);
             } else if (index == requestCount - 1) {
                 if (request.body_case() !=
-                    Tryx::USBProtocol::ReqPackagePb::kFileTransmitEnd) {
+                    panorama::wire::v1::Request::kTransferEnd) {
                     peerError = QStringLiteral(
                         "missing delayed upload end");
                     return;
                 }
-                response.mutable_file_transmit_end_status()
-                    ->set_file_trans_status(
-                        Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_end_status()
+                    ->set_status(
+                        panorama::wire::v1::TransferStatus::OK);
             } else {
                 if (request.body_case() !=
-                        Tryx::USBProtocol::ReqPackagePb::kFileTransmitData ||
-                    request.file_transmit_data().file_data().size() !=
+                        panorama::wire::v1::Request::kTransferChunk ||
+                    request.transfer_chunk().file_data().size() !=
                         static_cast<size_t>(0x40000)) {
                     peerError = QStringLiteral(
                         "invalid delayed upload data request");
                     return;
                 }
-                response.mutable_file_transmit_data_status()
-                    ->set_file_trans_status(
-                        Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_chunk_status()
+                    ->set_status(
+                        panorama::wire::v1::TransferStatus::OK);
             }
             if (!writeResponse(sockets[1], response, &peerError)) {
                 return;
@@ -11433,14 +12601,14 @@ void PrinterProtocolTests::uploadEndTimeoutIsFinalizationUnknown() {
              qPrintable(socketError));
     QString peerError;
     std::thread peer([&]() {
-        const QList<Tryx::USBProtocol::ReqPackagePb::BodyCase> expected = {
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitBegin,
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitData,
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitEnd
+        const QList<panorama::wire::v1::Request::BodyCase> expected = {
+            panorama::wire::v1::Request::kTransferBegin,
+            panorama::wire::v1::Request::kTransferChunk,
+            panorama::wire::v1::Request::kTransferEnd
         };
         quint64 transferTrackId = 0;
         for (int index = 0; index < expected.size(); ++index) {
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readRequest(sockets[1], &request, &peerError) ||
                 request.body_case() != expected.at(index)) {
                 if (peerError.isEmpty()) {
@@ -11468,13 +12636,13 @@ void PrinterProtocolTests::uploadEndTimeoutIsFinalizationUnknown() {
             }
             auto response = baseResponse(request);
             if (index == 0) {
-                response.mutable_file_transmit_begin_status()
-                    ->set_file_trans_status(
-                        Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_begin_status()
+                    ->set_status(
+                        panorama::wire::v1::TransferStatus::OK);
             } else {
-                response.mutable_file_transmit_data_status()
-                    ->set_file_trans_status(
-                        Tryx::USBProtocol::FileTransmitStatusPb::OK);
+                response.mutable_transfer_chunk_status()
+                    ->set_status(
+                        panorama::wire::v1::TransferStatus::OK);
             }
             if (!writeResponse(sockets[1], response, &peerError)) {
                 return;
@@ -11543,13 +12711,13 @@ void PrinterProtocolTests::uploadFailureClosesSession() {
     QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
     QString peerError;
     std::thread peer([&]() {
-        const QList<Tryx::USBProtocol::ReqPackagePb::BodyCase> expected = {
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitBegin,
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitData,
-            Tryx::USBProtocol::ReqPackagePb::kFileTransmitEnd
+        const QList<panorama::wire::v1::Request::BodyCase> expected = {
+            panorama::wire::v1::Request::kTransferBegin,
+            panorama::wire::v1::Request::kTransferChunk,
+            panorama::wire::v1::Request::kTransferEnd
         };
         for (int stage = 0; stage <= failureStage; ++stage) {
-            Tryx::USBProtocol::ReqPackagePb request;
+            panorama::wire::v1::Request request;
             if (!readRequest(sockets[1], &request, &peerError) ||
                 request.body_case() != expected.at(stage)) {
                 peerError = QStringLiteral("unexpected request at failing stage %1").arg(stage);
@@ -11557,14 +12725,14 @@ void PrinterProtocolTests::uploadFailureClosesSession() {
             }
             auto response = baseResponse(request);
             const auto status = stage == failureStage
-                ? Tryx::USBProtocol::FileTransmitStatusPb::FileError
-                : Tryx::USBProtocol::FileTransmitStatusPb::OK;
+                ? panorama::wire::v1::TransferStatus::FILE_ERROR
+                : panorama::wire::v1::TransferStatus::OK;
             if (stage == 0) {
-                response.mutable_file_transmit_begin_status()->set_file_trans_status(status);
+                response.mutable_transfer_begin_status()->set_status(status);
             } else if (stage == 1) {
-                response.mutable_file_transmit_data_status()->set_file_trans_status(status);
+                response.mutable_transfer_chunk_status()->set_status(status);
             } else {
-                response.mutable_file_transmit_end_status()->set_file_trans_status(status);
+                response.mutable_transfer_end_status()->set_status(status);
             }
             if (!writeResponse(sockets[1], response, &peerError)) {
                 return;
@@ -11629,30 +12797,30 @@ void PrinterProtocolTests::uploadCancellationStopsBeforeNextChunk() {
     std::atomic_bool cancelled{false};
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb beginRequest;
+        panorama::wire::v1::Request beginRequest;
         if (!readRequest(sockets[1], &beginRequest, &peerError) ||
             beginRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kFileTransmitBegin) {
+                panorama::wire::v1::Request::kTransferBegin) {
             peerError = QStringLiteral("missing upload begin before cancellation");
             return;
         }
         auto beginResponse = baseResponse(beginRequest);
-        beginResponse.mutable_file_transmit_begin_status()->set_file_trans_status(
-            Tryx::USBProtocol::FileTransmitStatusPb::OK);
+        beginResponse.mutable_transfer_begin_status()->set_status(
+            panorama::wire::v1::TransferStatus::OK);
         if (!writeResponse(sockets[1], beginResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb dataRequest;
+        panorama::wire::v1::Request dataRequest;
         if (!readRequest(sockets[1], &dataRequest, &peerError) ||
             dataRequest.body_case() !=
-                Tryx::USBProtocol::ReqPackagePb::kFileTransmitData) {
+                panorama::wire::v1::Request::kTransferChunk) {
             peerError = QStringLiteral("missing first data chunk before cancellation");
             return;
         }
         auto dataResponse = baseResponse(dataRequest);
-        dataResponse.mutable_file_transmit_data_status()->set_file_trans_status(
-            Tryx::USBProtocol::FileTransmitStatusPb::OK);
+        dataResponse.mutable_transfer_chunk_status()->set_status(
+            panorama::wire::v1::TransferStatus::OK);
         if (!writeResponse(sockets[1], dataResponse, &peerError)) {
             return;
         }
@@ -11723,26 +12891,26 @@ void PrinterProtocolTests::uploadSourceMutationIsRejected() {
     QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
     QString peerError;
     std::thread peer([&]() {
-        Tryx::USBProtocol::ReqPackagePb beginRequest;
+        panorama::wire::v1::Request beginRequest;
         if (!readRequest(sockets[1], &beginRequest, &peerError)) {
             return;
         }
         auto beginResponse = baseResponse(beginRequest);
-        beginResponse.mutable_file_transmit_begin_status()->set_file_trans_status(
-            Tryx::USBProtocol::FileTransmitStatusPb::OK);
+        beginResponse.mutable_transfer_begin_status()->set_status(
+            panorama::wire::v1::TransferStatus::OK);
         if (!writeResponse(sockets[1], beginResponse, &peerError)) {
             return;
         }
 
-        Tryx::USBProtocol::ReqPackagePb dataRequest;
+        panorama::wire::v1::Request dataRequest;
         if (!readRequest(sockets[1], &dataRequest, &peerError) ||
-            dataRequest.file_transmit_data().file_data().size() != 0x40000) {
+            dataRequest.transfer_chunk().file_data().size() != 0x40000) {
             peerError = QStringLiteral("unexpected first chunk before source mutation");
             return;
         }
         auto dataResponse = baseResponse(dataRequest);
-        dataResponse.mutable_file_transmit_data_status()->set_file_trans_status(
-            Tryx::USBProtocol::FileTransmitStatusPb::OK);
+        dataResponse.mutable_transfer_chunk_status()->set_status(
+            panorama::wire::v1::TransferStatus::OK);
         if (!writeResponse(sockets[1], dataResponse, &peerError)) {
             return;
         }

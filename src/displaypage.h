@@ -16,10 +16,17 @@ class DeviceManager;
 struct TryxRuntimeOperationInfo;
 
 struct MediaEntry {
+    enum class Origin {
+        UserFile,
+        DevicePreset,
+    };
+
     QString filePath;
     QString fileName;
+    QString remoteId;
     QString format;
-    qint64 sizeBytes;
+    quint64 sizeBytes = 0;
+    Origin origin = Origin::UserFile;
 };
 
 class MediaTile : public QFrame {
@@ -28,9 +35,12 @@ public:
     explicit MediaTile(const MediaEntry &entry, QWidget *parent = nullptr);
 
     QString filePath() const { return entry_.filePath; }
+    QString remoteId() const { return entry_.remoteId; }
+    MediaEntry::Origin origin() const { return entry_.origin; }
     bool isSelected() const { return selected_; }
     void setSelected(bool sel);
     void setThumbnail(const QPixmap &pix);
+    void setNeutralPlaceholder(const QString &text);
     QPixmap thumbnail() const { return thumb_; }
 
 signals:
@@ -55,14 +65,11 @@ class DisplayPage : public QWidget {
 public:
     explicit DisplayPage(DeviceManager *deviceMgr, QWidget *parent = nullptr);
 
-    static QString builtinMediaDir();
-
 signals:
     void statusMessage(const QString &msg);
 
 private slots:
     void onUploadClicked();
-    void onUploadBuiltinClicked();
     void onSetDisplayClicked();
     void onDeleteClicked();
     void onRefreshClicked();
@@ -75,12 +82,9 @@ private slots:
                             quint64 revision);
     void onRetryClicked();
     void onCancelClicked();
-    void onTileClicked(MediaTile *tile);
 
 private:
     void setupUi();
-    void loadBuiltinMedia();
-    QPixmap extractThumbnail(const QString &videoPath, const QString &cachePath);
     void setUploadBusy(bool busy);
 
     DeviceManager *deviceMgr_;
@@ -89,7 +93,6 @@ private:
     QLabel *brightnessLabel_;
     QComboBox *ratioCombo_;
     QPushButton *uploadBtn_;
-    QPushButton *uploadBuiltinBtn_;
     QPushButton *setDisplayBtn_;
     QPushButton *deleteBtn_;
     QPushButton *refreshBtn_;
@@ -100,11 +103,6 @@ private:
     bool uploadBusy_ = false;
     QString activeOperationId_;
     QString retryOperationId_;
-
-    QScrollArea *builtinScrollArea_;
-    QWidget *builtinGridWidget_;
-    QGridLayout *builtinGrid_;
-    QList<MediaTile *> tiles_;
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
