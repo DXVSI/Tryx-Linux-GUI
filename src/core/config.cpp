@@ -42,6 +42,10 @@ picojson::value to_json_text(const std::string& s) {
   return picojson::value(s);
 }
 
+bool valid_pase_overlay_lease_mode(const std::string& mode) {
+  return mode == "ping-and-overlay-lease" || mode == "ping-only";
+}
+
 bool parse_root_object(const std::string& raw, picojson::object& out) {
   picojson::value parsed;
   std::string parse_err = picojson::parse(parsed, raw);
@@ -105,7 +109,13 @@ std::string ConfigManager::get_state_path() {
 std::optional<Config> ConfigManager::load_config() {
   auto target = get_config_path();
 
-  if (!std::filesystem::exists(target)) {
+  std::error_code path_error;
+  const bool config_exists =
+      std::filesystem::exists(target, path_error);
+  if (path_error) {
+    return std::nullopt;
+  }
+  if (!config_exists) {
     return Config{};
   }
 
@@ -125,11 +135,25 @@ std::optional<Config> ConfigManager::load_config() {
   cfg.keepalive_interval =
       extract_number(root, "keepalive_interval", cfg.keepalive_interval);
   cfg.language = extract_text(root, "language", cfg.language);
+  const auto overlay_mode = root.find("pase_overlay_lease_mode");
+  if (overlay_mode != root.end()) {
+    if (!overlay_mode->second.is<std::string>()) {
+      return std::nullopt;
+    }
+    cfg.pase_overlay_lease_mode =
+        overlay_mode->second.get<std::string>();
+  }
+  if (!valid_pase_overlay_lease_mode(cfg.pase_overlay_lease_mode)) {
+    return std::nullopt;
+  }
 
   return cfg;
 }
 
 bool ConfigManager::save_config(const Config& config) {
+  if (!valid_pase_overlay_lease_mode(config.pase_overlay_lease_mode)) {
+    return false;
+  }
   auto dir_path = get_config_dir();
   std::filesystem::create_directories(dir_path);
 
@@ -138,6 +162,8 @@ bool ConfigManager::save_config(const Config& config) {
   root["brightness"] = to_json_number(config.brightness);
   root["keepalive_interval"] = to_json_number(config.keepalive_interval);
   root["language"] = to_json_text(config.language);
+  root["pase_overlay_lease_mode"] =
+      to_json_text(config.pase_overlay_lease_mode);
 
   std::string serialized = picojson::value(root).serialize();
   return write_json_file(get_config_path(), serialized);

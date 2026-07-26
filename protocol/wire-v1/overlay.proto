@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package panorama.wire.v1;
+
+message OverlayLabel {
+  enum Background {
+    BACKGROUND_NONE = 0;
+    BACKGROUND_COLOR = 1;
+    BACKGROUND_GRADIENT_VERTICAL = 2;
+    BACKGROUND_GRADIENT_HORIZONTAL = 3;
+  }
+
+  uint32 label_id = 1;
+  uint32 line = 2;
+  uint32 order = 3;
+  sint32 gap_left = 4;
+  Background background = 5;
+  uint32 background_color = 6;
+  uint32 gradient_color = 7;
+  string text_font = 8;
+  uint32 text_size = 9;
+  uint32 text_color = 10;
+  string text = 11;
+}
+
+message OverlayGroup {
+  enum TextAlignment {
+    ALIGN_AUTO = 0;
+    ALIGN_LEFT = 1;
+    ALIGN_CENTER = 2;
+    ALIGN_RIGHT = 3;
+  }
+
+  uint32 group_id = 1;
+  uint32 group_x = 2;
+  uint32 group_y = 3;
+  uint32 group_width = 4;
+  uint32 group_height = 5;
+  TextAlignment text_align = 6;
+  sint32 line_gap = 7;
+  repeated OverlayLabel labels = 8;
+}
+
+message OverlayLabelUpdate {
+  uint32 label_id = 1;
+  string text = 2;
+}
+
+message OverlayGroupUpdate {
+  uint32 group_id = 1;
+  repeated OverlayLabelUpdate label_texts = 2;
+}
+
+message MetricBatch {
+  repeated OverlayGroupUpdate label_groups = 1;
+}
+
+message OverlayLayout {
+  repeated OverlayGroup label_groups = 1;
+}

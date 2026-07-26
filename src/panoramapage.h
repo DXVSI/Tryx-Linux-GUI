@@ -10,30 +10,25 @@
 #include <QColor>
 #include <QSlider>
 #include <QListWidget>
-#include <QScrollArea>
-#include <QGridLayout>
 #include <QFrame>
 #include <QProgressBar>
-#include <QStackedWidget>
-#include <QTabBar>
-#include <QMap>
-#include <QSettings>
+#include <QHash>
 #include <QToolButton>
 #include <QMenu>
 #include <QWidgetAction>
 
 #include <QRadioButton>
-#include <QMediaPlayer>
-#include <QVideoSink>
-#include <QVideoFrame>
-#include <QAudioOutput>
 #include "systemmonitor.h"
 #include "splitconfig.h"
 
 class DeviceManager;
-
-struct MediaEntry;
-class MediaTile;
+struct TryxRuntimeOperationInfo;
+struct TryxRuntimeOperationsSnapshot;
+struct TryxRuntimeMediaCatalogSnapshot;
+struct TryxRuntimeMetricsState;
+struct TryxRuntimeDisplayMutation;
+struct TryxRuntimeApplyRequest;
+struct TryxRuntimeDisplayState;
 
 class PanoramaPage : public QWidget {
     Q_OBJECT
@@ -51,25 +46,23 @@ public slots:
     void stopMetrics();
 
 private slots:
-    // Tab switching
-    void onTabChanged(int index);
-
-    // Pre-set tab
-    void onMetricToggled();
     void onChooseTextColor();
-    void onPresetSave();
-    void onTileClicked(MediaTile *tile);
-
-    // Customization tab
     void onUploadClicked();
-    void onUploadBuiltinClicked();
     void onSetDisplayClicked();
     void onDeleteClicked();
     void onRefreshClicked();
     void onMediaListUpdated(const QStringList &files);
+    void onMediaCatalogUpdated(
+        const TryxRuntimeMediaCatalogSnapshot &snapshot);
     void onMediaUploaded(const QString &filename);
     void onMediaDeleted();
     void onUploadStatus(const QString &status);
+    void onOperationChanged(const TryxRuntimeOperationInfo &info,
+                            quint64 revision);
+    void onMetricsStateUpdated(const TryxRuntimeMetricsState &state);
+    void onDisplayStateUpdated(const TryxRuntimeDisplayState &state);
+    void onRetryClicked();
+    void onCancelClicked();
     void onScreenModeChanged();
     void onCustomSave();
     void onFileListContextMenu(const QPoint &pos);
@@ -81,62 +74,62 @@ private slots:
     void onSendMetrics();
 
 private:
+#ifdef TRYX_PROTOCOL_TESTING
+    friend class PrinterProtocolTests;
+#endif
     void setupUi();
-    void setupPresetTab(QWidget *parent);
     void setupCustomizationTab(QWidget *parent);
     void setupDisplaySettings();
-    void loadBuiltinMedia();
-    QPixmap extractThumbnail(const QString &videoPath, const QString &cachePath);
-    void applyScreenConfig();
+    QString thumbnailCachePathForDeviceFile(const QString &fileName) const;
+    QString localPreviewSourceForDeviceFile(const QString &fileName) const;
+    void cacheThumbnailForDeviceFile(const QString &fileName, const QString &sourcePath);
+    void applyCachedThumbnailToDeviceItem(const QString &fileName);
+    void deleteDeviceItems(const QList<QListWidgetItem *> &items);
+    QString startPrinterApply(const QStringList &media,
+                              const QString &ratio,
+                              const QString &playMode,
+                              const QStringList &metrics = {},
+                              bool updateMetrics = true);
+    TryxRuntimeApplyRequest fullScreenApplyRequest(
+        const QStringList &media, const QString &ratio,
+        const QString &playMode, const QStringList &metrics,
+        bool replaceOverlay) const;
+    void submitDisplayMutation(
+        const TryxRuntimeDisplayMutation &mutation);
+    void submitPendingBrightness();
+    void schedulePendingBrightness();
+    void updateBrightnessPipelineFromState(
+        const TryxRuntimeDisplayState &state);
+    void finishBrightnessPipeline(bool keepPending);
+    void selectDisplayMedia(const QStringList &media);
+    void syncOperationPanel(const TryxRuntimeOperationsSnapshot &snapshot);
+    QString operationStatusText(const TryxRuntimeOperationInfo &info) const;
+    void setUploadBusy(bool busy);
+    void updateActionAvailability();
+    QStringList selectedDeviceMediaNames() const;
+    void updateCustomMetricsButton();
     void savePageState();
     void restorePageState();
-
-    void rebuildPresetGrid();
-    int calculateGridColumns() const;
-
-    static QString builtinMediaDir();
-    static QString presetIdForName(const QString &name);
 
     DeviceManager *deviceMgr_;
     SystemMonitor *monitor_;
     QTimer *metricsTimer_;
     bool metricsRunning_ = false;
+    bool uploadBusy_ = false;
+    bool refreshPending_ = false;
 
-    // Tab bar
-    QTabBar *tabBar_;
-    QStackedWidget *tabStack_;
-
-    // Pre-set tab - built-in media carousel
-    QScrollArea *presetScrollArea_;
-    QWidget *presetGridWidget_;
-    QGridLayout *presetGrid_;
-    QList<MediaTile *> presetTiles_;
-    MediaTile *selectedPresetTile_ = nullptr;
-
-    // Preview
-    QLabel *previewLabel_ = nullptr;
-    QMediaPlayer *previewPlayer_ = nullptr;
-    QVideoSink *previewSink_ = nullptr;
-
-    // Pre-set tab - sysinfo display
-    struct MetricOption {
-        QCheckBox *checkbox;
-        QString label;
-        QString unit;
-    };
-    QList<MetricOption> metricOptions_;
-    QLabel *selectionCountLabel_;
-
-    // Display settings controls
-    QComboBox *positionCombo_;
-    QComboBox *alignCombo_;
-    QPushButton *textColorBtn_;
-    QColor textColor_ = QColor("#FFFFFF");
-    QCheckBox *cbCpuBadge_;
-    QCheckBox *cbGpuBadge_;
+    QWidget *operationPanel_;
+    QLabel *operationStatusLabel_;
 
     // Metrics status
     QLabel *metricsStatusLabel_;
+
+    // Full-screen overlay controls
+    QComboBox *alignCombo_;
+    QPushButton *textColorBtn_;
+    QColor textColor_ = QColor("#DCDCDC");
+    QCheckBox *cbCpuBadge_;
+    QCheckBox *cbGpuBadge_;
 
     // Customization tab - file management
     QListWidget *fileList_;
@@ -147,6 +140,8 @@ private:
     QPushButton *setDisplayBtn_;
     QPushButton *deleteBtn_;
     QPushButton *refreshBtn_;
+    QPushButton *retryBtn_;
+    QPushButton *cancelBtn_;
     QLabel *dropZone_;
     QProgressBar *progressBar_;
 
@@ -160,20 +155,33 @@ private:
     QMenu *customMetricsMenu_;
     QList<QCheckBox *> customMetricCheckboxes_;
 
-    // Customization tab - user media grid
-    QScrollArea *customScrollArea_;
-    QWidget *customGridWidget_;
-    QGridLayout *customGrid_;
-    QList<MediaTile *> customTiles_;
+    QString pendingUploadSourcePath_;
+    QString activeOperationId_;
+    QString retryOperationId_;
+    QString printerMetricsOperationId_;
+    QStringList pendingPrinterMetrics_;
+    QStringList activePrinterMetrics_;
+    QStringList availablePrinterMetrics_;
+    QStringList activeLegacyMetrics_;
+    bool legacyMetricsStartPending_ = false;
+    QHash<QString, QString> uploadSourcePaths_;
 
     // Display settings panel
     QSlider *brightnessSlider_;
     QLabel *brightnessLabel_;
-    QCheckBox *cbSleepMode_;
+    QCheckBox *cbDisplayOff_;
     QCheckBox *cbMirrorMode_;
+    QCheckBox *cbWaterfallMode_;
+    QString brightnessOperationId_;
+    int brightnessOperationTarget_ = -1;
+    int pendingBrightness_ = -1;
+    quint64 brightnessBaseRevision_ = 0;
+    bool brightnessOperationSucceeded_ = false;
+    bool brightnessReadbackConfirmed_ = false;
+    bool brightnessDispatchQueued_ = false;
+    bool displayMutationReady_ = false;
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
-    void resizeEvent(QResizeEvent *event) override;
 };

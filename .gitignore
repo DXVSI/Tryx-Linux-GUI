@@ -1,5 +1,6 @@
 # Build
 build/
+build.tar.xz
 .cache/
 *.o
 *.a
@@ -14,6 +15,20 @@ tryx-panorama-manager
 # Local documentation
 docs/
 
+# Local proprietary flashing tools
+tools/upgrade_tool
+tools/config.ini
+tools/Linux_Upgrade_Tool/
+
+# Vendor video payloads are intentionally not distributed.
+/media/
+/demo.mp4
+
+# Recovered vendor protocol sources are local research input only.
+/proto/
+
 # Qt generated
 ui_*.h
 qrc_*.cpp
+translations/*.qm
+.omc

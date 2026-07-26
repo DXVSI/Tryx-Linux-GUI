@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package panorama.wire.v1;
+
+import "configuration.proto";
+import "overlay.proto";
+
+message WireHeader {
+  uint32 version = 1;
+  uint64 track_id = 2;
+  uint32 payload_crc32 = 3;
+}
+
+message Ping {
+  bytes payload = 1;
+}
+
+message Pong {
+  bytes payload = 1;
+}
+
+message QueryToken {
+  string dummy = 1;
+}
+
+message DeviceAuthQuery {
+  uint32 key = 1;
+}
+
+message DeviceInformation {
+  string os_name = 1;
+  string os_version = 2;
+  string firmware_version = 3;
+  string product_name = 4;
+  string app_version = 5;
+  string serial_number = 8;
+  bool serial_number_locked = 9;
+  string chip_id = 10;
+}
+
+message DeviceAuthentication {
+  string auth = 1;
+}
+
+message TransferBegin {
+  bytes file_name = 1;
+  uint32 file_size = 2;
+}
+
+message TransferChunk {
+  bytes file_data = 1;
+}
+
+message TransferEnd {
+  bytes file_type = 1;
+  uint32 checksum = 2;
+}
+
+message TransferStatus {
+  enum Code {
+    OK = 0;
+    SPACE_NOT_ENOUGH = 1;
+    FILE_ERROR = 2;
+    CHECKSUM_FAILURE = 3;
+  }
+
+  Code status = 1;
+}
+
+message FileRemoval {
+  string file_name = 1;
+  string file_type = 2;
+}
+
+message ProtocolError {
+  enum Code {
+    SUCCESS = 0;
+    FAILURE = 1;
+    UNSUPPORTED_BODY = 2;
+  }
+
+  Code code = 1;
+  string why = 2;
+}
+
+message Acknowledgement {
+  string dummy = 1;
+}
+
+message AsynchronousEvent {
+  bool play_finished = 1;
+}
+
+message Request {
+  WireHeader header = 1;
+
+  oneof body {
+    Ping ping = 10;
+    QueryToken device_information_query = 100;
+    DeviceAuthQuery device_authentication_query = 101;
+    QueryToken system_configuration_query = 102;
+    QueryToken media_catalog_query = 103;
+    QueryToken user_configuration_query = 104;
+    UserConfiguration user_configuration = 200;
+    OverlayLayout overlay_layout = 201;
+    MetricBatch metric_batch = 300;
+    TransferBegin transfer_begin = 400;
+    TransferChunk transfer_chunk = 401;
+    TransferEnd transfer_end = 402;
+    FileRemoval file_removal = 403;
+  }
+}
+
+message Response {
+  WireHeader header = 1;
+  ProtocolError error = 2;
+
+  oneof body {
+    Pong pong = 10;
+    DeviceInformation device_information = 500;
+    DeviceAuthentication device_authentication = 501;
+    SystemConfiguration system_configuration = 502;
+    MediaCatalog media_catalog = 503;
+    UserConfiguration user_configuration = 504;
+    Acknowledgement acknowledgement = 600;
+    TransferStatus transfer_begin_status = 800;
+    TransferStatus transfer_chunk_status = 801;
+    TransferStatus transfer_end_status = 802;
+    AsynchronousEvent asynchronous_event = 987;
+  }
+}

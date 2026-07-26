@@ -159,6 +159,11 @@ void HudPage::onChooseTextColor() {
 }
 
 void HudPage::onApplyConfig() {
+    if (deviceMgr_->isPrinterClassDevicePresent()) {
+        emit statusMessage(tr("Screen configuration is disabled on printer-class firmware until the new protocol is verified."));
+        return;
+    }
+
     applyScreenConfig();
     emit statusMessage(tr("Metrics configuration applied"));
 }

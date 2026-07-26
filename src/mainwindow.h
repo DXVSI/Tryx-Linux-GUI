@@ -18,6 +18,7 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(const QString &currentLanguage,
                         std::function<void(const QString &)> languageHandler,
+                        DeviceManager *deviceManager,
                         QWidget *parent = nullptr);
     ~MainWindow();
 
@@ -42,6 +43,7 @@ private:
     QLabel *statusLabel_ = nullptr;
     std::function<void(const QString &)> languageHandler_;
     QString currentLanguage_;
+    QString connectedStatusText_;
 
     bool minimizeToTray_ = true;
 };
