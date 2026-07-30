@@ -22,6 +22,8 @@ class FirmwareController final : public QObject {
                    NOTIFY stateChanged)
     Q_PROPERTY(bool flashSupported READ flashSupported
                    NOTIFY stateChanged)
+    Q_PROPERTY(bool recoveryRequired READ recoveryRequired
+                   NOTIFY stateChanged)
     Q_PROPERTY(bool canValidate READ canValidate
                    NOTIFY availabilityChanged)
     Q_PROPERTY(bool canFlash READ canFlash NOTIFY availabilityChanged)
@@ -53,6 +55,7 @@ public:
     bool flashBusy() const;
     bool approvalAvailable() const;
     bool flashSupported() const;
+    bool recoveryRequired() const;
     bool canValidate() const;
     bool canFlash() const;
     bool confirmationRequired() const;
@@ -75,6 +78,7 @@ public:
     Q_INVOKABLE void cancelFlashConfirmation();
     Q_INVOKABLE void confirmFlash();
     Q_INVOKABLE void requestCancel();
+    Q_INVOKABLE void acknowledgeFirmwareRecovery();
     Q_INVOKABLE void refresh();
     void retranslate();
 
@@ -113,6 +117,7 @@ private:
     bool validationBusy_ = false;
     bool flashBusy_ = false;
     bool flashSupported_ = false;
+    bool recoveryRequired_ = false;
     bool requestPending_ = false;
     bool stateRequestPending_ = false;
     bool stateRefreshAgain_ = false;

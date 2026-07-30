@@ -30,7 +30,7 @@
           <li>Use one Qt Quick desktop interface backed by a private runtime.</li>
           <li>Add native Linux tray integration and preserve legacy serial/ADB control.</li>
           <li>Add PASE media editing, export, save-as-new, replace, and verified deletion.</li>
-          <li>Add local firmware validation and an exclusive transport safety gate.</li>
+          <li>Add local firmware validation, an exclusive transport gate, and a crash-persistent recovery interlock.</li>
           <li>Keep QML compatible with Qt 6.4 and distribute no bundled vendor media.</li>
         </ul>
       </description>

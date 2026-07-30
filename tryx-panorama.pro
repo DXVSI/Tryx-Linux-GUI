@@ -81,6 +81,8 @@ SOURCES += \
 
 HEADERS += \
     src/devicemanager.h \
+    src/firmwarebridge.h \
+    src/firmwarerecoveryjournal.h \
     src/systemmonitor.h \
     src/firmwareupdater.h \
     src/mediatransform.h \
@@ -92,6 +94,8 @@ HEADERS += \
 SOURCES += \
     src/runtime/main.cpp \
     src/devicemanager.cpp \
+    src/firmwarebridge.cpp \
+    src/firmwarerecoveryjournal.cpp \
     src/systemmonitor.cpp \
     src/firmwareupdater.cpp \
     src/mediatransform.cpp \

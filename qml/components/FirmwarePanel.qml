@@ -7,6 +7,9 @@ Frame {
 
     required property var controller
 
+    readonly property bool recoveryActionAvailable:
+        controller.recoveryRequired && !controller.busy
+
     padding: 22
 
     function formatBytes(bytes) {
@@ -43,6 +46,8 @@ Frame {
             return qsTr("Completed")
         case "Failed":
             return qsTr("Failed")
+        case "RecoveryRequired":
+            return qsTr("Recovery required")
         default:
             return qsTr("Unavailable")
         }
@@ -270,6 +275,15 @@ Frame {
                            ? "#ef6b73" : "#9ca4ac"
                     wrapMode: Text.WordWrap
                 }
+            }
+
+            PrimaryButton {
+                objectName: "firmwareRecoveryAcknowledgeButton"
+                text: qsTr("I inspected the display; resume connection")
+                visible: root.recoveryActionAvailable
+                enabled: root.recoveryActionAvailable
+                onClicked:
+                    root.controller.acknowledgeFirmwareRecovery()
             }
 
             Button {

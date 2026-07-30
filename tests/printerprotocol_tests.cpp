@@ -3,6 +3,8 @@
 
 #include "printerprotocol.h"
 #include "devicemanager.h"
+#include "firmwarebridge.h"
+#include "firmwareupdater.h"
 #include "mediatransform.h"
 #include "runtimebridge.h"
 #include "systemmonitor.h"
@@ -17,6 +19,8 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QSemaphore>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 
@@ -392,6 +396,41 @@ bool writeTextFile(const QString &path, const QByteArray &contents) {
            file.write(contents) == contents.size();
 }
 
+TryxFirmwareRecoveryRecord firmwareRecoveryRecord(
+    const QString &phase = QStringLiteral("Armed"),
+    QChar hashCharacter = QLatin1Char('a')) {
+    const qint64 now =
+        QDateTime::currentDateTimeUtc()
+            .toMSecsSinceEpoch();
+    TryxFirmwareRecoveryRecord record;
+    record.attemptId =
+        QUuid::createUuid().toString(
+            QUuid::WithoutBraces);
+    record.phase = phase;
+    record.packageKind =
+        QStringLiteral("RockchipBundle");
+    record.packageSha256 =
+        QString(64, hashCharacter);
+    record.createdUtcMs = now;
+    record.updatedUtcMs = now;
+    return record;
+}
+
+bool sameFirmwareRecoveryRecord(
+    const TryxFirmwareRecoveryRecord &left,
+    const TryxFirmwareRecoveryRecord &right) {
+    return left.attemptId == right.attemptId &&
+           left.phase == right.phase &&
+           left.packageKind ==
+               right.packageKind &&
+           left.packageSha256 ==
+               right.packageSha256 &&
+           left.createdUtcMs ==
+               right.createdUtcMs &&
+           left.updatedUtcMs ==
+               right.updatedUtcMs;
+}
+
 bool createUsbDevice(const QString &sysRoot, const QString &name,
                      const QByteArray &productId) {
     const QString devicePath = QDir(sysRoot).filePath(QStringLiteral("bus/usb/devices/") + name);
@@ -599,6 +638,24 @@ private slots:
     void lostPrinterSessionRejectsMutationsBeforeDispatch();
     void lostPrinterSessionRequiresObservedRemovalBeforeReconnect();
     void sessionNotReadyRejectsMutationsBeforeDispatch();
+    void firmwareExclusiveGateRejectsDeviceWork();
+    void firmwareExclusiveGateRejectsUnresolvedDeviceState();
+    void firmwareExclusiveGateSuppressesReconnectUntilRelease();
+    void firmwareWorkerQuiesceClosesTransport();
+    void firmwareReleaseFenceWaitsForLateQuiesce();
+    void approvedFirmwareStagingPinsBytes();
+    void rockchipLoaderIdentityIsFailClosed();
+    void rockchipRciRequiresRk3568();
+    void rockchipWritesAreIdentityFenced();
+    void irreversibleFirmwareTimeoutDoesNotKillProcess();
+    void irreversibleFirmwareFailureDisablesReconnect();
+    void firmwareRecoveryJournalPersistsAcrossRestart();
+    void firmwareRecoveryInheritedSafeExitPreservesRecord();
+    void firmwareRecoveryCleanSafeExitClearsRecord();
+    void firmwareRecoverySuccessRequiresExplicitAcknowledgement();
+    void firmwareRecoveryAcknowledgementWaitsForReleaseFence();
+    void firmwareRecoveryAcknowledgementUnlinksSymlinkExactly();
+    void firmwareRecoveryDirectoryEntryRemainsFailClosed();
     void persistentUsbInputFailureStopsSameGenerationWithoutRecovery();
     void partialUploadRequiresObservedDeviceRemovalBeforeRetry();
     void tamperedV8RetryManifestIsRejected_data();
@@ -9211,6 +9268,1727 @@ void PrinterProtocolTests::
     QCOMPARE(deleteSpy.count(), 0);
     QCOMPARE(retryValidationSpy.count(), 0);
     QVERIFY(manager->activeOperationInfo().id.isEmpty());
+}
+
+void PrinterProtocolTests::
+    firmwareExclusiveGateRejectsDeviceWork() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("dev"));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+
+    QSignalSpy quiescedSpy(
+        manager.get(),
+        &DeviceManager::firmwareTransportQuiesced);
+    QSignalSpy connectSpy(
+        manager.get(), &DeviceManager::requestConnect);
+    QSignalSpy keepaliveSpy(
+        manager.get(), &DeviceManager::requestKeepalive);
+    QSignalSpy disconnectSpy(
+        manager.get(), &DeviceManager::requestDisconnect);
+    QSignalSpy brightnessSpy(
+        manager.get(), &DeviceManager::requestBrightness);
+    QSignalSpy screenConfigSpy(
+        manager.get(), &DeviceManager::requestScreenConfig);
+    QSignalSpy rotationSpy(
+        manager.get(), &DeviceManager::requestRotation);
+    QSignalSpy rebootSpy(
+        manager.get(), &DeviceManager::requestReboot);
+    QSignalSpy legacyDeleteSpy(
+        manager.get(), &DeviceManager::requestDeleteMedia);
+    QSignalSpy legacyUploadSpy(
+        manager.get(), &DeviceManager::requestUploadMedia);
+    QSignalSpy legacyRefreshSpy(
+        manager.get(), &DeviceManager::requestRefreshMedia);
+    QSignalSpy sysinfoSpy(
+        manager.get(), &DeviceManager::requestSysinfo);
+    QSignalSpy preparationSpy(
+        manager.get(),
+        &DeviceManager::requestPreparePrinterMedia);
+    QSignalSpy applySpy(
+        manager.get(),
+        &DeviceManager::requestPrinterApplyMedia);
+    QSignalSpy metricsSpy(
+        manager.get(),
+        &DeviceManager::requestPrinterConfigureMetrics);
+    QSignalSpy deleteSpy(
+        manager.get(),
+        &DeviceManager::requestPrinterDeleteMedia);
+
+    QString gateError;
+    QVERIFY2(
+        manager->acquireFirmwareExclusive(
+            QStringLiteral("firmware-lease-a"),
+            &gateError),
+        qPrintable(gateError));
+    QVERIFY(manager->firmwareExclusiveActive());
+    QTRY_COMPARE(quiescedSpy.count(), 1);
+    QCOMPARE(
+        quiescedSpy.first().at(0).toString(),
+        QStringLiteral("firmware-lease-a"));
+    QVERIFY(quiescedSpy.first().at(1).toBool());
+
+    QString secondGateError;
+    QVERIFY(!manager->acquireFirmwareExclusive(
+        QStringLiteral("firmware-lease-b"),
+        &secondGateError));
+    QVERIFY(!secondGateError.isEmpty());
+
+    manager->connectDevice(
+        QStringLiteral("/dev/tty-test"));
+    manager->startKeepalive(1);
+    manager->connected_ = true;
+    manager->disconnectDevice();
+    manager->setBrightness(50);
+    manager->setScreenConfig(
+        {QStringLiteral("media.h264")});
+    manager->setRotation(90);
+    manager->rebootDevice();
+    manager->deleteMedia(
+        {QStringLiteral("media.h264")});
+    manager->uploadMedia(
+        QStringLiteral("/tmp/media.mp4"));
+    manager->refreshMediaList();
+    manager->sendSysinfo(
+        {QStringLiteral("CPU Temperature")},
+        {QStringLiteral("42")},
+        {QStringLiteral("C")});
+    manager->connected_ = false;
+    QCOMPARE(connectSpy.count(), 0);
+    QCOMPARE(keepaliveSpy.count(), 0);
+    QCOMPARE(disconnectSpy.count(), 0);
+    QCOMPARE(brightnessSpy.count(), 0);
+    QCOMPARE(screenConfigSpy.count(), 0);
+    QCOMPARE(rotationSpy.count(), 0);
+    QCOMPARE(rebootSpy.count(), 0);
+    QCOMPARE(legacyDeleteSpy.count(), 0);
+    QCOMPARE(legacyUploadSpy.count(), 0);
+    QCOMPARE(legacyRefreshSpy.count(), 0);
+    QCOMPARE(sysinfoSpy.count(), 0);
+
+    QTemporaryFile source;
+    QVERIFY(source.open());
+    QCOMPARE(
+        source.write(QByteArrayLiteral("source")), 6);
+    source.flush();
+    const QString uploadId =
+        QStringLiteral(
+            "71717171-7171-4171-8171-717171717171");
+    QCOMPARE(
+        manager->queueUploadOperation(
+            uploadId, source.fileName()),
+        uploadId);
+    QCOMPARE(
+        manager->operationInfo(uploadId).errorCategory,
+        QStringLiteral("FirmwareUpdateActive"));
+
+    TryxRuntimeApplyRequest applyRequest;
+    applyRequest.media = {
+        QStringLiteral(
+            "existing.mp4.h264_2240x1080")};
+    const QString applyId =
+        QStringLiteral(
+            "72727272-7272-4272-8272-727272727272");
+    QCOMPARE(
+        manager->queueApplyOperation(
+            applyId, applyRequest),
+        applyId);
+    QCOMPARE(
+        manager->operationInfo(applyId).errorCategory,
+        QStringLiteral("FirmwareUpdateActive"));
+
+    TryxRuntimeMetricsConfigRequest metricsRequest;
+    metricsRequest.enabled = true;
+    metricsRequest.metrics = {
+        QStringLiteral("CPU Temperature")};
+    const QString metricsId =
+        QStringLiteral(
+            "73737373-7373-4373-8373-737373737373");
+    QCOMPARE(
+        manager->queueMetricsConfigOperation(
+            metricsId, metricsRequest),
+        metricsId);
+    QCOMPARE(
+        manager->operationInfo(metricsId).errorCategory,
+        QStringLiteral("FirmwareUpdateActive"));
+
+    const QString deleteId =
+        QStringLiteral(
+            "74747474-7474-4474-8474-747474747474");
+    QCOMPARE(
+        manager->queueDeleteMediaOperation(
+            deleteId,
+            {QStringLiteral(
+                "existing.mp4.h264_2240x1080")}),
+        deleteId);
+    QCOMPARE(
+        manager->operationInfo(deleteId).errorCategory,
+        QStringLiteral("FirmwareUpdateActive"));
+
+    const QString stageId =
+        QStringLiteral(
+            "75757575-7575-4575-8575-757575757575");
+    QCOMPARE(
+        manager->queueStageDeviceMediaOperation(
+            stageId, QString(64, QLatin1Char('a')),
+            QStringLiteral(":1.99")),
+        stageId);
+    QCOMPARE(
+        manager->operationInfo(stageId).errorCategory,
+        QStringLiteral("FirmwareUpdateActive"));
+
+    QCOMPARE(preparationSpy.count(), 0);
+    QCOMPARE(applySpy.count(), 0);
+    QCOMPARE(metricsSpy.count(), 0);
+    QCOMPARE(deleteSpy.count(), 0);
+    QVERIFY(manager->activeOperationInfo().id.isEmpty());
+
+    manager->releaseFirmwareExclusive(
+        QStringLiteral("wrong-lease"));
+    QVERIFY(manager->firmwareExclusiveActive());
+    manager->releaseFirmwareExclusive(
+        QStringLiteral("firmware-lease-a"), false);
+    QTRY_VERIFY(
+        !manager->firmwareExclusiveActive());
+
+    manager->activeOperationId_ =
+        QStringLiteral("active-operation");
+    QString activeError;
+    QVERIFY(!manager->acquireFirmwareExclusive(
+        QStringLiteral("firmware-lease-c"),
+        &activeError));
+    QVERIFY(activeError.contains(
+        QStringLiteral("active-operation")));
+    manager->activeOperationId_.clear();
+}
+
+void PrinterProtocolTests::
+    firmwareExclusiveGateSuppressesReconnectUntilRelease() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(
+        sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+    QSignalSpy configureSpy(
+        manager.get(),
+        &DeviceManager::requestConfigurePrinter);
+    QSignalSpy sessionSpy(
+        manager.get(),
+        &DeviceManager::requestStartPrinterSession);
+    QSignalSpy quiescedSpy(
+        manager.get(),
+        &DeviceManager::firmwareTransportQuiesced);
+
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
+    QVERIFY(configureSpy.count() >= 1);
+    configureSpy.clear();
+    sessionSpy.clear();
+
+    QString gateError;
+    QVERIFY2(
+        manager->acquireFirmwareExclusive(
+            QStringLiteral("firmware-reconnect-lease"),
+            &gateError),
+        qPrintable(gateError));
+    QTRY_COMPARE(quiescedSpy.count(), 1);
+    QVERIFY(!manager->isPrinterClassConnected());
+
+    manager->rescanPrinterForTesting();
+    QCOMPARE(configureSpy.count(), 0);
+    QCOMPARE(sessionSpy.count(), 0);
+    QVERIFY(!manager->isPrinterClassConnected());
+
+    manager->releaseFirmwareExclusive(
+        QStringLiteral("firmware-reconnect-lease"),
+        true);
+    QVERIFY(manager->firmwareExclusiveActive());
+    QTRY_COMPARE(configureSpy.count(), 1);
+    QTRY_COMPARE(sessionSpy.count(), 1);
+    QTRY_VERIFY(
+        !manager->firmwareExclusiveActive());
+    QVERIFY(manager->isPrinterClassConnected());
+}
+
+void PrinterProtocolTests::
+    firmwareExclusiveGateRejectsUnresolvedDeviceState() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("dev"));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+
+    const auto expectRejected =
+        [&manager](const QString &leaseId,
+                   const QString &expectedText) {
+            QString error;
+            QVERIFY(!manager->acquireFirmwareExclusive(
+                leaseId, &error));
+            QVERIFY2(
+                error.contains(expectedText,
+                               Qt::CaseInsensitive),
+                qPrintable(error));
+            QVERIFY(!manager->firmwareExclusiveActive());
+        };
+
+    manager->pendingDeleteOperationId_ =
+        QStringLiteral("pending-delete");
+    expectRejected(
+        QStringLiteral("firmware-delete-lease"),
+        QStringLiteral("delete"));
+    manager->pendingDeleteOperationId_.clear();
+
+    manager->pendingReplaceJournalOperationId_ =
+        QStringLiteral("pending-replace");
+    expectRejected(
+        QStringLiteral("firmware-replace-lease"),
+        QStringLiteral("replacement"));
+    manager->pendingReplaceJournalOperationId_.clear();
+
+    manager->printerRecoveryRequired_ = true;
+    expectRejected(
+        QStringLiteral("firmware-recovery-lease"),
+        QStringLiteral("recovery"));
+    manager->printerRecoveryRequired_ = false;
+
+    manager->printerDisplaySessionLost_ = true;
+    expectRejected(
+        QStringLiteral("firmware-session-lease"),
+        QStringLiteral("session"));
+    manager->printerDisplaySessionLost_ = false;
+
+    const QString retryOperationId =
+        QStringLiteral(
+            "76767676-7676-4676-8676-767676767676");
+    DeviceManager::OperationRecord retryRecord;
+    retryRecord.info.id = retryOperationId;
+    retryRecord.info.terminalOutcome =
+        QStringLiteral("FinalizationUnknown");
+    retryRecord.uploadFinalizationReconciliationPending =
+        true;
+    manager->operations_.insert(
+        retryOperationId, retryRecord);
+    manager->retryCacheOperationId_ = retryOperationId;
+    expectRejected(
+        QStringLiteral("firmware-retry-lease"),
+        QStringLiteral("unresolved"));
+    manager->retryCacheOperationId_.clear();
+    manager->operations_.remove(retryOperationId);
+
+    QVERIFY(QDir().mkpath(
+        QFileInfo(manager->deleteIntentPath()).absolutePath()));
+    QFile deleteIntent(manager->deleteIntentPath());
+    QVERIFY(deleteIntent.open(
+        QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(deleteIntent.write("{}"), 2);
+    deleteIntent.close();
+    expectRejected(
+        QStringLiteral("firmware-delete-file-lease"),
+        QStringLiteral("delete"));
+    QVERIFY(deleteIntent.remove());
+
+    QFile replaceIntent(manager->replaceIntentPath());
+    QVERIFY(replaceIntent.open(
+        QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(replaceIntent.write("{}"), 2);
+    replaceIntent.close();
+    expectRejected(
+        QStringLiteral("firmware-replace-file-lease"),
+        QStringLiteral("replacement"));
+    QVERIFY(replaceIntent.remove());
+}
+
+void PrinterProtocolTests::
+    firmwareWorkerQuiesceClosesTransport() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(
+        createSocketPair(sockets, &socketError),
+        qPrintable(socketError));
+
+    constexpr quint64 generation = 81;
+    DeviceWorker worker;
+    worker.updatePrinterGenerationGate(
+        generation, false);
+    worker.adoptPrinterFileDescriptorForTesting(
+        sockets[0], QStringLiteral("test-endpoint"));
+    QSignalSpy quiescedSpy(
+        &worker,
+        &DeviceWorker::firmwareTransportQuiesced);
+    worker.quiesceForFirmware(
+        QStringLiteral("firmware-lease"),
+        generation);
+
+    QCOMPARE(quiescedSpy.count(), 1);
+    QCOMPARE(
+        quiescedSpy.first().at(0).toString(),
+        QStringLiteral("firmware-lease"));
+    QCOMPARE(
+        quiescedSpy.first().at(1).toULongLong(),
+        generation);
+    QString peerError;
+    QVERIFY2(
+        waitForPeerClosureWithoutPayload(
+            sockets[1], kPeerTimeoutMs, &peerError),
+        qPrintable(peerError));
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::
+    firmwareReleaseFenceWaitsForLateQuiesce() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(
+        sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(true);
+    QSignalSpy configureSpy(
+        manager.get(),
+        &DeviceManager::requestConfigurePrinter);
+    QSignalSpy sessionSpy(
+        manager.get(),
+        &DeviceManager::requestStartPrinterSession);
+    QSignalSpy quiescedSpy(
+        manager.get(),
+        &DeviceManager::firmwareTransportQuiesced);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
+
+    QSemaphore workerEntered;
+    QSemaphore releaseWorker;
+    QVERIFY(QMetaObject::invokeMethod(
+        manager->worker_,
+        [&workerEntered, &releaseWorker]() {
+            workerEntered.release();
+            releaseWorker.acquire();
+        },
+        Qt::QueuedConnection));
+    QVERIFY(workerEntered.tryAcquire(1, 5000));
+    configureSpy.clear();
+    sessionSpy.clear();
+
+    const QString lease =
+        QStringLiteral(
+            "firmware-late-quiesce-lease");
+    QString gateError;
+    QVERIFY2(
+        manager->acquireFirmwareExclusive(
+            lease, &gateError),
+        qPrintable(gateError));
+    manager->releaseFirmwareExclusive(
+        lease, true);
+
+    QCoreApplication::processEvents(
+        QEventLoop::AllEvents, 100);
+    QVERIFY(manager->firmwareExclusiveActive());
+    QCOMPARE(quiescedSpy.count(), 0);
+    QCOMPARE(configureSpy.count(), 0);
+    QCOMPARE(sessionSpy.count(), 0);
+
+    releaseWorker.release();
+    QTRY_COMPARE(quiescedSpy.count(), 1);
+    QTRY_VERIFY(
+        !manager->firmwareExclusiveActive());
+    QTRY_COMPARE(configureSpy.count(), 1);
+    QTRY_COMPARE(sessionSpy.count(), 1);
+    QVERIFY(manager->isPrinterClassConnected());
+}
+
+void PrinterProtocolTests::
+    approvedFirmwareStagingPinsBytes() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("approved.zip"));
+    const QByteArray approvedBytes(
+        "approved-firmware-payload");
+    const QByteArray replacementBytes(
+        "replaced-firmware-payload");
+    QCOMPARE(
+        approvedBytes.size(),
+        replacementBytes.size());
+    QVERIFY(writeTextFile(
+        sourcePath, approvedBytes));
+    const QString approvedSha =
+        QString::fromLatin1(
+            QCryptographicHash::hash(
+                approvedBytes,
+                QCryptographicHash::Sha256)
+                .toHex());
+
+    std::shared_ptr<QTemporaryDir>
+        stagedDirectory;
+    QString stagedPath;
+    QString stagingError;
+    QVERIFY2(
+        FirmwareBridge::
+            stageApprovedPackageCopy(
+                sourcePath,
+                approvedBytes.size(),
+                approvedSha,
+                &stagedDirectory,
+                &stagedPath,
+                &stagingError),
+        qPrintable(stagingError));
+    QVERIFY(stagedDirectory);
+    QVERIFY(stagedPath.startsWith(
+        stagedDirectory->path() +
+        QLatin1Char('/')));
+    QFile stagedFile(stagedPath);
+    QVERIFY(stagedFile.open(
+        QIODevice::ReadOnly));
+    QCOMPARE(
+        stagedFile.readAll(),
+        approvedBytes);
+    stagedFile.close();
+    QVERIFY(
+        !(QFileInfo(stagedPath).permissions() &
+          QFileDevice::WriteOwner));
+
+    QSaveFile replacement(sourcePath);
+    QVERIFY(replacement.open(
+        QIODevice::WriteOnly));
+    QCOMPARE(
+        replacement.write(replacementBytes),
+        replacementBytes.size());
+    QVERIFY(replacement.commit());
+
+    QVERIFY(stagedFile.open(
+        QIODevice::ReadOnly));
+    QCOMPARE(
+        stagedFile.readAll(),
+        approvedBytes);
+    stagedFile.close();
+    QString updaterIdentityError;
+    QVERIFY2(
+        FirmwareUpdater::
+            approvedPackageIdentityMatches(
+                stagedPath,
+                approvedBytes.size(),
+                approvedSha,
+                &updaterIdentityError),
+        qPrintable(updaterIdentityError));
+    QVERIFY(!FirmwareUpdater::
+                approvedPackageIdentityMatches(
+                    sourcePath,
+                    approvedBytes.size(),
+                    approvedSha,
+                    &updaterIdentityError));
+
+    std::shared_ptr<QTemporaryDir>
+        rejectedDirectory;
+    QString rejectedPath;
+    QString rejectedError;
+    QVERIFY(!FirmwareBridge::
+                stageApprovedPackageCopy(
+                    sourcePath,
+                    approvedBytes.size(),
+                    approvedSha,
+                    &rejectedDirectory,
+                    &rejectedPath,
+                    &rejectedError));
+    QVERIFY(!rejectedDirectory);
+    QVERIFY(rejectedPath.isEmpty());
+    QVERIFY(rejectedError.contains(
+        QStringLiteral("identity"),
+        Qt::CaseInsensitive));
+}
+
+void PrinterProtocolTests::
+    rockchipLoaderIdentityIsFailClosed() {
+    const QString validOutput =
+        QStringLiteral(
+            "List of rockusb connected(1)\n"
+            "DevNo=1 Vid=0x2207,Pid=0x350a,LocationID=19 Mode=Loader SerialNo=BYZLTRYX026900\n");
+    const auto valid =
+        FirmwareUpdater::
+            parseRockchipLoaderIdentity(
+                validOutput,
+                QStringLiteral(
+                    "BYZLTRYX026900"));
+    QCOMPARE(
+        static_cast<int>(valid.status),
+        static_cast<int>(
+            FirmwareUpdater::
+                RockchipProbeStatus::Valid));
+    QCOMPARE(valid.deviceNumber, 1);
+    QCOMPARE(valid.vendorId, quint16(0x2207));
+    QCOMPARE(valid.productId, quint16(0x350a));
+    QCOMPARE(valid.locationId,
+             QStringLiteral("19"));
+    QCOMPARE(valid.mode,
+             QStringLiteral("Loader"));
+    QCOMPARE(valid.serial,
+             QStringLiteral("BYZLTRYX026900"));
+
+    const QStringList unsafeOutputs = {
+        QStringLiteral(
+            "DevNo=1 Vid=0x2207,Pid=0x350a,LocationID=19 Mode=Loader SerialNo=BYZLTRYX026900\n"),
+        QStringLiteral(
+            "List of rockusb connected(2)\n"
+            "DevNo=1 Vid=0x2207,Pid=0x350a,LocationID=19 Mode=Loader SerialNo=BYZLTRYX026900\n"
+            "DevNo=2 Vid=0x2207,Pid=0x350a,LocationID=20 Mode=Loader SerialNo=OTHERTRYX000001\n"),
+        QStringLiteral(
+            "List of rockusb connected(1)\n"
+            "DevNo=1 Vid=0x2207,Pid=0x350a,LocationID=19 Mode=Maskrom SerialNo=BYZLTRYX026900\n"),
+        QStringLiteral(
+            "List of rockusb connected(1)\n"
+            "DevNo=1 Vid=0x1234,Pid=0x350a,LocationID=19 Mode=Loader SerialNo=BYZLTRYX026900\n"),
+        QStringLiteral(
+            "List of rockusb connected(1)\n"
+            "DevNo=1 Vid=0x2207,Pid=0x1234,LocationID=19 Mode=Loader SerialNo=BYZLTRYX026900\n"),
+        QStringLiteral(
+            "List of rockusb connected(1)\n"
+            "DevNo=1 Vid=0x2207,Pid=0x350a,LocationID=19 Mode=Loader SerialNo=\n"),
+        QStringLiteral(
+            "List of rockusb connected(1)\n"
+            "DevNo=1 Vid=0x2207,Pid=0x350a,LocationID=19 Mode=Loader SerialNo=UNRELATED0001\n"),
+        QStringLiteral(
+            "List of rockusb connected(1)\n"
+            "DevNo=broken Vid=0x2207,Pid=0x350a,LocationID=19 Mode=Loader SerialNo=BYZLTRYX026900\n")
+    };
+    for (const QString &output :
+         unsafeOutputs) {
+        const auto identity =
+            FirmwareUpdater::
+                parseRockchipLoaderIdentity(
+                    output);
+        QCOMPARE(
+            static_cast<int>(
+                identity.status),
+            static_cast<int>(
+                FirmwareUpdater::
+                    RockchipProbeStatus::
+                        Unsafe));
+        QVERIFY2(
+            !identity.error.isEmpty(),
+            qPrintable(output));
+    }
+
+    const auto mismatch =
+        FirmwareUpdater::
+            parseRockchipLoaderIdentity(
+                validOutput,
+                QStringLiteral(
+                    "DIFFERENTTRYX0001"));
+    QCOMPARE(
+        static_cast<int>(mismatch.status),
+        static_cast<int>(
+            FirmwareUpdater::
+                RockchipProbeStatus::Unsafe));
+    QVERIFY(mismatch.error.contains(
+        QStringLiteral("does not match"),
+        Qt::CaseInsensitive));
+
+    const auto none =
+        FirmwareUpdater::
+            parseRockchipLoaderIdentity(
+                QStringLiteral(
+                    "List of rockusb connected(0)\n"));
+    QCOMPARE(
+        static_cast<int>(none.status),
+        static_cast<int>(
+            FirmwareUpdater::
+                RockchipProbeStatus::
+                    NoDevice));
+
+    auto changed = valid;
+    changed.locationId =
+        QStringLiteral("20");
+    QVERIFY(!FirmwareUpdater::
+                sameRockchipIdentity(
+                    valid, changed));
+}
+
+void PrinterProtocolTests::
+    rockchipRciRequiresRk3568() {
+    QString error;
+    QVERIFY2(
+        FirmwareUpdater::
+            rockchipChipInfoIsRk3568(
+                QStringLiteral(
+                    "Chip Info: 38 36 35 33 00 00 00 00\n"),
+                &error),
+        qPrintable(error));
+    QVERIFY(error.isEmpty());
+
+    QVERIFY(!FirmwareUpdater::
+                rockchipChipInfoIsRk3568(
+                    QStringLiteral(
+                        "Chip Info: 39 36 35 33 00 00\n"),
+                    &error));
+    QVERIFY(error.contains(
+        QStringLiteral("RK3568"),
+        Qt::CaseInsensitive));
+    QVERIFY(!FirmwareUpdater::
+                rockchipChipInfoIsRk3568(
+                    QStringLiteral(
+                        "Rockchip device ready\n"),
+                    &error));
+    QVERIFY(!error.isEmpty());
+}
+
+void PrinterProtocolTests::
+    rockchipWritesAreIdentityFenced() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString toolPath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("upgrade_tool"));
+    const QByteArray toolScript =
+        QByteArrayLiteral(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$0.log\"\n"
+            "case \"$1\" in\n"
+            "  LD)\n"
+            "    printf '%s\\n' 'List of rockusb connected(1)'\n"
+            "    printf '%s\\n' 'DevNo=1 Vid=0x2207,Pid=0x350a,LocationID=19 Mode=Loader SerialNo=BYZLTRYX026900'\n"
+            "    ;;\n"
+            "  RCI)\n"
+            "    printf '%s\\n' 'Chip Info: 38 36 35 33 00 00 00 00'\n"
+            "    ;;\n"
+            "esac\n"
+            "exit 0\n");
+    QVERIFY(writeTextFile(
+        toolPath, toolScript));
+    QVERIFY(QFile::setPermissions(
+        toolPath,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner));
+
+    const QString firmwareDirectory =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("firmware"));
+    QVERIFY(QDir().mkpath(
+        firmwareDirectory));
+    const QString loaderPath =
+        QDir(firmwareDirectory).filePath(
+            QStringLiteral(
+                "MiniLoaderAll.bin"));
+    const QString parameterPath =
+        QDir(firmwareDirectory).filePath(
+            QStringLiteral("parameter.txt"));
+    const QString rootfsPath =
+        QDir(firmwareDirectory).filePath(
+            QStringLiteral("rootfs.img"));
+    const QString startMarkerPath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("start.bin"));
+    const QString completeMarkerPath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("complete.bin"));
+    QVERIFY(writeTextFile(loaderPath, "loader"));
+    QVERIFY(writeTextFile(parameterPath, "parameter"));
+    QVERIFY(writeTextFile(rootfsPath, "rootfs"));
+    QVERIFY(writeTextFile(startMarkerPath, "start"));
+    QVERIFY(writeTextFile(
+        completeMarkerPath, "complete"));
+
+    FirmwareUpdater updater;
+    updater.updateMode_ =
+        FirmwareUpdater::UpdateMode::
+            RockchipLoader;
+    updater.upgradeToolPath_ = toolPath;
+    updater.selectedSerial_ =
+        QStringLiteral("BYZLTRYX026900");
+    updater.rockchipFirmwareDir_ =
+        firmwareDirectory;
+    updater.rockchipStartMarkerPath_ =
+        startMarkerPath;
+    updater.rockchipCompleteMarkerPath_ =
+        completeMarkerPath;
+    updater.rockchipPartitions_ = {
+        QStringLiteral("rootfs")};
+    updater.rockchipPartitionOffsets_.insert(
+        QStringLiteral("rootfs"),
+        QStringLiteral("0x1000"));
+    updater.rockchipPartitionTotal_ = 1;
+    QSignalSpy finishedSpy(
+        &updater, &FirmwareUpdater::finished);
+    QSignalSpy irreversibleSpy(
+        &updater,
+        &FirmwareUpdater::irreversibleStarted);
+
+    updater.startProgramStep(
+        FirmwareUpdater::Step::DetectLoader,
+        toolPath, {QStringLiteral("LD")},
+        10000,
+        QStringLiteral("test loader probe"));
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        finishedSpy.count(), 1, 10000);
+    QCOMPARE(
+        finishedSpy.first().at(0).toBool(),
+        true);
+    QCOMPARE(irreversibleSpy.count(), 1);
+
+    QFile logFile(toolPath +
+                  QStringLiteral(".log"));
+    QVERIFY(logFile.open(
+        QIODevice::ReadOnly));
+    const QStringList commands =
+        QString::fromUtf8(logFile.readAll())
+            .split(
+                QLatin1Char('\n'),
+                Qt::SkipEmptyParts);
+    QCOMPARE(commands.size(), 14);
+    QCOMPARE(commands.at(0),
+             QStringLiteral("LD"));
+    QCOMPARE(commands.at(1),
+             QStringLiteral("RCI"));
+    QCOMPARE(commands.at(2),
+             QStringLiteral("LD"));
+    QVERIFY(commands.at(3).startsWith(
+        QStringLiteral("WL 0x077ff8 ")));
+    QCOMPARE(commands.at(4),
+             QStringLiteral("LD"));
+    QVERIFY(commands.at(5).startsWith(
+        QStringLiteral("UL ")));
+    QCOMPARE(commands.at(6),
+             QStringLiteral("LD"));
+    QVERIFY(commands.at(7).startsWith(
+        QStringLiteral("DI -p ")));
+    QCOMPARE(commands.at(8),
+             QStringLiteral("LD"));
+    QVERIFY(commands.at(9).startsWith(
+        QStringLiteral("WL 0x1000 ")));
+    QCOMPARE(commands.at(10),
+             QStringLiteral("LD"));
+    QVERIFY(commands.at(11).startsWith(
+        QStringLiteral("WL 0x077ff8 ")));
+    QCOMPARE(commands.at(12),
+             QStringLiteral("LD"));
+    QCOMPARE(commands.at(13),
+             QStringLiteral("RD"));
+
+    int mutatingCommands = 0;
+    for (int index = 0;
+         index < commands.size(); ++index) {
+        const QString &command =
+            commands.at(index);
+        const bool mutating =
+            command.startsWith(
+                QStringLiteral("WL ")) ||
+            command.startsWith(
+                QStringLiteral("UL ")) ||
+            command.startsWith(
+                QStringLiteral("DI ")) ||
+            command == QStringLiteral("RD");
+        if (!mutating) {
+            continue;
+        }
+        ++mutatingCommands;
+        QVERIFY(index > 0);
+        QCOMPARE(
+            commands.at(index - 1),
+            QStringLiteral("LD"));
+    }
+    QCOMPARE(mutatingCommands, 6);
+}
+
+void PrinterProtocolTests::
+    irreversibleFirmwareTimeoutDoesNotKillProcess() {
+    const QString sleepExecutable =
+        QStandardPaths::findExecutable(
+            QStringLiteral("sleep"));
+    QVERIFY(!sleepExecutable.isEmpty());
+
+    const QList<FirmwareUpdater::Step>
+        irreversibleSteps = {
+            FirmwareUpdater::Step::
+                RebootRecovery,
+            FirmwareUpdater::Step::
+                FlashPartition
+        };
+    for (const FirmwareUpdater::Step step :
+         irreversibleSteps) {
+        FirmwareUpdater updater;
+        updater.updateMode_ =
+            step ==
+                    FirmwareUpdater::Step::
+                        RebootRecovery
+                ? FirmwareUpdater::
+                      UpdateMode::
+                          LegacyAdbOta
+                : FirmwareUpdater::
+                      UpdateMode::
+                          RockchipLoader;
+        updater.currentStep_ = step;
+        updater.currentProgram_ =
+            sleepExecutable;
+        updater.irreversibleStarted_ = true;
+        updater.rockchipWritesStarted_ =
+            step != FirmwareUpdater::Step::
+                        RebootRecovery;
+        updater.process_ =
+            new QProcess(&updater);
+        updater.process_->start(
+            sleepExecutable,
+            {QStringLiteral("5")});
+        QVERIFY(
+            updater.process_
+                ->waitForStarted(3000));
+        QSignalSpy statusSpy(
+            &updater,
+            &FirmwareUpdater::statusChanged);
+        QSignalSpy finishedSpy(
+            &updater,
+            &FirmwareUpdater::finished);
+
+        updater.onStepTimedOut();
+
+        QCOMPARE(
+            updater.process_->state(),
+            QProcess::Running);
+        QCOMPARE(finishedSpy.count(), 0);
+        QCOMPARE(statusSpy.count(), 1);
+        QVERIFY(statusSpy.first()
+                    .at(0)
+                    .toString()
+                    .contains(
+                        QStringLiteral(
+                            "will not be interrupted"),
+                        Qt::CaseInsensitive));
+        updater.cleanupProcess();
+        updater.currentStep_ =
+            FirmwareUpdater::Step::Idle;
+    }
+}
+
+void PrinterProtocolTests::
+    irreversibleFirmwareFailureDisablesReconnect() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(
+        sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
+    QSignalSpy configureSpy(
+        manager.get(),
+        &DeviceManager::requestConfigurePrinter);
+    configureSpy.clear();
+
+    const QString journalPath =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral(
+                    "recovery/interlock.json"));
+    FirmwareBridge bridge(
+        manager.get(), nullptr, journalPath);
+    FirmwareBridge::Approval approval;
+    approval.kind =
+        QStringLiteral("RockchipBundle");
+    approval.sha256 =
+        QString(64, QLatin1Char('f'));
+    QString journalError;
+    QVERIFY2(
+        bridge.armRecoveryJournal(
+            approval, &journalError),
+        qPrintable(journalError));
+    const QString lease =
+        QStringLiteral(
+            "firmware-unknown-outcome-lease");
+    QString gateError;
+    QVERIFY2(
+        manager->acquireFirmwareExclusive(
+            lease, &gateError),
+        qPrintable(gateError));
+    bridge.firmwareGateLeaseId_ = lease;
+    bridge.flashBusy_ = true;
+    bridge.updaterStarted_ = true;
+    bridge.updaterIrreversibleStarted_ =
+        true;
+    QSignalSpy finishedSpy(
+        &bridge, &FirmwareBridge::finished);
+
+    bridge.handleUpdaterFinished(
+        false,
+        QStringLiteral(
+            "synthetic unknown outcome"));
+
+    QTRY_VERIFY(
+        !manager->firmwareExclusiveActive());
+    QVERIFY(!manager->autoConnectMode_);
+    QVERIFY(
+        !manager->isPrinterClassConnected());
+    QCOMPARE(configureSpy.count(), 0);
+    QCOMPARE(finishedSpy.count(), 1);
+    QVERIFY(finishedSpy.first()
+                .at(1)
+                .toString()
+                .contains(
+                    QStringLiteral(
+                        "explicitly acknowledge"),
+                    Qt::CaseInsensitive));
+    const auto recovery =
+        TryxFirmwareRecoveryJournal(
+            journalPath)
+            .load();
+    QCOMPARE(
+        recovery.status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Loaded);
+    QCOMPARE(
+        recovery.record.phase,
+        QStringLiteral("Irreversible"));
+
+    manager->rescanPrinterForTesting();
+    QCOMPARE(configureSpy.count(), 0);
+    QVERIFY(
+        !manager->isPrinterClassConnected());
+}
+
+void PrinterProtocolTests::
+    firmwareRecoveryJournalPersistsAcrossRestart() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString journalPath =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral(
+                    "recovery/interlock.json"));
+    TryxFirmwareRecoveryJournal journal(
+        journalPath);
+    const TryxFirmwareRecoveryRecord expected =
+        firmwareRecoveryRecord(
+            QStringLiteral("Irreversible"));
+    QString journalError;
+    QVERIFY2(
+        journal.write(expected, &journalError),
+        qPrintable(journalError));
+
+    struct stat directoryStatus {};
+    struct stat journalStatus {};
+    QCOMPARE(
+        ::stat(
+            QFile::encodeName(
+                QFileInfo(journalPath)
+                    .absolutePath())
+                .constData(),
+            &directoryStatus),
+        0);
+    QCOMPARE(
+        directoryStatus.st_mode & 07777,
+        static_cast<mode_t>(0700));
+    QCOMPARE(
+        ::lstat(
+            QFile::encodeName(journalPath)
+                .constData(),
+            &journalStatus),
+        0);
+    QVERIFY(S_ISREG(journalStatus.st_mode));
+    QCOMPARE(
+        journalStatus.st_mode & 07777,
+        static_cast<mode_t>(0600));
+    QCOMPARE(
+        journalStatus.st_nlink,
+        static_cast<nlink_t>(1));
+
+    const auto loaded = journal.load();
+    QCOMPARE(
+        loaded.status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Loaded);
+    QVERIFY(sameFirmwareRecoveryRecord(
+        loaded.record, expected));
+
+    for (int restart = 0; restart < 2;
+         ++restart) {
+        FirmwareBridge bridge(
+            nullptr, nullptr, journalPath);
+        QVERIFY(bridge.recoveryRequired());
+        const QVariantMap state =
+            bridge.stateForCaller(
+                QStringLiteral(":1.25"));
+        QCOMPARE(
+            state.value(
+                QStringLiteral(
+                    "recoveryRequired"))
+                .toBool(),
+            true);
+        QCOMPARE(
+            state.value(
+                QStringLiteral("apiVersion"))
+                .toUInt(),
+            quint32(2));
+        QVERIFY(
+            !state.contains(
+                QStringLiteral("journalPath")));
+        QVERIFY(
+            !state.contains(
+                QStringLiteral("approvalToken")));
+    }
+
+    QVERIFY(
+        FirmwareAdaptor::staticMetaObject
+            .indexOfMethod(
+                "AcknowledgeFirmwareRecovery()") >=
+        0);
+
+    const QString sysRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(
+        sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot,
+        QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
+    registerTryxRuntimeMetaTypes();
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+    TryxRuntimeExportedObject exportedObject;
+    TryxRuntimeManagerAdaptor connectionAdaptor(
+        &exportedObject, manager.get());
+    FirmwareBridge bridge(
+        manager.get(), nullptr, journalPath);
+    QVERIFY(
+        manager
+            ->firmwareRecoveryInterlockActive());
+    QSignalSpy configureSpy(
+        manager.get(),
+        &DeviceManager::requestConfigurePrinter);
+    QSignalSpy connectSpy(
+        manager.get(),
+        &DeviceManager::requestConnect);
+
+    manager->rescanPrinterForTesting();
+    connectionAdaptor.ConnectDevice(
+        QString());
+    QCoreApplication::processEvents(
+        QEventLoop::AllEvents, 100);
+    QCOMPARE(configureSpy.count(), 0);
+    QCOMPARE(connectSpy.count(), 0);
+    QVERIFY(
+        manager
+            ->firmwareRecoveryInterlockActive());
+    QCOMPARE(
+        journal.load().status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Loaded);
+
+    QVERIFY(
+        bridge.requestRecoveryAcknowledgement(
+            QStringLiteral(":1.32")));
+    QVERIFY(
+        !manager
+             ->firmwareRecoveryInterlockActive());
+    QTRY_COMPARE(configureSpy.count(), 1);
+    QCOMPARE(
+        journal.load().status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Missing);
+}
+
+void PrinterProtocolTests::
+    firmwareRecoveryInheritedSafeExitPreservesRecord() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString journalPath =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral(
+                    "recovery/interlock.json"));
+    TryxFirmwareRecoveryJournal journal(
+        journalPath);
+    const TryxFirmwareRecoveryRecord inherited =
+        firmwareRecoveryRecord(
+            QStringLiteral(
+                "AwaitingDeviceVerification"),
+            QLatin1Char('a'));
+    QString journalError;
+    QVERIFY2(
+        journal.write(
+            inherited, &journalError),
+        qPrintable(journalError));
+
+    FirmwareBridge::Approval approval;
+    approval.kind =
+        QStringLiteral("RockchipBundle");
+    approval.sha256 =
+        QString(64, QLatin1Char('b'));
+
+    {
+        FirmwareBridge bridge(
+            nullptr, nullptr, journalPath);
+        bridge.attemptInheritedRecovery_ =
+            true;
+        QVERIFY2(
+            bridge.armRecoveryJournal(
+                approval, &journalError),
+            qPrintable(journalError));
+        const auto beforeFailure =
+            journal.load();
+        QVERIFY(sameFirmwareRecoveryRecord(
+            beforeFailure.record, inherited));
+
+        bridge.flashBusy_ = true;
+        bridge.updaterStarted_ = true;
+        bridge.updaterIrreversibleStarted_ =
+            false;
+        bridge.handleUpdaterFinished(
+            false,
+            QStringLiteral(
+                "synthetic safe failure"));
+
+        const auto afterFailure =
+            journal.load();
+        QCOMPARE(
+            afterFailure.status,
+            TryxFirmwareRecoveryJournalLoadStatus::
+                Loaded);
+        QVERIFY(sameFirmwareRecoveryRecord(
+            afterFailure.record, inherited));
+        QVERIFY(bridge.recoveryRequired());
+        QCOMPARE(
+            bridge.phase_,
+            QStringLiteral(
+                "RecoveryRequired"));
+    }
+
+    {
+        FirmwareBridge bridge(
+            nullptr, nullptr, journalPath);
+        QTRY_VERIFY(bridge.updater_ != nullptr);
+        bridge.attemptInheritedRecovery_ =
+            true;
+        QVERIFY2(
+            bridge.armRecoveryJournal(
+                approval, &journalError),
+            qPrintable(journalError));
+        bridge.flashBusy_ = true;
+        bridge.updaterStarted_ = false;
+        bridge.flashOwnerUniqueName_ =
+            QStringLiteral(":1.25");
+
+        bridge.requestCancel(
+            QStringLiteral(":1.25"));
+
+        const auto afterCancel =
+            journal.load();
+        QCOMPARE(
+            afterCancel.status,
+            TryxFirmwareRecoveryJournalLoadStatus::
+                Loaded);
+        QVERIFY(sameFirmwareRecoveryRecord(
+            afterCancel.record, inherited));
+        QVERIFY(bridge.recoveryRequired());
+    }
+}
+
+void PrinterProtocolTests::
+    firmwareRecoveryCleanSafeExitClearsRecord() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString journalPath =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral(
+                    "recovery/interlock.json"));
+    TryxFirmwareRecoveryJournal journal(
+        journalPath);
+    FirmwareBridge bridge(
+        nullptr, nullptr, journalPath);
+    FirmwareBridge::Approval approval;
+    approval.kind =
+        QStringLiteral("RockchipBundle");
+    approval.sha256 =
+        QString(64, QLatin1Char('c'));
+    QString journalError;
+
+    QVERIFY2(
+        bridge.armRecoveryJournal(
+            approval, &journalError),
+        qPrintable(journalError));
+    QCOMPARE(
+        journal.load().status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Loaded);
+    bridge.flashBusy_ = true;
+    bridge.updaterStarted_ = true;
+    bridge.handleUpdaterFinished(
+        false,
+        QStringLiteral(
+            "synthetic safe failure"));
+    QCOMPARE(
+        journal.load().status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Missing);
+    QVERIFY(!bridge.recoveryRequired());
+
+    QTRY_VERIFY(bridge.updater_ != nullptr);
+    QVERIFY2(
+        bridge.armRecoveryJournal(
+            approval, &journalError),
+        qPrintable(journalError));
+    bridge.flashBusy_ = true;
+    bridge.updaterStarted_ = false;
+    bridge.flashOwnerUniqueName_ =
+        QStringLiteral(":1.26");
+    bridge.requestCancel(
+        QStringLiteral(":1.26"));
+    QCOMPARE(
+        journal.load().status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Missing);
+    QVERIFY(!bridge.recoveryRequired());
+}
+
+void PrinterProtocolTests::
+    firmwareRecoverySuccessRequiresExplicitAcknowledgement() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("dev"));
+    const QString journalPath =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral(
+                    "recovery/interlock.json"));
+    QVERIFY(createUsbDevice(
+        sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot,
+        QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+    QSignalSpy configureSpy(
+        manager.get(),
+        &DeviceManager::requestConfigurePrinter);
+    FirmwareBridge bridge(
+        manager.get(), nullptr, journalPath);
+    FirmwareBridge::Approval approval;
+    approval.kind =
+        QStringLiteral("RockchipBundle");
+    approval.sha256 =
+        QString(64, QLatin1Char('d'));
+    QString journalError;
+    QVERIFY2(
+        bridge.armRecoveryJournal(
+            approval, &journalError),
+        qPrintable(journalError));
+
+    bridge.flashBusy_ = true;
+    bridge.updaterStarted_ = true;
+    bridge.handleUpdaterFinished(
+        true,
+        QStringLiteral(
+            "synthetic success"));
+
+    const auto awaiting =
+        TryxFirmwareRecoveryJournal(
+            journalPath)
+            .load();
+    QCOMPARE(
+        awaiting.status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Loaded);
+    QCOMPARE(
+        awaiting.record.phase,
+        QStringLiteral(
+            "AwaitingDeviceVerification"));
+    QVERIFY(bridge.recoveryRequired());
+    QCOMPARE(
+        bridge.phase_,
+        QStringLiteral(
+            "AwaitingDeviceVerification"));
+    QCOMPARE(configureSpy.count(), 0);
+
+    manager->rescanPrinterForTesting();
+    QCOMPARE(configureSpy.count(), 0);
+    QVERIFY(
+        TryxFirmwareRecoveryJournal(
+            journalPath)
+            .load()
+            .status ==
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Loaded);
+}
+
+void PrinterProtocolTests::
+    firmwareRecoveryAcknowledgementWaitsForReleaseFence() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("dev"));
+    const QString journalPath =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral(
+                    "recovery/interlock.json"));
+    QVERIFY(createUsbDevice(
+        sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot,
+        QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(
+        true);
+    QSignalSpy configureSpy(
+        manager.get(),
+        &DeviceManager::requestConfigurePrinter);
+    QSignalSpy sessionSpy(
+        manager.get(),
+        &DeviceManager::requestStartPrinterSession);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
+    configureSpy.clear();
+    sessionSpy.clear();
+
+    QSemaphore workerEntered;
+    QSemaphore releaseWorker;
+    QVERIFY(QMetaObject::invokeMethod(
+        manager->worker_,
+        [&workerEntered, &releaseWorker]() {
+            workerEntered.release();
+            releaseWorker.acquire();
+        },
+        Qt::QueuedConnection));
+    QVERIFY(workerEntered.tryAcquire(1, 5000));
+
+    FirmwareBridge bridge(
+        manager.get(), nullptr, journalPath);
+    FirmwareBridge::Approval approval;
+    approval.kind =
+        QStringLiteral("RockchipBundle");
+    approval.sha256 =
+        QString(64, QLatin1Char('e'));
+    QString journalError;
+    QVERIFY2(
+        bridge.armRecoveryJournal(
+            approval, &journalError),
+        qPrintable(journalError));
+
+    const QString lease =
+        QStringLiteral(
+            "firmware-recovery-ack-lease");
+    QString gateError;
+    QVERIFY2(
+        manager->acquireFirmwareExclusive(
+            lease, &gateError),
+        qPrintable(gateError));
+    bridge.firmwareGateLeaseId_ = lease;
+    bridge.flashBusy_ = true;
+    bridge.updaterStarted_ = true;
+    bridge.handleUpdaterFinished(
+        true,
+        QStringLiteral(
+            "synthetic success"));
+
+    QVERIFY(manager->firmwareExclusiveActive());
+    QVERIFY(
+        bridge.requestRecoveryAcknowledgement(
+            QStringLiteral(":1.27")));
+    QCOMPARE(
+        TryxFirmwareRecoveryJournal(
+            journalPath)
+            .load()
+            .status,
+        TryxFirmwareRecoveryJournalLoadStatus::
+            Missing);
+    QVERIFY(!bridge.recoveryRequired());
+    QVERIFY(manager->firmwareExclusiveActive());
+    QCOMPARE(configureSpy.count(), 0);
+    QCOMPARE(sessionSpy.count(), 0);
+
+    releaseWorker.release();
+    QTRY_VERIFY(
+        !manager->firmwareExclusiveActive());
+    QTRY_COMPARE(configureSpy.count(), 1);
+    QTRY_COMPARE(sessionSpy.count(), 1);
+    QVERIFY(manager->isPrinterClassConnected());
+
+    QVERIFY(
+        !bridge.requestRecoveryAcknowledgement(
+            QStringLiteral(":1.27")));
+    QCoreApplication::processEvents(
+        QEventLoop::AllEvents, 100);
+    QCOMPARE(configureSpy.count(), 1);
+}
+
+void PrinterProtocolTests::
+    firmwareRecoveryAcknowledgementUnlinksSymlinkExactly() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString recoveryDirectory =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral("recovery"));
+    const QString journalPath =
+        QDir(recoveryDirectory)
+            .filePath(
+                QStringLiteral(
+                    "interlock.json"));
+    const QString targetPath =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral("target.txt"));
+    const QByteArray targetContents(
+        "do-not-remove-or-modify");
+    QVERIFY(QDir().mkpath(
+        recoveryDirectory));
+    QVERIFY(QFile::setPermissions(
+        recoveryDirectory,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner));
+    QVERIFY(writeTextFile(
+        targetPath, targetContents));
+    QCOMPARE(
+        ::symlink(
+            QFile::encodeName(targetPath)
+                .constData(),
+            QFile::encodeName(journalPath)
+                .constData()),
+        0);
+
+    const QString sysRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("dev"));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+    FirmwareBridge bridge(
+        manager.get(), nullptr, journalPath);
+    QVERIFY(bridge.recoveryRequired());
+    QVERIFY(bridge.recoveryJournalInvalid_);
+    QVERIFY(
+        !bridge.requestRecoveryAcknowledgement(
+            QString()));
+    struct stat symlinkStatus {};
+    QCOMPARE(
+        ::lstat(
+            QFile::encodeName(journalPath)
+                .constData(),
+            &symlinkStatus),
+        0);
+    QVERIFY(S_ISLNK(symlinkStatus.st_mode));
+
+    QVERIFY(
+        bridge.requestRecoveryAcknowledgement(
+            QStringLiteral(":1.28")));
+    QCOMPARE(
+        ::lstat(
+            QFile::encodeName(journalPath)
+                .constData(),
+            &symlinkStatus),
+        -1);
+    QCOMPARE(errno, ENOENT);
+    QFile target(targetPath);
+    QVERIFY(target.open(QIODevice::ReadOnly));
+    QCOMPARE(target.readAll(), targetContents);
+    target.close();
+    QVERIFY(manager->autoConnectMode_);
+
+    const QString hardLinkTargetPath =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral(
+                    "hardlink-target.txt"));
+    QVERIFY(writeTextFile(
+        hardLinkTargetPath,
+        targetContents));
+    QVERIFY(QFile::setPermissions(
+        hardLinkTargetPath,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner));
+    QCOMPARE(
+        ::link(
+            QFile::encodeName(
+                hardLinkTargetPath)
+                .constData(),
+            QFile::encodeName(journalPath)
+                .constData()),
+        0);
+    {
+        FirmwareBridge hardLinkBridge(
+            manager.get(), nullptr,
+            journalPath);
+        QVERIFY(
+            hardLinkBridge.recoveryRequired());
+        QVERIFY(
+            hardLinkBridge
+                .recoveryJournalInvalid_);
+        QVERIFY(
+            hardLinkBridge
+                .requestRecoveryAcknowledgement(
+                    QStringLiteral(":1.30")));
+    }
+    QCOMPARE(
+        ::lstat(
+            QFile::encodeName(journalPath)
+                .constData(),
+            &symlinkStatus),
+        -1);
+    QCOMPARE(errno, ENOENT);
+    QFile hardLinkTarget(
+        hardLinkTargetPath);
+    QVERIFY(
+        hardLinkTarget.open(
+            QIODevice::ReadOnly));
+    QCOMPARE(
+        hardLinkTarget.readAll(),
+        targetContents);
+}
+
+void PrinterProtocolTests::
+    firmwareRecoveryDirectoryEntryRemainsFailClosed() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString recoveryDirectory =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral("recovery"));
+    const QString journalPath =
+        QDir(recoveryDirectory)
+            .filePath(
+                QStringLiteral(
+                    "interlock.json"));
+    QVERIFY(QDir().mkpath(journalPath));
+    QVERIFY(QFile::setPermissions(
+        recoveryDirectory,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner));
+
+    const QString sysRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("dev"));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(
+            sysRoot, devRoot));
+    FirmwareBridge bridge(
+        manager.get(), nullptr, journalPath);
+    QVERIFY(bridge.recoveryRequired());
+    QVERIFY(bridge.recoveryJournalInvalid_);
+    QVERIFY(
+        !bridge.requestRecoveryAcknowledgement(
+            QStringLiteral(":1.29")));
+    QVERIFY(QFileInfo(journalPath).isDir());
+    QVERIFY(!manager->autoConnectMode_);
+
+    const QString unsafeDirectory =
+        QDir(temporaryDirectory.path())
+            .filePath(
+                QStringLiteral(
+                    "unsafe-recovery"));
+    const QString unsafeJournalPath =
+        QDir(unsafeDirectory)
+            .filePath(
+                QStringLiteral(
+                    "interlock.json"));
+    QVERIFY(QDir().mkpath(
+        unsafeDirectory));
+    QVERIFY(QFile::setPermissions(
+        unsafeDirectory,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner |
+            QFileDevice::ReadGroup |
+            QFileDevice::ExeGroup |
+            QFileDevice::ReadOther |
+            QFileDevice::ExeOther));
+    QVERIFY(writeTextFile(
+        unsafeJournalPath,
+        QByteArrayLiteral("{}")));
+    QVERIFY(QFile::setPermissions(
+        unsafeJournalPath,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner));
+    FirmwareBridge unsafeDirectoryBridge(
+        manager.get(), nullptr,
+        unsafeJournalPath);
+    QVERIFY(
+        unsafeDirectoryBridge
+            .recoveryRequired());
+    QVERIFY(
+        unsafeDirectoryBridge
+            .recoveryJournalInvalid_);
+    QVERIFY(
+        !unsafeDirectoryBridge
+             .requestRecoveryAcknowledgement(
+                 QStringLiteral(":1.31")));
+    QVERIFY(QFileInfo::exists(
+        unsafeJournalPath));
 }
 
 void PrinterProtocolTests::

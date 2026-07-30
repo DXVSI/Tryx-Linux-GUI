@@ -2649,6 +2649,48 @@ void DeviceWorker::clearPrinterDevice(quint64 generation) {
     drainAllPrinterCancellations();
 }
 
+void DeviceWorker::quiesceForFirmware(const QString &leaseId,
+                                      quint64 generation) {
+    // This slot is deliberately queued on the same worker thread as every
+    // device command. Reaching it proves that all commands accepted before the
+    // firmware gate have returned. The generation gate is closed synchronously
+    // by DeviceManager before this slot is queued, so in-flight printer-class
+    // transactions are interrupted and no later transaction can start.
+    legacyMetricsTimer_->stop();
+    if (device_) {
+        if (device_->is_connected()) {
+            device_->disconnect();
+        }
+        device_.reset();
+    }
+
+    stopPrinterSession();
+    printerProtocol_ = std::make_unique<PrinterProtocol>();
+    printerSessionRecoveryAttempt_ = 0;
+    printerOverlayActivationPending_ = false;
+    printerOverlayLeaseRefreshNext_ = false;
+    printerDevicePath_.clear();
+    printerDeviceSerial_.clear();
+    foregroundPrinterOperationId_.clear();
+    printerOverlayConfig_ = {};
+    configuredPrinterGeneration_ = qMax(
+        qMax(configuredPrinterGeneration_, generation),
+        printerGenerationGate_.load(std::memory_order_acquire));
+    printerSessionElapsedTimer_.invalidate();
+    drainAllPrinterCancellations();
+
+    emit firmwareTransportQuiesced(leaseId, generation);
+}
+
+void DeviceWorker::releaseFirmwareQuiesceFence(
+    const QString &leaseId, quint64 generation) {
+    // This no-op fence shares the device worker queue with quiesce and every
+    // transport command. Its ACK proves that a previously queued quiesce can
+    // no longer run after DeviceManager resumes the transport.
+    emit firmwareQuiesceReleaseFenceReached(
+        leaseId, generation);
+}
+
 void DeviceWorker::readPrinterDeviceInfo(const QString &devicePath,
                                          quint64 generation) {
     PrinterProtocol::OperationContext context;
@@ -4150,6 +4192,150 @@ void DeviceManager::setPrinterOverlayLeaseMode(
         Qt::QueuedConnection);
 }
 
+bool DeviceManager::acquireFirmwareExclusive(
+    const QString &leaseId, QString *errorMessage) {
+    const auto fail = [errorMessage](const QString &message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    if (QThread::currentThread() != thread()) {
+        return fail(tr(
+            "The firmware transport gate must be acquired on the runtime thread"));
+    }
+    if (remoteMode_ || !worker_ || !workerThread_.isRunning()) {
+        return fail(tr(
+            "The local device transport is unavailable for firmware flashing"));
+    }
+    const QString normalizedLease = leaseId.trimmed();
+    if (normalizedLease.isEmpty()) {
+        return fail(tr("The firmware transport lease is invalid"));
+    }
+    if (firmwareExclusiveActive()) {
+        return fail(tr(
+            "Another firmware operation already owns the device transport"));
+    }
+    if (!activeOperationId_.isEmpty()) {
+        return fail(
+            tr("Device operation %1 is still active")
+                .arg(activeOperationId_));
+    }
+    if (!pendingRetryValidationId_.isEmpty()) {
+        return fail(tr(
+            "Stored retry media is still being validated"));
+    }
+    if (!retryCacheOperationId_.isEmpty()) {
+        const auto retry =
+            operations_.constFind(retryCacheOperationId_);
+        if (retry == operations_.constEnd() ||
+            retry->requiresDeviceRecovery ||
+            retry->uploadFinalizationReconciliationPending ||
+            retry->info.terminalOutcome ==
+                QStringLiteral("PartialOrUnknown") ||
+            retry->info.terminalOutcome ==
+                QStringLiteral("FinalizationUnknown")) {
+            return fail(tr(
+                "A previous media transfer has an unresolved device outcome; cancel or reconcile it before firmware flashing"));
+        }
+    }
+    if (!pendingDeleteOperationId_.isEmpty() ||
+        QFileInfo::exists(deleteIntentPath())) {
+        return fail(tr(
+            "A previous delete command still requires read-only reconciliation"));
+    }
+    if (!pendingReplaceJournalOperationId_.isEmpty() ||
+        QFileInfo::exists(replaceIntentPath())) {
+        return fail(tr(
+            "A previous replacement still requires read-only reconciliation"));
+    }
+    if (printerRecoveryRequired_) {
+        return fail(tr(
+            "The PASE requires physical reconnect recovery before firmware flashing"));
+    }
+    if (printerDisplaySessionLost_) {
+        return fail(tr(
+            "The PASE display session is lost; physically reconnect the device before firmware flashing"));
+    }
+
+    // All public device entry points run on this thread. Publishing the lease
+    // before closing the worker generation gate makes the active-operation
+    // check and mutation exclusion one indivisible event-loop transition.
+    firmwareExclusiveLeaseId_ = normalizedLease;
+    firmwareRecoveryReconnectRequested_ = false;
+    firmwareResumeAutoConnect_ = autoConnectMode_;
+    firmwareQuiesceGeneration_ = ++printerGeneration_;
+    setPrinterDisplaySessionActive(false);
+    printerSessionResumePending_ = false;
+    printerSessionResumeSerial_.clear();
+    stopKeepalive();
+    emit requestCancelPrinterPreparation(printerGeneration_);
+    worker_->updatePrinterGenerationGate(printerGeneration_, false);
+    emit requestFirmwareTransportQuiesce(
+        normalizedLease, firmwareQuiesceGeneration_);
+    emit uploadStatus(tr(
+        "Device transport is reserved for firmware flashing"));
+    return true;
+}
+
+void DeviceManager::releaseFirmwareExclusive(
+    const QString &leaseId, bool resumeTransport) {
+    if (QThread::currentThread() != thread() ||
+        leaseId.trimmed().isEmpty() ||
+        leaseId.trimmed() != firmwareExclusiveLeaseId_) {
+        return;
+    }
+    if (!firmwareReleasePendingLeaseId_.isEmpty()) {
+        if (firmwareReleasePendingLeaseId_ ==
+            leaseId.trimmed()) {
+            // A later shutdown request may downgrade an already queued resume.
+            firmwareReleaseResumeTransport_ =
+                firmwareReleaseResumeTransport_ &&
+                resumeTransport;
+        }
+        return;
+    }
+    firmwareReleasePendingLeaseId_ =
+        leaseId.trimmed();
+    firmwareReleaseResumeTransport_ =
+        resumeTransport && firmwareResumeAutoConnect_;
+    emit requestFirmwareQuiesceReleaseFence(
+        firmwareReleasePendingLeaseId_,
+        firmwareQuiesceGeneration_);
+}
+
+void DeviceManager::
+    setFirmwareRecoveryInterlockActive(
+        bool active) {
+    firmwareRecoveryInterlockActive_ = active;
+    if (active) {
+        autoConnectMode_ = false;
+        stopKeepalive();
+    }
+}
+
+void DeviceManager::
+    resumeConnectionAfterFirmwareRecoveryAcknowledgement() {
+    if (firmwareRecoveryInterlockActive_) {
+        emit deviceError(tr(
+            "Device connection remains blocked by firmware recovery"));
+        return;
+    }
+    if (remoteMode_) {
+        connectDevice();
+        return;
+    }
+    if (firmwareExclusiveActive()) {
+        // A firmware completion publishes its recovery state before the
+        // worker-thread release fence necessarily returns. Preserve this
+        // explicit user action and reconnect only after the old transport
+        // queue is proven empty.
+        firmwareRecoveryReconnectRequested_ = true;
+        return;
+    }
+    connectDevice();
+}
+
 void DeviceManager::initializeRemote() {
     registerTryxRuntimeMetaTypes();
 
@@ -5040,6 +5226,10 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
     connect(worker_, &DeviceWorker::connected, this,
             [this](const QString &pid, const QString &serial,
                    const QString &fw, const QString &app) {
+                if (firmwareExclusiveActive() ||
+                    firmwareRecoveryInterlockActive_) {
+                    return;
+                }
                 if (printerSnapshot_.blocksLegacyTransport()) {
                     emit requestDisconnect();
                     return;
@@ -5049,18 +5239,22 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 emit deviceConnected(pid, serial, fw, app);
             });
     connect(worker_, &DeviceWorker::disconnected, this, [this]() {
-        if (printerClassConnected_) {
+        if (printerClassConnected_ || firmwareExclusiveActive()) {
             return;
         }
         connected_ = false;
         emit deviceDisconnected();
     });
     const auto legacyResultIsCurrent = [this]() {
-        return connected_ && !printerClassConnected_ &&
+        return !firmwareExclusiveActive() &&
+               !firmwareRecoveryInterlockActive_ &&
+               connected_ && !printerClassConnected_ &&
                !printerSnapshot_.blocksLegacyTransport();
     };
     connect(worker_, &DeviceWorker::error, this, [this](const QString &message) {
-        if (!printerSnapshot_.blocksLegacyTransport()) {
+        if (!firmwareExclusiveActive() &&
+            !firmwareRecoveryInterlockActive_ &&
+            !printerSnapshot_.blocksLegacyTransport()) {
             emit deviceError(message);
         }
     });
@@ -5102,7 +5296,9 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
             });
 
     const auto printerResultIsCurrent = [this](quint64 generation) {
-        return generation == printerGeneration_ && printerClassConnected_ &&
+        return !firmwareExclusiveActive() &&
+               !firmwareRecoveryInterlockActive_ &&
+               generation == printerGeneration_ && printerClassConnected_ &&
                printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready;
     };
     const auto printerOperationResultIsExpected =
@@ -5239,6 +5435,55 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     }
                 }
             });
+    connect(worker_, &DeviceWorker::firmwareTransportQuiesced, this,
+            [this](const QString &leaseId, quint64 generation) {
+                if (leaseId != firmwareExclusiveLeaseId_ ||
+                    generation != firmwareQuiesceGeneration_) {
+                    return;
+                }
+                const bool wasConnected = connected_;
+                detachPrinterClassDevice(false);
+                connected_ = false;
+                setPrinterDisplaySessionActive(false);
+                printerSessionResumePending_ = false;
+                printerSessionResumeSerial_.clear();
+                emit mediaListUpdated({});
+                if (wasConnected) {
+                    emit deviceDisconnected();
+                }
+                emit firmwareTransportQuiesced(
+                    leaseId, true,
+                    tr("Device transports are closed for firmware flashing"));
+            });
+    connect(
+        worker_,
+        &DeviceWorker::firmwareQuiesceReleaseFenceReached,
+        this,
+        [this](const QString &leaseId, quint64 generation) {
+            if (leaseId != firmwareExclusiveLeaseId_ ||
+                leaseId != firmwareReleasePendingLeaseId_ ||
+                generation != firmwareQuiesceGeneration_) {
+                return;
+            }
+            const bool reconnect =
+                firmwareReleaseResumeTransport_ ||
+                firmwareRecoveryReconnectRequested_;
+            firmwareExclusiveLeaseId_.clear();
+            firmwareReleasePendingLeaseId_.clear();
+            firmwareQuiesceGeneration_ = 0;
+            firmwareResumeAutoConnect_ = false;
+            firmwareReleaseResumeTransport_ = false;
+            firmwareRecoveryReconnectRequested_ = false;
+            if (reconnect) {
+                connectDevice();
+            } else {
+                // A non-resuming release is a fail-closed recovery boundary,
+                // not merely "do not reconnect right now". Disable passive
+                // monitor-triggered reconnects until the user explicitly
+                // starts a new connection after inspecting the device.
+                autoConnectMode_ = false;
+            }
+        });
     connect(worker_, &DeviceWorker::printerSessionLost, this,
             [this, printerResultIsCurrent](quint64 generation) {
                 if (!printerResultIsCurrent(generation)) {
@@ -7184,6 +7429,13 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
             worker_, &DeviceWorker::endPrinterForegroundOperation);
     connect(this, &DeviceManager::requestClearPrinter,
             worker_, &DeviceWorker::clearPrinterDevice);
+    connect(this, &DeviceManager::requestFirmwareTransportQuiesce,
+            worker_, &DeviceWorker::quiesceForFirmware);
+    connect(
+        this,
+        &DeviceManager::requestFirmwareQuiesceReleaseFence,
+        worker_,
+        &DeviceWorker::releaseFirmwareQuiesceFence);
     connect(this, &DeviceManager::requestPrinterDeviceInfo,
             worker_, &DeviceWorker::readPrinterDeviceInfo);
     connect(this, &DeviceManager::requestPrinterDisplayState,
@@ -7440,7 +7692,9 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
             });
 
     connect(keepaliveTimer_, &QTimer::timeout, this, [this]() {
-        if (!printerClassConnected_) {
+        if (!firmwareExclusiveActive() &&
+            !firmwareRecoveryInterlockActive_ &&
+            !printerClassConnected_) {
             emit requestKeepalive();
         }
     });
@@ -7704,6 +7958,7 @@ void DeviceManager::setPrinterDisplaySessionActive(bool active) {
 void DeviceManager::handlePrinterSnapshot(
     const PrinterProtocol::DiscoverySnapshot &snapshot) {
     const bool oldPresence = isPrinterClassDevicePresent();
+    const bool wasConnected = connected_;
     const bool wasPrinterConnected = printerClassConnected_;
     const QString oldPath = printerDevicePath_;
     const QString oldSerial = printerDeviceSerial_;
@@ -7732,6 +7987,25 @@ void DeviceManager::handlePrinterSnapshot(
     emit requestCancelPrinterPreparation(printerGeneration_);
     if (wasPrinterConnected) {
         emit printerOperationsCancelled();
+    }
+    if (firmwareExclusiveActive() ||
+        firmwareRecoveryInterlockActive_) {
+        worker_->updatePrinterGenerationGate(
+            printerGeneration_, false);
+        detachPrinterClassDevice(false);
+        connected_ = false;
+        printerSessionResumePending_ = false;
+        printerSessionResumeSerial_.clear();
+        emit mediaListUpdated({});
+        if (wasConnected) {
+            emit deviceDisconnected();
+        }
+        const bool newPresence =
+            isPrinterClassDevicePresent();
+        if (oldPresence != newPresence) {
+            emit printerPresenceChanged(newPresence);
+        }
+        return;
     }
     const bool ready = snapshot.state == PrinterProtocol::DiscoveryState::Ready &&
                        snapshot.devices.size() == 1;
@@ -7901,6 +8175,15 @@ void DeviceManager::connectDevice(const QString &port) {
         remoteCall(QStringLiteral("ConnectDevice"), {port});
         return;
     }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
+        return;
+    }
+    if (firmwareRecoveryInterlockActive_) {
+        emit deviceError(tr(
+            "Device connection is blocked until firmware recovery is explicitly acknowledged"));
+        return;
+    }
     if (!port.isEmpty() && printerSnapshot_.blocksLegacyTransport()) {
         emit deviceError(
             tr("A TRYX printer-class or Rockchip gadget device is present; use Auto connection."));
@@ -8013,6 +8296,10 @@ void DeviceManager::disconnectDevice() {
         remoteCall(QStringLiteral("DisconnectDevice"));
         return;
     }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
+        return;
+    }
     autoConnectMode_ = false;
     setPrinterDisplaySessionActive(false);
     printerSessionResumePending_ = false;
@@ -8040,6 +8327,11 @@ void DeviceManager::disconnectDevice() {
 void DeviceManager::requestDeviceInfo() {
     if (remoteMode_) {
         remoteCall(QStringLiteral("RequestDeviceInfo"));
+        return;
+    }
+    if (firmwareExclusiveActive()) {
+        emit printerDeviceInfoFailed(
+            firmwareExclusiveStatusText());
         return;
     }
     const QString devicePath = currentPrinterPath();
@@ -8132,6 +8424,9 @@ QString DeviceManager::printerUnavailableStatusText() const {
 }
 
 QString DeviceManager::printerMutationUnavailableStatusText() const {
+    if (firmwareExclusiveActive()) {
+        return firmwareExclusiveStatusText();
+    }
     if (!pendingRetryValidationId_.isEmpty()) {
         return tr(
             "Stored retry media is still being validated; wait for validation to finish before using the PASE display session.");
@@ -8151,8 +8446,15 @@ QString DeviceManager::printerMutationUnavailableStatusText() const {
     return printerUnavailableStatusText();
 }
 
+QString DeviceManager::firmwareExclusiveStatusText() const {
+    return tr(
+        "Device controls are unavailable while firmware flashing owns the USB transport");
+}
+
 void DeviceManager::resumePrinterSessionAfterRetryCacheValidation() {
     if (remoteMode_ || !worker_ ||
+        firmwareExclusiveActive() ||
+        firmwareRecoveryInterlockActive_ ||
         !pendingRetryValidationId_.isEmpty() ||
         printerRecoveryRequired_) {
         return;
@@ -10033,6 +10335,11 @@ QString DeviceManager::queueStageDeviceMediaOperation(
         record.artifactOwner = ownerUniqueName;
         return operationId;
     };
+    if (firmwareExclusiveActive()) {
+        return reject(
+            QStringLiteral("FirmwareUpdateActive"),
+            firmwareExclusiveStatusText());
+    }
     if (!isSha256Hex(mediaId)) {
         return reject(
             QStringLiteral("InvalidMediaId"),
@@ -10396,6 +10703,11 @@ QString DeviceManager::queueRecoveredOperation(
                 requestedApplyFingerprint;
             return operationId;
         };
+    if (firmwareExclusiveActive()) {
+        return reject(
+            QStringLiteral("FirmwareUpdateActive"),
+            firmwareExclusiveStatusText());
+    }
     if (!transformValid) {
         return reject(
             QStringLiteral("InvalidMediaTransform"),
@@ -10644,6 +10956,13 @@ QString DeviceManager::queueUploadOperation(const QString &requestedOperationId,
             : operationId;
     }
 
+    if (firmwareExclusiveActive()) {
+        rejectOperation(
+            operationId, kind, subject,
+            QStringLiteral("FirmwareUpdateActive"),
+            firmwareExclusiveStatusText());
+        return rejectedResult();
+    }
     if (!pendingRetryValidationId_.isEmpty()) {
         rejectOperation(
             operationId, kind, subject,
@@ -10857,6 +11176,13 @@ QString DeviceManager::queueDeleteMediaOperation(
     if (operations_.contains(operationId)) {
         return operationId;
     }
+    if (firmwareExclusiveActive()) {
+        rejectOperation(
+            operationId, kind, subject,
+            QStringLiteral("FirmwareUpdateActive"),
+            firmwareExclusiveStatusText());
+        return operationId;
+    }
     if (!pendingDeleteOperationId_.isEmpty() ||
         QFileInfo::exists(deleteIntentPath())) {
         rejectOperation(
@@ -11029,6 +11355,13 @@ QString DeviceManager::queueApplyOperation(const QString &requestedOperationId,
         return operationId;
     }
 
+    if (firmwareExclusiveActive()) {
+        rejectOperation(
+            operationId, QStringLiteral("Apply"), subject,
+            QStringLiteral("FirmwareUpdateActive"),
+            firmwareExclusiveStatusText());
+        return operationId;
+    }
     if (!pendingRetryValidationId_.isEmpty()) {
         rejectOperation(
             operationId, QStringLiteral("Apply"), subject,
@@ -11180,6 +11513,13 @@ QString DeviceManager::queueMetricsConfigOperation(
     if (operations_.contains(operationId)) {
         return operationId;
     }
+    if (firmwareExclusiveActive()) {
+        rejectOperation(
+            operationId, QStringLiteral("MetricsConfig"), subject,
+            QStringLiteral("FirmwareUpdateActive"),
+            firmwareExclusiveStatusText());
+        return operationId;
+    }
     if (!pendingRetryValidationId_.isEmpty()) {
         rejectOperation(
             operationId, QStringLiteral("MetricsConfig"), subject,
@@ -11285,6 +11625,13 @@ QString DeviceManager::retryOperation(const QString &sourceOperationId,
         return newOperationId;
     }
     if (operations_.contains(newOperationId)) {
+        return newOperationId;
+    }
+    if (firmwareExclusiveActive()) {
+        rejectOperation(
+            newOperationId, QStringLiteral("UploadRetry"),
+            QString(), QStringLiteral("FirmwareUpdateActive"),
+            firmwareExclusiveStatusText());
         return newOperationId;
     }
     const auto source = operations_.constFind(sourceOperationId);
@@ -11836,7 +12183,8 @@ void DeviceManager::loadReplaceJournal() {
 }
 
 void DeviceManager::resumePendingReplaceReconciliation() {
-    if (pendingReplaceJournalOperationId_.isEmpty() ||
+    if (firmwareExclusiveActive() ||
+        pendingReplaceJournalOperationId_.isEmpty() ||
         !pendingDeleteOperationId_.isEmpty() ||
         !activeOperationId_.isEmpty() ||
         !printerDisplaySessionActive_ ||
@@ -12106,7 +12454,8 @@ void DeviceManager::loadDeleteIntent() {
 }
 
 void DeviceManager::resumePendingDeleteReconciliation() {
-    if (pendingDeleteOperationId_.isEmpty() ||
+    if (firmwareExclusiveActive() ||
+        pendingDeleteOperationId_.isEmpty() ||
         !pendingRetryValidationId_.isEmpty() ||
         !activeOperationId_.isEmpty() ||
         !printerDisplaySessionActive_ ||
@@ -13151,6 +13500,10 @@ void DeviceManager::setBrightness(int value) {
         remoteCall(QStringLiteral("SetBrightness"), {boundedValue});
         return;
     }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
+        return;
+    }
     if (isPrinterClassDevicePresent()) {
         TryxRuntimeApplyRequest request;
         request.display.brightnessPresent = true;
@@ -13175,6 +13528,10 @@ void DeviceManager::setScreenConfig(
                     settingsPosition, settingsColor, settingsAlign,
                     settingsBadges, filterOpacity, presetId,
                     sysinfoLabels2, settingsBadges2, waterfallMode});
+        return;
+    }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
         return;
     }
     if (isPrinterClassDevicePresent()) {
@@ -13222,6 +13579,9 @@ void DeviceManager::sendSysinfo(const QStringList &labels,
         remoteCall(QStringLiteral("SendSysinfo"), {labels, values, units});
         return;
     }
+    if (firmwareExclusiveActive()) {
+        return;
+    }
     if (isPrinterClassDevicePresent()) {
         const QString devicePath = currentPrinterPath();
         if (devicePath.isEmpty() || !printerDisplaySessionActive_ ||
@@ -13242,6 +13602,10 @@ void DeviceManager::setRotation(int degrees) {
         remoteCall(QStringLiteral("SetRotation"), {degrees});
         return;
     }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
+        return;
+    }
     if (isPrinterClassDevicePresent()) {
         emit uploadStatus(
             tr("Rotation is not supported on printer-class firmware yet."));
@@ -13253,6 +13617,10 @@ void DeviceManager::setRotation(int degrees) {
 void DeviceManager::rebootDevice() {
     if (remoteMode_) {
         remoteCall(QStringLiteral("RebootDevice"));
+        return;
+    }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
         return;
     }
     if (isPrinterClassDevicePresent()) {
@@ -13268,6 +13636,10 @@ void DeviceManager::deleteMedia(const QStringList &files) {
         remoteCall(QStringLiteral("DeleteMedia"), {files});
         return;
     }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
+        return;
+    }
     if (isPrinterClassDevicePresent()) {
         emit uploadStatus(
             tr("Media deletion is disabled because USB file_remove has no dedicated response."));
@@ -13279,6 +13651,10 @@ void DeviceManager::deleteMedia(const QStringList &files) {
 void DeviceManager::uploadMedia(const QString &localPath) {
     if (remoteMode_) {
         remoteCall(QStringLiteral("UploadMedia"), {localPath});
+        return;
+    }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
         return;
     }
     if (isPrinterClassDevicePresent()) {
@@ -13296,6 +13672,10 @@ void DeviceManager::uploadMedia(const QString &localPath) {
 void DeviceManager::refreshMediaList() {
     if (remoteMode_) {
         remoteCall(QStringLiteral("RefreshMediaList"));
+        return;
+    }
+    if (firmwareExclusiveActive()) {
+        emit deviceError(firmwareExclusiveStatusText());
         return;
     }
     if (isPrinterClassDevicePresent()) {
@@ -13331,6 +13711,9 @@ void DeviceManager::refreshMediaList() {
 void DeviceManager::startKeepalive(int intervalSec) {
     if (remoteMode_) {
         remoteCall(QStringLiteral("StartKeepalive"), {intervalSec});
+        return;
+    }
+    if (firmwareExclusiveActive()) {
         return;
     }
     if (printerClassConnected_) {

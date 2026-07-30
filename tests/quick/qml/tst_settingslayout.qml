@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtTest
 
+import "../../../qml/components" as Components
 import "../../../qml/pages" as Pages
 
 TestCase {
@@ -69,6 +70,7 @@ TestCase {
         property bool flashBusy: false
         property bool approvalAvailable: false
         property bool flashSupported: false
+        property bool recoveryRequired: false
         property bool canValidate: packagePath.length > 0
         property bool canFlash: false
         property bool confirmationRequired: false
@@ -83,6 +85,7 @@ TestCase {
         property string firmwareVersion: ""
         property string appVersion: ""
         property string errorMessage: ""
+        property int recoveryAcknowledgementCount: 0
 
         function setPackagePath(path) {
             packagePath = path
@@ -92,6 +95,9 @@ TestCase {
         function cancelFlashConfirmation() {}
         function confirmFlash() {}
         function requestCancel() {}
+        function acknowledgeFirmwareRecovery() {
+            ++recoveryAcknowledgementCount
+        }
         function refresh() {}
     }
 
@@ -102,6 +108,14 @@ TestCase {
             runtime: runtimeMock
             settings: settingsMock
             firmware: firmwareMock
+        }
+    }
+
+    Component {
+        id: firmwarePanelComponent
+
+        Components.FirmwarePanel {
+            controller: firmwareMock
         }
     }
 
@@ -126,6 +140,9 @@ TestCase {
             findChild(page, "firmwareChooseButton")
         const firmwarePath =
             findChild(page, "firmwarePackagePath")
+        const firmwareRecovery =
+            findChild(page,
+                      "firmwareRecoveryAcknowledgeButton")
         const serialPort =
             findChild(page, "serialPortCombo")
         const keepalive =
@@ -139,6 +156,7 @@ TestCase {
         verify(firmwarePanel !== null)
         verify(firmwareChoose !== null)
         verify(firmwarePath !== null)
+        verify(firmwareRecovery !== null)
         verify(serialPort !== null)
         verify(keepalive !== null)
         verify(reconnect !== null)
@@ -146,6 +164,10 @@ TestCase {
         compare(keepalive.value, 10)
         compare(language.currentText, "English")
         verify(autostart.checked)
+        compare(firmwareRecovery.text,
+                "I inspected the display; resume connection")
+        verify(!firmwareRecovery.visible)
+        verify(!firmwareRecovery.enabled)
 
         const githubPosition =
             openGitHub.mapToItem(content, 0, 0)
@@ -155,5 +177,42 @@ TestCase {
         settingsMock.language = "ru"
         wait(0)
         compare(language.currentText, "Russian")
+    }
+
+    function test_firmwareRecoveryAcknowledgementVisibility() {
+        firmwareMock.busy = false
+        firmwareMock.recoveryRequired = false
+        firmwareMock.recoveryAcknowledgementCount = 0
+
+        const panel = createTemporaryObject(
+            firmwarePanelComponent, testCase,
+            {"width": 950, "height": 600,
+             "visible": true})
+        verify(panel !== null)
+        wait(0)
+
+        const recoveryButton = findChild(
+            panel, "firmwareRecoveryAcknowledgeButton")
+        verify(recoveryButton !== null)
+        compare(
+            recoveryButton.text,
+            "I inspected the display; resume connection")
+        verify(!recoveryButton.visible)
+        verify(!recoveryButton.enabled)
+        verify(!panel.recoveryActionAvailable)
+
+        firmwareMock.recoveryRequired = true
+        wait(0)
+        verify(panel.recoveryActionAvailable)
+        verify(recoveryButton.enabled)
+        recoveryButton.clicked()
+        compare(
+            firmwareMock.recoveryAcknowledgementCount, 1)
+
+        firmwareMock.busy = true
+        wait(0)
+        verify(!panel.recoveryActionAvailable)
+        verify(!recoveryButton.visible)
+        verify(!recoveryButton.enabled)
     }
 }

@@ -112,9 +112,13 @@ only the GUI; the separate runtime remains available to the user service.
   replaced through a crash-safe verified workflow, or deleted when eligible.
 - Quick Settings provides local firmware package selection and validation.
   The runtime obtains an exclusive device-transport gate before handing work
-  to the existing updater backend. The gate and validation paths are covered
-  by offline tests; this release preparation did not physically flash a
-  device and does not claim that hardware operation as verified.
+  to the existing updater backend and writes an owner-only recovery interlock
+  before dispatch. A daemon restart cannot silently reconnect after an
+  interrupted or completed flash. The user must inspect the display and
+  explicitly acknowledge recovery before the normal device session resumes.
+  The gate, journal, and validation paths are covered by offline tests; this
+  release preparation did not physically flash a device and does not claim
+  that hardware operation as verified.
 - The QML application and package checks remain compatible with Qt 6.4 for
   Ubuntu 24.04 and Linux Mint 22.
 - The protocol implementation uses project-owned clean-room schemas. Release
@@ -323,6 +327,18 @@ The local validator recognizes two Panorama SE package formats:
 The `upgrade_tool` executable is not bundled in this open source repository because its redistribution rights are not clear. The app looks for it in `TRYX_UPGRADE_TOOL`, `PATH`, next to the app binary, `tools/upgrade_tool`, and `~/.local/bin/upgrade_tool`.
 
 Rockchip RK3568 loader access may require a local udev rule for USB VID/PID `2207:350a` so the flashing backend can reset or inspect the device without root.
+
+Before dispatching an approved package, the runtime atomically writes an
+owner-only recovery journal and keeps the device transport under an exclusive
+firmware gate. The journal survives daemon crashes, forced termination, and
+successful updater completion. While it exists, startup is fail-closed: the
+runtime does not automatically open a normal display session. After the
+updater finishes, wait for the cooler to boot, inspect the physical display,
+then use **I inspected the display; resume connection** in Quick Settings.
+That explicit action removes the exact journal entry, releases the gate, and
+starts a fresh connection. It is not an automated firmware-version or boot
+verification. A new locally approved recovery flash remains possible while
+the device is still in Rockchip Loader mode.
 
 After updating to the new KANALI firmware, the cooler no longer exposes ADB by default. It appears as `391a:1021 RK PASE` with a bidirectional printer interface. The app generates C++ types from three minimal, project-owned schemas under `protocol/wire-v1`; recovered vendor descriptor sources are not a build or release dependency. The production path does not read or write `/dev/usb/lp*`: it claims the `07/01/02` interface through usbfs, temporarily detaches `usblp`, arms one bulk IN before each request, never re-arms that endpoint while the matching bulk OUT is still active, drains optional periodic responses to a complete frame boundary after OUT, and releases the interface on shutdown.
 

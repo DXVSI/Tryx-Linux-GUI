@@ -8,9 +8,11 @@
 #include <QStringList>
 #include <QTimer>
 #include <QtGlobal>
+#include <atomic>
 #include <memory>
 
 class QFileInfo;
+class PrinterProtocolTests;
 class QTemporaryDir;
 
 class FirmwareUpdater : public QObject {
@@ -77,15 +79,26 @@ public:
     QString rockchipFlashingUnavailableMessage() const;
     bool rockchipFlashingAvailable() const;
     bool isRunning() const;
+    bool hasStartedIrreversibleOperation() const {
+        return irreversibleStarted_.load(
+            std::memory_order_acquire);
+    }
 
 public slots:
-    void startLegacyAdbOta(const QString &packagePath);
-    void startRockchipLoaderUpdate(const QString &packagePath);
+    void startLegacyAdbOta(
+        const QString &packagePath,
+        qint64 expectedSize,
+        const QString &expectedSha256);
+    void startRockchipLoaderUpdate(
+        const QString &packagePath,
+        qint64 expectedSize,
+        const QString &expectedSha256);
     void cancel();
 
 signals:
     void statusChanged(const QString &message);
     void progressChanged(int value);
+    void irreversibleStarted();
     void finished(bool success, const QString &message);
 
 private slots:
@@ -111,13 +124,45 @@ private:
         PushPackage,
         VerifyRemoteSize,
         VerifyRemoteSizeFallback,
+        VerifyRemoteSha256,
+        VerifyRemoteSha256Fallback,
         RebootRecovery,
         RebootLoader,
         DetectLoader,
+        ReadChipInfo,
+        ConfirmLoader,
         WriteStartMarker,
         UpgradeLoader,
         WriteGpt,
         WriteParameter,
+        FlashPartition,
+        WriteCompleteMarker,
+        RebootRockchip
+    };
+
+    enum class RockchipProbeStatus {
+        NoDevice,
+        Unsafe,
+        Valid
+    };
+
+    struct RockchipLoaderIdentity {
+        RockchipProbeStatus status =
+            RockchipProbeStatus::NoDevice;
+        QString error;
+        int deviceNumber = -1;
+        quint16 vendorId = 0;
+        quint16 productId = 0;
+        QString locationId;
+        QString mode;
+        QString serial;
+    };
+
+    enum class RockchipNextAction {
+        None,
+        WriteStartMarker,
+        UpgradeLoader,
+        WriteGpt,
         FlashPartition,
         WriteCompleteMarker,
         RebootRockchip
@@ -147,6 +192,22 @@ private:
                                       QString *errorMessage);
     static bool writeRockchipMarker(const QString &path, quint32 state,
                                     QString *errorMessage);
+    static bool fileSha256(const QString &path, QString *sha256,
+                           QString *errorMessage);
+    static bool approvedPackageIdentityMatches(
+        const QString &path,
+        qint64 expectedSize,
+        const QString &expectedSha256,
+        QString *errorMessage);
+    static RockchipLoaderIdentity parseRockchipLoaderIdentity(
+        const QString &output,
+        const QString &requiredSerial = {});
+    static bool rockchipChipInfoIsRk3568(
+        const QString &output,
+        QString *errorMessage);
+    static bool sameRockchipIdentity(
+        const RockchipLoaderIdentity &left,
+        const RockchipLoaderIdentity &right);
 
     PackageInfo validateLegacyAndroidOta(const QString &packagePath,
                                          const QFileInfo &fileInfo,
@@ -165,11 +226,16 @@ private:
                           int timeoutMs, const QString &status);
     bool selectAdbDevice(const QString &output, QString *errorMessage);
     qint64 parseRemoteSize(const QString &output) const;
+    QString parseRemoteSha256(const QString &output) const;
     void handleStepSuccess(const QString &output);
     void scheduleLoaderPoll(const QString &lastOutput = {});
+    void confirmRockchipLoader(
+        RockchipNextAction nextAction,
+        const QString &status);
+    void continueRockchipAction();
     void startRockchipGptWrite();
     void startNextRockchipFlashPartition();
-    bool rockchipLoaderDetected(const QString &output) const;
+    void startCurrentRockchipPartitionWrite();
     bool isRockchipCancelLocked() const;
     void fail(const QString &message);
     void complete(const QString &message);
@@ -186,6 +252,8 @@ private:
     QString upgradeToolPath_;
     QString selectedSerial_;
     QString currentBuildIncremental_;
+    QString packageSha256_;
+    qint64 packageExpectedSize_ = 0;
     QString rockchipFirmwareDir_;
     QString rockchipStartMarkerPath_;
     QString rockchipCompleteMarkerPath_;
@@ -197,7 +265,15 @@ private:
     QByteArray processStdErr_;
     int loaderPollAttempts_ = 0;
     int rockchipPartitionTotal_ = 0;
+    RockchipLoaderIdentity rockchipLoaderIdentity_;
+    RockchipNextAction rockchipNextAction_ =
+        RockchipNextAction::None;
     std::unique_ptr<QTemporaryDir> tempDir_;
     PackageInfo package_;
     bool cancelRequested_ = false;
+    bool rockchipWritesStarted_ = false;
+    std::atomic_bool irreversibleStarted_{
+        false};
+
+    friend class PrinterProtocolTests;
 };

@@ -269,6 +269,10 @@ public slots:
                             quint64 generation);
     void startPrinterDisplaySession(const QString &devicePath,
                                     quint64 generation);
+    void quiesceForFirmware(const QString &leaseId,
+                            quint64 generation);
+    void releaseFirmwareQuiesceFence(const QString &leaseId,
+                                     quint64 generation);
 
 signals:
     void connected(const QString &productId, const QString &serial,
@@ -355,6 +359,10 @@ signals:
     void printerSessionStarted(quint64 generation);
     void printerSessionStopped(quint64 generation);
     void printerSessionLost(quint64 generation);
+    void firmwareTransportQuiesced(const QString &leaseId,
+                                   quint64 generation);
+    void firmwareQuiesceReleaseFenceReached(
+        const QString &leaseId, quint64 generation);
 
 private slots:
     void sendPrinterKeepalive();
@@ -560,6 +568,18 @@ public:
     TryxRuntimeDisplayState displayState() const { return displayState_; }
     TryxRuntimeMediaCatalogSnapshot mediaCatalogSnapshot() const;
     QString mediaThumbnailPath(const QString &thumbnailKey) const;
+    bool acquireFirmwareExclusive(const QString &leaseId,
+                                  QString *errorMessage = nullptr);
+    void releaseFirmwareExclusive(const QString &leaseId,
+                                  bool resumeTransport = true);
+    void setFirmwareRecoveryInterlockActive(bool active);
+    void resumeConnectionAfterFirmwareRecoveryAcknowledgement();
+    bool firmwareExclusiveActive() const {
+        return !firmwareExclusiveLeaseId_.isEmpty();
+    }
+    bool firmwareRecoveryInterlockActive() const {
+        return firmwareRecoveryInterlockActive_;
+    }
 
 signals:
     void deviceConnected(const QString &productId, const QString &serial,
@@ -588,6 +608,9 @@ signals:
         const TryxRuntimeOperationsSnapshot &snapshot);
     void metricsStateUpdated(const TryxRuntimeMetricsState &state);
     void displayStateUpdated(const TryxRuntimeDisplayState &state);
+    void firmwareTransportQuiesced(const QString &leaseId,
+                                   bool success,
+                                   const QString &message);
 #ifdef TRYX_PROTOCOL_TESTING
     void printerWorkerDeviceInfoFailedForTesting(const QString &message,
                                                  quint64 generation);
@@ -702,6 +725,10 @@ signals:
                                quint64 generation);
     void requestStartPrinterSession(const QString &devicePath,
                                     quint64 generation);
+    void requestFirmwareTransportQuiesce(const QString &leaseId,
+                                         quint64 generation);
+    void requestFirmwareQuiesceReleaseFence(
+        const QString &leaseId, quint64 generation);
 
 private:
     struct OperationRecord;
@@ -736,6 +763,7 @@ private:
     QString currentPrinterPath() const;
     QString printerUnavailableStatusText() const;
     QString printerMutationUnavailableStatusText() const;
+    QString firmwareExclusiveStatusText() const;
     void resumePrinterSessionAfterRetryCacheValidation();
     bool completePrinterRecoveryAfterRemoval(
         const QString &currentDeviceIdentity);
@@ -1005,6 +1033,9 @@ private:
     QString pendingDeleteOperationId_;
     QJsonObject pendingDeleteIntent_;
     QString pendingReplaceJournalOperationId_;
+    QString firmwareExclusiveLeaseId_;
+    QString firmwareReleasePendingLeaseId_;
+    quint64 firmwareQuiesceGeneration_ = 0;
     bool connected_ = false;
     bool printerClassConnected_ = false;
     bool printerDisplaySessionActive_ = false;
@@ -1014,6 +1045,10 @@ private:
     bool printerRecoveryRemovalObserved_ = false;
     bool printerSessionResumePending_ = false;
     bool autoConnectMode_ = false;
+    bool firmwareResumeAutoConnect_ = false;
+    bool firmwareReleaseResumeTransport_ = false;
+    bool firmwareRecoveryReconnectRequested_ = false;
+    bool firmwareRecoveryInterlockActive_ = false;
     bool automaticPrinterSessionStart_ = true;
     bool remoteMode_ = false;
     bool remoteApiCompatible_ = false;

@@ -11,7 +11,7 @@
 
 namespace {
 
-constexpr quint32 kFirmwareApiVersion = 1;
+constexpr quint32 kFirmwareApiVersion = 2;
 constexpr int kFirmwareCallTimeoutMs = 5000;
 
 QString firmwareInterfaceName() {
@@ -88,6 +88,10 @@ bool FirmwareController::approvalAvailable() const {
 
 bool FirmwareController::flashSupported() const {
     return flashSupported_;
+}
+
+bool FirmwareController::recoveryRequired() const {
+    return recoveryRequired_;
 }
 
 bool FirmwareController::canValidate() const {
@@ -319,6 +323,51 @@ void FirmwareController::requestCancel() {
         });
 }
 
+void FirmwareController::acknowledgeFirmwareRecovery() {
+    if (!serviceAvailable_ || !compatible_ ||
+        !recoveryRequired_ || busy()) {
+        setTransportError(
+            tr("Firmware recovery acknowledgement is not available"));
+        return;
+    }
+
+    setTransportError({});
+    setRequestPending(true);
+
+    QDBusInterface firmware(
+        tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
+        firmwareInterfaceName(), bus_);
+    firmware.setTimeout(kFirmwareCallTimeoutMs);
+    const quint64 epoch = serviceEpoch_;
+    auto *watcher = new QDBusPendingCallWatcher(
+        firmware.asyncCall(
+            QStringLiteral(
+                "AcknowledgeFirmwareRecovery")),
+        this);
+    connect(
+        watcher, &QDBusPendingCallWatcher::finished, this,
+        [this, watcher, epoch]() {
+            QDBusPendingReply<bool> reply = *watcher;
+            watcher->deleteLater();
+            if (epoch != serviceEpoch_) {
+                return;
+            }
+            setRequestPending(false);
+            if (!reply.isValid()) {
+                setTransportError(reply.error().message());
+                return;
+            }
+            if (!reply.value()) {
+                setTransportError(
+                    tr("The firmware service rejected the recovery acknowledgement"));
+            }
+            // The daemon remains authoritative. Do not clear recovery locally
+            // or reconnect from the GUI; refresh the caller-owned state after
+            // the acknowledgement has been processed.
+            requestState();
+        });
+}
+
 void FirmwareController::refresh() {
     if (!serviceAvailable_) {
         return;
@@ -512,6 +561,12 @@ void FirmwareController::applyState(
         state.value(QStringLiteral("flashBusy")).toBool();
     flashSupported_ =
         state.value(QStringLiteral("flashSupported")).toBool();
+    if (state.contains(
+            QStringLiteral("recoveryRequired"))) {
+        recoveryRequired_ =
+            state.value(
+                QStringLiteral("recoveryRequired")).toBool();
+    }
     progress_ = qBound(
         0, state.value(QStringLiteral("progress")).toInt(),
         100);
@@ -555,6 +610,7 @@ void FirmwareController::clearRemoteState(
     validationBusy_ = false;
     flashBusy_ = false;
     flashSupported_ = false;
+    recoveryRequired_ = false;
     requestPending_ = false;
     stateRequestPending_ = false;
     stateRefreshAgain_ = false;

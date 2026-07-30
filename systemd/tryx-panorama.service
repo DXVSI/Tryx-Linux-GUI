@@ -13,7 +13,11 @@ ExecStart=/usr/lib/tryx-panorama-manager/tryx-panorama-runtime
 Restart=on-failure
 RestartSec=1
 TimeoutStartSec=15
-TimeoutStopSec=10
+# SIGTERM must reach only the runtime first. It defers exit while its adb or
+# upgrade_tool child owns an irreversible firmware write.
+KillMode=mixed
+# A firmware write has no universally safe forced-termination deadline.
+TimeoutStopSec=infinity
 
 [Install]
 WantedBy=graphical-session.target
