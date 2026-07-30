@@ -98,6 +98,29 @@ StatusNotifier watcher and host are available, closing the window hides the
 GUI to the native desktop tray. Without a watcher, closing the window exits
 only the GUI; the separate runtime remains available to the user service.
 
+## What's new in 2.1.0
+
+- The desktop application is now one Qt Quick GUI with no Qt Widgets runtime
+  dependency. Hardware access remains in the separately packaged private
+  runtime.
+- The Linux tray uses StatusNotifierItem and DBusMenu, while desktop
+  notifications use `org.freedesktop.Notifications`.
+- Legacy serial/ADB devices retain display, media, metrics, keepalive, and
+  device-control support through the same Quick interface.
+- PASE user media can be edited with Fit, Fill, Crop, Stretch, zoom, pan, and
+  rotation, exported as its exact raw H264 device copy, saved as a new item,
+  replaced through a crash-safe verified workflow, or deleted when eligible.
+- Quick Settings provides local firmware package selection and validation.
+  The runtime obtains an exclusive device-transport gate before handing work
+  to the existing updater backend. The gate and validation paths are covered
+  by offline tests; this release preparation did not physically flash a
+  device and does not claim that hardware operation as verified.
+- The QML application and package checks remain compatible with Qt 6.4 for
+  Ubuntu 24.04 and Linux Mint 22.
+- The protocol implementation uses project-owned clean-room schemas. Release
+  packages contain no extracted KANALI schemas, vendor firmware, or bundled
+  media.
+
 ## Features
 
 - Upload images, videos, GIFs (auto-converts non-MP4 formats)
@@ -177,13 +200,13 @@ Install a downloaded package with the package manager for your distribution:
 ```fish
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.0.1-1.fc44.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.1.0-1.fc44.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.0.1-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.1.0-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.0.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.1.0-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download

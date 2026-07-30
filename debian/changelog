@@ -1,3 +1,20 @@
+tryx-panorama-manager (2.1.0-1) noble; urgency=medium
+
+  * Replace the Qt Widgets frontend with one Qt Quick desktop GUI and a
+    separately packaged private runtime.
+  * Add native Linux tray integration through StatusNotifierItem, DBusMenu,
+    and freedesktop Notifications.
+  * Preserve legacy serial/ADB control while adding the PASE media editor,
+    export, Save as new, Replace, and verified deletion workflows.
+  * Add local firmware validation and the Quick firmware panel with an
+    exclusive device-transport safety gate. Physical flashing is not claimed
+    as verified by this release preparation.
+  * Keep the QML interface compatible with Qt 6.4.
+  * Use project-owned clean-room protocol schemas and ship no bundled vendor
+    media.
+
+ -- DXVSI <dxvsi123@gmail.com>  Thu, 30 Jul 2026 20:47:32 +0700
+
 tryx-panorama-manager (2.0.1-1) noble; urgency=medium
 
   * Fix checksum generation for native GitHub Release assets.

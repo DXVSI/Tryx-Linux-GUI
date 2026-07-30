@@ -1,4 +1,4 @@
-.TH TRYX-PANORAMA-MANAGER 1 "2026-07-27" "TRYX Panorama Manager 2.0.1" "User Commands"
+.TH TRYX-PANORAMA-MANAGER 1 "2026-07-30" "TRYX Panorama Manager 2.1.0" "User Commands"
 .SH NAME
 tryx-panorama-manager \- control compatible TRYX Panorama cooler displays
 .SH SYNOPSIS
@@ -9,10 +9,13 @@ tryx-panorama-manager \- control compatible TRYX Panorama cooler displays
 .br
 .SH DESCRIPTION
 .B TRYX Panorama Manager
-is a Qt 6 application for controlling compatible TRYX Panorama and Panorama SE
-cooler displays on Linux.
-It manages custom media, display settings, live system metrics, and devices
-using the PASE printer-class USB protocol.
+is a Qt 6 Quick application for controlling compatible TRYX Panorama and
+Panorama SE cooler displays on Linux.
+The desktop GUI communicates over the user D-Bus session with a separately
+packaged private runtime that owns USB, legacy serial/ADB, media, live-metrics,
+and firmware operations.
+The application manages custom media, display settings, and devices using the
+PASE printer-class USB protocol without bundling vendor media.
 .PP
 Starting the graphical application starts the packaged systemd user service on
 demand.
@@ -24,6 +27,12 @@ package.
 Print the application version and exit without starting the graphical
 application or accessing USB.
 .SH FILES
+.TP
+.I /usr/bin/tryx-panorama-manager
+Qt Quick desktop GUI.
+.TP
+.I /usr/lib/tryx-panorama-manager/tryx-panorama-runtime
+Private background runtime.
 .TP
 .I /usr/lib/systemd/user/tryx-panorama.service
 Systemd user unit for the background runtime.

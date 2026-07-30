@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.0.1
+Version:        2.1.0
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX Panorama cooler displays
 
@@ -118,6 +118,16 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx-panorama-manager.1*
 
 %changelog
+* Thu Jul 30 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.1.0-1
+- Replace the Qt Widgets frontend with one Qt Quick GUI and a private runtime
+- Add StatusNotifierItem, DBusMenu, and freedesktop Notifications integration
+- Preserve legacy serial/ADB control and add PASE media editing, export,
+  save-as-new, replace, and verified deletion workflows
+- Add local firmware validation and a Quick firmware panel protected by an
+  exclusive device-transport gate; physical flashing is not claimed as verified
+- Keep QML compatible with Qt 6.4
+- Use project-owned clean-room protocol schemas and ship no bundled vendor media
+
 * Mon Jul 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.0.1-1
 - Fix checksum generation for native GitHub Release assets
 

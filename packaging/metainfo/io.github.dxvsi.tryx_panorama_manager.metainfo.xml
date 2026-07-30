@@ -24,6 +24,17 @@
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.1.0" type="stable" date="2026-07-30">
+      <description>
+        <ul>
+          <li>Use one Qt Quick desktop interface backed by a private runtime.</li>
+          <li>Add native Linux tray integration and preserve legacy serial/ADB control.</li>
+          <li>Add PASE media editing, export, save-as-new, replace, and verified deletion.</li>
+          <li>Add local firmware validation and an exclusive transport safety gate.</li>
+          <li>Keep QML compatible with Qt 6.4 and distribute no bundled vendor media.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.0.1" type="stable" date="2026-07-27"/>
     <release version="2.0.0" type="stable" date="2026-07-27"/>
   </releases>
