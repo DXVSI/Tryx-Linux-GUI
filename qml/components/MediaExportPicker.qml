@@ -22,7 +22,7 @@ Popup {
         mediaId = targetMediaId
         mediaName = targetMediaName
         fileName = workflow.suggestedExportFileName(targetMediaName)
-        if (currentFolder.toString().length === 0)
+        if (String(currentFolder).length === 0)
             currentFolder = homeFolder
         open()
     }
@@ -133,7 +133,7 @@ Popup {
                 anchors.fill: parent
                 anchors.leftMargin: 12
                 anchors.rightMargin: 12
-                text: root.currentFolder.toString()
+                text: String(root.currentFolder)
                 color: "#c7cdd2"
                 verticalAlignment: Text.AlignVCenter
                 elide: Text.ElideMiddle
@@ -151,9 +151,9 @@ Popup {
 
             Button {
                 text: qsTr("Up")
-                enabled: folderModel.parentFolder.toString().length > 0 &&
-                         folderModel.parentFolder.toString() !==
-                         root.currentFolder.toString()
+                enabled: String(folderModel.parentFolder).length > 0 &&
+                         String(folderModel.parentFolder) !==
+                         String(root.currentFolder)
                 onClicked: root.navigate(folderModel.parentFolder)
             }
 

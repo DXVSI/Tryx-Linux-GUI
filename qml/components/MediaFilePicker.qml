@@ -25,7 +25,7 @@ Popup {
     function openPicker() {
         clearSelection()
         pendingSource = ""
-        if (currentFolder.toString().length === 0)
+        if (String(currentFolder).length === 0)
             currentFolder = editor.homeFolder
         open()
     }
@@ -45,7 +45,7 @@ Popup {
     }
 
     function acceptSelection() {
-        if (selectedFile.toString().length === 0)
+        if (String(selectedFile).length === 0)
             return
         pendingSource = selectedFile
         close()
@@ -69,7 +69,7 @@ Popup {
         const source = pendingSource
         pendingSource = ""
         clearSelection()
-        if (source.toString().length > 0)
+        if (String(source).length > 0)
             Qt.callLater(() => root.editor.begin(source))
     }
 
@@ -149,7 +149,7 @@ Popup {
                 anchors.fill: parent
                 anchors.leftMargin: 12
                 anchors.rightMargin: 12
-                text: root.currentFolder.toString()
+                text: String(root.currentFolder)
                 color: "#c7cdd2"
                 verticalAlignment: Text.AlignVCenter
                 elide: Text.ElideMiddle
@@ -167,9 +167,9 @@ Popup {
 
             Button {
                 text: qsTr("Up")
-                enabled: folderModel.parentFolder.toString().length > 0 &&
-                         folderModel.parentFolder.toString() !==
-                         root.currentFolder.toString()
+                enabled: String(folderModel.parentFolder).length > 0 &&
+                         String(folderModel.parentFolder) !==
+                         String(root.currentFolder)
                 onClicked: root.navigate(folderModel.parentFolder)
             }
 
@@ -220,8 +220,8 @@ Popup {
                     height: 54
                     highlighted:
                         !fileDelegate.fileIsDir &&
-                        root.selectedFile.toString() ===
-                        fileDelegate.fileUrl.toString()
+                        String(root.selectedFile) ===
+                        String(fileDelegate.fileUrl)
 
                     onClicked:
                         root.selectEntry(
@@ -310,15 +310,15 @@ Popup {
 
             Label {
                 Layout.fillWidth: true
-                text: root.selectedFile.toString().length > 0
+                text: String(root.selectedFile).length > 0
                       ? qsTr("Selected: %1").arg(
                             root.selectedName.length > 0
                             ? root.selectedName
                             : decodeURIComponent(
-                                  root.selectedFile.toString()
+                                  String(root.selectedFile)
                                       .split("/").pop()))
                       : qsTr("Select a media file to continue")
-                color: root.selectedFile.toString().length > 0
+                color: String(root.selectedFile).length > 0
                        ? "#c7cdd2" : "#7f8990"
                 elide: Text.ElideMiddle
             }
@@ -331,7 +331,7 @@ Popup {
             PrimaryButton {
                 objectName: "mediaFilePickerOpenButton"
                 text: qsTr("Open")
-                enabled: root.selectedFile.toString().length > 0
+                enabled: String(root.selectedFile).length > 0
                 onClicked: root.acceptSelection()
             }
         }

@@ -321,7 +321,7 @@ ScrollView {
                                     Label {
                                         anchors.centerIn: parent
                                         visible:
-                                            mediaDelegate.thumbnailUrl.toString()
+                                            String(mediaDelegate.thumbnailUrl)
                                             .length === 0
                                         text: qsTr("No preview")
                                         color: "#6f7383"

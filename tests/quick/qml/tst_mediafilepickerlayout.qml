@@ -87,9 +87,9 @@ TestCase {
         tryVerify(() => picker.opened)
 
         picker.selectedFile = Qt.resolvedUrl("fixture.mp4")
-        verify(picker.selectedFile.toString().length > 0)
+        verify(String(picker.selectedFile).length > 0)
 
         picker.navigate(Qt.resolvedUrl(".."))
-        compare(picker.selectedFile.toString(), "")
+        compare(String(picker.selectedFile), "")
     }
 }

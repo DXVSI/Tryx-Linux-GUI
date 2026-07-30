@@ -19,7 +19,7 @@ Popup {
     function openPicker() {
         selectedFile = ""
         selectedName = ""
-        if (currentFolder.toString().length === 0)
+        if (String(currentFolder).length === 0)
             currentFolder = controller.homeFolder
         open()
     }
@@ -31,9 +31,9 @@ Popup {
     }
 
     function acceptSelection() {
-        if (selectedFile.toString().length === 0)
+        if (String(selectedFile).length === 0)
             return
-        controller.setPackagePath(selectedFile.toString())
+        controller.setPackagePath(String(selectedFile))
         close()
     }
 
@@ -123,7 +123,7 @@ Popup {
                 anchors.fill: parent
                 anchors.leftMargin: 12
                 anchors.rightMargin: 12
-                text: root.currentFolder.toString()
+                text: String(root.currentFolder)
                 color: "#c7cdd2"
                 verticalAlignment: Text.AlignVCenter
                 elide: Text.ElideMiddle
@@ -141,9 +141,9 @@ Popup {
 
             Button {
                 text: qsTr("Up")
-                enabled: folderModel.parentFolder.toString().length > 0 &&
-                         folderModel.parentFolder.toString() !==
-                         root.currentFolder.toString()
+                enabled: String(folderModel.parentFolder).length > 0 &&
+                         String(folderModel.parentFolder) !==
+                         String(root.currentFolder)
                 onClicked: root.navigate(folderModel.parentFolder)
             }
 
@@ -189,8 +189,8 @@ Popup {
                     height: 54
                     highlighted:
                         !fileDelegate.fileIsDir &&
-                        root.selectedFile.toString() ===
-                        fileDelegate.fileUrl.toString()
+                        String(root.selectedFile) ===
+                        String(fileDelegate.fileUrl)
 
                     onClicked: {
                         if (fileDelegate.fileIsDir) {
@@ -283,7 +283,7 @@ Popup {
 
             Label {
                 Layout.fillWidth: true
-                text: root.selectedFile.toString().length > 0
+                text: String(root.selectedFile).length > 0
                       ? qsTr("Selected: %1").arg(root.selectedName)
                       : qsTr("Select a ZIP package to continue")
                 color: "#9da5ac"
@@ -298,7 +298,7 @@ Popup {
             PrimaryButton {
                 objectName: "firmwarePickerSelectButton"
                 text: qsTr("Select")
-                enabled: root.selectedFile.toString().length > 0
+                enabled: String(root.selectedFile).length > 0
                 onClicked: root.acceptSelection()
             }
         }

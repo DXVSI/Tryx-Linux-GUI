@@ -107,6 +107,8 @@ QMLIMPORTSCANNER = $$[QT_HOST_LIBEXECS]/qmlimportscanner
 QMLLINT_FLAGS =
 versionAtLeast(QT_VERSION, 6.8.0) {
     QMLLINT_FLAGS += -W 0
+} else {
+    QMLLINT_FLAGS += --deferred-property-id info
 }
 exists($$QMLLINT) {
     qml_lint.target = qml-lint

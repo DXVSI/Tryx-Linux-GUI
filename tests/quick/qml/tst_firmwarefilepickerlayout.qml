@@ -50,6 +50,6 @@ TestCase {
         tryVerify(() => !picker.opened)
         compare(
             controllerMock.packagePath,
-            selected.toString())
+            String(selected))
     }
 }
