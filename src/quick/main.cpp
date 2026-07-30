@@ -1,5 +1,6 @@
 #include "appsettingscontroller.h"
 #include "devicemediaworkflowcontroller.h"
+#include "linuxtraycontroller.h"
 #include "mediaeditorcontroller.h"
 #include "mediapreviewcontroller.h"
 #include "runtimebootstrap.h"
@@ -105,7 +106,7 @@ int main(int argc, char *argv[]) {
     }
     if (rawArgumentPresent(argc, argv, "--version")) {
         std::fputs(
-            "tryx-panorama-quick " TRYX_APP_VERSION "\n",
+            "tryx-panorama-manager " TRYX_APP_VERSION "\n",
             stdout);
         return 0;
     }
@@ -156,15 +157,47 @@ int main(int argc, char *argv[]) {
     SystemMetricsModel systemMetrics;
     AppSettingsController settings(smokeTest);
     WindowChromeController windowChrome;
+    LinuxTrayController tray;
+
+    const auto updateTrayPresentation =
+        [&tray, &runtime]() {
+            tray.setLabels(
+                LinuxTrayController::tr("Open"),
+                LinuxTrayController::tr("Quit"));
+            tray.setToolTip(
+                QStringLiteral("TRYX Panorama Manager"),
+                runtime.connectionStatus());
+        };
+    updateTrayPresentation();
+    windowChrome.setTrayAvailable(tray.available());
+    QObject::connect(
+        &tray, &LinuxTrayController::availableChanged,
+        &windowChrome, [&tray, &windowChrome]() {
+            windowChrome.setTrayAvailable(
+                tray.available());
+        });
+    QObject::connect(
+        &tray, &LinuxTrayController::showRequested,
+        &windowChrome,
+        &WindowChromeController::showWindow);
+    QObject::connect(
+        &tray, &LinuxTrayController::quitRequested,
+        &app, &QCoreApplication::quit);
+    QObject::connect(
+        &runtime, &RuntimeClient::connectionChanged,
+        &tray, updateTrayPresentation);
 
     QQmlApplicationEngine engine;
     QObject::connect(
         &settings, &AppSettingsController::languageChanged,
-        &engine, [&app, &translator, &settings, &engine, &runtime]() {
+        &engine,
+        [&app, &translator, &settings, &engine, &runtime,
+         &updateTrayPresentation]() {
             applyLanguage(
                 app, translator, settings.language());
             engine.retranslate();
             runtime.retranslate();
+            updateTrayPresentation();
         });
     engine.setInitialProperties({
         {QStringLiteral("runtime"),
@@ -198,17 +231,12 @@ int main(int argc, char *argv[]) {
     windowChrome.setWindow(rootWindow);
     QObject::connect(
         &instanceServer, &QLocalServer::newConnection, &app,
-        [&instanceServer, rootWindow]() {
+        [&instanceServer, &windowChrome]() {
             while (QLocalSocket *connection =
                        instanceServer.nextPendingConnection()) {
                 connection->deleteLater();
             }
-            if (!rootWindow) {
-                return;
-            }
-            rootWindow->show();
-            rootWindow->raise();
-            rootWindow->requestActivate();
+            windowChrome.showWindow();
         });
     if (smokeTest) {
         QTimer::singleShot(0, &app, [&app]() { app.exit(0); });

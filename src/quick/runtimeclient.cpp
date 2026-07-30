@@ -1,18 +1,29 @@
 #include "runtimeclient.h"
 
+#include "mediatransform.h"
+
 #include <QColor>
 #include <QDBusConnectionInterface>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QSet>
 #include <QTimer>
 #include <QUuid>
 #include <QtGlobal>
 
+#include <cerrno>
+#include <cstring>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace {
 
 constexpr int kRuntimeCallTimeoutMs = 5000;
+constexpr int kLegacyUploadTimeoutMs = 15 * 60 * 1000;
 
 bool isPlayMode(const QString &value, bool split) {
     return value == QStringLiteral("Single") ||
@@ -45,6 +56,10 @@ RuntimeClient::RuntimeClient(bool offline, QObject *parent)
           this),
       mediaModel_(this),
       operationModel_(this) {
+    legacyUploadDeadline_.setSingleShot(true);
+    legacyUploadDeadline_.setInterval(kLegacyUploadTimeoutMs);
+    connect(&legacyUploadDeadline_, &QTimer::timeout,
+            this, &RuntimeClient::onLegacyUploadTimeout);
     if (offline) {
         return;
     }
@@ -79,6 +94,19 @@ bool RuntimeClient::connected() const {
     return connection_.connected;
 }
 
+bool RuntimeClient::ready() const {
+    return serviceAvailable_ && compatible_ &&
+           (legacyConnected() ||
+            (connection_.printerClassDevicePresent &&
+             connection_.displaySessionActive));
+}
+
+bool RuntimeClient::legacyConnected() const {
+    return connection_.connected &&
+           !connection_.printerClassConnected &&
+           !connection_.printerClassDevicePresent;
+}
+
 bool RuntimeClient::printerClassDevicePresent() const {
     return connection_.printerClassDevicePresent;
 }
@@ -93,6 +121,9 @@ QString RuntimeClient::connectionStatus() const {
     }
     if (!compatible_) {
         return tr("Runtime API is incompatible");
+    }
+    if (legacyConnected()) {
+        return tr("Legacy serial/ADB device is connected");
     }
     if (!connection_.printerClassDevicePresent) {
         return tr("PASE printer-class device is not present");
@@ -124,14 +155,22 @@ OperationListModel *RuntimeClient::operationModel() {
 }
 
 bool RuntimeClient::operationBusy() const {
-    return !activeOperationId_.isEmpty();
+    return !activeOperationId_.isEmpty() ||
+           legacyUpload_.active();
 }
 
 QString RuntimeClient::activeOperationId() const {
-    return activeOperationId_;
+    return legacyUpload_.active()
+        ? legacyUpload_.operationId
+        : activeOperationId_;
 }
 
 QString RuntimeClient::operationSummary() const {
+    if (legacyUpload_.active()) {
+        return legacyUpload_.rejectionEmitted
+            ? tr("Legacy upload timed out; waiting for the device worker to release the protected source")
+            : tr("Uploading media to the legacy device");
+    }
     if (activeOperation_.id.isEmpty()) {
         return {};
     }
@@ -148,6 +187,9 @@ QString RuntimeClient::operationSummary() const {
 }
 
 double RuntimeClient::operationProgress() const {
+    if (legacyUpload_.active()) {
+        return 0.0;
+    }
     if (activeOperation_.total <= 0) {
         return 0.0;
     }

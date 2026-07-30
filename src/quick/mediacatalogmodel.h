@@ -43,6 +43,9 @@ public:
     Q_INVOKABLE QString deviceCopyBlockReason(
         const QString &mediaId) const;
     void applySnapshot(const TryxRuntimeMediaCatalogSnapshot &snapshot);
+    void applyLegacyFiles(const QStringList &files,
+                          quint64 revision,
+                          const QString &deviceIdentity);
     void clear();
 
 signals:

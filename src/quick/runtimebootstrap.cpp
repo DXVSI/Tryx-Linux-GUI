@@ -177,16 +177,16 @@ bool controlRuntimeThroughSystemd(
 bool startDevelopmentRuntime(QString *errorMessage) {
     const QDir quickBinaryDirectory(
         QCoreApplication::applicationDirPath());
-    const QString sameDirectory =
-        quickBinaryDirectory.filePath(
-            QStringLiteral("tryx-panorama-manager"));
     const QString buildSibling =
         QDir(quickBinaryDirectory.absolutePath())
             .absoluteFilePath(
-                QStringLiteral("../tryx-panorama-manager"));
+                QStringLiteral("../runtime/tryx-panorama-runtime"));
+    const QString installedRuntime =
+        QStringLiteral(
+            "/usr/lib/tryx-panorama-manager/tryx-panorama-runtime");
     QString executable;
     for (const QString &candidate :
-         {sameDirectory, buildSibling}) {
+         {buildSibling, installedRuntime}) {
         const QFileInfo info(candidate);
         if (info.exists() && info.isFile() &&
             !info.isSymLink() && info.isExecutable()) {
@@ -196,11 +196,10 @@ bool startDevelopmentRuntime(QString *errorMessage) {
     }
     if (executable.isEmpty()) {
         executable = QStandardPaths::findExecutable(
-            QStringLiteral("tryx-panorama-manager"));
+            QStringLiteral("tryx-panorama-runtime"));
     }
     if (executable.isEmpty() ||
-        !QProcess::startDetached(
-            executable, {QStringLiteral("--daemon")})) {
+        !QProcess::startDetached(executable, {})) {
         if (errorMessage) {
             *errorMessage = QObject::tr(
                 "The systemd unit is not installed and the development runtime could not be started");
@@ -220,7 +219,7 @@ QString instanceSocketPath() {
         ? QDir::tempPath()
         : runtimeDir;
     return QDir(baseDir).filePath(
-        QStringLiteral("tryx-panorama-quick.instance"));
+        QStringLiteral("tryx-panorama-manager.instance"));
 }
 
 bool notifyRunningInstance(const QString &path) {

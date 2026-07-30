@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 #include <QUrl>
 
@@ -133,6 +134,31 @@ void MediaCatalogModel::applySnapshot(
     if (identityChanged) {
         emit deviceIdentityChanged();
     }
+}
+
+void MediaCatalogModel::applyLegacyFiles(
+    const QStringList &files, quint64 revision,
+    const QString &deviceIdentity) {
+    TryxRuntimeMediaCatalogSnapshot snapshot;
+    snapshot.revision = revision;
+    snapshot.deviceIdentity = deviceIdentity;
+
+    QSet<QString> seen;
+    for (const QString &value : files) {
+        const QString name = value.trimmed();
+        if (name.isEmpty() || seen.contains(name)) {
+            continue;
+        }
+        seen.insert(name);
+        TryxRuntimeMediaEntry entry;
+        entry.name = name;
+        entry.source = 1U;
+        entry.deleteAllowed = true;
+        // Manager1 has no FilePull identity. Keep mediaId empty so Quick
+        // cannot expose PASE-only export/edit actions for legacy files.
+        snapshot.entries.append(entry);
+    }
+    applySnapshot(snapshot);
 }
 
 void MediaCatalogModel::clear() {

@@ -1,6 +1,14 @@
 # TRYX Panorama Linux GUI
 
-Qt6 GUI application for managing TRYX Panorama AIO cooler displays on Linux.
+Linux-only Qt 6 Quick application for managing TRYX Panorama AIO cooler
+displays.
+
+The project ships one desktop GUI backed by a separate headless runtime. The
+GUI owns presentation and user interaction; the runtime owns device discovery,
+USB and serial/ADB communication, media operations, metrics delivery, and
+firmware work. They communicate over the user D-Bus session.
+
+Project home: [github.com/DXVSI/Tryx-Linux-GUI](https://github.com/DXVSI/Tryx-Linux-GUI)
 
 ## Support the Project
 
@@ -60,11 +68,35 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 - Analysis of KANALI resources to identify the device-side preset catalog without redistributing its extracted media
 - Full protocol analysis to discover device commands for system metrics display
 - Implemented working real-time CPU/GPU/Disk temperature monitoring on the cooler screen
-- Built complete Qt6 GUI from scratch (Homepage, Panorama, Settings pages)
+- Built a complete Qt 6 Quick GUI from scratch (Dashboard, Display, and Settings pages)
 - Auto-detection of CPU/GPU hardware names for badge display
 - Auto-conversion of non-MP4 media formats (WebM, MKV, AVI, GIF) before upload to device
 - Fixed serial communication issues (timeouts, wrong command formats, broken ADB quoting)
-- Separated the background runtime from the modern desktop interface
+- Separated hardware ownership into a headless runtime behind the desktop interface
+
+## Architecture
+
+There is one supported desktop frontend: `tryx-panorama-manager`, implemented
+with Qt Quick. It talks to `tryx-panorama-runtime` through the Manager1 and
+Manager2 D-Bus interfaces. Closing or restarting the GUI does not transfer
+hardware ownership away from the runtime.
+
+Development builds are written to:
+
+- `build/quick/tryx-panorama-manager` - desktop GUI
+- `build/runtime/tryx-panorama-runtime` - headless runtime
+
+A system installation uses:
+
+- `/usr/bin/tryx-panorama-manager` - public desktop launcher
+- `/usr/lib/tryx-panorama-manager/tryx-panorama-runtime` - private runtime
+  started by the user service or the GUI bootstrap
+
+The Linux tray integration exports a StatusNotifierItem and DBusMenu over
+D-Bus and sends notifications through `org.freedesktop.Notifications`. When a
+StatusNotifier watcher and host are available, closing the window hides the
+GUI to the native desktop tray. Without a watcher, closing the window exits
+only the GUI; the separate runtime remains available to the user service.
 
 ## Features
 
@@ -72,7 +104,7 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 - Modern desktop interface with a preview-first PASE media editor
 - Explicit Fit, Fill, Crop, Stretch, Zoom, pan, rotation, and Fit background controls before upload
 - Exact transformed preview rendered through the same canonical FFmpeg filter used for the final 2240 × 1080 media
-- Immutable private upload snapshot with atomic client-to-daemon ownership transfer before D-Bus acceptance
+- Immutable private upload snapshot with atomic client-to-runtime ownership transfer before D-Bus acceptance
 - Origin-aware PASE media catalog that labels device presets separately from user uploads
 - Export of writable PASE user media as an honest raw H264 device copy
 - Edit of an existing PASE user-media copy with Save as new or crash-safe Replace
@@ -80,12 +112,12 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 - Hardware name badges (auto-detected from system)
 - Brightness control (0-100)
 - Display settings: position, alignment, color, filter
-- Keepalive daemon for persistent display
+- Runtime-owned keepalive for persistent display
 - Auto-detects legacy devices through `/dev/ttyACM*` and PASE firmware through direct libusb discovery
-- System tray integration (KDE Plasma native)
+- Native Linux StatusNotifierItem tray integration with DBusMenu and desktop notifications when a watcher is available
 - Settings persistence between sessions
 - Async device communication (non-blocking GUI)
-- Native firmware update flow for locally selected Panorama SE OTA and Rockchip packages
+- Quick Settings firmware panel for locally selected packages, with validation and hardware work owned by the headless runtime
 - Device information and media list over the new KANALI USB printer-class protocol
 - Direct asynchronous libusb transport with one request-scoped IN armed before OUT and bounded response reads after known OUT completion
 - Exact operation IDs, progress, cancellation, verified completion, and manual retry through D-Bus Manager2
@@ -93,8 +125,8 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 - Content-aware Save that reuses a verified PASE copy instead of uploading the same local media again
 - Verified deletion of one eligible user media file at a time, with crash-safe reconciliation and no automatic FileRemove replay
 - One shared Panorama operation banner with progress, cancellation, and one fail-closed manual retry candidate
-- Daemon-owned PASE metric configuration and one-second sampling that continue after the GUI closes
-- Runtime API compatibility check that prevents a new GUI from silently using an outdated background daemon
+- Runtime-owned PASE metric configuration and one-second sampling that continue after the GUI closes
+- Runtime API compatibility check that prevents the GUI from silently using an outdated background runtime
 
 ## Media-free distribution
 
@@ -125,13 +157,13 @@ also proves that the exact verified replacement copy still exists.
 
 ## Native Linux packages
 
-Version 2.0 uses one source version to build separate native packages for
-Fedora, Ubuntu/Linux Mint, and Arch Linux. A Fedora binary is not reused on
-other distributions.
+TRYX Panorama Manager supports Linux only. Native packaging targets Fedora 43
+and 44, Ubuntu 24.04, Linux Mint 22, and current Arch Linux. A binary package
+built for one distribution is not reused on another distribution.
 
 Release assets use these formats:
 
-- RPM `x86_64` for supported Fedora releases
+- RPM `x86_64` for Fedora 43 and Fedora 44
 - DEB `amd64` for Ubuntu 24.04 and Linux Mint 22
 - `.pkg.tar.zst` `x86_64` for current Arch Linux
 - `SHA256SUMS` for artifact verification
@@ -172,13 +204,13 @@ executable without the `libx264` encoder required by PASE media preparation.
 Use `--allowerasing` when installing the RPM so DNF can replace an existing
 `ffmpeg-free` package with RPM Fusion's full `ffmpeg` build.
 
-Native packages install the background runtime, both desktop frontends,
-desktop entry, icon, systemd user unit, and two PASE udev rules. The installed
-launcher and systemd unit currently use `tryx-panorama-manager`; run
-`tryx-panorama-quick` explicitly to open the redesigned interface. Packages do
-not enable autostart or restart an existing daemon during an upgrade.
-Reconnect the PASE USB cable after installation, launch the application once,
-and enable autostart in Settings only if wanted.
+Native packages install the Qt Quick GUI at
+`/usr/bin/tryx-panorama-manager`, the private background runtime at
+`/usr/lib/tryx-panorama-manager/tryx-panorama-runtime`, the desktop entry,
+icon, systemd user unit, and two PASE udev rules. Packages do not enable
+autostart or restart an existing runtime during an upgrade. Reconnect the PASE
+USB cable after installation, launch the application once, and enable
+autostart in Settings only if wanted.
 
 The committed Arch PKGBUILD intentionally accepts only a local release source
 archive with an explicit checksum. From a clean release checkout, build it
@@ -199,7 +231,8 @@ popd
 ## Requirements
 
 **Build:**
-- Qt 6.4 or newer (Core, D-Bus, Gui, Network, Widgets, QML, Quick, Quick Controls)
+- Linux
+- Qt 6.4 or newer (Concurrent, Core, D-Bus, Gui, QML, Quick, Quick Controls 2)
 - C++17 compiler
 - qmake6
 - Qt6 translation tools with `lrelease`
@@ -252,10 +285,17 @@ sudo dnf install -y android-tools unzip e2fsprogs ffmpeg mesa-demos
 
 ## Firmware Updates
 
-The firmware updater supports two local package formats for Panorama SE:
+Firmware updates are initiated from the firmware panel in Quick Settings, but
+package validation and hardware access belong to the headless runtime. The
+panel accepts a locally selected ZIP; it does not download firmware
+automatically. Availability depends on the package type, connected device
+state, and required external tools. Validation is not a claim that an
+arbitrary package is safe for a different model.
 
-- Legacy Android OTA `update.zip` for `cm01_se` devices. The app validates `META-INF/com/android/metadata`, copies the package to `/sdcard/update.zip` over ADB, verifies the copied size, and reboots the cooler into recovery.
-- New KANALI Rockchip loader ZIP bundles for `PASE`. The app validates the required Rockchip files, checks `parameter.txt` for `RK3568`, and inspects `rootfs:/usr/bin/panorama` for the product marker. Flashing uses an external Rockchip `upgrade_tool` executable when it is available. If an ADB device is present, the app reboots it into Loader first; if RockUSB Loader or Maskrom is already present, the app can continue directly without ADB.
+The local validator recognizes two Panorama SE package formats:
+
+- Legacy Android OTA `update.zip` for `cm01_se` devices. The runtime validates `META-INF/com/android/metadata`, copies an approved package to `/sdcard/update.zip` over ADB, verifies the copied size, and requests recovery reboot.
+- New KANALI Rockchip loader ZIP bundles for `PASE`. The runtime validates the required Rockchip files, checks `parameter.txt` for `RK3568`, and inspects `rootfs:/usr/bin/panorama` for the product marker. It can invoke an external Rockchip `upgrade_tool` only when the backend and device-state checks pass. If an ADB device is present, it may request reboot into Loader first; if RockUSB Loader or Maskrom is already present, the external backend can continue without ADB.
 
 The `upgrade_tool` executable is not bundled in this open source repository because its redistribution rights are not clear. The app looks for it in `TRYX_UPGRADE_TOOL`, `PATH`, next to the app binary, `tools/upgrade_tool`, and `~/.local/bin/upgrade_tool`.
 
@@ -278,15 +318,27 @@ Automatic firmware download is not enabled yet. KANALI uses SM2-encrypted reques
 ## Build
 
 ```fish
-git clone --branch production https://github.com/DXVSI/tryx-panorama-se-360-linux-gui.git tryx-panorama-current; and cd tryx-panorama-current
-qmake6 tryx-panorama-all.pro; and make -j(nproc); and dbus-run-session -- make package-check
-./build/tryx-panorama-manager
-./build/quick/tryx-panorama-quick
+git clone --branch production https://github.com/DXVSI/Tryx-Linux-GUI.git; and cd Tryx-Linux-GUI
+qmake6 tryx-panorama-all.pro
+make
+dbus-run-session -- make package-check
 ```
 
-System installation includes both client binaries, the daemon entry point,
-user service, PASE usbfs rule, desktop entry, icon, and translations. It does
-not install a video library:
+For a development run, start the runtime in one terminal:
+
+```fish
+./build/runtime/tryx-panorama-runtime
+```
+
+Then start the GUI from another terminal in the same user session:
+
+```fish
+./build/quick/tryx-panorama-manager
+```
+
+System installation includes the public GUI, private runtime, user service,
+PASE usbfs rules, desktop entry, icon, and translations. It does not install a
+video library:
 
 ```fish
 sudo make install; and sudo udevadm control --reload-rules; and sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=391a --attr-match=idProduct=1021; and sudo udevadm settle --timeout=10
@@ -295,7 +347,7 @@ systemctl --user daemon-reload; and systemctl --user start tryx-panorama.service
 
 The command above is the first-install path. When updating an existing manual
 source installation, first finish or cancel every active media operation, then
-install the new files and restart the daemon explicitly:
+install the new files and restart the runtime explicitly:
 
 ```fish
 sudo make install; and systemctl --user daemon-reload; and systemctl --user restart tryx-panorama.service; and systemctl --user is-active tryx-panorama.service
@@ -308,10 +360,12 @@ The install target supplies a user preset that keeps autostart disabled by
 default. Enable it later from Settings or explicitly with
 `systemctl --user enable tryx-panorama.service`.
 
-The version command is safe to use without a graphical or D-Bus session:
+The GUI and runtime version commands are safe to use without a graphical or
+D-Bus session:
 
 ```fish
-./build/tryx-panorama-manager --version
+./build/quick/tryx-panorama-manager --version
+./build/runtime/tryx-panorama-runtime --version
 ```
 
 Offline printer-protocol tests do not access physical USB hardware:
@@ -324,23 +378,26 @@ cd tests; and qmake6 printerprotocol_tests.pro; and make -j(nproc); and ../build
 
 ```
 src/
-  core/              # Device protocol library
-  main.cpp           # Entry point
+  core/              # Legacy serial/ADB protocol and shared configuration
+  quick/             # The Qt Quick GUI, D-Bus client, tray, and controllers
+  runtime/           # Headless runtime entry point
+  devicemanager.*    # Runtime-owned async device and operation coordination
+  firmwarebridge.*   # Runtime-side firmware D-Bus boundary
+  firmwareupdater.*  # Local firmware validation and external-tool execution
   mediatransform.*   # Canonical media transform validation and FFmpeg filter
   runtimecontract.*  # Shared Manager1/Manager2 D-Bus data contract
-  quick/             # Modern desktop presentation and runtime client layer
-  mainwindow.*       # Main window with navigation
-  panoramapage.*     # Display + metrics configuration
-  homepage.*         # System monitoring dashboard
-  settingspage.*     # App settings
-  devicemanager.*    # Async device communication
+  runtimebridge.*    # Exported runtime D-Bus adaptors
   printerprotocol.*  # PASE framing, direct libusb transport and udev discovery
   systemmonitor.*    # System metrics reader
-  traymanager.*      # System tray
-qml/                 # Desktop shell, pages and media editor
+qml/
+  Main.qml           # Single desktop shell
+  pages/             # Dashboard, Display, and Settings
+  components/        # Media editor, firmware panel, and shared controls
+resources/           # GUI resource collection and application icon
+translations/        # Qt Linguist translation sources
 include/panorama/    # Protocol headers
 protocol/wire-v1/    # Minimal project-owned protobuf wire schema
-tests/               # Offline protocol, transport and discovery tests
+tests/               # Offline runtime, protocol, transport, and Quick tests
 debian/              # Ubuntu 24.04 and Linux Mint 22 package metadata
 packaging/
   arch/              # Arch Linux PKGBUILD
@@ -348,6 +405,8 @@ packaging/
   metainfo/          # AppStream metadata
   scripts/           # Release and package-content gates
   *.rules            # PASE permissions and printer suppression
+tryx-panorama-all.pro   # Aggregate runtime + GUI build and package-check
+tryx-panorama.pro       # Headless runtime qmake project
 ```
 
 ## Tested on

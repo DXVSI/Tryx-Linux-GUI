@@ -6,7 +6,7 @@ pkgver=2.0.1
 pkgrel=1
 pkgdesc='Control TRYX Panorama cooler displays on Linux'
 arch=('x86_64')
-url='https://github.com/DXVSI/tryx-panorama-se-360-linux-gui'
+url='https://github.com/DXVSI/Tryx-Linux-GUI'
 license=('MIT' 'BSD-2-Clause')
 depends=(
   'dbus'

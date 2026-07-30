@@ -1,7 +1,7 @@
 QT += concurrent core dbus gui qml quick quickcontrols2
 
 CONFIG += c++17 lrelease embed_translations
-TARGET = tryx-panorama-quick
+TARGET = tryx-panorama-manager
 TEMPLATE = app
 
 !versionAtLeast(QT_VERSION, 6.4.0) {
@@ -29,6 +29,7 @@ HEADERS += \
     src/mediatransform.h \
     src/quick/appsettingscontroller.h \
     src/quick/devicemediaworkflowcontroller.h \
+    src/quick/linuxtraycontroller.h \
     src/quick/mediacatalogmodel.h \
     src/quick/mediaeditorcontroller.h \
     src/quick/mediapreviewcontroller.h \
@@ -45,6 +46,7 @@ SOURCES += \
     src/core/config.cpp \
     src/quick/appsettingscontroller.cpp \
     src/quick/devicemediaworkflowcontroller.cpp \
+    src/quick/linuxtraycontroller.cpp \
     src/quick/main.cpp \
     src/quick/mediacatalogmodel.cpp \
     src/quick/mediaeditorcontroller.cpp \
@@ -89,6 +91,8 @@ DISTFILES += \
     $$QML_FILES \
     resources/tryx-panorama.png \
     tests/quick/quick_tests.pro \
+    tests/quick/linuxtraycontroller_tests.pro \
+    tests/quick/linuxtraycontroller_tests.cpp \
     tests/quick/tst_quickmodels.cpp \
     $$QML_TEST_FILES
 
@@ -120,8 +124,12 @@ quick_tests.commands = \
         TRYX_QML_ROOT=$$shell_path($$PWD/qml) \
         TRYX_QML_IMPORT_PATH=$$shell_path($$[QT_INSTALL_QML]) \
             $$shell_path($$PWD/build/quick-tests/tryx-quick-tests) && \
+        $$QMAKE_QMAKE linuxtraycontroller_tests.pro && $(MAKE) && \
+        dbus-run-session -- \
+            $$shell_path($$PWD/build/linuxtray-tests/linuxtraycontroller-tests) \
+                -txt && \
     env -u DBUS_SESSION_BUS_ADDRESS QT_QPA_PLATFORM=offscreen \
-        $$shell_path($$PWD/build/quick/tryx-panorama-quick) \
+        $$shell_path($$PWD/build/quick/tryx-panorama-manager) \
         --smoke-test
 QMAKE_EXTRA_TARGETS += quick_tests
 

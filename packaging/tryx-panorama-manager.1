@@ -7,8 +7,6 @@ tryx-panorama-manager \- control compatible TRYX Panorama cooler displays
 .B tryx-panorama-manager
 .B \-\-version
 .br
-.B tryx-panorama-manager
-.B \-\-daemon
 .SH DESCRIPTION
 .B TRYX Panorama Manager
 is a Qt 6 application for controlling compatible TRYX Panorama and Panorama SE
@@ -25,12 +23,6 @@ package.
 .B \-\-version
 Print the application version and exit without starting the graphical
 application or accessing USB.
-.TP
-.B \-\-daemon
-Run the background D-Bus service.
-This mode is intended to be started by
-.BR systemd (1)
-or by the graphical application.
 .SH FILES
 .TP
 .I /usr/lib/systemd/user/tryx-panorama.service
@@ -46,7 +38,7 @@ Early PASE device-access rule.
 Late rule that prevents printer-service activation for the PASE interface.
 .SH BUGS
 Report issues at
-.UR https://github.com/DXVSI/tryx-panorama-se-360-linux-gui/issues
+.UR https://github.com/DXVSI/Tryx-Linux-GUI/issues
 .UE .
 .SH SEE ALSO
 .BR systemctl (1),

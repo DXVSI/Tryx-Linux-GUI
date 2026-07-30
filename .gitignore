@@ -8,7 +8,7 @@ build.tar.xz
 *.d
 Makefile
 Makefile.quick
-Makefile.widgets
+Makefile.runtime
 tests/quick/target_wrapper.sh
 .qmake.stash
 moc_*.cpp

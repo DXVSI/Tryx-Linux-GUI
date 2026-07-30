@@ -4,7 +4,7 @@ Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX Panorama cooler displays
 
 License:        MIT AND BSD-2-Clause
-URL:            https://github.com/DXVSI/tryx-panorama-se-360-linux-gui
+URL:            https://github.com/DXVSI/Tryx-Linux-GUI
 Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.xz
 
 # The first native package release is intentionally limited to the architecture
@@ -21,11 +21,9 @@ BuildRequires:  qt6-qtdeclarative-devel
 BuildRequires:  pkgconfig(Qt6Core)
 BuildRequires:  pkgconfig(Qt6DBus)
 BuildRequires:  pkgconfig(Qt6Gui)
-BuildRequires:  pkgconfig(Qt6Network)
 BuildRequires:  pkgconfig(Qt6Qml)
 BuildRequires:  pkgconfig(Qt6Quick)
 BuildRequires:  pkgconfig(Qt6QuickControls2)
-BuildRequires:  pkgconfig(Qt6Widgets)
 BuildRequires:  protobuf-compiler
 BuildRequires:  pkgconfig(protobuf)
 BuildRequires:  pkgconfig(libudev)
@@ -109,7 +107,7 @@ udevadm verify --resolve-names=never \
 %license %{_licensedir}/%{name}/picojson-BSD-2-Clause.txt
 %doc README.md
 %{_bindir}/tryx-panorama-manager
-%{_bindir}/tryx-panorama-quick
+%{_prefix}/lib/tryx-panorama-manager/tryx-panorama-runtime
 %{_userunitdir}/tryx-panorama.service
 %{_userpresetdir}/90-tryx-panorama.preset
 %{_udevrulesdir}/70-tryx-pase-access.rules

@@ -158,16 +158,13 @@ jobs:
           rpm -V tryx-panorama-manager
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
-          test "$(tryx-panorama-quick --version)" = \
-            "tryx-panorama-quick $(tr -d '\r\n' < VERSION)"
-          for binary in tryx-panorama-manager tryx-panorama-quick; do
+          for binary in tryx-panorama-manager; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
             fi
           done
           QT_QPA_PLATFORM=offscreen tryx-panorama-manager --smoke-test
-          QT_QPA_PLATFORM=offscreen tryx-panorama-quick --smoke-test
           ffmpeg -hide_banner -encoders \
             > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
           grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
@@ -321,16 +318,13 @@ jobs:
           dpkg --verify tryx-panorama-manager
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
-          test "$(tryx-panorama-quick --version)" = \
-            "tryx-panorama-quick $(tr -d '\r\n' < VERSION)"
-          for binary in tryx-panorama-manager tryx-panorama-quick; do
+          for binary in tryx-panorama-manager; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
             fi
           done
           QT_QPA_PLATFORM=offscreen tryx-panorama-manager --smoke-test
-          QT_QPA_PLATFORM=offscreen tryx-panorama-quick --smoke-test
           ffmpeg -hide_banner -encoders \
             > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
           grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
@@ -452,16 +446,13 @@ jobs:
           pacman -Qkk tryx-panorama-manager
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
-          test "$(tryx-panorama-quick --version)" = \
-            "tryx-panorama-quick $(tr -d '\r\n' < VERSION)"
-          for binary in tryx-panorama-manager tryx-panorama-quick; do
+          for binary in tryx-panorama-manager; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
             fi
           done
           QT_QPA_PLATFORM=offscreen tryx-panorama-manager --smoke-test
-          QT_QPA_PLATFORM=offscreen tryx-panorama-quick --smoke-test
           ffmpeg -hide_banner -encoders \
             > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
           grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
@@ -522,9 +513,7 @@ jobs:
           version=$(rpm -q --qf '%{VERSION}' tryx-panorama-manager)
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $version"
-          test "$(tryx-panorama-quick --version)" = \
-            "tryx-panorama-quick $version"
-          for binary in tryx-panorama-manager tryx-panorama-quick; do
+          for binary in tryx-panorama-manager; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
@@ -533,9 +522,6 @@ jobs:
           DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
             QT_QPA_PLATFORM=offscreen \
             tryx-panorama-manager --smoke-test
-          DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
-            QT_QPA_PLATFORM=offscreen \
-            tryx-panorama-quick --smoke-test
           ffmpeg -hide_banner -encoders \
             > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
           grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
@@ -570,9 +556,7 @@ jobs:
           version=${version%%-*}
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $version"
-          test "$(tryx-panorama-quick --version)" = \
-            "tryx-panorama-quick $version"
-          for binary in tryx-panorama-manager tryx-panorama-quick; do
+          for binary in tryx-panorama-manager; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
@@ -581,9 +565,6 @@ jobs:
           DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
             QT_QPA_PLATFORM=offscreen \
             tryx-panorama-manager --smoke-test
-          DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
-            QT_QPA_PLATFORM=offscreen \
-            tryx-panorama-quick --smoke-test
           ffmpeg -hide_banner -encoders \
             > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
           grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
@@ -623,9 +604,7 @@ jobs:
           version=${version%-*}
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $version"
-          test "$(tryx-panorama-quick --version)" = \
-            "tryx-panorama-quick $version"
-          for binary in tryx-panorama-manager tryx-panorama-quick; do
+          for binary in tryx-panorama-manager; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
@@ -634,9 +613,6 @@ jobs:
           DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
             QT_QPA_PLATFORM=offscreen \
             tryx-panorama-manager --smoke-test
-          DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
-            QT_QPA_PLATFORM=offscreen \
-            tryx-panorama-quick --smoke-test
           ffmpeg -hide_banner -encoders \
             > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
           grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"

@@ -3,12 +3,19 @@
 #include <QObject>
 #include <QProcess>
 #include <QString>
+#include <QStringList>
 
 class QTimer;
 
 class AppSettingsController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString language READ language NOTIFY languageChanged)
+    Q_PROPERTY(QString devicePort READ devicePort
+                   NOTIFY deviceSettingsChanged)
+    Q_PROPERTY(int keepaliveInterval READ keepaliveInterval
+                   NOTIFY deviceSettingsChanged)
+    Q_PROPERTY(QStringList serialPorts READ serialPorts
+                   NOTIFY serialPortsChanged)
     Q_PROPERTY(bool autostartEnabled READ autostartEnabled
                    NOTIFY autostartEnabledChanged)
     Q_PROPERTY(bool autostartAvailable READ autostartAvailable
@@ -22,17 +29,25 @@ public:
                                    QObject *parent = nullptr);
 
     QString language() const;
+    QString devicePort() const;
+    int keepaliveInterval() const;
+    QStringList serialPorts() const;
     bool autostartEnabled() const;
     bool autostartAvailable() const;
     bool busy() const;
     QString errorMessage() const;
 
     Q_INVOKABLE void setLanguage(const QString &code);
+    Q_INVOKABLE void setDevicePort(const QString &port);
+    Q_INVOKABLE void setKeepaliveInterval(int seconds);
+    Q_INVOKABLE void refreshSerialPorts();
     Q_INVOKABLE void setAutostartEnabled(bool enabled);
     Q_INVOKABLE void refreshAutostart();
 
 signals:
     void languageChanged();
+    void deviceSettingsChanged();
+    void serialPortsChanged();
     void autostartEnabledChanged();
     void autostartAvailableChanged();
     void busyChanged();
@@ -47,6 +62,8 @@ private:
     };
 
     static bool isSupportedLanguage(const QString &code);
+    bool saveDeviceSettings(const QString &port,
+                            int keepaliveInterval);
     static bool isEnabledState(const QString &state);
     static bool isDisabledState(const QString &state);
 
@@ -64,6 +81,9 @@ private:
 
     bool offline_ = false;
     QString language_ = QStringLiteral("en");
+    QString devicePort_;
+    int keepaliveInterval_ = 10;
+    QStringList serialPorts_;
     bool autostartEnabled_ = false;
     bool autostartAvailable_ = false;
     bool busy_ = false;

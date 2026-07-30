@@ -206,6 +206,7 @@ public slots:
     void sendKeepalive();
     void sendSysinfo(const QStringList &labels, const QStringList &values,
                      const QStringList &units);
+    void sendLegacyMetrics();
 
     void configurePrinterDevice(const QString &devicePath,
                                 const QString &deviceSerial,
@@ -405,6 +406,7 @@ private:
 
     std::unique_ptr<panorama::Device> device_;
     std::unique_ptr<PrinterProtocol> printerProtocol_;
+    QTimer *legacyMetricsTimer_;
     QTimer *printerKeepaliveTimer_;
     QTimer *printerMetricsTimer_;
     QTimer *printerRecoveryTimer_;

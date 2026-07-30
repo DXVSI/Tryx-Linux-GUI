@@ -2,6 +2,7 @@
 
 #include <panorama/config.hpp>
 
+#include <QDir>
 #include <QProcess>
 #include <QStringList>
 #include <QTimer>
@@ -51,6 +52,10 @@ AppSettingsController::AppSettingsController(
                     tr("Unsupported application language setting: %1")
                         .arg(configured));
             }
+            devicePort_ =
+                QString::fromStdString(config->port).trimmed();
+            keepaliveInterval_ =
+                qBound(5, config->keepalive_interval, 60);
         }
     } catch (const std::exception &error) {
         setConfigError(
@@ -82,12 +87,25 @@ AppSettingsController::AppSettingsController(
         this, &AppSettingsController::handleAutostartTimeout);
 
     if (!offline_) {
+        refreshSerialPorts();
         refreshAutostart();
     }
 }
 
 QString AppSettingsController::language() const {
     return language_;
+}
+
+QString AppSettingsController::devicePort() const {
+    return devicePort_;
+}
+
+int AppSettingsController::keepaliveInterval() const {
+    return keepaliveInterval_;
+}
+
+QStringList AppSettingsController::serialPorts() const {
+    return serialPorts_;
 }
 
 bool AppSettingsController::autostartEnabled() const {
@@ -148,6 +166,62 @@ void AppSettingsController::setLanguage(
     emit languageChanged();
 }
 
+void AppSettingsController::setDevicePort(
+    const QString &port) {
+    const QString normalized = port.trimmed();
+    if (!normalized.isEmpty() &&
+        (!normalized.startsWith(QStringLiteral("/dev/ttyACM")) ||
+         normalized.contains(QStringLiteral("/../")))) {
+        setConfigError(
+            tr("Only Auto or a /dev/ttyACM device can be selected"));
+        return;
+    }
+    if (devicePort_ == normalized) {
+        return;
+    }
+    if (!saveDeviceSettings(normalized, keepaliveInterval_)) {
+        return;
+    }
+    devicePort_ = normalized;
+    emit deviceSettingsChanged();
+}
+
+void AppSettingsController::setKeepaliveInterval(
+    int seconds) {
+    const int bounded = qBound(5, seconds, 60);
+    if (keepaliveInterval_ == bounded) {
+        return;
+    }
+    if (!saveDeviceSettings(devicePort_, bounded)) {
+        return;
+    }
+    keepaliveInterval_ = bounded;
+    emit deviceSettingsChanged();
+}
+
+void AppSettingsController::refreshSerialPorts() {
+    QStringList ports;
+    const QDir devices(QStringLiteral("/dev"));
+    const QFileInfoList entries = devices.entryInfoList(
+        {QStringLiteral("ttyACM*")},
+        QDir::System | QDir::Files | QDir::Readable,
+        QDir::Name);
+    for (const QFileInfo &entry : entries) {
+        ports.append(
+            QStringLiteral("/dev/") + entry.fileName());
+    }
+    if (!devicePort_.isEmpty() &&
+        !ports.contains(devicePort_)) {
+        ports.prepend(devicePort_);
+    }
+    ports.removeDuplicates();
+    if (serialPorts_ == ports) {
+        return;
+    }
+    serialPorts_ = ports;
+    emit serialPortsChanged();
+}
+
 void AppSettingsController::setAutostartEnabled(
     bool enabled) {
     if (offline_) {
@@ -192,6 +266,34 @@ bool AppSettingsController::isSupportedLanguage(
     return code == QStringLiteral("en") ||
            code == QStringLiteral("ru") ||
            code == QStringLiteral("system");
+}
+
+bool AppSettingsController::saveDeviceSettings(
+    const QString &port, int keepaliveInterval) {
+    try {
+        const auto loaded =
+            panorama::ConfigManager::load_config();
+        if (!loaded) {
+            setConfigError(
+                tr("The application settings file is unreadable or invalid"));
+            return false;
+        }
+        panorama::Config config = *loaded;
+        config.port = port.toStdString();
+        config.keepalive_interval = keepaliveInterval;
+        if (!panorama::ConfigManager::save_config(config)) {
+            setConfigError(
+                tr("Failed to save device connection settings"));
+            return false;
+        }
+    } catch (const std::exception &error) {
+        setConfigError(
+            tr("Failed to save device connection settings: %1")
+                .arg(QString::fromLocal8Bit(error.what())));
+        return false;
+    }
+    setConfigError({});
+    return true;
 }
 
 bool AppSettingsController::isEnabledState(

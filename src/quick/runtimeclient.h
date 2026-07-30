@@ -8,6 +8,7 @@
 #include <QDBusServiceWatcher>
 #include <QObject>
 #include <QStringList>
+#include <QTimer>
 
 class RuntimeClient final : public QObject {
     Q_OBJECT
@@ -15,6 +16,9 @@ class RuntimeClient final : public QObject {
                    NOTIFY connectionChanged)
     Q_PROPERTY(bool compatible READ compatible NOTIFY connectionChanged)
     Q_PROPERTY(bool connected READ connected NOTIFY connectionChanged)
+    Q_PROPERTY(bool ready READ ready NOTIFY connectionChanged)
+    Q_PROPERTY(bool legacyConnected READ legacyConnected
+                   NOTIFY connectionChanged)
     Q_PROPERTY(bool printerClassDevicePresent
                    READ printerClassDevicePresent NOTIFY connectionChanged)
     Q_PROPERTY(bool displaySessionActive READ displaySessionActive
@@ -75,6 +79,8 @@ public:
     bool serviceAvailable() const;
     bool compatible() const;
     bool connected() const;
+    bool ready() const;
+    bool legacyConnected() const;
     bool printerClassDevicePresent() const;
     bool displaySessionActive() const;
     QString connectionStatus() const;
@@ -131,6 +137,13 @@ public:
 
     Q_INVOKABLE void refreshAll();
     Q_INVOKABLE void refreshMedia();
+    Q_INVOKABLE void connectDevice(const QString &port = QString());
+    Q_INVOKABLE void disconnectDevice();
+    Q_INVOKABLE void requestDeviceInfo();
+    Q_INVOKABLE void setRotation(int degrees);
+    Q_INVOKABLE void rebootDevice();
+    Q_INVOKABLE void startKeepalive(int intervalSec);
+    Q_INVOKABLE void stopKeepalive();
     Q_INVOKABLE void applyFullScreen(
         const QStringList &media, const QString &playMode,
         const QStringList &metrics, const QStringList &badges);
@@ -198,13 +211,34 @@ private slots:
         bool printerClassDevicePresent, quint64 revision);
     void onDeviceDisconnected(quint64 revision);
     void onDeviceError(QString message, quint64 revision);
+    void onLegacyBrightnessChanged(int value, quint64 revision);
+    void onLegacyScreenConfigChanged(quint64 revision);
+    void onLegacyMediaUploaded(QString filename, quint64 revision);
+    void onLegacyMediaDeleted(quint64 revision);
+    void onLegacyMediaListUpdated(QStringList files, quint64 revision);
+    void onLegacyUploadStatus(QString status, quint64 revision);
     void onPrinterPresenceChanged(bool present,
                                   bool printerClassConnected,
                                   quint64 revision);
     void onDisplaySessionChanged(bool active, quint64 revision);
+    void onLegacyUploadTimeout();
 
 private:
     friend class QuickClientTests;
+
+    struct LegacyUploadState {
+        QString operationId;
+        QString sourcePath;
+        QString claimedPath;
+        quint64 device = 0;
+        quint64 inode = 0;
+        quint64 epoch = 0;
+        bool rejectionEmitted = false;
+
+        bool active() const {
+            return !operationId.isEmpty();
+        }
+    };
 
     void subscribeSignals();
     void startHandshake();
@@ -215,6 +249,9 @@ private:
     void refreshDisplay();
     void setDiagnostic(const QString &message);
     bool mutationReady(const QString &action);
+    bool manager1Ready(const QString &action,
+                       bool requireConnected = true);
+    QString legacyDeviceIdentity() const;
     QString nextOperationId() const;
     void sendOperation(const QString &method,
                        const QVariantList &arguments,
@@ -230,6 +267,23 @@ private:
     void sendVoidCall(const QString &interfaceName,
                       const QString &method,
                       const QVariantList &arguments = {});
+    void sendLegacyScreenConfig(
+        const TryxRuntimeApplyRequest &request);
+    static QVariantList legacyScreenConfigArguments(
+        const TryxRuntimeApplyRequest &request);
+    bool claimLegacyUploadSource(
+        const QString &operationId, const QString &sourcePath,
+        QString *errorMessage);
+    void beginLegacyUpload(const QString &operationId);
+    void finishLegacyUpload(const QString &filename);
+    void rejectLegacyUpload(const QString &message,
+                            bool restoreSource);
+    void clearLegacyUpload(bool removeSource,
+                           bool removeClaim);
+    static bool fileIdentityMatches(
+        const QString &path, quint64 device, quint64 inode);
+    static void removeFileIfIdentityMatches(
+        const QString &path, quint64 device, quint64 inode);
     TryxRuntimeApplyRequest baseApplyRequest() const;
     TryxRuntimeApplyRequest fullScreenApplyRequest(
         const QStringList &media, const QString &playMode,
@@ -276,6 +330,10 @@ private:
     OperationListModel operationModel_;
     QString activeOperationId_;
     TryxRuntimeOperationInfo activeOperation_;
+    LegacyUploadState legacyUpload_;
+    QTimer legacyUploadDeadline_;
+    TryxRuntimeApplyRequest pendingLegacyScreenConfig_;
+    bool pendingLegacyScreenConfigValid_ = false;
     QString diagnostic_;
     quint64 serviceEpoch_ = 1;
 };

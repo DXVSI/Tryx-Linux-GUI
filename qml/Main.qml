@@ -29,6 +29,11 @@ ApplicationWindow {
     Material.accent: "#def750"
     color: "#15181b"
 
+    onClosing: close => {
+        if (window.windowChrome.handleCloseRequest())
+            close.accepted = false
+    }
+
     property int currentPage: 0
     readonly property string pageTitle:
         currentPage === 0 ? qsTr("Dashboard")

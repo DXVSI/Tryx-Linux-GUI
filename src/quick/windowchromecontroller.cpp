@@ -14,6 +14,14 @@ bool WindowChromeController::maximized() const {
            window_->visibility() == QWindow::Maximized;
 }
 
+bool WindowChromeController::trayAvailable() const {
+    return trayAvailable_;
+}
+
+bool WindowChromeController::hiddenToTray() const {
+    return hiddenToTray_;
+}
+
 void WindowChromeController::setWindow(QWindow *window) {
     if (window_ == window) {
         return;
@@ -21,16 +29,33 @@ void WindowChromeController::setWindow(QWindow *window) {
     if (window_) {
         disconnect(window_, nullptr, this, nullptr);
     }
+    setHiddenToTray(false);
+    restoreMaximized_ = false;
     window_ = window;
     if (window_) {
         connect(window_, &QWindow::visibilityChanged,
                 this, &WindowChromeController::windowStateChanged);
         connect(window_, &QObject::destroyed, this, [this]() {
             window_.clear();
+            setHiddenToTray(false);
             emit windowStateChanged();
         });
     }
     emit windowStateChanged();
+}
+
+void WindowChromeController::setTrayAvailable(bool available) {
+    if (trayAvailable_ == available) {
+        return;
+    }
+    trayAvailable_ = available;
+    emit trayAvailabilityChanged();
+
+    // Never leave the GUI alive but unreachable after the desktop removes
+    // its StatusNotifier host or the watcher process restarts.
+    if (!trayAvailable_ && hiddenToTray_) {
+        showWindow();
+    }
 }
 
 bool WindowChromeController::startMove() {
@@ -72,6 +97,38 @@ void WindowChromeController::closeWindow() {
     }
 }
 
+bool WindowChromeController::handleCloseRequest() {
+    if (!window_ || !trayAvailable_) {
+        return false;
+    }
+
+    restoreMaximized_ =
+        window_->visibility() == QWindow::Maximized;
+    setHiddenToTray(true);
+    window_->hide();
+    return true;
+}
+
+void WindowChromeController::showWindow() {
+    if (!window_) {
+        setHiddenToTray(false);
+        return;
+    }
+
+    const bool restoreMaximized = restoreMaximized_;
+    setHiddenToTray(false);
+    if (restoreMaximized) {
+        window_->showMaximized();
+    } else if (window_->visibility() == QWindow::Minimized) {
+        window_->showNormal();
+    } else {
+        window_->show();
+    }
+    restoreMaximized_ = false;
+    window_->raise();
+    window_->requestActivate();
+}
+
 bool WindowChromeController::validResizeEdges(
     Qt::Edges edges) {
     return edges == Qt::LeftEdge ||
@@ -82,4 +139,12 @@ bool WindowChromeController::validResizeEdges(
            edges == (Qt::RightEdge | Qt::TopEdge) ||
            edges == (Qt::LeftEdge | Qt::BottomEdge) ||
            edges == (Qt::RightEdge | Qt::BottomEdge);
+}
+
+void WindowChromeController::setHiddenToTray(bool hidden) {
+    if (hiddenToTray_ == hidden) {
+        return;
+    }
+    hiddenToTray_ = hidden;
+    emit hiddenToTrayChanged();
 }

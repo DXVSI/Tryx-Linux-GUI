@@ -1,6 +1,5 @@
 #include "devicemanager.h"
 #include "printerprotocol.h"
-#include "hudrenderer.h"
 #include "mediatransform.h"
 #include "systemmonitor.h"
 #include <QDateTime>
@@ -48,6 +47,8 @@
 namespace {
 
 constexpr int kMaxPrinterKeepaliveWriteRetries = 3;
+constexpr int kPaseDisplayWidth = 2240;
+constexpr int kPaseDisplayHeight = 1080;
 constexpr int kPrinterKeepaliveRetryBackoffMs = 500;
 constexpr int kMaxTerminalOperationHistory = 32;
 constexpr int kRetryCacheFormatVersion = 9;
@@ -708,8 +709,8 @@ QString mutationOutcomeName(PrinterProtocol::MutationOutcome outcome) {
 QString h264PrinterName(const QString &baseName) {
     return QStringLiteral("%1.h264_%2x%3")
         .arg(baseName)
-        .arg(HudRenderer::DISPLAY_WIDTH)
-        .arg(HudRenderer::DISPLAY_HEIGHT);
+        .arg(kPaseDisplayWidth)
+        .arg(kPaseDisplayHeight);
 }
 
 QString printerPresetMediaFile(const QString &presetId) {
@@ -1562,7 +1563,7 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                   << QStringLiteral("-framerate") << QStringLiteral("30");
     }
     const QString filter = tryxMediaTransformFfmpegFilter(
-        transform, HudRenderer::DISPLAY_WIDTH, HudRenderer::DISPLAY_HEIGHT);
+        transform, kPaseDisplayWidth, kPaseDisplayHeight);
     if (filter.isEmpty()) {
         emit failed(operationId, tr("Media transform filter is invalid"),
                     generation);
@@ -1978,6 +1979,7 @@ void PrinterMediaPreparer::shutdown() {
 DeviceWorker::DeviceWorker(QObject *parent)
     : QObject(parent),
       printerProtocol_(std::make_unique<PrinterProtocol>()),
+      legacyMetricsTimer_(new QTimer(this)),
       printerKeepaliveTimer_(new QTimer(this)),
       printerMetricsTimer_(new QTimer(this)),
       printerRecoveryTimer_(new QTimer(this)),
@@ -1985,6 +1987,9 @@ DeviceWorker::DeviceWorker(QObject *parent)
       printerCancellationFd_(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)),
       printerOperationCancellationFd_(
           eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {
+    legacyMetricsTimer_->setInterval(1000);
+    connect(legacyMetricsTimer_, &QTimer::timeout,
+            this, &DeviceWorker::sendLegacyMetrics);
     printerKeepaliveTimer_->setSingleShot(true);
     printerKeepaliveTimer_->setInterval(2000);
     connect(printerKeepaliveTimer_, &QTimer::timeout,
@@ -2103,6 +2108,7 @@ void DeviceWorker::connectDevice(const QString &port) {
 }
 
 void DeviceWorker::disconnectDevice() {
+    legacyMetricsTimer_->stop();
     if (!device_) {
         return;
     }
@@ -2129,6 +2135,9 @@ void DeviceWorker::doHandshake() {
         QString::fromStdString(info->firmware),
         QString::fromStdString(info->app_version)
     );
+    legacyMetricsTimer_->start();
+    QTimer::singleShot(
+        0, this, &DeviceWorker::sendLegacyMetrics);
 }
 
 void DeviceWorker::setBrightness(int value) {
@@ -2317,6 +2326,22 @@ void DeviceWorker::sendSysinfo(const QStringList &labels, const QStringList &val
 
     device_->send_sysinfo(data);
     emit sysinfoSent();
+}
+
+void DeviceWorker::sendLegacyMetrics() {
+    if (!device_ || !device_->is_connected()) {
+        legacyMetricsTimer_->stop();
+        return;
+    }
+
+    QStringList labels;
+    QStringList values;
+    QStringList units;
+    collectPaseMetricValues(
+        printerSystemMonitor_, &labels, &values, &units);
+    if (!labels.isEmpty()) {
+        sendSysinfo(labels, values, units);
+    }
 }
 
 void DeviceWorker::deleteMedia(const QStringList &files) {

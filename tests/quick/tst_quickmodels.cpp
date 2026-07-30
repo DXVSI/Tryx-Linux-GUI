@@ -18,6 +18,7 @@
 #include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -27,6 +28,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QUuid>
+#include <QWindow>
 
 class QuickClientTests final : public QObject {
     Q_OBJECT
@@ -59,6 +61,7 @@ private slots:
     void systemMetricsModelMapsAvailability();
     void appSettingsDefaultToEnglishAndPreserveConfig();
     void windowChromeRejectsOperationsWithoutWindow();
+    void windowChromeHidesAndRestoresOnlyWithTray();
 };
 
 void QuickClientTests::transformDefaultsAreCanonical() {
@@ -1240,13 +1243,52 @@ void QuickClientTests::
     WindowChromeController chrome;
     QVERIFY(!chrome.ready());
     QVERIFY(!chrome.maximized());
+    QVERIFY(!chrome.trayAvailable());
+    QVERIFY(!chrome.hiddenToTray());
     QVERIFY(!chrome.startMove());
     QVERIFY(!chrome.startResize(Qt::LeftEdge));
     QVERIFY(!chrome.startResize(
         Qt::LeftEdge | Qt::RightEdge));
+    QVERIFY(!chrome.handleCloseRequest());
+    chrome.setTrayAvailable(true);
+    QVERIFY(chrome.trayAvailable());
+    QVERIFY(!chrome.handleCloseRequest());
+    QVERIFY(!chrome.hiddenToTray());
+    chrome.showWindow();
+    chrome.setTrayAvailable(false);
+    QVERIFY(!chrome.trayAvailable());
     chrome.minimize();
     chrome.toggleMaximized();
     chrome.closeWindow();
+}
+
+void QuickClientTests::
+    windowChromeHidesAndRestoresOnlyWithTray() {
+    QWindow window;
+    window.resize(640, 480);
+    window.show();
+    QTRY_VERIFY(window.isVisible());
+
+    WindowChromeController chrome;
+    chrome.setWindow(&window);
+    QVERIFY(chrome.ready());
+    QVERIFY(!chrome.handleCloseRequest());
+    QVERIFY(window.isVisible());
+
+    chrome.setTrayAvailable(true);
+    QVERIFY(chrome.handleCloseRequest());
+    QVERIFY(chrome.hiddenToTray());
+    QVERIFY(!window.isVisible());
+
+    chrome.showWindow();
+    QTRY_VERIFY(window.isVisible());
+    QVERIFY(!chrome.hiddenToTray());
+
+    QVERIFY(chrome.handleCloseRequest());
+    QVERIFY(chrome.hiddenToTray());
+    chrome.setTrayAvailable(false);
+    QTRY_VERIFY(window.isVisible());
+    QVERIFY(!chrome.hiddenToTray());
 }
 
 int main(int argc, char **argv) {
@@ -1277,7 +1319,8 @@ int main(int argc, char **argv) {
         "XDG_RUNTIME_DIR",
         QFile::encodeName(isolatedRuntime.path()));
 
-    QCoreApplication application(argc, argv);
+    qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
+    QGuiApplication application(argc, argv);
     QuickClientTests tests;
     return QTest::qExec(&tests, argc, argv);
 }
