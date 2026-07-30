@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QColor>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -60,13 +61,73 @@ private slots:
     void operationsRejectStaleEvents();
     void operationAcknowledgementRequiresExactIdentity();
     void succeededOperationClearsBusyState();
+    void deviceMediaWorkflowRejectsMismatchedClaimIdentity();
+    void deviceMediaWorkflowSaveAsNewCompletesAndReleasesLease();
+    void deviceMediaWorkflowInvalidationStopsReplaceMutations();
     void applyRequestPreservesConfirmedOverlaySettings();
     void metricsRequestUsesExplicitEnableDisableContract();
     void systemMetricsModelMapsAvailability();
     void appSettingsDefaultToEnglishAndPreserveConfig();
     void windowChromeRejectsOperationsWithoutWindow();
     void windowChromeHidesAndRestoresOnlyWithTray();
+
+private:
+    static void preparePaseDeviceMedia(
+        RuntimeClient *runtime, const QString &mediaId,
+        const QString &mediaName,
+        const QString &deviceIdentity);
+    static TryxRuntimeDeviceMediaArtifact deviceMediaArtifact(
+        const QString &operationId, const QString &artifactId,
+        const QString &mediaId, const QString &mediaName,
+        const QString &deviceIdentity);
 };
+
+void QuickClientTests::preparePaseDeviceMedia(
+    RuntimeClient *runtime, const QString &mediaId,
+    const QString &mediaName,
+    const QString &deviceIdentity) {
+    runtime->serviceAvailable_ = true;
+    runtime->compatible_ = true;
+    runtime->connection_.revision = 1;
+    runtime->connection_.printerClassConnected = true;
+    runtime->connection_.printerClassDevicePresent = true;
+    runtime->connection_.displaySessionActive = true;
+
+    TryxRuntimeMediaEntry entry;
+    entry.name = mediaName;
+    entry.source = 1;
+    entry.mediaId = mediaId;
+
+    TryxRuntimeMediaCatalogSnapshot snapshot;
+    snapshot.revision = 1;
+    snapshot.deviceIdentity = deviceIdentity;
+    snapshot.entries = {entry};
+    runtime->mediaModel()->applySnapshot(snapshot);
+}
+
+TryxRuntimeDeviceMediaArtifact
+QuickClientTests::deviceMediaArtifact(
+    const QString &operationId, const QString &artifactId,
+    const QString &mediaId, const QString &mediaName,
+    const QString &deviceIdentity) {
+    TryxRuntimeDeviceMediaArtifact artifact;
+    artifact.operationId = operationId;
+    artifact.artifactId = artifactId;
+    artifact.mediaId = mediaId;
+    artifact.deviceIdentity = deviceIdentity;
+    artifact.remoteName = mediaName;
+    artifact.size = 1;
+    artifact.decodedSha256 =
+        QString(64, QLatin1Char('0'));
+    artifact.localPath =
+        QDir(tryxRuntimeDeviceMediaOutboxPath())
+            .filePath(QStringLiteral("offline-test.h264"));
+    artifact.logicalType = QStringLiteral("Video");
+    artifact.leaseId = QStringLiteral("lease-1");
+    artifact.leaseExpiresUtcMs =
+        QDateTime::currentMSecsSinceEpoch() + 60000;
+    return artifact;
+}
 
 void QuickClientTests::transformDefaultsAreCanonical() {
     RuntimeClient runtime(true);
@@ -1166,6 +1227,278 @@ void QuickClientTests::succeededOperationClearsBusyState() {
         Q_ARG(quint64, 2)));
     QVERIFY(!runtime.operationBusy());
     QVERIFY(OperationListModel::isTerminal(operation));
+}
+
+void QuickClientTests::
+    deviceMediaWorkflowRejectsMismatchedClaimIdentity() {
+    const QString mediaId = QStringLiteral("media-1");
+    const QString mediaName =
+        QStringLiteral("source.mp4.h264_2240x1080");
+    const QString deviceIdentity =
+        QStringLiteral("device-1");
+    const QString artifactId =
+        QStringLiteral("artifact-1");
+
+    RuntimeClient runtime(true);
+    preparePaseDeviceMedia(
+        &runtime, mediaId, mediaName, deviceIdentity);
+    MediaEditorController editor(&runtime);
+    DeviceMediaWorkflowController workflow(
+        &runtime, &editor);
+
+    workflow.beginEdit(mediaId, mediaName);
+    QCOMPARE(runtime.offlineRequests_.size(), 1);
+    const QString stageOperationId =
+        runtime.offlineRequests_.constFirst().operationId;
+    QVERIFY(!stageOperationId.isEmpty());
+
+    TryxRuntimeOperationInfo staged;
+    staged.id = stageOperationId;
+    staged.kind = QStringLiteral("StageDeviceMedia");
+    staged.state = QStringLiteral("Succeeded");
+    staged.resultName = artifactId;
+    emit runtime.operationUpdated(staged);
+
+    QCOMPARE(runtime.offlineRequests_.size(), 2);
+    QCOMPARE(
+        runtime.offlineRequests_.constLast().method,
+        QStringLiteral("ClaimDeviceMediaArtifact"));
+
+    TryxRuntimeDeviceMediaArtifact stale =
+        deviceMediaArtifact(
+            QStringLiteral("stale-operation"), artifactId,
+            mediaId, mediaName, deviceIdentity);
+    emit runtime.artifactClaimed(
+        stageOperationId, stale);
+
+    QCOMPARE(runtime.offlineRequests_.size(), 3);
+    const RuntimeClient::OfflineRequest release =
+        runtime.offlineRequests_.constLast();
+    QCOMPARE(
+        release.method,
+        QStringLiteral("ReleaseDeviceMediaArtifact"));
+    QCOMPARE(
+        release.arguments,
+        QVariantList({artifactId, stale.leaseId}));
+    QVERIFY(!workflow.busy());
+    QVERIFY(!workflow.error().isEmpty());
+    QVERIFY(!editor.recoveredDeviceCopy());
+
+    const int requestCount =
+        runtime.offlineRequests_.size();
+    emit runtime.artifactClaimed(
+        stageOperationId,
+        deviceMediaArtifact(
+            stageOperationId, artifactId, mediaId,
+            mediaName, deviceIdentity));
+    QCOMPARE(
+        runtime.offlineRequests_.size(), requestCount);
+}
+
+void QuickClientTests::
+    deviceMediaWorkflowSaveAsNewCompletesAndReleasesLease() {
+    const QString mediaId = QStringLiteral("media-1");
+    const QString mediaName =
+        QStringLiteral("source.mp4.h264_2240x1080");
+    const QString deviceIdentity =
+        QStringLiteral("device-1");
+    const QString artifactId =
+        QStringLiteral("artifact-1");
+
+    RuntimeClient runtime(true);
+    preparePaseDeviceMedia(
+        &runtime, mediaId, mediaName, deviceIdentity);
+    MediaEditorController editor(&runtime);
+    DeviceMediaWorkflowController workflow(
+        &runtime, &editor);
+
+    workflow.beginEdit(mediaId, mediaName);
+    QCOMPARE(runtime.offlineRequests_.size(), 1);
+    const RuntimeClient::OfflineRequest stageRequest =
+        runtime.offlineRequests_.constFirst();
+    QCOMPARE(
+        stageRequest.method,
+        QStringLiteral("QueueStageDeviceMedia"));
+    QCOMPARE(
+        stageRequest.arguments.at(1).toString(), mediaId);
+    QVERIFY(workflow.busy());
+
+    TryxRuntimeOperationInfo staleStage;
+    staleStage.id = QStringLiteral("stale-stage");
+    staleStage.kind = QStringLiteral("StageDeviceMedia");
+    staleStage.state = QStringLiteral("Succeeded");
+    staleStage.resultName = artifactId;
+    emit runtime.operationUpdated(staleStage);
+    QCOMPARE(runtime.offlineRequests_.size(), 1);
+
+    TryxRuntimeOperationInfo staged = staleStage;
+    staged.id = stageRequest.operationId;
+    emit runtime.operationUpdated(staged);
+    QCOMPARE(runtime.offlineRequests_.size(), 2);
+    const RuntimeClient::OfflineRequest claimRequest =
+        runtime.offlineRequests_.constLast();
+    QCOMPARE(
+        claimRequest.method,
+        QStringLiteral("ClaimDeviceMediaArtifact"));
+    QCOMPARE(
+        claimRequest.arguments,
+        QVariantList(
+            {stageRequest.operationId, artifactId}));
+
+    const TryxRuntimeDeviceMediaArtifact artifact =
+        deviceMediaArtifact(
+            stageRequest.operationId, artifactId, mediaId,
+            mediaName, deviceIdentity);
+    emit runtime.artifactClaimed(
+        QStringLiteral("stale-stage"), artifact);
+    QCOMPARE(runtime.offlineRequests_.size(), 2);
+    QVERIFY(workflow.claimPending_);
+
+    emit runtime.artifactClaimed(
+        stageRequest.operationId, artifact);
+    QVERIFY(editor.recoveredDeviceCopy());
+    QVERIFY(!workflow.claimPending_);
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &workflow.renewTimer_, "timeout",
+        Qt::DirectConnection));
+    QCOMPARE(runtime.offlineRequests_.size(), 3);
+    QCOMPARE(
+        runtime.offlineRequests_.constLast().method,
+        QStringLiteral("RenewDeviceMediaArtifactLease"));
+    QCOMPARE(
+        runtime.offlineRequests_.constLast().arguments,
+        QVariantList({artifactId, artifact.leaseId}));
+
+    emit editor.recoveredSaveAsNewRequested(
+        editor.transform());
+    QCOMPARE(runtime.offlineRequests_.size(), 4);
+    const RuntimeClient::OfflineRequest mutationRequest =
+        runtime.offlineRequests_.constLast();
+    QCOMPARE(
+        mutationRequest.method,
+        QStringLiteral(
+            "QueueRecoveredMediaUploadWithTransform"));
+    QCOMPARE(
+        mutationRequest.arguments.at(1).toString(),
+        artifactId);
+    QCOMPARE(
+        mutationRequest.arguments.at(2).toString(),
+        artifact.leaseId);
+    QVERIFY(editor.submissionPending());
+
+    TryxRuntimeOperationInfo staleMutation;
+    staleMutation.id = QStringLiteral("stale-mutation");
+    staleMutation.kind =
+        QStringLiteral("RecoveredMediaUpload");
+    staleMutation.state = QStringLiteral("Succeeded");
+    emit runtime.operationUpdated(staleMutation);
+    QVERIFY(editor.submissionPending());
+    QCOMPARE(runtime.offlineRequests_.size(), 4);
+
+    TryxRuntimeOperationInfo completed = staleMutation;
+    completed.id = mutationRequest.operationId;
+    emit runtime.operationUpdated(completed);
+
+    QCOMPARE(runtime.offlineRequests_.size(), 5);
+    QCOMPARE(
+        runtime.offlineRequests_.constLast().method,
+        QStringLiteral("ReleaseDeviceMediaArtifact"));
+    QCOMPARE(
+        runtime.offlineRequests_.constLast().arguments,
+        QVariantList({artifactId, artifact.leaseId}));
+    QVERIFY(!workflow.busy());
+    QVERIFY(!editor.submissionPending());
+    QVERIFY(!editor.recoveredDeviceCopy());
+
+    const int requestCount =
+        runtime.offlineRequests_.size();
+    emit runtime.operationUpdated(completed);
+    emit editor.recoveredSaveAsNewRequested(
+        editor.transform());
+    QCOMPARE(
+        runtime.offlineRequests_.size(), requestCount);
+}
+
+void QuickClientTests::
+    deviceMediaWorkflowInvalidationStopsReplaceMutations() {
+    const QString mediaId = QStringLiteral("media-1");
+    const QString mediaName =
+        QStringLiteral("source.mp4.h264_2240x1080");
+    const QString deviceIdentity =
+        QStringLiteral("device-1");
+    const QString artifactId =
+        QStringLiteral("artifact-1");
+
+    RuntimeClient runtime(true);
+    preparePaseDeviceMedia(
+        &runtime, mediaId, mediaName, deviceIdentity);
+    MediaEditorController editor(&runtime);
+    DeviceMediaWorkflowController workflow(
+        &runtime, &editor);
+
+    workflow.beginEdit(mediaId, mediaName);
+    const QString stageOperationId =
+        runtime.offlineRequests_.constFirst().operationId;
+
+    TryxRuntimeOperationInfo staged;
+    staged.id = stageOperationId;
+    staged.kind = QStringLiteral("StageDeviceMedia");
+    staged.state = QStringLiteral("Succeeded");
+    staged.resultName = artifactId;
+    emit runtime.operationUpdated(staged);
+
+    const TryxRuntimeDeviceMediaArtifact artifact =
+        deviceMediaArtifact(
+            stageOperationId, artifactId, mediaId,
+            mediaName, deviceIdentity);
+    emit runtime.artifactClaimed(
+        stageOperationId, artifact);
+    QVERIFY(editor.recoveredDeviceCopy());
+
+    emit editor.recoveredReplaceRequested(
+        editor.transform());
+    QCOMPARE(runtime.offlineRequests_.size(), 3);
+    const RuntimeClient::OfflineRequest replaceRequest =
+        runtime.offlineRequests_.constLast();
+    QCOMPARE(
+        replaceRequest.method,
+        QStringLiteral("QueueReplaceDeviceMedia"));
+    QVERIFY(editor.submissionPending());
+
+    const quint64 serviceEpoch = runtime.serviceEpoch_;
+    const int requestCount =
+        runtime.offlineRequests_.size();
+    runtime.onServiceUnregistered(
+        tryxRuntimeServiceName());
+
+    QCOMPARE(runtime.serviceEpoch_, serviceEpoch + 1);
+    QCOMPARE(
+        runtime.offlineRequests_.size(), requestCount);
+    QVERIFY(!workflow.busy());
+    QVERIFY(workflow.error().contains(
+        QStringLiteral("runtime"),
+        Qt::CaseInsensitive));
+    QVERIFY(!editor.submissionPending());
+    QVERIFY(!editor.recoveredDeviceCopy());
+
+    TryxRuntimeOperationInfo completed;
+    completed.id = replaceRequest.operationId;
+    completed.kind = QStringLiteral("ReplaceDeviceMedia");
+    completed.state = QStringLiteral("Succeeded");
+    completed.terminalOutcome = QStringLiteral("Replaced");
+    emit runtime.operationUpdated(completed);
+    emit runtime.artifactClaimed(
+        stageOperationId, artifact);
+    emit editor.recoveredReplaceRequested(
+        editor.transform());
+    QVERIFY(QMetaObject::invokeMethod(
+        &workflow.renewTimer_, "timeout",
+        Qt::DirectConnection));
+    workflow.beginEdit(mediaId, mediaName);
+
+    QCOMPARE(
+        runtime.offlineRequests_.size(), requestCount);
 }
 
 void QuickClientTests::

@@ -226,6 +226,13 @@ private slots:
 private:
     friend class QuickClientTests;
 
+    struct OfflineRequest {
+        QString method;
+        QVariantList arguments;
+        QString operationId;
+        QString kind;
+    };
+
     struct LegacyUploadState {
         QString operationId;
         QString sourcePath;
@@ -336,4 +343,6 @@ private:
     bool pendingLegacyScreenConfigValid_ = false;
     QString diagnostic_;
     quint64 serviceEpoch_ = 1;
+    bool offline_ = false;
+    QList<OfflineRequest> offlineRequests_;
 };

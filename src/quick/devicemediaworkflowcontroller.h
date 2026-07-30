@@ -54,6 +54,8 @@ signals:
     void userMessage(const QString &message, bool error);
 
 private:
+    friend class QuickClientTests;
+
     enum class Intent {
         None,
         Edit,
@@ -96,6 +98,7 @@ private:
     QString mediaName_;
     QString error_;
     QString pendingStageOperationId_;
+    QString pendingClaimOperationId_;
     QString pendingArtifactId_;
     QString pendingMutationOperationId_;
     TryxRuntimeDeviceMediaArtifact artifact_;

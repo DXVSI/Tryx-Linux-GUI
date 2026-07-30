@@ -55,7 +55,8 @@ RuntimeClient::RuntimeClient(bool offline, QObject *parent)
               QDBusServiceWatcher::WatchForUnregistration,
           this),
       mediaModel_(this),
-      operationModel_(this) {
+      operationModel_(this),
+      offline_(offline) {
     legacyUploadDeadline_.setSingleShot(true);
     legacyUploadDeadline_.setInterval(kLegacyUploadTimeoutMs);
     connect(&legacyUploadDeadline_, &QTimer::timeout,
@@ -345,6 +346,15 @@ void RuntimeClient::claimDeviceMediaArtifact(
             operationId, artifactId, error);
         return;
     }
+    if (offline_) {
+        offlineRequests_.append({
+            QStringLiteral("ClaimDeviceMediaArtifact"),
+            {operationId, artifactId},
+            operationId,
+            QStringLiteral("ClaimDeviceMediaArtifact"),
+        });
+        return;
+    }
 
     QDBusInterface runtime(
         tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
@@ -399,6 +409,15 @@ void RuntimeClient::renewDeviceMediaArtifactLease(
             tr("The artifact lease cannot be renewed"));
         return;
     }
+    if (offline_) {
+        offlineRequests_.append({
+            QStringLiteral("RenewDeviceMediaArtifactLease"),
+            {artifactId, leaseId},
+            {},
+            QStringLiteral("RenewDeviceMediaArtifactLease"),
+        });
+        return;
+    }
 
     QDBusInterface runtime(
         tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
@@ -442,6 +461,15 @@ void RuntimeClient::releaseDeviceMediaArtifact(
         emit artifactReleaseFailed(
             artifactId, leaseId,
             tr("The runtime is unavailable"));
+        return;
+    }
+    if (offline_) {
+        offlineRequests_.append({
+            QStringLiteral("ReleaseDeviceMediaArtifact"),
+            {artifactId, leaseId},
+            {},
+            QStringLiteral("ReleaseDeviceMediaArtifact"),
+        });
         return;
     }
 
@@ -1457,6 +1485,11 @@ QString RuntimeClient::nextOperationId() const {
 void RuntimeClient::sendOperation(
     const QString &method, const QVariantList &arguments,
     const QString &operationId, const QString &kind) {
+    if (offline_) {
+        offlineRequests_.append(
+            {method, arguments, operationId, kind});
+        return;
+    }
     QDBusMessage message = QDBusMessage::createMethodCall(
         tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
         tryxRuntimeOperationsInterfaceName(), method);

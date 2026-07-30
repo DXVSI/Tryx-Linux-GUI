@@ -613,6 +613,7 @@ void DeviceMediaWorkflowController::releaseArtifact() {
 
 void DeviceMediaWorkflowController::clearArtifact() {
     artifact_ = {};
+    pendingClaimOperationId_.clear();
     pendingArtifactId_.clear();
     claimPending_ = false;
 }
@@ -666,6 +667,7 @@ void DeviceMediaWorkflowController::onOperationUpdated(
             fail(operationError(info));
             return;
         }
+        pendingClaimOperationId_ = operationId;
         pendingArtifactId_ = info.resultName;
         claimPending_ = true;
         runtime_->claimDeviceMediaArtifact(
@@ -720,8 +722,11 @@ void DeviceMediaWorkflowController::onOperationUpdated(
 void DeviceMediaWorkflowController::onArtifactClaimed(
     const QString &operationId,
     const TryxRuntimeDeviceMediaArtifact &artifact) {
-    Q_UNUSED(operationId)
     if (!claimPending_ ||
+        operationId != pendingClaimOperationId_) {
+        return;
+    }
+    if (artifact.operationId != operationId ||
         artifact.artifactId != pendingArtifactId_ ||
         artifact.mediaId != mediaId_ ||
         artifact.deviceIdentity !=
@@ -734,6 +739,7 @@ void DeviceMediaWorkflowController::onArtifactClaimed(
         return;
     }
     claimPending_ = false;
+    pendingClaimOperationId_.clear();
     pendingArtifactId_.clear();
     artifact_ = artifact;
     updateRenewTimer();
@@ -754,8 +760,9 @@ void DeviceMediaWorkflowController::onArtifactClaimed(
 void DeviceMediaWorkflowController::onArtifactClaimFailed(
     const QString &operationId, const QString &artifactId,
     const QString &message) {
-    Q_UNUSED(operationId)
-    if (!claimPending_ || artifactId != pendingArtifactId_) {
+    if (!claimPending_ ||
+        operationId != pendingClaimOperationId_ ||
+        artifactId != pendingArtifactId_) {
         return;
     }
     fail(message);
@@ -812,6 +819,7 @@ void DeviceMediaWorkflowController::onRuntimeInvalidated() {
     if (exportProcess_.state() != QProcess::NotRunning) {
         exportProcess_.kill();
     }
+    clearArtifact();
     if (!pendingMutationOperationId_.isEmpty()) {
         editor_->finishRecoveredSubmission(
             pendingMutationOperationId_, false,
@@ -821,7 +829,6 @@ void DeviceMediaWorkflowController::onRuntimeInvalidated() {
         !editor_->submissionPending()) {
         editor_->cancel();
     }
-    clearArtifact();
     clearPendingWorkflow();
     error_ = tr("The runtime stopped during the device media action");
     emit stateChanged();
