@@ -30,9 +30,6 @@
 namespace {
 
 void configureApplicationIdentity(QCoreApplication &app) {
-    // Keep this identity byte-for-byte aligned with the runtime.
-    // AppLocalDataLocation contains the shared, read-only thumbnail catalog
-    // consumed by MediaCatalogModel.
     app.setApplicationName(QStringLiteral("TRYX Panorama Manager"));
     app.setApplicationVersion(QStringLiteral(TRYX_APP_VERSION));
     app.setOrganizationName(QStringLiteral("DXVSI"));

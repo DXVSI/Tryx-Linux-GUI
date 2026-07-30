@@ -12,6 +12,7 @@ OBJECTS_DIR = $$PWD/../../build/quick-tests/obj
 MOC_DIR = $$PWD/../../build/quick-tests/moc
 
 HEADERS += \
+    ../../src/applicationpaths.h \
     ../../src/systemmonitor.h \
     ../../src/runtimecontract.h \
     ../../src/mediatransform.h \

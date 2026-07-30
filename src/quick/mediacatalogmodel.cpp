@@ -1,14 +1,23 @@
 #include "mediacatalogmodel.h"
+#include "applicationpaths.h"
 
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSet>
-#include <QStandardPaths>
 #include <QUrl>
 
 MediaCatalogModel::MediaCatalogModel(QObject *parent)
-    : QAbstractListModel(parent) {}
+    : MediaCatalogModel(
+          panorama::sharedApplicationDataLocation(),
+          parent) {}
+
+MediaCatalogModel::MediaCatalogModel(
+    const QString &applicationDataRoot,
+    QObject *parent)
+    : QAbstractListModel(parent),
+      applicationDataRoot_(
+          QDir(applicationDataRoot).absolutePath()) {}
 
 int MediaCatalogModel::rowCount(const QModelIndex &parent) const {
     return parent.isValid() ? 0 : entries_.size();
@@ -181,9 +190,7 @@ QUrl MediaCatalogModel::thumbnailUrl(
     if (!sha256.match(entry.thumbnailKey).hasMatch()) {
         return {};
     }
-    const QString root = QStandardPaths::writableLocation(
-        QStandardPaths::AppLocalDataLocation);
-    const QString path = QDir(root).filePath(
+    const QString path = QDir(applicationDataRoot_).filePath(
         QStringLiteral("media-catalog/thumbnails/%1.jpg")
             .arg(entry.thumbnailKey));
     const QFileInfo info(path);

@@ -24,6 +24,7 @@ MOC_DIR = $$PWD/build/quick/moc
 RCC_DIR = $$PWD/build/quick/rcc
 
 HEADERS += \
+    src/applicationpaths.h \
     src/systemmonitor.h \
     src/runtimecontract.h \
     src/mediatransform.h \

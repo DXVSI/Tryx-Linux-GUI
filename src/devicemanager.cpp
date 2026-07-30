@@ -1,4 +1,5 @@
 #include "devicemanager.h"
+#include "applicationpaths.h"
 #include "printerprotocol.h"
 #include "mediatransform.h"
 #include "systemmonitor.h"
@@ -9212,8 +9213,7 @@ QString DeviceManager::mediaCatalogDirectory() const {
         return mediaCatalogDirectoryOverride_;
     }
 #endif
-    return QDir(QStandardPaths::writableLocation(
-                    QStandardPaths::AppLocalDataLocation))
+    return QDir(panorama::sharedApplicationDataLocation())
         .filePath(QStringLiteral("media-catalog"));
 }
 
@@ -9595,8 +9595,7 @@ QString DeviceManager::paseMetricsConfigDirectory() const {
         return paseMetricsConfigDirectoryOverride_;
     }
 #endif
-    return QStandardPaths::writableLocation(
-        QStandardPaths::AppLocalDataLocation);
+    return panorama::sharedApplicationDataLocation();
 }
 
 QString DeviceManager::paseMetricsConfigPath() const {

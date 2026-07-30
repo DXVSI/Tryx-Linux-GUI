@@ -80,6 +80,7 @@ SOURCES += \
     src/core/config.cpp
 
 HEADERS += \
+    src/applicationpaths.h \
     src/devicemanager.h \
     src/firmwarebridge.h \
     src/firmwarerecoveryjournal.h \

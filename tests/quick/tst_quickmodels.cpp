@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include "appsettingscontroller.h"
+#include "applicationpaths.h"
 #include "devicemediaworkflowcontroller.h"
 #include "mediacatalogmodel.h"
 #include "mediaeditorcontroller.h"
@@ -35,6 +36,7 @@ class QuickClientTests final : public QObject {
     Q_OBJECT
 
 private slots:
+    void sharedApplicationDataPathUsesStableManagerNamespace();
     void transformDefaultsAreCanonical();
     void nonCropFieldsAreNeutral();
     void cropRotationResetsViewport();
@@ -52,6 +54,7 @@ private slots:
     void exportHelperIsAtomicAndDoesNotClobber();
     void qmlImportScannerFindsResolvedModules();
     void catalogRejectsStaleRevision();
+    void catalogResolvesThumbnailFromConfiguredDataRoot();
     void catalogExposesDeviceCopyEligibility();
     void legacyConnectionPopulatesCurrentMediaModel();
     void legacyScreenConfigKeepsManager1Shape();
@@ -81,6 +84,16 @@ private:
         const QString &mediaId, const QString &mediaName,
         const QString &deviceIdentity);
 };
+
+void QuickClientTests::
+    sharedApplicationDataPathUsesStableManagerNamespace() {
+    QCOMPARE(
+        panorama::sharedApplicationDataLocation(),
+        QDir(QStandardPaths::writableLocation(
+                 QStandardPaths::GenericDataLocation))
+            .filePath(QStringLiteral(
+                "DXVSI/TRYX Panorama Manager")));
+}
 
 void QuickClientTests::preparePaseDeviceMedia(
     RuntimeClient *runtime, const QString &mediaId,
@@ -930,6 +943,44 @@ void QuickClientTests::catalogRejectsStaleRevision() {
         model.data(model.index(0), MediaCatalogModel::NameRole)
             .toString(),
         entry.name);
+}
+
+void QuickClientTests::
+    catalogResolvesThumbnailFromConfiguredDataRoot() {
+    QTemporaryDir temporaryData;
+    QVERIFY(temporaryData.isValid());
+
+    const QString thumbnailKey(64, QLatin1Char('a'));
+    const QString thumbnailDirectory =
+        QDir(temporaryData.path()).filePath(
+            QStringLiteral("media-catalog/thumbnails"));
+    QVERIFY(QDir().mkpath(thumbnailDirectory));
+    const QString thumbnailPath =
+        QDir(thumbnailDirectory).filePath(
+            thumbnailKey + QStringLiteral(".jpg"));
+    QFile thumbnail(thumbnailPath);
+    QVERIFY(thumbnail.open(QIODevice::WriteOnly));
+    QCOMPARE(thumbnail.write("thumbnail"), 9);
+    thumbnail.close();
+
+    TryxRuntimeMediaEntry entry;
+    entry.name =
+        QStringLiteral("user.mp4.h264_2240x1080");
+    entry.thumbnailKey = thumbnailKey;
+
+    TryxRuntimeMediaCatalogSnapshot snapshot;
+    snapshot.revision = 1;
+    snapshot.deviceIdentity = QStringLiteral("device-a");
+    snapshot.entries = {entry};
+
+    MediaCatalogModel model(temporaryData.path());
+    model.applySnapshot(snapshot);
+
+    QCOMPARE(
+        model.data(
+            model.index(0),
+            MediaCatalogModel::ThumbnailUrlRole).toUrl(),
+        QUrl::fromLocalFile(thumbnailPath));
 }
 
 void QuickClientTests::catalogExposesDeviceCopyEligibility() {

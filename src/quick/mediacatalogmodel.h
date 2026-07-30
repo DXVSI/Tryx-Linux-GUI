@@ -27,6 +27,9 @@ public:
     Q_ENUM(Role)
 
     explicit MediaCatalogModel(QObject *parent = nullptr);
+    explicit MediaCatalogModel(
+        const QString &applicationDataRoot,
+        QObject *parent = nullptr);
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index,
@@ -62,4 +65,5 @@ private:
     quint64 revision_ = 0;
     QString deviceIdentity_;
     QList<TryxRuntimeMediaEntry> entries_;
+    QString applicationDataRoot_;
 };
