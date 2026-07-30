@@ -12,6 +12,7 @@ ApplicationWindow {
     required property var runtime
     required property var mediaEditor
     required property var deviceMedia
+    required property var firmware
     required property var systemMetrics
     required property var settings
     required property var windowChrome
@@ -326,6 +327,7 @@ ApplicationWindow {
                     SettingsPage {
                         runtime: window.runtime
                         settings: window.settings
+                        firmware: window.firmware
                     }
                 }
             }

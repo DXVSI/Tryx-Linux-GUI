@@ -1,5 +1,6 @@
 #include "appsettingscontroller.h"
 #include "devicemediaworkflowcontroller.h"
+#include "firmwarecontroller.h"
 #include "linuxtraycontroller.h"
 #include "mediaeditorcontroller.h"
 #include "mediapreviewcontroller.h"
@@ -29,9 +30,9 @@
 namespace {
 
 void configureApplicationIdentity(QCoreApplication &app) {
-    // Keep this identity byte-for-byte aligned with the daemon and Widgets
-    // client. AppLocalDataLocation contains the shared, read-only thumbnail
-    // catalog consumed by MediaCatalogModel.
+    // Keep this identity byte-for-byte aligned with the runtime.
+    // AppLocalDataLocation contains the shared, read-only thumbnail catalog
+    // consumed by MediaCatalogModel.
     app.setApplicationName(QStringLiteral("TRYX Panorama Manager"));
     app.setApplicationVersion(QStringLiteral(TRYX_APP_VERSION));
     app.setOrganizationName(QStringLiteral("DXVSI"));
@@ -154,6 +155,7 @@ int main(int argc, char *argv[]) {
     MediaEditorController mediaEditor(&runtime);
     DeviceMediaWorkflowController deviceMedia(
         &runtime, &mediaEditor);
+    FirmwareController firmware;
     SystemMetricsModel systemMetrics;
     AppSettingsController settings(smokeTest);
     WindowChromeController windowChrome;
@@ -191,12 +193,13 @@ int main(int argc, char *argv[]) {
     QObject::connect(
         &settings, &AppSettingsController::languageChanged,
         &engine,
-        [&app, &translator, &settings, &engine, &runtime,
+        [&app, &translator, &settings, &engine, &runtime, &firmware,
          &updateTrayPresentation]() {
             applyLanguage(
                 app, translator, settings.language());
             engine.retranslate();
             runtime.retranslate();
+            firmware.retranslate();
             updateTrayPresentation();
         });
     engine.setInitialProperties({
@@ -206,6 +209,8 @@ int main(int argc, char *argv[]) {
          QVariant::fromValue(static_cast<QObject *>(&mediaEditor))},
         {QStringLiteral("deviceMedia"),
          QVariant::fromValue(static_cast<QObject *>(&deviceMedia))},
+        {QStringLiteral("firmware"),
+         QVariant::fromValue(static_cast<QObject *>(&firmware))},
         {QStringLiteral("systemMetrics"),
          QVariant::fromValue(
              static_cast<QObject *>(&systemMetrics))},

@@ -2,11 +2,14 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import "../components"
+
 ScrollView {
     id: root
 
     required property var runtime
     required property var settings
+    required property var firmware
 
     clip: true
 
@@ -84,6 +87,12 @@ ScrollView {
                     }
                 }
             }
+        }
+
+        FirmwarePanel {
+            objectName: "firmwarePanel"
+            Layout.fillWidth: true
+            controller: root.firmware
         }
 
         Frame {
@@ -191,6 +200,97 @@ ScrollView {
 
                 GridLayout {
                     Layout.fillWidth: true
+                    columns: 3
+                    columnSpacing: 16
+                    rowSpacing: 10
+
+                    Label {
+                        text: qsTr("Legacy serial port")
+                        color: "#9ca4ac"
+                    }
+
+                    ComboBox {
+                        id: serialPortCombo
+
+                        objectName: "serialPortCombo"
+                        Layout.fillWidth: true
+                        model: [qsTr("Auto")].concat(
+                                   root.settings.serialPorts)
+                        currentIndex: {
+                            if (root.settings.devicePort.length === 0)
+                                return 0
+                            const portIndex =
+                                root.settings.serialPorts.indexOf(
+                                    root.settings.devicePort)
+                            return portIndex < 0 ? 0 : portIndex + 1
+                        }
+                        onActivated: index => {
+                            root.settings.setDevicePort(
+                                index === 0
+                                ? ""
+                                : root.settings.serialPorts[index - 1])
+                        }
+                    }
+
+                    Button {
+                        text: qsTr("Rescan ports")
+                        onClicked: root.settings.refreshSerialPorts()
+                    }
+
+                    Label {
+                        text: qsTr("Keepalive interval")
+                        color: "#9ca4ac"
+                    }
+
+                    SpinBox {
+                        id: keepaliveSpin
+
+                        objectName: "keepaliveSpin"
+                        from: 5
+                        to: 60
+                        value: root.settings.keepaliveInterval
+                        editable: true
+                        textFromValue: value => qsTr("%1 s").arg(value)
+                        valueFromText: text => {
+                            const parsed = parseInt(text)
+                            return isNaN(parsed)
+                                   ? root.settings.keepaliveInterval
+                                   : parsed
+                        }
+                        onValueModified:
+                            root.settings.setKeepaliveInterval(value)
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Used by legacy serial/ADB devices. PASE printer-class devices are detected automatically.")
+                        color: "#7f8991"
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Button {
+                        objectName: "reconnectDeviceButton"
+                        text: qsTr("Reconnect")
+                        enabled: root.runtime.serviceAvailable &&
+                                 !root.runtime.operationBusy
+                        onClicked: {
+                            root.runtime.disconnectDevice()
+                            root.runtime.connectDevice(
+                                root.settings.devicePort)
+                            root.runtime.startKeepalive(
+                                root.settings.keepaliveInterval)
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: "#343b42"
+                }
+
+                GridLayout {
+                    Layout.fillWidth: true
                     columns: 2
                     columnSpacing: 24
                     rowSpacing: 12
@@ -218,6 +318,22 @@ ScrollView {
                               ? qsTr("Detected")
                               : qsTr("Not detected")
                         color: root.runtime.printerClassDevicePresent
+                               ? "#66d18f" : "#efb85f"
+                    }
+
+                    Label {
+                        text: qsTr("Transport")
+                        color: "#9ca4ac"
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: root.runtime.printerClassDevicePresent
+                              ? qsTr("PASE printer class")
+                              : (root.runtime.legacyConnected
+                                 ? qsTr("Legacy serial / ADB")
+                                 : qsTr("Waiting for device"))
+                        color: root.runtime.printerClassDevicePresent ||
+                               root.runtime.legacyConnected
                                ? "#66d18f" : "#efb85f"
                     }
 
@@ -295,7 +411,7 @@ ScrollView {
                     anchors.verticalCenter: parent.verticalCenter
                     text: qsTr("Open GitHub")
                     onClicked: Qt.openUrlExternally(
-                        "https://github.com/DXVSI/tryx-panorama-se-360-linux-gui")
+                        "https://github.com/DXVSI/Tryx-Linux-GUI")
                 }
             }
         }

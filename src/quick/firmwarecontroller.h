@@ -3,6 +3,7 @@
 #include <QDBusConnection>
 #include <QDBusServiceWatcher>
 #include <QObject>
+#include <QUrl>
 #include <QVariantMap>
 
 class FirmwareController final : public QObject {
@@ -13,6 +14,7 @@ class FirmwareController final : public QObject {
     Q_PROPERTY(bool ready READ ready NOTIFY stateChanged)
     Q_PROPERTY(QString packagePath READ packagePath WRITE setPackagePath
                    NOTIFY packagePathChanged)
+    Q_PROPERTY(QUrl homeFolder READ homeFolder CONSTANT)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool validationBusy READ validationBusy NOTIFY stateChanged)
     Q_PROPERTY(bool flashBusy READ flashBusy NOTIFY stateChanged)
@@ -45,6 +47,7 @@ public:
     bool compatible() const;
     bool ready() const;
     QString packagePath() const;
+    QUrl homeFolder() const;
     bool busy() const;
     bool validationBusy() const;
     bool flashBusy() const;

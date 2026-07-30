@@ -52,6 +52,10 @@ private slots:
     void qmlImportScannerFindsResolvedModules();
     void catalogRejectsStaleRevision();
     void catalogExposesDeviceCopyEligibility();
+    void legacyConnectionPopulatesCurrentMediaModel();
+    void legacyScreenConfigKeepsManager1Shape();
+    void legacyTransformBoundaryIsExplicit();
+    void legacyUploadRetainsSourceUntilTerminalSignal();
     void operationsExposeStableRoles();
     void operationsRejectStaleEvents();
     void operationAcknowledgementRequiresExactIdentity();
@@ -910,6 +914,155 @@ void QuickClientTests::catalogExposesDeviceCopyEligibility() {
     QVERIFY(!model.deviceCopyBlockReason(
         presetMedia.mediaId).isEmpty());
     QVERIFY(!model.canStageDeviceCopy(QStringLiteral("missing")));
+}
+
+void QuickClientTests::
+    legacyConnectionPopulatesCurrentMediaModel() {
+    RuntimeClient runtime(true);
+    runtime.serviceAvailable_ = true;
+    runtime.compatible_ = true;
+
+    TryxRuntimeSnapshot snapshot;
+    snapshot.revision = 4;
+    snapshot.connected = true;
+    snapshot.serial = QStringLiteral("LEGACY-1");
+    snapshot.mediaFiles = {
+        QStringLiteral("first.mp4"),
+        QStringLiteral("first.mp4"),
+        QString(),
+        QStringLiteral("second.gif"),
+    };
+    runtime.applyConnectionSnapshot(snapshot);
+
+    QVERIFY(runtime.ready());
+    QVERIFY(runtime.legacyConnected());
+    QVERIFY(runtime.connectionStatus().contains(
+        QStringLiteral("Legacy")));
+    QCOMPARE(runtime.mediaModel()->rowCount(), 2);
+    QCOMPARE(
+        runtime.mediaModel()->deviceIdentity(),
+        QStringLiteral("legacy:LEGACY-1"));
+    const QModelIndex first =
+        runtime.mediaModel()->index(0, 0);
+    QVERIFY(first.data(
+        MediaCatalogModel::DeleteAllowedRole).toBool());
+    QVERIFY(!first.data(
+        MediaCatalogModel::DeviceCopyAllowedRole).toBool());
+    QVERIFY(first.data(
+        MediaCatalogModel::MediaIdRole).toString().isEmpty());
+}
+
+void QuickClientTests::
+    legacyScreenConfigKeepsManager1Shape() {
+    TryxRuntimeApplyRequest request;
+    request.media = {
+        QStringLiteral("left.mp4"),
+        QStringLiteral("right.mp4"),
+    };
+    request.ratio = QStringLiteral("2:1");
+    request.screenMode =
+        QStringLiteral("Screen Splitting");
+    request.playMode = QStringLiteral("Single");
+    request.sysinfoLabels =
+        {QStringLiteral("CPU Temperature")};
+    request.settingsPosition = QStringLiteral("Top");
+    request.settingsColor = QStringLiteral("#dcdcdc");
+    request.settingsAlign = QStringLiteral("Left");
+    request.settingsBadges =
+        {QStringLiteral("CPU Badge")};
+    request.filterOpacity = 12;
+    request.presetId = QStringLiteral("custom");
+    request.sysinfoLabels2 =
+        {QStringLiteral("GPU Temperature")};
+    request.settingsBadges2 =
+        {QStringLiteral("GPU Badge")};
+    request.waterfallMode = true;
+
+    const QVariantList arguments =
+        RuntimeClient::legacyScreenConfigArguments(request);
+    QCOMPARE(arguments.size(), 14);
+    QCOMPARE(arguments.at(0).toStringList(), request.media);
+    QCOMPARE(arguments.at(2).toString(), request.screenMode);
+    QCOMPARE(arguments.at(9).toInt(), request.filterOpacity);
+    QCOMPARE(
+        arguments.at(11).toStringList(),
+        request.sysinfoLabels2);
+    QCOMPARE(arguments.at(13).toBool(), true);
+}
+
+void QuickClientTests::legacyTransformBoundaryIsExplicit() {
+    RuntimeClient runtime(true);
+    runtime.serviceAvailable_ = true;
+    runtime.compatible_ = true;
+    runtime.connection_.revision = 1;
+    runtime.connection_.connected = true;
+
+    TryxRuntimeMediaTransform transform =
+        tryxLegacyFitMediaTransform();
+    transform.mode = QStringLiteral("Fill");
+    const QString operationId =
+        runtime.queueUploadWithTransform(
+            QStringLiteral("/tmp/source.mp4"), transform);
+    QVERIFY(operationId.isEmpty());
+    QVERIFY(runtime.diagnostic().contains(
+        QStringLiteral("default Fit")));
+    QVERIFY(!runtime.operationBusy());
+}
+
+void QuickClientTests::
+    legacyUploadRetainsSourceUntilTerminalSignal() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString sourcePath =
+        QDir(directory.path()).filePath(
+            QStringLiteral("source.mp4"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(
+        QIODevice::WriteOnly | QIODevice::NewOnly));
+    QCOMPARE(source.write("legacy-upload"), qint64(13));
+    source.close();
+    QVERIFY(QFile::setPermissions(
+        sourcePath,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner));
+
+    RuntimeClient runtime(true);
+    runtime.serviceAvailable_ = true;
+    runtime.compatible_ = true;
+    runtime.connection_.revision = 1;
+    runtime.connection_.connected = true;
+
+    QString claimError;
+    const QString operationId =
+        QStringLiteral("legacy-operation");
+    QVERIFY(runtime.claimLegacyUploadSource(
+        operationId, sourcePath, &claimError));
+    QVERIFY(claimError.isEmpty());
+    const QString claimedPath =
+        runtime.legacyUpload_.claimedPath;
+    QVERIFY(QFileInfo::exists(sourcePath));
+    QVERIFY(QFileInfo::exists(claimedPath));
+    QVERIFY(runtime.operationBusy());
+
+    QSignalSpy rejected(
+        &runtime,
+        &RuntimeClient::operationRequestRejected);
+    QSignalSpy accepted(
+        &runtime,
+        &RuntimeClient::operationRequestAccepted);
+    runtime.onLegacyUploadTimeout();
+    QCOMPARE(rejected.count(), 1);
+    QVERIFY(runtime.operationBusy());
+    QVERIFY(QFileInfo::exists(sourcePath));
+    QVERIFY(QFileInfo::exists(claimedPath));
+
+    QVERIFY(QFile::remove(sourcePath));
+    QVERIFY(QFileInfo::exists(claimedPath));
+    runtime.onLegacyMediaUploaded(
+        QStringLiteral("uploaded.mp4"), 2);
+    QVERIFY(!runtime.operationBusy());
+    QVERIFY(!QFileInfo::exists(claimedPath));
+    QCOMPARE(accepted.count(), 0);
 }
 
 void QuickClientTests::operationsExposeStableRoles() {

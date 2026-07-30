@@ -62,7 +62,7 @@ QString previewDirectoryPath() {
         return {};
     }
     return QDir(runtimePath).filePath(
-        QStringLiteral("tryx-panorama-quick/previews"));
+        QStringLiteral("tryx-panorama-manager/previews"));
 }
 
 bool writeAll(QFile *file, const char *data, qint64 size) {

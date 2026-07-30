@@ -5,7 +5,7 @@ TARGET = tryx-panorama-manager
 TEMPLATE = app
 
 !versionAtLeast(QT_VERSION, 6.4.0) {
-    error("tryx-panorama-quick requires Qt 6.4 or newer")
+    error("tryx-panorama-manager requires Qt 6.4 or newer")
 }
 
 VERSION = $$cat($$PWD/VERSION, lines)
@@ -29,6 +29,7 @@ HEADERS += \
     src/mediatransform.h \
     src/quick/appsettingscontroller.h \
     src/quick/devicemediaworkflowcontroller.h \
+    src/quick/firmwarecontroller.h \
     src/quick/linuxtraycontroller.h \
     src/quick/mediacatalogmodel.h \
     src/quick/mediaeditorcontroller.h \
@@ -46,6 +47,7 @@ SOURCES += \
     src/core/config.cpp \
     src/quick/appsettingscontroller.cpp \
     src/quick/devicemediaworkflowcontroller.cpp \
+    src/quick/firmwarecontroller.cpp \
     src/quick/linuxtraycontroller.cpp \
     src/quick/main.cpp \
     src/quick/mediacatalogmodel.cpp \
@@ -64,6 +66,8 @@ QML_FILES = \
     qml/components/MediaEditor.qml \
     qml/components/MediaExportPicker.qml \
     qml/components/MediaFilePicker.qml \
+    qml/components/FirmwareFilePicker.qml \
+    qml/components/FirmwarePanel.qml \
     qml/components/MetricCard.qml \
     qml/components/NavButton.qml \
     qml/components/OperationBanner.qml \

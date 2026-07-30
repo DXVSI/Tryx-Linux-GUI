@@ -17,6 +17,7 @@ HEADERS += \
     ../../src/mediatransform.h \
     ../../src/quick/appsettingscontroller.h \
     ../../src/quick/devicemediaworkflowcontroller.h \
+    ../../src/quick/firmwarecontroller.h \
     ../../src/quick/mediacatalogmodel.h \
     ../../src/quick/mediaeditorcontroller.h \
     ../../src/quick/mediapreviewcontroller.h \
@@ -32,6 +33,7 @@ SOURCES += \
     ../../src/core/config.cpp \
     ../../src/quick/appsettingscontroller.cpp \
     ../../src/quick/devicemediaworkflowcontroller.cpp \
+    ../../src/quick/firmwarecontroller.cpp \
     ../../src/quick/mediacatalogmodel.cpp \
     ../../src/quick/mediaeditorcontroller.cpp \
     ../../src/quick/mediapreviewcontroller.cpp \

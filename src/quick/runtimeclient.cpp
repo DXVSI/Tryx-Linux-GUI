@@ -47,7 +47,7 @@ RuntimeClient::RuntimeClient(bool offline, QObject *parent)
       bus_(offline
                ? QDBusConnection(
                      QStringLiteral(
-                         "tryx-panorama-quick-offline"))
+                         "tryx-panorama-manager-offline"))
                : QDBusConnection::sessionBus()),
       serviceWatcher_(
           tryxRuntimeServiceName(), bus_,
@@ -286,6 +286,23 @@ QString RuntimeClient::queueUploadWithTransform(
         return {};
     }
     const QString operationId = nextOperationId();
+    if (legacyConnected()) {
+        if (!tryxMediaTransformIsLegacyFit(transform)) {
+            setDiagnostic(tr(
+                "Legacy serial/ADB upload supports only the default Fit transform. Reset sizing, rotation, zoom, position and background before uploading."));
+            emit userMessage(diagnostic_, true);
+            return {};
+        }
+        QString claimError;
+        if (!claimLegacyUploadSource(
+                operationId, localPath, &claimError)) {
+            setDiagnostic(claimError);
+            emit userMessage(diagnostic_, true);
+            return {};
+        }
+        beginLegacyUpload(operationId);
+        return operationId;
+    }
     sendOperation(
         QStringLiteral("QueueUploadWithTransform"),
         {operationId, localPath, QVariant::fromValue(transform)},
@@ -554,6 +571,9 @@ void RuntimeClient::refreshMedia() {
     }
     sendVoidCall(tryxRuntimeInterfaceName(),
                  QStringLiteral("RefreshMediaList"));
+    if (legacyConnected()) {
+        return;
+    }
 
     QDBusInterface runtime(
         tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
@@ -576,6 +596,108 @@ void RuntimeClient::refreshMedia() {
                 }
                 mediaModel_.applySnapshot(reply.value());
             });
+}
+
+void RuntimeClient::connectDevice(const QString &port) {
+    if (!manager1Ready(tr("Connect"), false)) {
+        return;
+    }
+    const QString normalized = port.trimmed();
+    if (!normalized.isEmpty() &&
+        (!normalized.startsWith(QStringLiteral("/dev/ttyACM")) ||
+         normalized.contains(QStringLiteral("/../")))) {
+        setDiagnostic(
+            tr("Connect accepts Auto or a /dev/ttyACM device"));
+        emit userMessage(diagnostic_, true);
+        return;
+    }
+    sendVoidCall(tryxRuntimeInterfaceName(),
+                 QStringLiteral("ConnectDevice"),
+                 {normalized});
+}
+
+void RuntimeClient::disconnectDevice() {
+    if (!manager1Ready(tr("Disconnect"))) {
+        return;
+    }
+    sendVoidCall(tryxRuntimeInterfaceName(),
+                 QStringLiteral("DisconnectDevice"));
+}
+
+void RuntimeClient::requestDeviceInfo() {
+    if (!manager1Ready(tr("Device information"))) {
+        return;
+    }
+    sendVoidCall(tryxRuntimeInterfaceName(),
+                 QStringLiteral("RequestDeviceInfo"));
+}
+
+void RuntimeClient::setRotation(int degrees) {
+    if (!manager1Ready(tr("Rotation")) ||
+        !legacyConnected()) {
+        if (ready() && !legacyConnected()) {
+            setDiagnostic(tr(
+                "The legacy rotation command is unavailable for PASE"));
+            emit userMessage(diagnostic_, true);
+        }
+        return;
+    }
+    int normalized = degrees % 360;
+    if (normalized < 0) {
+        normalized += 360;
+    }
+    if ((normalized % 90) != 0) {
+        setDiagnostic(tr(
+            "Legacy rotation must be 0, 90, 180 or 270 degrees"));
+        emit userMessage(diagnostic_, true);
+        return;
+    }
+    sendVoidCall(tryxRuntimeInterfaceName(),
+                 QStringLiteral("SetRotation"),
+                 {normalized});
+}
+
+void RuntimeClient::rebootDevice() {
+    if (!manager1Ready(tr("Reboot")) ||
+        !legacyConnected()) {
+        if (ready() && !legacyConnected()) {
+            setDiagnostic(tr(
+                "The legacy reboot command is unavailable for PASE"));
+            emit userMessage(diagnostic_, true);
+        }
+        return;
+    }
+    sendVoidCall(tryxRuntimeInterfaceName(),
+                 QStringLiteral("RebootDevice"));
+}
+
+void RuntimeClient::startKeepalive(int intervalSec) {
+    if (!manager1Ready(tr("Keepalive")) ||
+        !legacyConnected()) {
+        if (ready() && !legacyConnected()) {
+            setDiagnostic(tr(
+                "Legacy keepalive is unavailable for PASE"));
+            emit userMessage(diagnostic_, true);
+        }
+        return;
+    }
+    sendVoidCall(tryxRuntimeInterfaceName(),
+                 QStringLiteral("StartKeepalive"),
+                 {qBound(5, intervalSec, 60)});
+}
+
+void RuntimeClient::stopKeepalive() {
+    if (!manager1Ready(tr("Keepalive")) ||
+        !legacyConnected()) {
+        if (ready() && !legacyConnected()) {
+            setDiagnostic(tr(
+                "Legacy keepalive is unavailable for PASE"));
+            emit userMessage(diagnostic_, true);
+        }
+        return;
+    }
+    sendVoidCall(tryxRuntimeInterfaceName(),
+                 QStringLiteral("StopKeepalive"));
 }
 
 void RuntimeClient::applyFullScreen(
@@ -608,6 +730,10 @@ void RuntimeClient::applyFullScreen(
     const TryxRuntimeApplyRequest request =
         fullScreenApplyRequest(
             media, playMode, metrics, badges);
+    if (legacyConnected()) {
+        sendLegacyScreenConfig(request);
+        return;
+    }
     const QString operationId = nextOperationId();
     sendOperation(QStringLiteral("QueueApplyWithMetrics"),
                   {operationId, QVariant::fromValue(request)},
@@ -659,6 +785,10 @@ void RuntimeClient::applySplitScreen(
         splitScreenApplyRequest(
             leftMedia, rightMedia, leftMetrics, rightMetrics,
             leftBadges, rightBadges);
+    if (legacyConnected()) {
+        sendLegacyScreenConfig(request);
+        return;
+    }
     const QString operationId = nextOperationId();
     sendOperation(QStringLiteral("QueueApplyWithMetrics"),
                   {operationId, QVariant::fromValue(request)},
@@ -674,6 +804,19 @@ void RuntimeClient::deleteMedia(const QStringList &media) {
         emit userMessage(diagnostic_, true);
         return;
     }
+    if (legacyConnected()) {
+        if (!mediaModel_.canDelete(media.constFirst())) {
+            setDiagnostic(
+                mediaModel_.deleteBlockReason(
+                    media.constFirst()));
+            emit userMessage(diagnostic_, true);
+            return;
+        }
+        sendVoidCall(tryxRuntimeInterfaceName(),
+                     QStringLiteral("DeleteMedia"),
+                     {media});
+        return;
+    }
     const QString operationId = nextOperationId();
     sendOperation(QStringLiteral("QueueDeleteMedia"),
                   {operationId, media}, operationId,
@@ -681,6 +824,12 @@ void RuntimeClient::deleteMedia(const QStringList &media) {
 }
 
 void RuntimeClient::cancelActiveOperation() {
+    if (legacyUpload_.active()) {
+        setDiagnostic(tr(
+            "A legacy upload cannot be cancelled safely while the device worker owns the protected source"));
+        emit userMessage(diagnostic_, true);
+        return;
+    }
     if (!compatible_ || activeOperationId_.isEmpty()) {
         return;
     }
@@ -711,6 +860,12 @@ void RuntimeClient::configureMetrics(
     if (!mutationReady(tr("Metrics"))) {
         return;
     }
+    if (legacyConnected()) {
+        setDiagnostic(tr(
+            "Legacy overlay metrics are applied together with the display layout"));
+        emit userMessage(diagnostic_, true);
+        return;
+    }
     TryxRuntimeMetricsConfigRequest request;
     QString validationError;
     if (!metricsConfigRequest(
@@ -727,6 +882,15 @@ void RuntimeClient::configureMetrics(
 }
 
 void RuntimeClient::setBrightness(int value) {
+    if (legacyConnected()) {
+        if (!mutationReady(tr("Brightness"))) {
+            return;
+        }
+        sendVoidCall(tryxRuntimeInterfaceName(),
+                     QStringLiteral("SetBrightness"),
+                     {qBound(0, value, 100)});
+        return;
+    }
     TryxRuntimeDisplayMutation mutation;
     mutation.brightnessPresent = true;
     mutation.brightness = qBound(0, value, 100);
@@ -734,6 +898,13 @@ void RuntimeClient::setBrightness(int value) {
 }
 
 void RuntimeClient::setBacklight(bool enabled) {
+    if (legacyConnected()) {
+        Q_UNUSED(enabled);
+        setDiagnostic(tr(
+            "Display backlight control is unavailable on the legacy protocol"));
+        emit userMessage(diagnostic_, true);
+        return;
+    }
     TryxRuntimeDisplayMutation mutation;
     mutation.backlightPresent = true;
     mutation.backlightEnabled = enabled;
@@ -741,6 +912,14 @@ void RuntimeClient::setBacklight(bool enabled) {
 }
 
 void RuntimeClient::setOrientation(bool mirror, bool waterfall) {
+    if (legacyConnected()) {
+        Q_UNUSED(mirror);
+        Q_UNUSED(waterfall);
+        setDiagnostic(tr(
+            "Use the legacy rotation control for a serial/ADB device"));
+        emit userMessage(diagnostic_, true);
+        return;
+    }
     TryxRuntimeDisplayMutation mutation;
     mutation.orientationPresent = true;
     mutation.mirrorMode = mirror;
@@ -765,6 +944,11 @@ void RuntimeClient::onServiceRegistered(const QString &) {
 
 void RuntimeClient::onServiceUnregistered(const QString &) {
     ++serviceEpoch_;
+    if (legacyUpload_.active()) {
+        rejectLegacyUpload(
+            tr("Runtime service stopped during the legacy upload"),
+            true);
+    }
     emit runtimeInvalidated();
     clearRuntimeState();
     serviceAvailable_ = false;
@@ -838,6 +1022,11 @@ void RuntimeClient::onDeviceDisconnected(quint64) {
     if (!compatible_) {
         return;
     }
+    if (legacyUpload_.active()) {
+        rejectLegacyUpload(
+            tr("The legacy device disconnected during upload"),
+            true);
+    }
     refreshConnection();
 }
 
@@ -845,8 +1034,101 @@ void RuntimeClient::onDeviceError(QString message, quint64) {
     if (!compatible_) {
         return;
     }
+    if (legacyUpload_.active()) {
+        rejectLegacyUpload(message, true);
+    }
     setDiagnostic(message);
     refreshConnection();
+}
+
+void RuntimeClient::onLegacyBrightnessChanged(
+    int value, quint64 revision) {
+    if (!compatible_ || !legacyConnected()) {
+        return;
+    }
+    display_.revision =
+        qMax(display_.revision + 1, revision);
+    display_.valid = true;
+    display_.brightness = qBound(0, value, 100);
+    emit displayChanged();
+}
+
+void RuntimeClient::onLegacyScreenConfigChanged(
+    quint64 revision) {
+    if (!compatible_ || !legacyConnected() ||
+        !pendingLegacyScreenConfigValid_) {
+        return;
+    }
+    const TryxRuntimeApplyRequest request =
+        pendingLegacyScreenConfig_;
+    pendingLegacyScreenConfigValid_ = false;
+    display_.revision =
+        qMax(display_.revision + 1, revision);
+    display_.valid = true;
+    display_.screenMode = request.screenMode;
+    display_.playMode = request.playMode;
+    display_.media = request.media;
+    display_.sysinfoLabels = request.sysinfoLabels;
+    display_.settingsBadges = request.settingsBadges;
+    display_.settingsPosition = request.settingsPosition;
+    display_.settingsColor = request.settingsColor;
+    display_.settingsAlign = request.settingsAlign;
+    display_.sysinfoLabels2 = request.sysinfoLabels2;
+    display_.settingsBadges2 = request.settingsBadges2;
+    display_.waterfallMode = request.waterfallMode;
+    emit displayChanged();
+}
+
+void RuntimeClient::onLegacyMediaUploaded(
+    QString filename, quint64) {
+    if (!compatible_ || !legacyUpload_.active()) {
+        return;
+    }
+    finishLegacyUpload(filename);
+    refreshMedia();
+}
+
+void RuntimeClient::onLegacyMediaDeleted(quint64) {
+    if (compatible_ && legacyConnected()) {
+        refreshMedia();
+    }
+}
+
+void RuntimeClient::onLegacyMediaListUpdated(
+    QStringList files, quint64 revision) {
+    if (!compatible_ || !legacyConnected()) {
+        return;
+    }
+    mediaModel_.applyLegacyFiles(
+        files, revision, legacyDeviceIdentity());
+}
+
+void RuntimeClient::onLegacyUploadStatus(
+    QString status, quint64) {
+    if (!compatible_ || status.trimmed().isEmpty()) {
+        return;
+    }
+    setDiagnostic(status);
+    if (legacyUpload_.active()) {
+        emit operationChanged();
+    }
+}
+
+void RuntimeClient::onLegacyUploadTimeout() {
+    if (!legacyUpload_.active() ||
+        legacyUpload_.rejectionEmitted) {
+        return;
+    }
+    legacyUpload_.rejectionEmitted = true;
+    const QString operationId =
+        legacyUpload_.operationId;
+    const QString error = tr(
+        "Legacy upload timed out. The protected source is retained until the device worker reports a terminal result.");
+    setDiagnostic(error);
+    emit operationRequestRejected(
+        operationId, QStringLiteral("Upload"), error);
+    emit userMessage(error, true);
+    emit operationChanged();
 }
 
 void RuntimeClient::onPrinterPresenceChanged(
@@ -907,6 +1189,30 @@ void RuntimeClient::subscribeSignals() {
     ok &= bus_.connect(
         service, path, manager1, QStringLiteral("DeviceError"),
         this, SLOT(onDeviceError(QString,quint64)));
+    ok &= bus_.connect(
+        service, path, manager1,
+        QStringLiteral("BrightnessChanged"), this,
+        SLOT(onLegacyBrightnessChanged(int,quint64)));
+    ok &= bus_.connect(
+        service, path, manager1,
+        QStringLiteral("ScreenConfigChanged"), this,
+        SLOT(onLegacyScreenConfigChanged(quint64)));
+    ok &= bus_.connect(
+        service, path, manager1,
+        QStringLiteral("MediaUploaded"), this,
+        SLOT(onLegacyMediaUploaded(QString,quint64)));
+    ok &= bus_.connect(
+        service, path, manager1,
+        QStringLiteral("MediaDeleted"), this,
+        SLOT(onLegacyMediaDeleted(quint64)));
+    ok &= bus_.connect(
+        service, path, manager1,
+        QStringLiteral("MediaListUpdated"), this,
+        SLOT(onLegacyMediaListUpdated(QStringList,quint64)));
+    ok &= bus_.connect(
+        service, path, manager1,
+        QStringLiteral("UploadStatus"), this,
+        SLOT(onLegacyUploadStatus(QString,quint64)));
     ok &= bus_.connect(
         service, path, manager1,
         QStringLiteral("PrinterPresenceChanged"), this,
@@ -973,6 +1279,8 @@ void RuntimeClient::clearRuntimeState() {
     display_ = {};
     activeOperationId_.clear();
     activeOperation_ = {};
+    pendingLegacyScreenConfig_ = {};
+    pendingLegacyScreenConfigValid_ = false;
     mediaModel_.clear();
     operationModel_.clear();
     emit connectionChanged();
@@ -1091,6 +1399,12 @@ bool RuntimeClient::mutationReady(const QString &action) {
     if (!serviceAvailable_ || !compatible_) {
         setDiagnostic(tr("%1 is unavailable because the runtime is not ready")
                           .arg(action));
+    } else if (legacyConnected()) {
+        if (!operationBusy()) {
+            return true;
+        }
+        setDiagnostic(tr("%1 is blocked while another operation is active")
+                          .arg(action));
     } else if (!connection_.printerClassDevicePresent) {
         setDiagnostic(tr("%1 requires a PASE printer-class device")
                           .arg(action));
@@ -1106,6 +1420,34 @@ bool RuntimeClient::mutationReady(const QString &action) {
     }
     emit userMessage(diagnostic_, true);
     return false;
+}
+
+bool RuntimeClient::manager1Ready(
+    const QString &action, bool requireConnected) {
+    if (!serviceAvailable_ || !compatible_) {
+        setDiagnostic(
+            tr("%1 is unavailable because the runtime is not ready")
+                .arg(action));
+    } else if (requireConnected &&
+               !connection_.connected) {
+        setDiagnostic(
+            tr("%1 requires a connected TRYX device")
+                .arg(action));
+    } else {
+        return true;
+    }
+    emit userMessage(diagnostic_, true);
+    return false;
+}
+
+QString RuntimeClient::legacyDeviceIdentity() const {
+    const QString identity =
+        !connection_.serial.trimmed().isEmpty()
+        ? connection_.serial.trimmed()
+        : connection_.productId.trimmed();
+    return identity.isEmpty()
+        ? QStringLiteral("legacy")
+        : QStringLiteral("legacy:%1").arg(identity);
 }
 
 QString RuntimeClient::nextOperationId() const {
@@ -1255,6 +1597,255 @@ void RuntimeClient::sendVoidCall(
                     emit userMessage(diagnostic_, true);
                 }
             });
+}
+
+void RuntimeClient::sendLegacyScreenConfig(
+    const TryxRuntimeApplyRequest &request) {
+    pendingLegacyScreenConfig_ = request;
+    pendingLegacyScreenConfigValid_ = true;
+    sendVoidCall(
+        tryxRuntimeInterfaceName(),
+        QStringLiteral("SetScreenConfig"),
+        legacyScreenConfigArguments(request));
+}
+
+QVariantList RuntimeClient::legacyScreenConfigArguments(
+    const TryxRuntimeApplyRequest &request) {
+    return {
+        request.media,
+        request.ratio,
+        request.screenMode,
+        request.playMode,
+        request.sysinfoLabels,
+        request.settingsPosition,
+        request.settingsColor,
+        request.settingsAlign,
+        request.settingsBadges,
+        request.filterOpacity,
+        request.presetId,
+        request.sysinfoLabels2,
+        request.settingsBadges2,
+        request.waterfallMode,
+    };
+}
+
+bool RuntimeClient::claimLegacyUploadSource(
+    const QString &operationId, const QString &sourcePath,
+    QString *errorMessage) {
+    if (legacyUpload_.active()) {
+        if (errorMessage) {
+            *errorMessage = tr(
+                "Wait for the current legacy upload to finish");
+        }
+        return false;
+    }
+
+    const QFileInfo info(sourcePath);
+    const QString absolutePath = info.absoluteFilePath();
+    const QByteArray encoded = QFile::encodeName(absolutePath);
+    struct stat status {};
+    if (operationId.isEmpty() || !info.exists() ||
+        !info.isFile() || info.isSymLink() ||
+        info.suffix().isEmpty() ||
+        ::lstat(encoded.constData(), &status) != 0 ||
+        !S_ISREG(status.st_mode) ||
+        status.st_uid != ::geteuid() ||
+        (status.st_mode & 07777) !=
+            (S_IRUSR | S_IWUSR) ||
+        status.st_nlink != 1 || status.st_size <= 0) {
+        if (errorMessage) {
+            *errorMessage = tr(
+                "The private legacy upload source is not a safe regular file");
+        }
+        return false;
+    }
+
+    const QString claimedName =
+        QStringLiteral("%1-legacy-%2.%3")
+            .arg(info.completeBaseName(), operationId,
+                 info.suffix().toLower());
+    const QString claimedPath =
+        info.dir().filePath(claimedName);
+    const QByteArray encodedClaim =
+        QFile::encodeName(claimedPath);
+    if (::link(encoded.constData(),
+               encodedClaim.constData()) != 0) {
+        if (errorMessage) {
+            *errorMessage = tr(
+                "Could not protect the legacy upload source: %1")
+                                .arg(QString::fromLocal8Bit(
+                                    std::strerror(errno)));
+        }
+        return false;
+    }
+
+    struct stat claimedStatus {};
+    if (::lstat(encodedClaim.constData(),
+                &claimedStatus) != 0 ||
+        !S_ISREG(claimedStatus.st_mode) ||
+        claimedStatus.st_dev != status.st_dev ||
+        claimedStatus.st_ino != status.st_ino ||
+        claimedStatus.st_nlink < 2) {
+        ::unlink(encodedClaim.constData());
+        if (errorMessage) {
+            *errorMessage = tr(
+                "The protected legacy upload source could not be verified");
+        }
+        return false;
+    }
+
+    legacyUpload_.operationId = operationId;
+    legacyUpload_.sourcePath = absolutePath;
+    legacyUpload_.claimedPath = claimedPath;
+    legacyUpload_.device =
+        static_cast<quint64>(status.st_dev);
+    legacyUpload_.inode =
+        static_cast<quint64>(status.st_ino);
+    legacyUpload_.epoch = serviceEpoch_;
+    legacyUpload_.rejectionEmitted = false;
+    if (errorMessage) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+void RuntimeClient::beginLegacyUpload(
+    const QString &operationId) {
+    if (!legacyUpload_.active() ||
+        legacyUpload_.operationId != operationId) {
+        return;
+    }
+
+    QDBusMessage message = QDBusMessage::createMethodCall(
+        tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
+        tryxRuntimeInterfaceName(),
+        QStringLiteral("UploadMedia"));
+    message.setArguments({legacyUpload_.claimedPath});
+    const quint64 epoch = legacyUpload_.epoch;
+    auto *watcher = new QDBusPendingCallWatcher(
+        bus_.asyncCall(message, kRuntimeCallTimeoutMs), this);
+    legacyUploadDeadline_.start();
+    emit operationChanged();
+    connect(
+        watcher, &QDBusPendingCallWatcher::finished, this,
+        [this, watcher, operationId, epoch]() {
+            const QDBusPendingReply<> reply = *watcher;
+            watcher->deleteLater();
+            if (!legacyUpload_.active() ||
+                legacyUpload_.operationId != operationId ||
+                legacyUpload_.epoch != epoch ||
+                epoch != serviceEpoch_) {
+                return;
+            }
+            if (!reply.isValid()) {
+                rejectLegacyUpload(
+                    reply.error().message(), true);
+                return;
+            }
+            setDiagnostic(tr(
+                "Waiting for the legacy device to finish the upload"));
+            emit operationChanged();
+        });
+}
+
+void RuntimeClient::finishLegacyUpload(
+    const QString &filename) {
+    if (!legacyUpload_.active()) {
+        return;
+    }
+    const QString operationId =
+        legacyUpload_.operationId;
+    const bool alreadyRejected =
+        legacyUpload_.rejectionEmitted;
+    clearLegacyUpload(true, true);
+    if (alreadyRejected) {
+        setDiagnostic(tr(
+            "The legacy upload completed after the client timeout"));
+        emit userMessage(diagnostic_, false);
+        return;
+    }
+    setDiagnostic({});
+    emit operationRequestAccepted(
+        operationId, QStringLiteral("Upload"));
+    emit userMessage(
+        filename.trimmed().isEmpty()
+            ? tr("Legacy upload completed")
+            : tr("Legacy upload completed: %1").arg(filename),
+        false);
+}
+
+void RuntimeClient::rejectLegacyUpload(
+    const QString &message, bool restoreSource) {
+    if (!legacyUpload_.active()) {
+        return;
+    }
+    const QString operationId =
+        legacyUpload_.operationId;
+    const bool alreadyRejected =
+        legacyUpload_.rejectionEmitted;
+    if (restoreSource &&
+        !fileIdentityMatches(
+            legacyUpload_.sourcePath,
+            legacyUpload_.device,
+            legacyUpload_.inode) &&
+        fileIdentityMatches(
+            legacyUpload_.claimedPath,
+            legacyUpload_.device,
+            legacyUpload_.inode)) {
+        const QByteArray claimed =
+            QFile::encodeName(legacyUpload_.claimedPath);
+        const QByteArray source =
+            QFile::encodeName(legacyUpload_.sourcePath);
+        ::link(claimed.constData(), source.constData());
+    }
+    clearLegacyUpload(false, true);
+    const QString error = message.trimmed().isEmpty()
+        ? tr("Legacy upload failed")
+        : message.trimmed();
+    setDiagnostic(error);
+    if (!alreadyRejected) {
+        emit operationRequestRejected(
+            operationId, QStringLiteral("Upload"), error);
+        emit userMessage(error, true);
+    }
+}
+
+void RuntimeClient::clearLegacyUpload(
+    bool removeSource, bool removeClaim) {
+    if (!legacyUpload_.active()) {
+        return;
+    }
+    const LegacyUploadState state = legacyUpload_;
+    legacyUploadDeadline_.stop();
+    legacyUpload_ = {};
+    if (removeSource) {
+        removeFileIfIdentityMatches(
+            state.sourcePath, state.device, state.inode);
+    }
+    if (removeClaim) {
+        removeFileIfIdentityMatches(
+            state.claimedPath, state.device, state.inode);
+    }
+    emit operationChanged();
+}
+
+bool RuntimeClient::fileIdentityMatches(
+    const QString &path, quint64 device, quint64 inode) {
+    const QByteArray encoded = QFile::encodeName(path);
+    struct stat status {};
+    return ::lstat(encoded.constData(), &status) == 0 &&
+           S_ISREG(status.st_mode) &&
+           static_cast<quint64>(status.st_dev) == device &&
+           static_cast<quint64>(status.st_ino) == inode;
+}
+
+void RuntimeClient::removeFileIfIdentityMatches(
+    const QString &path, quint64 device, quint64 inode) {
+    if (!fileIdentityMatches(path, device, inode)) {
+        return;
+    }
+    const QByteArray encoded = QFile::encodeName(path);
+    ::unlink(encoded.constData());
 }
 
 TryxRuntimeApplyRequest RuntimeClient::baseApplyRequest() const {
@@ -1461,7 +2052,24 @@ void RuntimeClient::applyConnectionSnapshot(
         connection_.revision != 0) {
         return;
     }
+    const bool wasLegacy = legacyConnected();
+    const QString oldIdentity =
+        wasLegacy ? legacyDeviceIdentity()
+                  : mediaModel_.deviceIdentity();
     connection_ = snapshot;
+    const bool isLegacy = legacyConnected();
+    const QString newIdentity =
+        isLegacy ? legacyDeviceIdentity() : QString();
+    if (wasLegacy != isLegacy ||
+        (isLegacy && oldIdentity != newIdentity) ||
+        !snapshot.connected) {
+        mediaModel_.clear();
+    }
+    if (isLegacy) {
+        mediaModel_.applyLegacyFiles(
+            snapshot.mediaFiles, snapshot.revision,
+            newIdentity);
+    }
     if (!snapshot.diagnostic.isEmpty()) {
         setDiagnostic(snapshot.diagnostic);
     }

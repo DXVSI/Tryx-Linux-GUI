@@ -6,7 +6,6 @@ Frame {
     id: root
 
     required property var controller
-    property string selectedPath: ""
 
     padding: 22
 
@@ -47,12 +46,6 @@ Frame {
         default:
             return qsTr("Unavailable")
         }
-    }
-
-    onSelectedPathChanged: {
-        if (selectedPath.length > 0 &&
-                selectedPath !== controller.packagePath)
-            controller.setPackagePath(selectedPath)
     }
 
     background: Rectangle {
@@ -119,6 +112,7 @@ Frame {
             TextField {
                 id: packagePathField
 
+                objectName: "firmwarePackagePath"
                 Layout.fillWidth: true
                 placeholderText: qsTr("/path/to/firmware.zip")
                 text: root.controller.packagePath
@@ -126,6 +120,13 @@ Frame {
                 enabled: !root.controller.busy
                 onTextEdited:
                     root.controller.setPackagePath(text)
+            }
+
+            Button {
+                objectName: "firmwareChooseButton"
+                text: qsTr("Choose…")
+                enabled: !root.controller.busy
+                onClicked: firmwareFilePicker.openPicker()
             }
 
             Button {
@@ -287,6 +288,11 @@ Frame {
                     root.controller.requestFlashConfirmation()
             }
         }
+    }
+
+    FirmwareFilePicker {
+        id: firmwareFilePicker
+        controller: root.controller
     }
 
     Dialog {

@@ -6,6 +6,8 @@
 #include <QDBusInterface>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QStandardPaths>
+#include <QUrl>
 
 namespace {
 
@@ -60,6 +62,12 @@ bool FirmwareController::ready() const {
 
 QString FirmwareController::packagePath() const {
     return packagePath_;
+}
+
+QUrl FirmwareController::homeFolder() const {
+    return QUrl::fromLocalFile(
+        QStandardPaths::writableLocation(
+            QStandardPaths::HomeLocation));
 }
 
 bool FirmwareController::busy() const {
@@ -148,7 +156,11 @@ QString FirmwareController::errorMessage() const {
 
 void FirmwareController::setPackagePath(
     const QString &path) {
-    const QString normalized = path.trimmed();
+    QString normalized = path.trimmed();
+    const QUrl url(normalized);
+    if (url.isLocalFile()) {
+        normalized = url.toLocalFile();
+    }
     if (packagePath_ == normalized) {
         return;
     }
