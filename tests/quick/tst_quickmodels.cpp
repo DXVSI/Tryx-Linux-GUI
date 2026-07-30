@@ -1364,12 +1364,29 @@ void QuickClientTests::
     {
         AppSettingsController settings(true);
         QCOMPARE(settings.language(), QStringLiteral("ru"));
+        QCOMPARE(
+            settings.devicePort(),
+            QString::fromStdString(config.port));
+        QCOMPARE(
+            settings.keepaliveInterval(),
+            config.keepalive_interval);
         QSignalSpy languageChanged(
             &settings,
             &AppSettingsController::languageChanged);
+        QSignalSpy deviceSettingsChanged(
+            &settings,
+            &AppSettingsController::deviceSettingsChanged);
         settings.setLanguage(QStringLiteral("en"));
+        settings.setDevicePort(
+            QStringLiteral("/dev/ttyACM9"));
+        settings.setKeepaliveInterval(41);
         QCOMPARE(settings.language(), QStringLiteral("en"));
+        QCOMPARE(
+            settings.devicePort(),
+            QStringLiteral("/dev/ttyACM9"));
+        QCOMPARE(settings.keepaliveInterval(), 41);
         QCOMPARE(languageChanged.count(), 1);
+        QCOMPARE(deviceSettingsChanged.count(), 2);
         QVERIFY(settings.errorMessage().isEmpty());
     }
 
@@ -1377,10 +1394,9 @@ void QuickClientTests::
         panorama::ConfigManager::load_config();
     QVERIFY(saved.has_value());
     QCOMPARE(saved->language, std::string("en"));
-    QCOMPARE(saved->port, config.port);
+    QCOMPARE(saved->port, std::string("/dev/ttyACM9"));
     QCOMPARE(saved->brightness, config.brightness);
-    QCOMPARE(saved->keepalive_interval,
-             config.keepalive_interval);
+    QCOMPARE(saved->keepalive_interval, 41);
     QCOMPARE(saved->pase_overlay_lease_mode,
              config.pase_overlay_lease_mode);
 

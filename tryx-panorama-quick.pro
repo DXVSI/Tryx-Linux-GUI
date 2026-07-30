@@ -78,6 +78,7 @@ QML_FILES = \
     qml/pages/SettingsPage.qml
 
 QML_TEST_FILES = \
+    tests/quick/qml/tst_firmwarefilepickerlayout.qml \
     tests/quick/qml/tst_homepagelayout.qml \
     tests/quick/qml/tst_mediaeditorlayout.qml \
     tests/quick/qml/tst_mediaexportpickerlayout.qml \
