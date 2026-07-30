@@ -53,6 +53,16 @@ bool versionRequested(int argc, char *argv[]) {
     return false;
 }
 
+bool smokeTestRequested(int argc, char *argv[]) {
+    for (int index = 1; index < argc; ++index) {
+        if (QString::fromLocal8Bit(argv[index]) ==
+            QStringLiteral("--smoke-test")) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void configureApplicationIdentity(QCoreApplication &app) {
     app.setApplicationName(QStringLiteral("TRYX Panorama Manager"));
     app.setApplicationVersion(QStringLiteral(TRYX_APP_VERSION));
@@ -311,8 +321,18 @@ int runDaemon(QCoreApplication &app) {
         return 2;
     }
 
+    // Acquire the singleton name before DeviceManager startup. Its
+    // constructor removes orphaned daemon-owned media spool files, starts the
+    // device monitor and may otherwise touch local runtime state. A second
+    // --daemon process must fail before any of those actions can run.
+    if (!bus.registerService(tryxRuntimeServiceName())) {
+        qCritical() << "Failed to acquire TRYX D-Bus service name:"
+                    << bus.lastError().message();
+        return 4;
+    }
+
     DeviceManager manager;
-    QObject exportedObject;
+    TryxRuntimeExportedObject exportedObject;
     TryxRuntimeManagerAdaptor adaptor(&exportedObject, &manager);
     TryxRuntimeOperationsAdaptor operationsAdaptor(
         &exportedObject, &manager, &adaptor);
@@ -320,13 +340,8 @@ int runDaemon(QCoreApplication &app) {
                             QDBusConnection::ExportAdaptors)) {
         qCritical() << "Failed to register TRYX D-Bus object:"
                     << bus.lastError().message();
+        bus.unregisterService(tryxRuntimeServiceName());
         return 3;
-    }
-    if (!bus.registerService(tryxRuntimeServiceName())) {
-        qCritical() << "Failed to acquire TRYX D-Bus service name:"
-                    << bus.lastError().message();
-        bus.unregisterObject(tryxRuntimeObjectPath());
-        return 4;
     }
 
     QObject::connect(&manager, &DeviceManager::deviceError,
@@ -365,7 +380,7 @@ bool notifyRunningInstance(const QString &path) {
 QString configuredLanguage() {
     auto config = panorama::ConfigManager::load_config();
     if (!config) {
-        return "system";
+        return "en";
     }
     return QString::fromStdString(config->language);
 }
@@ -422,6 +437,10 @@ int main(int argc, char *argv[]) {
     configureApplicationIdentity(app);
     app.setWindowIcon(QIcon(":/tryx-panorama.png"));
     app.setDesktopFileName("tryx-panorama-manager");
+
+    if (smokeTestRequested(argc, argv)) {
+        return 0;
+    }
 
     QTranslator translator;
     QString activeLanguage = configuredLanguage();

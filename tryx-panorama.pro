@@ -62,7 +62,7 @@ protobuf_source.dependency_type = TYPE_C
 QMAKE_EXTRA_COMPILERS += protobuf_header protobuf_source
 
 protocol_tests.target = check
-protocol_tests.commands = sh $$shell_path($$PWD/tests/check_no_bundled_video.sh) && cd $$shell_path($$PWD/tests) && $$QMAKE_QMAKE printerprotocol_tests.pro && $(MAKE) && $$shell_path($$PWD/build/tests/printerprotocol-tests)
+protocol_tests.commands = sh $$shell_path($$PWD/tests/check_no_bundled_video.sh) && cd $$shell_path($$PWD/tests) && $$QMAKE_QMAKE printerprotocol_tests.pro && $(MAKE) && $$shell_path($$PWD/build/tests/printerprotocol-tests) && $$QMAKE_QMAKE replacejournal_tests.pro && $(MAKE) && $$shell_path($$PWD/build/replacejournal-tests/replacejournal-tests)
 QMAKE_EXTRA_TARGETS += protocol_tests
 
 # Build output
@@ -87,7 +87,10 @@ HEADERS += \
     src/panoramapage.h \
     src/displaypage.h \
     src/firmwareupdater.h \
+    src/mediatransform.h \
     src/printerprotocol.h \
+    src/replacejournal.h \
+    src/runtimecontract.h \
     src/runtimebridge.h \
     src/settingspage.h \
     src/traymanager.h \
@@ -102,7 +105,10 @@ SOURCES += \
     src/panoramapage.cpp \
     src/displaypage.cpp \
     src/firmwareupdater.cpp \
+    src/mediatransform.cpp \
     src/printerprotocol.cpp \
+    src/replacejournal.cpp \
+    src/runtimecontract.cpp \
     src/runtimebridge.cpp \
     src/settingspage.cpp \
     src/traymanager.cpp \

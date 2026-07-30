@@ -1,3 +1,7 @@
 .qmake.stash
 Makefile
+Makefile.quick
+Makefile.widgets
 tests/Makefile
+tests/quick/Makefile
+tests/quick/target_wrapper.sh

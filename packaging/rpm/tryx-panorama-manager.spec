@@ -14,12 +14,17 @@ ExclusiveArch:  x86_64
 BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  dbus-daemon
+BuildRequires:  ffmpeg-free
 BuildRequires:  qt6-rpm-macros
 BuildRequires:  qt6-linguist
+BuildRequires:  qt6-qtdeclarative-devel
 BuildRequires:  pkgconfig(Qt6Core)
 BuildRequires:  pkgconfig(Qt6DBus)
 BuildRequires:  pkgconfig(Qt6Gui)
 BuildRequires:  pkgconfig(Qt6Network)
+BuildRequires:  pkgconfig(Qt6Qml)
+BuildRequires:  pkgconfig(Qt6Quick)
+BuildRequires:  pkgconfig(Qt6QuickControls2)
 BuildRequires:  pkgconfig(Qt6Widgets)
 BuildRequires:  protobuf-compiler
 BuildRequires:  pkgconfig(protobuf)
@@ -37,6 +42,7 @@ Requires:       dbus
 Requires:       systemd
 Requires:       systemd-udev
 Requires:       hicolor-icon-theme
+Requires:       qt6-qtdeclarative%{?_isa}
 # Media preparation uses the libx264 encoder. Fedora's ffmpeg-free may provide
 # /usr/bin/ffmpeg without that encoder, so require RPM Fusion's full package.
 Requires:       ffmpeg
@@ -68,14 +74,14 @@ upgrade_tool backend.
 test "$(tr -d '\r\n' < VERSION)" = "%{version}"
 
 %build
-%qmake_qt6 tryx-panorama.pro
+%qmake_qt6 tryx-panorama-all.pro
 %make_build
 
 %install
 %make_install INSTALL_ROOT=%{buildroot}
 
 %check
-dbus-run-session -- %make_build check
+dbus-run-session -- %make_build package-check
 
 packaging/scripts/verify-package-contents.sh %{buildroot}
 desktop-file-validate \
@@ -103,6 +109,7 @@ udevadm verify --resolve-names=never \
 %license %{_licensedir}/%{name}/picojson-BSD-2-Clause.txt
 %doc README.md
 %{_bindir}/tryx-panorama-manager
+%{_bindir}/tryx-panorama-quick
 %{_userunitdir}/tryx-panorama.service
 %{_userpresetdir}/90-tryx-panorama.preset
 %{_udevrulesdir}/70-tryx-pase-access.rules

@@ -49,6 +49,7 @@ struct RamMetrics {
 struct NetMetrics {
     double rxSpeedKBs = 0.0;
     double txSpeedKBs = 0.0;
+    bool available = false;
 };
 
 struct DiskMetrics {
@@ -56,6 +57,7 @@ struct DiskMetrics {
     int64_t usedGB = 0;
     double usagePercent = 0.0;
     double temperature = 0.0;
+    bool usageAvailable = false;
 };
 
 struct SystemMetrics {

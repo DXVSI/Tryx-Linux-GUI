@@ -10,7 +10,7 @@ struct Config {
   std::string port;  // Empty = auto-detect
   int brightness = 75;  //default lower than max setting to reduce burn-in risk on display
   int keepalive_interval = 10;
-  std::string language = "system";
+  std::string language = "en";
   std::string pase_overlay_lease_mode = "ping-and-overlay-lease";
 };
 

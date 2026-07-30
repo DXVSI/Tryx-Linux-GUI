@@ -110,6 +110,30 @@ public:
         QList<MediaFile> files;
     };
 
+    struct MediaPullResult {
+        bool success = false;
+        bool cancelled = false;
+        QString error;
+        QString mediaName;
+        qint64 fileSize = 0;
+        qint64 bytesDecoded = 0;
+        int chunkCount = 0;
+        QString rawSha256;
+        QString decodedSha256;
+    };
+
+    struct MediaReferenceResult {
+        bool success = false;
+        bool originalIdentityVerified = false;
+        bool replacementIdentityVerified = false;
+        QString error;
+        MediaFile media;
+        // Fixed order: PowerOn, Standby, Single, DualLeft, DualRight,
+        // Kaleidoscope, FilterSingle, FilterDualLeft, FilterDualRight.
+        QStringList references;
+        QStringList referencingSlots;
+    };
+
     struct ReadinessRetryInfo {
         int attempt = 0;
         qint64 expectedBytes = 0;
@@ -222,6 +246,11 @@ public:
     };
 
     using UploadProgress = std::function<void(qint64 bytesSent, qint64 totalBytes)>;
+    using MediaPullChunkSink = std::function<bool(
+        qint64 offset, const QByteArray &decodedChunk,
+        QString *errorMessage)>;
+    using MediaPullProgress = std::function<void(
+        qint64 bytesDecoded, qint64 totalBytes)>;
     using DeleteProgress = std::function<void(
         const QString &stage, const QString &fileName,
         int completedFiles, int totalFiles)>;
@@ -244,12 +273,26 @@ public:
                           const OperationContext &context);
     MediaListResult readMediaList(const QString &devicePath,
                                   const OperationContext &context);
+    MediaPullResult pullUserMedia(
+        const QString &devicePath, const QString &mediaName,
+        qint64 expectedSize, const MediaPullChunkSink &sink,
+        const MediaPullProgress &progress,
+        const OperationContext &context);
+    MediaReferenceResult readUserMediaReferences(
+        const QString &devicePath, const QString &mediaName,
+        qint64 expectedSize,
+        const QString &expectedReplacementName,
+        qint64 expectedReplacementSize,
+        const OperationContext &context);
     DeleteResult removeUserMedia(
         const QString &devicePath, const QStringList &fileNames,
         const BeforeDeleteDispatch &beforeDispatch,
         const DeleteProgress &progress,
         const OperationContext &context,
-        bool reconcileOnly = false);
+        bool reconcileOnly = false,
+        qint64 expectedSingleSize = 0,
+        const QString &expectedReplacementName = QString(),
+        qint64 expectedReplacementSize = 0);
     bool uploadMedia(const QString &devicePath, const QString &localPath,
                      const QString &remoteFileName, QString *uploadedName,
                      QString *errorMessage, const UploadProgress &progress,
@@ -343,6 +386,8 @@ public:
     void setUnframedRecoveryEligibleForTesting(bool eligible);
     void setFileTransmitDataWriteTimeoutForTesting(int timeoutMs);
     void setFileTransmitResponseTimeoutForTesting(int timeoutMs);
+    void setMediaPullLimitsForTesting(
+        qint64 maximumBytes, int maximumChunks, int deadlineMs);
     void setPersistentUsbInputFailureForTesting(bool persistent);
     void setBootstrapZeroByteWriteFailuresForTesting(int failureCount);
     QList<qint64> bootstrapReadinessAttemptOffsetsForTesting() const;
@@ -358,6 +403,10 @@ public:
         const QByteArray &request,
         int writeTimeoutMs = 100,
         int readTimeoutMs = 100);
+    static QByteArray applyMediaPullXorForTesting(
+        const QByteArray &bytes, quint64 absoluteOffset);
+    static bool validateMediaPullPathForTesting(
+        const QByteArray &rawPath, const QString &mediaName);
 #endif
 
 private:

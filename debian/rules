@@ -6,10 +6,10 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 	dh $@
 
 override_dh_auto_configure:
-	qmake6 tryx-panorama.pro
+	qmake6 tryx-panorama-all.pro
 
 override_dh_auto_test:
-	dbus-run-session -- $(MAKE) check
+	dbus-run-session -- $(MAKE) package-check
 
 override_dh_auto_install:
 	$(MAKE) INSTALL_ROOT=$(CURDIR)/debian/tryx-panorama-manager install

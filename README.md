@@ -64,12 +64,18 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 - Auto-detection of CPU/GPU hardware names for badge display
 - Auto-conversion of non-MP4 media formats (WebM, MKV, AVI, GIF) before upload to device
 - Fixed serial communication issues (timeouts, wrong command formats, broken ADB quoting)
-- Restructured into a single qmake project
+- Separated the background runtime from the modern desktop interface
 
 ## Features
 
 - Upload images, videos, GIFs (auto-converts non-MP4 formats)
+- Modern desktop interface with a preview-first PASE media editor
+- Explicit Fit, Fill, Crop, Stretch, Zoom, pan, rotation, and Fit background controls before upload
+- Exact transformed preview rendered through the same canonical FFmpeg filter used for the final 2240 × 1080 media
+- Immutable private upload snapshot with atomic client-to-daemon ownership transfer before D-Bus acceptance
 - Origin-aware PASE media catalog that labels device presets separately from user uploads
+- Export of writable PASE user media as an honest raw H264 device copy
+- Edit of an existing PASE user-media copy with Save as new or crash-safe Replace
 - Real-time system metrics on display (temperature, usage, frequency, power and date/time)
 - Hardware name badges (auto-detected from system)
 - Brightness control (0-100)
@@ -83,7 +89,7 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 - Device information and media list over the new KANALI USB printer-class protocol
 - Direct asynchronous libusb transport with one request-scoped IN armed before OUT and bounded response reads after known OUT completion
 - Exact operation IDs, progress, cancellation, verified completion, and manual retry through D-Bus Manager2
-- Backward-compatible media catalog through D-Bus Manager1 and an enhanced origin-aware catalog through Manager2 API version 6
+- Backward-compatible media catalog through D-Bus Manager1 and an enhanced origin-aware catalog through Manager2 API version 8
 - Content-aware Save that reuses a verified PASE copy instead of uploading the same local media again
 - Verified deletion of one eligible user media file at a time, with crash-safe reconciliation and no automatic FileRemove replay
 - One shared Panorama operation banner with progress, cancellation, and one fail-closed manual retry candidate
@@ -95,6 +101,27 @@ https://github.com/user-attachments/assets/f9baac04-fe28-4aeb-a8ea-eb2af37ff6cb
 The application does not bundle, install, or search for the extracted KANALI video library. Factory media already stored on PASE appears in the unified Media Library as a read-only `DEVICE PRESET`; it can be selected and applied but never deleted by the application. User uploads remain labelled separately. A user file with the same name as a known device file is still treated according to its catalog origin and is never promoted to a preset by filename.
 
 Manual user upload remains available. Thumbnails are generated from the user-selected source and shown only after the runtime has confirmed the uploaded origin in its device-scoped XDG media catalog. Legacy files left by an older installation under `/usr/share/tryx-panorama-manager/media` are ignored by the current runtime and are not deleted automatically.
+
+Writable user media already stored on a PASE device has an action menu in the
+Media Library. `Export copy…` saves the exact prepared device stream as
+`.h264`; it cannot reconstruct the original MP4, GIF, image, audio, or file
+name. `Edit` downloads the same private copy into the background runtime,
+opens it in the Fit, Fill, Crop and Stretch editor, and offers two explicit
+results:
+
+- `Save as new` uploads a verified new media file and always keeps the
+  original.
+- `Replace original` uploads and verifies the new file first, updates only
+  supported active display references, verifies them again, and only then
+  removes the original once. Immediately before FileRemove, the runtime
+  rechecks both the original and the verified replacement in the same fresh
+  FileList by exact name, size, user source, and writable flag.
+
+Factory presets, read-only entries, and unsupported device media do not expose
+Export, Edit, or Delete. An interrupted Replace is reconciled from its
+owner-only journal without automatically repeating an uncertain Apply or
+Delete command. Reconciliation becomes terminal only when a fresh FileList
+also proves that the exact verified replacement copy still exists.
 
 ## Native Linux packages
 
@@ -145,10 +172,13 @@ executable without the `libx264` encoder required by PASE media preparation.
 Use `--allowerasing` when installing the RPM so DNF can replace an existing
 `ffmpeg-free` package with RPM Fusion's full `ffmpeg` build.
 
-Native packages install the binary, desktop entry, icon, systemd user unit,
-and two PASE udev rules. They do not enable autostart or restart an existing
-daemon during an upgrade. Reconnect the PASE USB cable after installation,
-launch the application once, and enable autostart in Settings only if wanted.
+Native packages install the background runtime, both desktop frontends,
+desktop entry, icon, systemd user unit, and two PASE udev rules. The installed
+launcher and systemd unit currently use `tryx-panorama-manager`; run
+`tryx-panorama-quick` explicitly to open the redesigned interface. Packages do
+not enable autostart or restart an existing daemon during an upgrade.
+Reconnect the PASE USB cable after installation, launch the application once,
+and enable autostart in Settings only if wanted.
 
 The committed Arch PKGBUILD intentionally accepts only a local release source
 archive with an explicit checksum. From a clean release checkout, build it
@@ -169,7 +199,7 @@ popd
 ## Requirements
 
 **Build:**
-- Qt6 (Core, D-Bus, Gui, Network, Widgets)
+- Qt 6.4 or newer (Core, D-Bus, Gui, Network, Widgets, QML, Quick, Quick Controls)
 - C++17 compiler
 - qmake6
 - Qt6 translation tools with `lrelease`
@@ -181,19 +211,19 @@ popd
 Fedora build dependencies:
 
 ```fish
-sudo dnf install -y gcc-c++ git make dbus-daemon pkgconf-pkg-config qt6-qtbase-devel qt6-linguist protobuf-compiler protobuf-devel systemd-devel libusb1-devel
+sudo dnf install -y gcc-c++ git make dbus-daemon ffmpeg-free pkgconf-pkg-config qt6-qtbase-devel qt6-qtdeclarative-devel qt6-linguist protobuf-compiler protobuf-devel systemd-devel libusb1-devel
 ```
 
 Ubuntu 24.04 and Linux Mint 22 build dependencies:
 
 ```fish
-sudo apt install build-essential dbus-user-session git libprotobuf-dev libsystemd-dev libudev-dev libusb-1.0-0-dev pkg-config protobuf-compiler qmake6 qt6-base-dev qt6-l10n-tools
+sudo apt install build-essential dbus-user-session ffmpeg git libprotobuf-dev libsystemd-dev libudev-dev libusb-1.0-0-dev pkg-config protobuf-compiler qmake6 qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-l10n-tools qml6-module-qt-labs-folderlistmodel qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-dialogs qml6-module-qtquick-layouts qml6-module-qtquick-shapes qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qttest systemd-dev
 ```
 
 Arch Linux build dependencies:
 
 ```fish
-sudo pacman -S --needed base-devel dbus git libusb protobuf qt6-base qt6-tools systemd
+sudo pacman -S --needed base-devel dbus git libusb protobuf qt6-base qt6-declarative qt6-tools systemd
 ```
 
 The qmake guard requires the protobuf compiler and C++ runtime to be from the
@@ -235,7 +265,7 @@ After updating to the new KANALI firmware, the cooler no longer exposes ADB by d
 
 All printer operations are serialized by one worker-owned session, while cancellable ffmpeg conversion runs outside the USB worker. Passive udev discovery recognizes the `391a:0006 rk3xxx` Rockchip gadget identity but never opens it. Discovery is based on physical USB device events and stable bus/port identity, so the app does not mistake its own `usblp` detach or attach for a physical reconnect. Printer Class `GET_PORT_STATUS` is deliberately not used because PASE does not provide a reliable readiness signal through that request. A physical remove/add creates a new connection generation, interrupts old I/O through its cancellation gate, and discards stale results. Recovery confirms protocol readiness through an exact DeviceInfo response, completes the remaining bootstrap once, sends one post-bootstrap Ping, restores the confirmed overlay at most once, and only then starts metrics. It never retries a complete bootstrap in the same physical generation or automatically replays user configuration, upload, delete, or apply mutations.
 
-The readiness phase has a 20-second monotonic deadline. It retries only a DeviceInfo request whose USB OUT is confirmed to have transferred zero bytes, keeping the same claimed handle and using capped `500`, `1000`, then `2000` millisecond backoff. A partial or unknown OUT, cancellation, malformed response, or a complete OUT without the exact DeviceInfo response is terminal for that physical generation. System configuration and authentication queries are each sent at most once after readiness. Keepalive uses the observed untracked Ping frame and drains an optional asynchronous Pong. Metrics sampling and mutations start only after the post-bootstrap barrier. Manual upload uses the response-driven begin/data/end flow, converts media to the device's raw H264 format, gives data chunks a dedicated 15-second OUT deadline, and verifies the exact new name, prepared size, writable flag, and user source through a fresh media catalog before reporting success or applying it. Save first hashes the opened source file, looks up the source hash and versioned conversion profile in the device-scoped catalog, refreshes that catalog, and applies an exact verified match without conversion or retransmission. No completed IN transfer is re-armed while any OUT remains active, preventing queued response fragments or `EPROTO` completions from starving the writer. Periodic write-only commands perform a bounded post-OUT drain; no response is acceptable, but a partial or malformed frame closes the session fail-closed. A persistent bulk-IN failure latches the current USB endpoint generation as lost. Production does not call `libusb_reset_device`, retry the same generation, or replay its last mutation; recovery requires an observed physical remove/add cycle or a full PASE power cycle that creates a new generation. Conversion and preview subprocesses have bounded deadlines; a preview timeout falls back to an honest placeholder without discarding valid H264. The direct USB reader can recover a complete tracked protobuf when faulty PASE firmware drops only the `TRYX` frame header after an IN transport error; recovery still requires the exact transaction ID and expected response body. Manager2 API version 6 exposes stable UUIDs, structured operation states, origin-aware catalog entries, typed display mutations, confirmed display state, per-side overlay configuration, and explicit backlight power control. Manager1 retains its original catalog tuple for ABI compatibility. A verified prepared file and its staged JPEG preview are cached atomically after a failed transfer and can only be retried manually after prepared-file hash, device-generation, and media-catalog checks; the original source file is not required after conversion. If a data transfer ends partially or with an unknown outcome, its recovery requirement remains sticky across retries and daemon restarts. Upload, Retry, Apply, Delete, and metrics changes remain blocked until the runtime observes removal and reconnection of the current PASE endpoint, because closing libusb or issuing a generic USB reset does not prove that firmware discarded its hidden transfer session. A successful verification promotes the preview and content identity into the XDG media catalog. Apply is not atomic: uncertain writes are reported as partial or unknown, the session is closed, and no automatic rollback or replay is attempted.
+The readiness phase has a 20-second monotonic deadline. It retries only a DeviceInfo request whose USB OUT is confirmed to have transferred zero bytes, keeping the same claimed handle and using capped `500`, `1000`, then `2000` millisecond backoff. A partial or unknown OUT, cancellation, malformed response, or a complete OUT without the exact DeviceInfo response is terminal for that physical generation. System configuration and authentication queries are each sent at most once after readiness. Keepalive uses the observed untracked Ping frame and drains an optional asynchronous Pong. Metrics sampling and mutations start only after the post-bootstrap barrier. Manual upload uses the response-driven begin/data/end flow, converts media to the device's raw H264 format, gives data chunks a dedicated 15-second OUT deadline, and verifies the exact new name, prepared size, writable flag, and user source through a fresh media catalog before reporting success or applying it. Save first hashes the opened source file, looks up the source hash and transform-aware versioned conversion profile in the device-scoped catalog, refreshes that catalog, and applies an exact verified match without conversion or retransmission. No completed IN transfer is re-armed while any OUT remains active, preventing queued response fragments or `EPROTO` completions from starving the writer. Periodic write-only commands perform a bounded post-OUT drain; no response is acceptable, but a partial or malformed frame closes the session fail-closed. A persistent bulk-IN failure latches the current USB endpoint generation as lost. Production does not call `libusb_reset_device`, retry the same generation, or replay its last mutation; recovery requires an observed physical remove/add cycle or a full PASE power cycle that creates a new generation. Conversion and preview subprocesses have bounded deadlines; a preview timeout falls back to an honest placeholder without discarding valid H264. The direct USB reader can recover a complete tracked protobuf when faulty PASE firmware drops only the `TRYX` frame header after an IN transport error; recovery still requires the exact transaction ID and expected response body. Manager2 API version 8 adds FilePull-backed trusted device-media artifacts with owner-bound leases and crash-safe Save as new or Replace operations while preserving the API 7 media-transform and upload semantics. It also exposes stable UUIDs, structured operation states, origin-aware catalog entries, typed display mutations, confirmed display state, per-side overlay configuration, and explicit backlight power control. Manager1 retains its original catalog tuple for ABI compatibility. A verified prepared file and its staged JPEG preview are cached atomically after a failed transfer and can only be retried manually after prepared-file hash, device-generation, and media-catalog checks; the original source file is not required after conversion. If a data transfer ends partially or with an unknown outcome, its recovery requirement remains sticky across retries and daemon restarts. Upload, Retry, Apply, Delete, and metrics changes remain blocked until the runtime observes removal and reconnection of the current PASE endpoint, because closing libusb or issuing a generic USB reset does not prove that firmware discarded its hidden transfer session. A successful verification promotes the preview and content identity into the XDG media catalog. Apply is not atomic: uncertain writes are reported as partial or unknown, the session is closed, and no automatic rollback or replay is attempted.
 
 PASE full-screen mode supports up to three exact protocol metrics selected from CPU temperature, frequency, usage and power; GPU temperature, frequency, usage and power; memory frequency and usage; and date/time. A separate Manager2 operation sends the overlay layout, then the background daemon sends live values through a headerless metric batch every second. The two-second background scheduler supports two measured arms through `pase_overlay_lease_mode` in the existing XDG `config.json`: `ping-and-overlay-lease` alternates Ping with a full overlay lease, while `ping-only` sends only Ping after the initial reconnect overlay restoration. The default preserves the current `ping-and-overlay-lease` behavior until the A/B monitor selects an arm. The lease never writes user configuration or media state. An explicit protocol error from either metric update or layout lease is fail-closed instead of being discarded. Metric sampling pauses during upload or Apply and coalesces to the latest sample, while a delayed tracked response can still receive one bounded liveness command without replaying the mutation. The confirmed layout is stored only for the same non-empty device serial and survives GUI or daemon restarts. Missing sensors remain unavailable instead of being reported as zero. The Memory Frequency protocol label is retained for compatibility, but the current Linux runtime reports it as unavailable because upstream Linux does not expose a portable unprivileged source for the live DRAM clock; static SMBIOS transfer rates are not mislabeled as MHz.
 
@@ -249,11 +279,14 @@ Automatic firmware download is not enabled yet. KANALI uses SM2-encrypted reques
 
 ```fish
 git clone --branch production https://github.com/DXVSI/tryx-panorama-se-360-linux-gui.git tryx-panorama-current; and cd tryx-panorama-current
-qmake6 tryx-panorama.pro; and make -j(nproc)
+qmake6 tryx-panorama-all.pro; and make -j(nproc); and dbus-run-session -- make package-check
 ./build/tryx-panorama-manager
+./build/quick/tryx-panorama-quick
 ```
 
-System installation includes the binary, user service, PASE usbfs rule, desktop entry, icon, and translations. It does not install a video library:
+System installation includes both client binaries, the daemon entry point,
+user service, PASE usbfs rule, desktop entry, icon, and translations. It does
+not install a video library:
 
 ```fish
 sudo make install; and sudo udevadm control --reload-rules; and sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=391a --attr-match=idProduct=1021; and sudo udevadm settle --timeout=10
@@ -293,6 +326,9 @@ cd tests; and qmake6 printerprotocol_tests.pro; and make -j(nproc); and ../build
 src/
   core/              # Device protocol library
   main.cpp           # Entry point
+  mediatransform.*   # Canonical media transform validation and FFmpeg filter
+  runtimecontract.*  # Shared Manager1/Manager2 D-Bus data contract
+  quick/             # Modern desktop presentation and runtime client layer
   mainwindow.*       # Main window with navigation
   panoramapage.*     # Display + metrics configuration
   homepage.*         # System monitoring dashboard
@@ -301,6 +337,7 @@ src/
   printerprotocol.*  # PASE framing, direct libusb transport and udev discovery
   systemmonitor.*    # System metrics reader
   traymanager.*      # System tray
+qml/                 # Desktop shell, pages and media editor
 include/panorama/    # Protocol headers
 protocol/wire-v1/    # Minimal project-owned protobuf wire schema
 tests/               # Offline protocol, transport and discovery tests

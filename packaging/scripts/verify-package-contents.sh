@@ -30,6 +30,7 @@ require_file() {
 }
 
 require_file /usr/bin/tryx-panorama-manager
+require_file /usr/bin/tryx-panorama-quick
 require_file /usr/lib/systemd/user/tryx-panorama.service
 require_file /usr/lib/systemd/user-preset/90-tryx-panorama.preset
 require_file /usr/lib/udev/rules.d/70-tryx-pase-access.rules
@@ -54,10 +55,15 @@ if [ "$manpage_count" -ne 1 ]; then
     exit 1
 fi
 
-if [ ! -x "$staged_root/usr/bin/tryx-panorama-manager" ]; then
-    echo "package binary is not executable" >&2
-    exit 1
-fi
+for binary in \
+    "$staged_root/usr/bin/tryx-panorama-manager" \
+    "$staged_root/usr/bin/tryx-panorama-quick"
+do
+    if [ ! -x "$binary" ]; then
+        echo "package binary is not executable: ${binary#"$staged_root"}" >&2
+        exit 1
+    fi
+done
 
 preset=$(sed -e 's/[[:space:]]*$//' \
     "$staged_root/usr/lib/systemd/user-preset/90-tryx-panorama.preset")
@@ -92,9 +98,20 @@ if [ "$version" != "tryx-panorama-manager $expected_version" ]; then
     exit 1
 fi
 
-if ldd "$staged_root/usr/bin/tryx-panorama-manager" | grep -q 'not found'; then
-    echo "package binary has unresolved dynamic libraries" >&2
+quick_version=$("$staged_root/usr/bin/tryx-panorama-quick" --version)
+if [ "$quick_version" != "tryx-panorama-quick $expected_version" ]; then
+    echo "unexpected desktop client version output: $quick_version" >&2
     exit 1
 fi
+
+for binary in \
+    "$staged_root/usr/bin/tryx-panorama-manager" \
+    "$staged_root/usr/bin/tryx-panorama-quick"
+do
+    if ldd "$binary" | grep -q 'not found'; then
+        echo "package binary has unresolved dynamic libraries: ${binary#"$staged_root"}" >&2
+        exit 1
+    fi
+done
 
 echo "package contents verified: $staged_root"

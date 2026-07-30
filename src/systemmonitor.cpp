@@ -610,11 +610,15 @@ NetMetrics SystemMonitor::readNetMetrics() {
 
     QFile file("/proc/net/dev");
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        prevRxBytes_ = 0;
+        prevTxBytes_ = 0;
+        prevNetTimestamp_ = 0;
         return net;
     }
 
     int64_t totalRx = 0;
     int64_t totalTx = 0;
+    bool countersAvailable = false;
 
     QTextStream in(&file);
     QString line;
@@ -631,18 +635,34 @@ NetMetrics SystemMonitor::readNetMetrics() {
 
         QStringList parts = line.section(':', 1).split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
         if (parts.size() >= 9) {
-            totalRx += parts[0].toLongLong();
-            totalTx += parts[8].toLongLong();
+            bool rxOk = false;
+            bool txOk = false;
+            const int64_t rxBytes = parts[0].toLongLong(&rxOk);
+            const int64_t txBytes = parts[8].toLongLong(&txOk);
+            if (rxOk && txOk && rxBytes >= 0 && txBytes >= 0) {
+                totalRx += rxBytes;
+                totalTx += txBytes;
+                countersAvailable = true;
+            }
         }
     }
 
-    int64_t now = QDateTime::currentMSecsSinceEpoch();
+    if (!countersAvailable) {
+        prevRxBytes_ = 0;
+        prevTxBytes_ = 0;
+        prevNetTimestamp_ = 0;
+        return net;
+    }
 
-    if (prevNetTimestamp_ > 0) {
-        double dtSec = (now - prevNetTimestamp_) / 1000.0;
-        if (dtSec > 0) {
+    const int64_t now = QDateTime::currentMSecsSinceEpoch();
+    if (prevNetTimestamp_ > 0 && now > prevNetTimestamp_ &&
+        totalRx >= prevRxBytes_ && totalTx >= prevTxBytes_) {
+        const double dtSec =
+            static_cast<double>(now - prevNetTimestamp_) / 1000.0;
+        if (dtSec > 0.0) {
             net.rxSpeedKBs = (totalRx - prevRxBytes_) / 1024.0 / dtSec;
             net.txSpeedKBs = (totalTx - prevTxBytes_) / 1024.0 / dtSec;
+            net.available = true;
         }
     }
 
@@ -655,14 +675,20 @@ NetMetrics SystemMonitor::readNetMetrics() {
 
 DiskMetrics SystemMonitor::readDiskMetrics() {
     DiskMetrics disk;
-    QStorageInfo storage = QStorageInfo::root();
-    if (storage.isValid()) {
-        disk.totalGB = storage.bytesTotal() / (1024LL * 1024 * 1024);
-        int64_t freeGB = storage.bytesAvailable() / (1024LL * 1024 * 1024);
-        disk.usedGB = disk.totalGB - freeGB;
-        disk.usagePercent = disk.totalGB > 0
-                                ? static_cast<double>(disk.usedGB) / disk.totalGB * 100.0
-                                : 0.0;
+    const QStorageInfo storage = QStorageInfo::root();
+    const qint64 totalBytes = storage.bytesTotal();
+    const qint64 availableBytes = storage.bytesAvailable();
+    if (storage.isValid() && storage.isReady() &&
+        totalBytes > 0 && availableBytes >= 0 &&
+        availableBytes <= totalBytes) {
+        constexpr qint64 bytesPerGiB = 1024LL * 1024 * 1024;
+        const qint64 usedBytes = totalBytes - availableBytes;
+        disk.totalGB = totalBytes / bytesPerGiB;
+        disk.usedGB = usedBytes / bytesPerGiB;
+        disk.usagePercent =
+            static_cast<double>(usedBytes) /
+            static_cast<double>(totalBytes) * 100.0;
+        disk.usageAvailable = true;
     }
     disk.temperature = readDiskTemperature();
     return disk;
