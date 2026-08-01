@@ -179,9 +179,15 @@ int main(int argc, char *argv[]) {
         &tray, &LinuxTrayController::showRequested,
         &windowChrome,
         &WindowChromeController::showWindow);
+    // QGuiApplication::quit() first closes every top-level window. The QML
+    // close handler deliberately rejects that close while the tray is
+    // available, so an explicit tray Quit must leave the event loop directly.
+    // Queue exit() because it must run on the application thread.
     QObject::connect(
         &tray, &LinuxTrayController::quitRequested,
-        &app, &QCoreApplication::quit);
+        &app,
+        []() { QCoreApplication::exit(0); },
+        Qt::QueuedConnection);
     QObject::connect(
         &runtime, &RuntimeClient::connectionChanged,
         &tray, updateTrayPresentation);

@@ -104,7 +104,8 @@ only the GUI; the separate runtime remains available to the user service.
   dependency. Hardware access remains in the separately packaged private
   runtime.
 - The Linux tray uses StatusNotifierItem and DBusMenu, while desktop
-  notifications use `org.freedesktop.Notifications`.
+  notifications use `org.freedesktop.Notifications`. Its explicit Quit action
+  closes the GUI reliably while leaving the separate runtime active.
 - Legacy serial/ADB devices retain display, media, metrics, keepalive, and
   device-control support through the same Quick interface.
 - PASE user media can be edited with Fit, Fill, Crop, Stretch, zoom, pan, and

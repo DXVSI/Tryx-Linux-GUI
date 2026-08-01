@@ -4,6 +4,8 @@ tryx-panorama-manager (2.1.0-1) noble; urgency=medium
     separately packaged private runtime.
   * Add native Linux tray integration through StatusNotifierItem, DBusMenu,
     and freedesktop Notifications.
+  * Make the tray Quit action terminate the GUI without stopping the separate
+    runtime.
   * Preserve legacy serial/ADB control while adding the PASE media editor,
     export, Save as new, Replace, and verified deletion workflows.
   * Add local firmware validation and the Quick firmware panel with an
@@ -13,7 +15,7 @@ tryx-panorama-manager (2.1.0-1) noble; urgency=medium
   * Use project-owned clean-room protocol schemas and ship no bundled vendor
     media.
 
- -- DXVSI <dxvsi123@gmail.com>  Thu, 30 Jul 2026 20:47:32 +0700
+ -- DXVSI <dxvsi123@gmail.com>  Sun, 02 Aug 2026 01:48:44 +0700
 
 tryx-panorama-manager (2.0.1-1) noble; urgency=medium
 

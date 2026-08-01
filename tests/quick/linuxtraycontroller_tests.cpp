@@ -1,11 +1,19 @@
 #include "linuxtraycontroller.h"
+#include "windowchromecontroller.h"
 
+#include <QCoreApplication>
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusMetaType>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QEvent>
+#include <QGuiApplication>
+#include <QProcess>
 #include <QSignalSpy>
+#include <QStandardPaths>
+#include <QTimer>
+#include <QWindow>
 #include <QtTest>
 
 namespace {
@@ -20,6 +28,32 @@ const QString kNotificationsService =
     QStringLiteral("org.freedesktop.Notifications");
 const QString kNotificationsPath =
     QStringLiteral("/org/freedesktop/Notifications");
+const QString kQuitProbeArgument =
+    QStringLiteral("--internal-tray-quit-probe");
+
+class TrayCloseFilter final : public QObject {
+public:
+    explicit TrayCloseFilter(
+        WindowChromeController *windowChrome,
+        QObject *parent = nullptr)
+        : QObject(parent), windowChrome_(windowChrome) {}
+
+protected:
+    bool eventFilter(
+        QObject *watched, QEvent *event) override {
+        // Mirror Main.qml: reject a normal close and hide while tray support
+        // is available. Explicit tray Quit must still end the event loop.
+        if (event->type() == QEvent::Close &&
+            windowChrome_->handleCloseRequest()) {
+            event->ignore();
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    WindowChromeController *windowChrome_ = nullptr;
+};
 
 class MockStatusNotifierWatcher final : public QObject {
     Q_OBJECT
@@ -127,6 +161,55 @@ void unregisterMockWatcher(QDBusConnection bus) {
     bus.unregisterObject(kWatcherPath);
 }
 
+int runTrayQuitProbe(QGuiApplication &application) {
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) {
+        return 70;
+    }
+
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    windowChrome.setTrayAvailable(true);
+    TrayCloseFilter closeFilter(&windowChrome);
+    window.installEventFilter(&closeFilter);
+    window.show();
+
+    LinuxTrayController tray;
+    QObject::connect(
+        &tray, &LinuxTrayController::quitRequested,
+        &application,
+        []() { QCoreApplication::exit(0); },
+        Qt::QueuedConnection);
+
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(
+        &watchdog, &QTimer::timeout,
+        &application, [&application]() {
+            application.exit(75);
+        });
+    watchdog.start(2000);
+
+    QTimer::singleShot(0, &application, [bus]() mutable {
+        QDBusMessage quit = QDBusMessage::createMethodCall(
+            bus.baseService(),
+            QStringLiteral("/StatusNotifierItem/Menu"),
+            QStringLiteral("com.canonical.dbusmenu"),
+            QStringLiteral("Event"));
+        quit.setArguments({
+            linuxtray::MenuModel::Quit,
+            QStringLiteral("clicked"),
+            QVariant::fromValue(
+                QDBusVariant(QVariant(QString()))),
+            static_cast<uint>(0),
+        });
+        bus.asyncCall(quit);
+    });
+
+    return application.exec();
+}
+
 }  // namespace
 
 class LinuxTrayControllerTests final : public QObject {
@@ -140,6 +223,7 @@ private slots:
     void menuLabelsAdvanceRevision();
     void dbusTypesMatchStatusNotifierSpecifications();
     void watcherLifecycleAndActions();
+    void trayQuitTerminatesGuiEventLoop();
     void notificationsUseFreedesktopService();
     void noWatcherFallsBackToUnavailable();
 };
@@ -378,6 +462,30 @@ watcherLifecycleAndActions() {
 }
 
 void LinuxTrayControllerTests::
+trayQuitTerminatesGuiEventLoop() {
+    const QString dbusRunSession =
+        QStandardPaths::findExecutable(
+            QStringLiteral("dbus-run-session"));
+    QVERIFY2(
+        !dbusRunSession.isEmpty(),
+        "dbus-run-session is required for the tray quit probe");
+
+    QProcess probe;
+    probe.start(
+        dbusRunSession,
+        {QStringLiteral("--"),
+         QCoreApplication::applicationFilePath(),
+         kQuitProbeArgument});
+    QVERIFY2(
+        probe.waitForFinished(5000),
+        qPrintable(probe.errorString()));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(
+        probe.exitCode(),
+        0);
+}
+
+void LinuxTrayControllerTests::
 notificationsUseFreedesktopService() {
     QDBusConnection bus = QDBusConnection::sessionBus();
     QVERIFY(bus.isConnected());
@@ -417,6 +525,18 @@ noWatcherFallsBackToUnavailable() {
     QVERIFY(!tray.available());
 }
 
-QTEST_GUILESS_MAIN(LinuxTrayControllerTests)
+int main(int argc, char **argv) {
+    qputenv(
+        "QT_QPA_PLATFORM",
+        QByteArrayLiteral("offscreen"));
+    QGuiApplication application(argc, argv);
+    if (application.arguments().contains(
+            kQuitProbeArgument)) {
+        return runTrayQuitProbe(application);
+    }
+
+    LinuxTrayControllerTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 
 #include "linuxtraycontroller_tests.moc"
