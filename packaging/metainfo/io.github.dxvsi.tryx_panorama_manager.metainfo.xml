@@ -20,10 +20,22 @@
     <binary>tryx-panorama-manager</binary>
     <modalias>usb:v391Ap1021d*</modalias>
   </provides>
-  <url type="homepage">https://github.com/DXVSI/tryx-panorama-se-360-linux-gui</url>
-  <url type="bugtracker">https://github.com/DXVSI/tryx-panorama-se-360-linux-gui/issues</url>
+  <url type="homepage">https://github.com/DXVSI/Tryx-Linux-GUI</url>
+  <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.1.0" type="stable" date="2026-08-02">
+      <description>
+        <ul>
+          <li>Use one Qt Quick desktop interface backed by a private runtime.</li>
+          <li>Add native Linux tray integration and preserve legacy serial/ADB control.</li>
+          <li>Make tray Quit close only the GUI while the runtime stays active.</li>
+          <li>Add PASE media editing, export, save-as-new, replace, and verified deletion.</li>
+          <li>Add local firmware validation, an exclusive transport gate, and a crash-persistent recovery interlock.</li>
+          <li>Keep QML compatible with Qt 6.4 and distribute no bundled vendor media.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.0.1" type="stable" date="2026-07-27"/>
     <release version="2.0.0" type="stable" date="2026-07-27"/>
   </releases>

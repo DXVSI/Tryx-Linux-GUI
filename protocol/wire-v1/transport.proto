@@ -72,6 +72,26 @@ message FileRemoval {
   string file_type = 2;
 }
 
+message MediaReadChunkRequest {
+  bytes remote_path = 1;
+  uint64 session_id = 2;
+  uint64 offset = 3;
+}
+
+message MediaReadChunkResponse {
+  enum Status {
+    OK = 0;
+    FILE_ERROR = 1;
+  }
+
+  Status status = 1;
+  bytes remote_path = 2;
+  uint64 session_id = 3;
+  uint64 offset = 4;
+  uint64 file_size = 5;
+  bytes data = 6;
+}
+
 message ProtocolError {
   enum Code {
     SUCCESS = 0;
@@ -108,6 +128,7 @@ message Request {
     TransferChunk transfer_chunk = 401;
     TransferEnd transfer_end = 402;
     FileRemoval file_removal = 403;
+    MediaReadChunkRequest media_read_chunk = 406;
   }
 }
 
@@ -126,6 +147,7 @@ message Response {
     TransferStatus transfer_begin_status = 800;
     TransferStatus transfer_chunk_status = 801;
     TransferStatus transfer_end_status = 802;
+    MediaReadChunkResponse media_read_chunk = 805;
     AsynchronousEvent asynchronous_event = 987;
   }
 }

@@ -30,6 +30,7 @@ require_file() {
 }
 
 require_file /usr/bin/tryx-panorama-manager
+require_file /usr/lib/tryx-panorama-manager/tryx-panorama-runtime
 require_file /usr/lib/systemd/user/tryx-panorama.service
 require_file /usr/lib/systemd/user-preset/90-tryx-panorama.preset
 require_file /usr/lib/udev/rules.d/70-tryx-pase-access.rules
@@ -39,6 +40,11 @@ require_file /usr/share/icons/hicolor/256x256/apps/tryx-panorama.png
 require_file /usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
 require_file /usr/share/licenses/tryx-panorama-manager/LICENSE
 require_file /usr/share/licenses/tryx-panorama-manager/picojson-BSD-2-Clause.txt
+
+if [ -e "$staged_root/usr/bin/tryx-panorama-quick" ]; then
+    echo "package contains the retired secondary Quick launcher" >&2
+    exit 1
+fi
 
 manpage_count=0
 for manpage in \
@@ -54,10 +60,15 @@ if [ "$manpage_count" -ne 1 ]; then
     exit 1
 fi
 
-if [ ! -x "$staged_root/usr/bin/tryx-panorama-manager" ]; then
-    echo "package binary is not executable" >&2
-    exit 1
-fi
+for binary in \
+    "$staged_root/usr/bin/tryx-panorama-manager" \
+    "$staged_root/usr/lib/tryx-panorama-manager/tryx-panorama-runtime"
+do
+    if [ ! -x "$binary" ]; then
+        echo "package binary is not executable: ${binary#"$staged_root"}" >&2
+        exit 1
+    fi
+done
 
 preset=$(sed -e 's/[[:space:]]*$//' \
     "$staged_root/usr/lib/systemd/user-preset/90-tryx-panorama.preset")
@@ -92,8 +103,37 @@ if [ "$version" != "tryx-panorama-manager $expected_version" ]; then
     exit 1
 fi
 
-if ldd "$staged_root/usr/bin/tryx-panorama-manager" | grep -q 'not found'; then
-    echo "package binary has unresolved dynamic libraries" >&2
+runtime_version=$(
+    "$staged_root/usr/lib/tryx-panorama-manager/tryx-panorama-runtime" \
+        --version
+)
+if [ "$runtime_version" != "tryx-panorama-runtime $expected_version" ]; then
+    echo "unexpected runtime version output: $runtime_version" >&2
+    exit 1
+fi
+
+for binary in \
+    "$staged_root/usr/bin/tryx-panorama-manager" \
+    "$staged_root/usr/lib/tryx-panorama-manager/tryx-panorama-runtime"
+do
+    if ldd "$binary" | grep -q 'not found'; then
+        echo "package binary has unresolved dynamic libraries: ${binary#"$staged_root"}" >&2
+        exit 1
+    fi
+    if readelf -d "$binary" |
+       grep -Eq 'Shared library: \[libQt6Widgets\.so'; then
+        echo "package binary links forbidden Qt Widgets: ${binary#"$staged_root"}" >&2
+        exit 1
+    fi
+done
+
+service_exec=$(
+    sed -n 's/^ExecStart=//p' \
+        "$staged_root/usr/lib/systemd/user/tryx-panorama.service"
+)
+if [ "$service_exec" != \
+    "/usr/lib/tryx-panorama-manager/tryx-panorama-runtime" ]; then
+    echo "systemd unit does not start the package-private runtime" >&2
     exit 1
 fi
 

@@ -1,10 +1,10 @@
 Name:           tryx-panorama-manager
-Version:        2.0.1
+Version:        2.1.0
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX Panorama cooler displays
 
 License:        MIT AND BSD-2-Clause
-URL:            https://github.com/DXVSI/tryx-panorama-se-360-linux-gui
+URL:            https://github.com/DXVSI/Tryx-Linux-GUI
 Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.xz
 
 # The first native package release is intentionally limited to the architecture
@@ -14,13 +14,16 @@ ExclusiveArch:  x86_64
 BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  dbus-daemon
+BuildRequires:  ffmpeg-free
 BuildRequires:  qt6-rpm-macros
 BuildRequires:  qt6-linguist
+BuildRequires:  qt6-qtdeclarative-devel
 BuildRequires:  pkgconfig(Qt6Core)
 BuildRequires:  pkgconfig(Qt6DBus)
 BuildRequires:  pkgconfig(Qt6Gui)
-BuildRequires:  pkgconfig(Qt6Network)
-BuildRequires:  pkgconfig(Qt6Widgets)
+BuildRequires:  pkgconfig(Qt6Qml)
+BuildRequires:  pkgconfig(Qt6Quick)
+BuildRequires:  pkgconfig(Qt6QuickControls2)
 BuildRequires:  protobuf-compiler
 BuildRequires:  pkgconfig(protobuf)
 BuildRequires:  pkgconfig(libudev)
@@ -37,6 +40,7 @@ Requires:       dbus
 Requires:       systemd
 Requires:       systemd-udev
 Requires:       hicolor-icon-theme
+Requires:       qt6-qtdeclarative%{?_isa}
 # Media preparation uses the libx264 encoder. Fedora's ffmpeg-free may provide
 # /usr/bin/ffmpeg without that encoder, so require RPM Fusion's full package.
 Requires:       ffmpeg
@@ -68,14 +72,14 @@ upgrade_tool backend.
 test "$(tr -d '\r\n' < VERSION)" = "%{version}"
 
 %build
-%qmake_qt6 tryx-panorama.pro
+%qmake_qt6 tryx-panorama-all.pro
 %make_build
 
 %install
 %make_install INSTALL_ROOT=%{buildroot}
 
 %check
-dbus-run-session -- %make_build check
+dbus-run-session -- %make_build package-check
 
 packaging/scripts/verify-package-contents.sh %{buildroot}
 desktop-file-validate \
@@ -103,6 +107,7 @@ udevadm verify --resolve-names=never \
 %license %{_licensedir}/%{name}/picojson-BSD-2-Clause.txt
 %doc README.md
 %{_bindir}/tryx-panorama-manager
+%{_prefix}/lib/tryx-panorama-manager/tryx-panorama-runtime
 %{_userunitdir}/tryx-panorama.service
 %{_userpresetdir}/90-tryx-panorama.preset
 %{_udevrulesdir}/70-tryx-pase-access.rules
@@ -113,6 +118,17 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx-panorama-manager.1*
 
 %changelog
+* Sun Aug 02 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.1.0-1
+- Replace the Qt Widgets frontend with one Qt Quick GUI and a private runtime
+- Add StatusNotifierItem, DBusMenu, and freedesktop Notifications integration
+- Make tray Quit terminate the GUI while leaving the private runtime active
+- Preserve legacy serial/ADB control and add PASE media editing, export,
+  save-as-new, replace, and verified deletion workflows
+- Add local firmware validation and a Quick firmware panel protected by an
+  exclusive device-transport gate; physical flashing is not claimed as verified
+- Keep QML compatible with Qt 6.4
+- Use project-owned clean-room protocol schemas and ship no bundled vendor media
+
 * Mon Jul 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.0.1-1
 - Fix checksum generation for native GitHub Release assets
 

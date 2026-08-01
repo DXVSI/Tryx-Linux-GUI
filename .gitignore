@@ -7,6 +7,9 @@ build.tar.xz
 *.so
 *.d
 Makefile
+Makefile.quick
+Makefile.runtime
+tests/quick/target_wrapper.sh
 .qmake.stash
 moc_*.cpp
 moc_predefs.h

@@ -1,7 +1,7 @@
-QT += core dbus gui widgets network
+QT += core dbus gui
 
 CONFIG += c++17 lrelease embed_translations link_pkgconfig
-TARGET = tryx-panorama-manager
+TARGET = tryx-panorama-runtime
 TEMPLATE = app
 
 VERSION = $$cat($$PWD/VERSION, lines)
@@ -28,9 +28,9 @@ isEmpty(PROTOBUF_RUNTIME_PATCH_VERSION): PROTOBUF_RUNTIME_NORMALIZED_VERSION = $
 !equals(PROTOC_NORMALIZED_VERSION, $$PROTOBUF_RUNTIME_NORMALIZED_VERSION): error("protoc $$PROTOC_VERSION does not match libprotobuf $$PROTOBUF_RUNTIME_VERSION")
 
 TRANSLATIONS += translations/tryx-panorama_ru.ts
-LRELEASE_DIR = build/i18n
+LRELEASE_DIR = build/runtime/i18n
 
-INCLUDEPATH += $$PWD/include
+INCLUDEPATH += $$PWD/include $$PWD/src
 
 # Minimal, independently named schema for the confirmed PASE wire contract.
 PROTO_DIR = $$PWD/protocol/wire-v1
@@ -62,14 +62,14 @@ protobuf_source.dependency_type = TYPE_C
 QMAKE_EXTRA_COMPILERS += protobuf_header protobuf_source
 
 protocol_tests.target = check
-protocol_tests.commands = sh $$shell_path($$PWD/tests/check_no_bundled_video.sh) && cd $$shell_path($$PWD/tests) && $$QMAKE_QMAKE printerprotocol_tests.pro && $(MAKE) && $$shell_path($$PWD/build/tests/printerprotocol-tests)
+protocol_tests.commands = sh $$shell_path($$PWD/tests/check_no_bundled_video.sh) && cd $$shell_path($$PWD/tests) && $$QMAKE_QMAKE printerprotocol_tests.pro && $(MAKE) && $$shell_path($$PWD/build/tests/printerprotocol-tests) && $$QMAKE_QMAKE replacejournal_tests.pro && $(MAKE) && $$shell_path($$PWD/build/replacejournal-tests/replacejournal-tests)
 QMAKE_EXTRA_TARGETS += protocol_tests
 
 # Build output
-DESTDIR = $$PWD/build
-OBJECTS_DIR = $$PWD/build/obj
-MOC_DIR = $$PWD/build/moc
-RCC_DIR = $$PWD/build/rcc
+DESTDIR = $$PWD/build/runtime
+OBJECTS_DIR = $$PWD/build/runtime/obj
+MOC_DIR = $$PWD/build/runtime/moc
+RCC_DIR = $$PWD/build/runtime/rcc
 
 # Core library
 SOURCES += \
@@ -79,37 +79,31 @@ SOURCES += \
     src/core/media.cpp \
     src/core/config.cpp
 
-# GUI
 HEADERS += \
+    src/applicationpaths.h \
     src/devicemanager.h \
+    src/firmwarebridge.h \
+    src/firmwarerecoveryjournal.h \
     src/systemmonitor.h \
-    src/homepage.h \
-    src/panoramapage.h \
-    src/displaypage.h \
     src/firmwareupdater.h \
+    src/mediatransform.h \
     src/printerprotocol.h \
-    src/runtimebridge.h \
-    src/settingspage.h \
-    src/traymanager.h \
-    src/mainwindow.h \
-    src/splitconfig.h
+    src/replacejournal.h \
+    src/runtimecontract.h \
+    src/runtimebridge.h
 
 SOURCES += \
-    src/main.cpp \
+    src/runtime/main.cpp \
     src/devicemanager.cpp \
+    src/firmwarebridge.cpp \
+    src/firmwarerecoveryjournal.cpp \
     src/systemmonitor.cpp \
-    src/homepage.cpp \
-    src/panoramapage.cpp \
-    src/displaypage.cpp \
     src/firmwareupdater.cpp \
+    src/mediatransform.cpp \
     src/printerprotocol.cpp \
-    src/runtimebridge.cpp \
-    src/settingspage.cpp \
-    src/traymanager.cpp \
-    src/mainwindow.cpp \
-    src/splitconfig.cpp
-
-RESOURCES += resources/resources.qrc
+    src/replacejournal.cpp \
+    src/runtimecontract.cpp \
+    src/runtimebridge.cpp
 
 DISTFILES += \
     VERSION \
@@ -133,7 +127,7 @@ unix {
     SYSTEMD_USER_PRESET_DIR = $$system(pkg-config --variable=systemduserpresetdir systemd)
     isEmpty(SYSTEMD_USER_PRESET_DIR): error("systemd user preset directory was not found")
 
-    target.path = /usr/bin
+    target.path = /usr/lib/tryx-panorama-manager
     pase_udev_rules.path = /usr/lib/udev/rules.d
     pase_udev_rules.files = \
         packaging/70-tryx-pase-access.rules \

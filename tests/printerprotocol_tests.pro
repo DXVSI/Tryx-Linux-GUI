@@ -1,4 +1,4 @@
-QT += core dbus gui widgets testlib
+QT += core dbus gui testlib
 
 CONFIG += c++17 console testcase link_pkgconfig
 CONFIG -= app_bundle
@@ -57,19 +57,25 @@ HEADERS += \
     $$PWD/../src/printerprotocol.h \
     $$PWD/../src/runtimebridge.h \
     $$PWD/../src/devicemanager.h \
+    $$PWD/../src/firmwarebridge.h \
+    $$PWD/../src/firmwarerecoveryjournal.h \
+    $$PWD/../src/firmwareupdater.h \
     $$PWD/../src/systemmonitor.h \
-    $$PWD/../src/displaypage.h \
-    $$PWD/../src/panoramapage.h \
-    $$PWD/../src/splitconfig.h
+    $$PWD/../src/mediatransform.h \
+    $$PWD/../src/replacejournal.h \
+    $$PWD/../src/runtimecontract.h
 SOURCES += \
     printerprotocol_tests.cpp \
     $$PWD/../src/printerprotocol.cpp \
     $$PWD/../src/runtimebridge.cpp \
     $$PWD/../src/devicemanager.cpp \
+    $$PWD/../src/firmwarebridge.cpp \
+    $$PWD/../src/firmwarerecoveryjournal.cpp \
+    $$PWD/../src/firmwareupdater.cpp \
     $$PWD/../src/systemmonitor.cpp \
-    $$PWD/../src/displaypage.cpp \
-    $$PWD/../src/panoramapage.cpp \
-    $$PWD/../src/splitconfig.cpp \
+    $$PWD/../src/mediatransform.cpp \
+    $$PWD/../src/replacejournal.cpp \
+    $$PWD/../src/runtimecontract.cpp \
     $$PWD/../src/core/protocol.cpp \
     $$PWD/../src/core/device.cpp \
     $$PWD/../src/core/adb.cpp \

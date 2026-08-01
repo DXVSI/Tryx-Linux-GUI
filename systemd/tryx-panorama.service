@@ -1,6 +1,6 @@
 [Unit]
 Description=TRYX Panorama SE 360 Display Manager
-Documentation=https://github.com/DXVSI/tryx-panorama-se-360-linux-gui
+Documentation=https://github.com/DXVSI/Tryx-Linux-GUI
 PartOf=graphical-session.target
 After=graphical-session.target
 StartLimitIntervalSec=60
@@ -9,11 +9,15 @@ StartLimitBurst=5
 [Service]
 Type=dbus
 BusName=org.tryx.Panorama
-ExecStart=/usr/bin/tryx-panorama-manager --daemon
+ExecStart=/usr/lib/tryx-panorama-manager/tryx-panorama-runtime
 Restart=on-failure
 RestartSec=1
 TimeoutStartSec=15
-TimeoutStopSec=10
+# SIGTERM must reach only the runtime first. It defers exit while its adb or
+# upgrade_tool child owns an irreversible firmware write.
+KillMode=mixed
+# A firmware write has no universally safe forced-termination deadline.
+TimeoutStopSec=infinity
 
 [Install]
 WantedBy=graphical-session.target

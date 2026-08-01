@@ -2,370 +2,7 @@
 
 #include "devicemanager.h"
 
-#include <QDBusMetaType>
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeDeviceInfo &info) {
-    argument.beginStructure();
-    argument << info.devicePath << info.manufacturer << info.usbProduct
-             << info.usbSerial << info.osName << info.osVersion
-             << info.firmwareVersion << info.productName << info.appVersion
-             << info.serialNumber << info.chipId << info.serialNumberLocked;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeDeviceInfo &info) {
-    argument.beginStructure();
-    argument >> info.devicePath >> info.manufacturer >> info.usbProduct
-             >> info.usbSerial >> info.osName >> info.osVersion
-             >> info.firmwareVersion >> info.productName >> info.appVersion
-             >> info.serialNumber >> info.chipId >> info.serialNumberLocked;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeSnapshot &snapshot) {
-    argument.beginStructure();
-    argument << snapshot.revision << snapshot.connected
-             << snapshot.printerClassConnected
-             << snapshot.printerClassDevicePresent
-             << snapshot.displaySessionActive << snapshot.productId
-             << snapshot.serial << snapshot.firmware << snapshot.appVersion
-             << snapshot.mediaFiles << snapshot.diagnostic;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeSnapshot &snapshot) {
-    argument.beginStructure();
-    argument >> snapshot.revision >> snapshot.connected
-             >> snapshot.printerClassConnected
-             >> snapshot.printerClassDevicePresent
-             >> snapshot.displaySessionActive >> snapshot.productId
-             >> snapshot.serial >> snapshot.firmware >> snapshot.appVersion
-             >> snapshot.mediaFiles >> snapshot.diagnostic;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeMediaEntry &entry) {
-    argument.beginStructure();
-    argument << entry.name << entry.size << entry.source << entry.readOnly
-             << entry.thumbnailKey << entry.managedOrigin
-             << entry.deleteAllowed << entry.deleteBlockReason;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeMediaEntry &entry) {
-    argument.beginStructure();
-    argument >> entry.name >> entry.size >> entry.source >> entry.readOnly
-             >> entry.thumbnailKey >> entry.managedOrigin
-             >> entry.deleteAllowed >> entry.deleteBlockReason;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(
-    QDBusArgument &argument,
-    const TryxRuntimeMediaCatalogSnapshot &snapshot) {
-    argument.beginStructure();
-    argument << snapshot.revision << snapshot.deviceIdentity
-             << snapshot.entries;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(
-    const QDBusArgument &argument,
-    TryxRuntimeMediaCatalogSnapshot &snapshot) {
-    argument.beginStructure();
-    argument >> snapshot.revision >> snapshot.deviceIdentity
-             >> snapshot.entries;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeLegacyMediaEntry &entry) {
-    argument.beginStructure();
-    argument << entry.name << entry.size << entry.source << entry.readOnly
-             << entry.thumbnailKey;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeLegacyMediaEntry &entry) {
-    argument.beginStructure();
-    argument >> entry.name >> entry.size >> entry.source >> entry.readOnly
-             >> entry.thumbnailKey;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(
-    QDBusArgument &argument,
-    const TryxRuntimeLegacyMediaCatalogSnapshot &snapshot) {
-    argument.beginStructure();
-    argument << snapshot.revision << snapshot.deviceIdentity
-             << snapshot.entries;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(
-    const QDBusArgument &argument,
-    TryxRuntimeLegacyMediaCatalogSnapshot &snapshot) {
-    argument.beginStructure();
-    argument >> snapshot.revision >> snapshot.deviceIdentity
-             >> snapshot.entries;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeDisplayMutation &mutation) {
-    argument.beginStructure();
-    argument << mutation.brightnessPresent << mutation.brightness
-             << mutation.standbyPresent << mutation.standbyEnabled
-             << mutation.orientationPresent << mutation.mirrorMode
-             << mutation.waterfallMode << mutation.backlightPresent
-             << mutation.backlightEnabled;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeDisplayMutation &mutation) {
-    argument.beginStructure();
-    argument >> mutation.brightnessPresent >> mutation.brightness
-             >> mutation.standbyPresent >> mutation.standbyEnabled
-             >> mutation.orientationPresent >> mutation.mirrorMode
-             >> mutation.waterfallMode >> mutation.backlightPresent
-             >> mutation.backlightEnabled;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeApplyRequest &request) {
-    argument.beginStructure();
-    argument << request.media << request.ratio << request.screenMode
-             << request.playMode << request.sysinfoLabels
-             << request.settingsPosition << request.settingsColor
-             << request.settingsAlign << request.settingsBadges
-             << request.filterOpacity << request.presetId
-             << request.sysinfoLabels2 << request.settingsBadges2
-             << request.settingsPosition2 << request.settingsColor2
-             << request.settingsAlign2 << request.waterfallMode
-             << request.replaceOverlay << request.display;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeApplyRequest &request) {
-    argument.beginStructure();
-    argument >> request.media >> request.ratio >> request.screenMode
-             >> request.playMode >> request.sysinfoLabels
-             >> request.settingsPosition >> request.settingsColor
-             >> request.settingsAlign >> request.settingsBadges
-             >> request.filterOpacity >> request.presetId
-             >> request.sysinfoLabels2 >> request.settingsBadges2
-             >> request.settingsPosition2 >> request.settingsColor2
-             >> request.settingsAlign2 >> request.waterfallMode
-             >> request.replaceOverlay >> request.display;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeDisplayState &state) {
-    argument.beginStructure();
-    argument << state.revision << state.deviceSerial << state.valid
-             << state.backlightEnabled << state.brightness
-             << state.standbyEnabled << state.standbyMedia
-             << state.mirrorMode << state.waterfallMode
-             << state.screenMode << state.playMode << state.media
-             << state.sysinfoLabels << state.settingsBadges
-             << state.settingsPosition << state.settingsColor
-             << state.settingsAlign << state.sysinfoLabels2
-             << state.settingsBadges2 << state.settingsPosition2
-             << state.settingsColor2 << state.settingsAlign2
-             << state.diagnostic;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeDisplayState &state) {
-    argument.beginStructure();
-    argument >> state.revision >> state.deviceSerial >> state.valid
-             >> state.backlightEnabled >> state.brightness
-             >> state.standbyEnabled >> state.standbyMedia
-             >> state.mirrorMode >> state.waterfallMode
-             >> state.screenMode >> state.playMode >> state.media
-             >> state.sysinfoLabels >> state.settingsBadges
-             >> state.settingsPosition >> state.settingsColor
-             >> state.settingsAlign >> state.sysinfoLabels2
-             >> state.settingsBadges2 >> state.settingsPosition2
-             >> state.settingsColor2 >> state.settingsAlign2
-             >> state.diagnostic;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(
-    QDBusArgument &argument,
-    const TryxRuntimeMetricsConfigRequest &request) {
-    argument.beginStructure();
-    argument << request.enabled << request.metrics << request.alignment
-             << request.textColor;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(
-    const QDBusArgument &argument,
-    TryxRuntimeMetricsConfigRequest &request) {
-    argument.beginStructure();
-    argument >> request.enabled >> request.metrics >> request.alignment
-             >> request.textColor;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeMetricsState &state) {
-    argument.beginStructure();
-    argument << state.revision << state.deviceSerial << state.enabled
-             << state.samplingActive << state.metrics
-             << state.availableMetrics << state.alignment << state.textColor
-             << state.diagnostic;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeMetricsState &state) {
-    argument.beginStructure();
-    argument >> state.revision >> state.deviceSerial >> state.enabled
-             >> state.samplingActive >> state.metrics
-             >> state.availableMetrics >> state.alignment >> state.textColor
-             >> state.diagnostic;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeOperationInfo &info) {
-    argument.beginStructure();
-    argument << info.id << info.parentId << info.kind << info.state
-             << info.stage << info.errorCategory << info.terminalOutcome
-             << info.primaryErrorCategory << info.primaryErrorMessage
-             << info.retryMode << info.subject << info.resultName
-             << info.message << info.completed << info.total
-             << info.confirmedBytes << info.lastConfirmedChunkIndex
-             << info.attempt << info.deviceGeneration
-             << info.applyAfterUpload;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeOperationInfo &info) {
-    argument.beginStructure();
-    argument >> info.id >> info.parentId >> info.kind >> info.state
-             >> info.stage >> info.errorCategory >> info.terminalOutcome
-             >> info.primaryErrorCategory >> info.primaryErrorMessage
-             >> info.retryMode >> info.subject >> info.resultName
-             >> info.message >> info.completed >> info.total
-             >> info.confirmedBytes >> info.lastConfirmedChunkIndex
-             >> info.attempt >> info.deviceGeneration
-             >> info.applyAfterUpload;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument,
-                          const TryxRuntimeOperationsSnapshot &snapshot) {
-    argument.beginStructure();
-    argument << snapshot.revision << snapshot.activeOperationId
-             << snapshot.operations;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument,
-                                TryxRuntimeOperationsSnapshot &snapshot) {
-    argument.beginStructure();
-    argument >> snapshot.revision >> snapshot.activeOperationId
-             >> snapshot.operations;
-    argument.endStructure();
-    return argument;
-}
-
-QString tryxRuntimeServiceName() {
-    return QStringLiteral("org.tryx.Panorama");
-}
-
-QString tryxRuntimeObjectPath() {
-    return QStringLiteral("/org/tryx/Panorama");
-}
-
-QString tryxRuntimeInterfaceName() {
-    return QStringLiteral("org.tryx.Panorama.Manager1");
-}
-
-QString tryxRuntimeOperationsInterfaceName() {
-    return QStringLiteral("org.tryx.Panorama.Manager2");
-}
-
-quint32 tryxRuntimeApiVersion() {
-    return 6U;
-}
-
-void registerTryxRuntimeMetaTypes() {
-    qRegisterMetaType<TryxRuntimeDeviceInfo>();
-    qRegisterMetaType<TryxRuntimeSnapshot>();
-    qRegisterMetaType<TryxRuntimeMediaEntry>();
-    qRegisterMetaType<QList<TryxRuntimeMediaEntry>>();
-    qRegisterMetaType<TryxRuntimeMediaCatalogSnapshot>();
-    qRegisterMetaType<TryxRuntimeLegacyMediaEntry>();
-    qRegisterMetaType<QList<TryxRuntimeLegacyMediaEntry>>();
-    qRegisterMetaType<TryxRuntimeLegacyMediaCatalogSnapshot>();
-    qRegisterMetaType<TryxRuntimeDisplayMutation>();
-    qRegisterMetaType<TryxRuntimeApplyRequest>();
-    qRegisterMetaType<TryxRuntimeDisplayState>();
-    qRegisterMetaType<TryxRuntimeMetricsConfigRequest>();
-    qRegisterMetaType<TryxRuntimeMetricsState>();
-    qRegisterMetaType<TryxRuntimeOperationInfo>();
-    qRegisterMetaType<QList<TryxRuntimeOperationInfo>>();
-    qRegisterMetaType<TryxRuntimeOperationsSnapshot>();
-    qDBusRegisterMetaType<TryxRuntimeDeviceInfo>();
-    qDBusRegisterMetaType<TryxRuntimeSnapshot>();
-    qDBusRegisterMetaType<TryxRuntimeMediaEntry>();
-    qDBusRegisterMetaType<QList<TryxRuntimeMediaEntry>>();
-    qDBusRegisterMetaType<TryxRuntimeMediaCatalogSnapshot>();
-    qDBusRegisterMetaType<TryxRuntimeLegacyMediaEntry>();
-    qDBusRegisterMetaType<QList<TryxRuntimeLegacyMediaEntry>>();
-    qDBusRegisterMetaType<TryxRuntimeLegacyMediaCatalogSnapshot>();
-    qDBusRegisterMetaType<TryxRuntimeDisplayMutation>();
-    qDBusRegisterMetaType<TryxRuntimeApplyRequest>();
-    qDBusRegisterMetaType<TryxRuntimeDisplayState>();
-    qDBusRegisterMetaType<TryxRuntimeMetricsConfigRequest>();
-    qDBusRegisterMetaType<TryxRuntimeMetricsState>();
-    qDBusRegisterMetaType<TryxRuntimeOperationInfo>();
-    qDBusRegisterMetaType<QList<TryxRuntimeOperationInfo>>();
-    qDBusRegisterMetaType<TryxRuntimeOperationsSnapshot>();
-}
+#include <QDBusMessage>
 
 namespace {
 
@@ -387,6 +24,27 @@ TryxRuntimeLegacyMediaCatalogSnapshot legacyMediaCatalog(
 }
 
 }  // namespace
+
+QString TryxRuntimeExportedObject::callerUniqueName() const {
+    if (!calledFromDBus()) {
+        return {};
+    }
+    const QString owner = message().service().trimmed();
+    if (!owner.startsWith(QLatin1Char(':'))) {
+        sendErrorReply(
+            QStringLiteral("org.tryx.Panorama.Error.InvalidCaller"),
+            tr("The operation requires a unique D-Bus caller identity"));
+        return {};
+    }
+    return owner;
+}
+
+void TryxRuntimeExportedObject::sendCurrentCallError(
+    const QString &name, const QString &message) const {
+    if (calledFromDBus()) {
+        sendErrorReply(name, message);
+    }
+}
 
 TryxRuntimeManagerAdaptor::TryxRuntimeManagerAdaptor(
     QObject *exportedObject, DeviceManager *manager)
@@ -593,9 +251,10 @@ void TryxRuntimeManagerAdaptor::updateConnectionSnapshot(
 }
 
 TryxRuntimeOperationsAdaptor::TryxRuntimeOperationsAdaptor(
-    QObject *exportedObject, DeviceManager *manager,
+    TryxRuntimeExportedObject *exportedObject, DeviceManager *manager,
     TryxRuntimeManagerAdaptor *connectionAdaptor)
     : QDBusAbstractAdaptor(exportedObject),
+      exportedObject_(exportedObject),
       manager_(manager),
       connectionAdaptor_(connectionAdaptor) {
     connect(manager_, &DeviceManager::operationChanged, this,
@@ -662,6 +321,14 @@ QString TryxRuntimeOperationsAdaptor::QueueUpload(
                                           TryxRuntimeApplyRequest{}, false);
 }
 
+QString TryxRuntimeOperationsAdaptor::QueueUploadWithTransform(
+    const QString &operationId, const QString &localPath,
+    const TryxRuntimeMediaTransform &transform) {
+    return manager_->queueUploadOperation(
+        operationId, localPath, false, TryxRuntimeApplyRequest{}, false,
+        false, transform);
+}
+
 QString TryxRuntimeOperationsAdaptor::QueueUploadWithApply(
     const QString &operationId, const QString &localPath,
     const TryxRuntimeApplyRequest &request) {
@@ -669,11 +336,28 @@ QString TryxRuntimeOperationsAdaptor::QueueUploadWithApply(
                                           request, true);
 }
 
+QString TryxRuntimeOperationsAdaptor::QueueUploadWithApplyAndTransform(
+    const QString &operationId, const QString &localPath,
+    const TryxRuntimeApplyRequest &request,
+    const TryxRuntimeMediaTransform &transform) {
+    return manager_->queueUploadOperation(
+        operationId, localPath, true, request, true, false, transform);
+}
+
 QString TryxRuntimeOperationsAdaptor::QueueEnsureMediaAndApply(
     const QString &operationId, const QString &localPath,
     const TryxRuntimeApplyRequest &request) {
     return manager_->queueEnsureMediaAndApplyOperation(
         operationId, localPath, request);
+}
+
+QString
+TryxRuntimeOperationsAdaptor::QueueEnsureMediaAndApplyWithTransform(
+    const QString &operationId, const QString &localPath,
+    const TryxRuntimeApplyRequest &request,
+    const TryxRuntimeMediaTransform &transform) {
+    return manager_->queueEnsureMediaAndApplyOperation(
+        operationId, localPath, request, transform);
 }
 
 QString TryxRuntimeOperationsAdaptor::QueueDeleteMedia(
@@ -697,6 +381,115 @@ QString TryxRuntimeOperationsAdaptor::QueueMetricsConfig(
     return manager_->queueMetricsConfigOperation(operationId, request);
 }
 
+QString TryxRuntimeOperationsAdaptor::QueueStageDeviceMedia(
+    const QString &operationId, const QString &mediaId) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return {};
+    }
+    const QString queued = manager_->queueStageDeviceMediaOperation(
+        operationId, mediaId, owner);
+    if (queued.isEmpty()) {
+        sendInvalidArtifactError(
+            tr("Device media could not be staged for this caller"));
+    }
+    return queued;
+}
+
+TryxRuntimeDeviceMediaArtifact
+TryxRuntimeOperationsAdaptor::ClaimDeviceMediaArtifact(
+    const QString &operationId, const QString &artifactId) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return {};
+    }
+    QString errorMessage;
+    const TryxRuntimeDeviceMediaArtifact artifact =
+        manager_->claimDeviceMediaArtifact(
+            operationId, artifactId, owner, &errorMessage);
+    if (artifact.artifactId.isEmpty()) {
+        sendInvalidArtifactError(
+            errorMessage.isEmpty()
+                ? tr("The device media artifact is unavailable")
+                : errorMessage);
+    }
+    return artifact;
+}
+
+bool TryxRuntimeOperationsAdaptor::RenewDeviceMediaArtifactLease(
+    const QString &artifactId, const QString &leaseId) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return false;
+    }
+    QString errorMessage;
+    const bool renewed = manager_->renewDeviceMediaArtifactLease(
+        artifactId, leaseId, owner, &errorMessage);
+    if (!renewed) {
+        sendInvalidArtifactError(
+            errorMessage.isEmpty()
+                ? tr("The device media artifact lease could not be renewed")
+                : errorMessage);
+    }
+    return renewed;
+}
+
+bool TryxRuntimeOperationsAdaptor::ReleaseDeviceMediaArtifact(
+    const QString &artifactId, const QString &leaseId) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return false;
+    }
+    QString errorMessage;
+    const bool released = manager_->releaseDeviceMediaArtifact(
+        artifactId, leaseId, owner, &errorMessage);
+    if (!released) {
+        sendInvalidArtifactError(
+            errorMessage.isEmpty()
+                ? tr("The device media artifact could not be released")
+                : errorMessage);
+    }
+    return released;
+}
+
+QString
+TryxRuntimeOperationsAdaptor::QueueRecoveredMediaUploadWithTransform(
+    const QString &operationId, const QString &artifactId,
+    const QString &leaseId,
+    const TryxRuntimeMediaTransform &transform) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return {};
+    }
+    const QString queued =
+        manager_->queueRecoveredMediaUploadOperation(
+            operationId, artifactId, leaseId, owner, transform);
+    if (queued.isEmpty()) {
+        sendInvalidArtifactError(
+            tr("The recovered media artifact is unavailable for upload"));
+    }
+    return queued;
+}
+
+QString TryxRuntimeOperationsAdaptor::QueueReplaceDeviceMedia(
+    const QString &operationId, const QString &artifactId,
+    const QString &leaseId, const QString &originalMediaId,
+    const TryxRuntimeApplyRequest &request,
+    const TryxRuntimeMediaTransform &transform) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return {};
+    }
+    const QString queued = manager_->queueReplaceDeviceMediaOperation(
+        operationId, artifactId, leaseId, originalMediaId,
+        request, transform, owner);
+    if (queued.isEmpty()) {
+        sendInvalidArtifactError(
+            tr("The recovered media artifact is unavailable for replacement"));
+    }
+    return queued;
+}
+
 QString TryxRuntimeOperationsAdaptor::RetryOperation(
     const QString &sourceOperationId, const QString &newOperationId) {
     return manager_->retryOperation(sourceOperationId, newOperationId);
@@ -705,4 +498,20 @@ QString TryxRuntimeOperationsAdaptor::RetryOperation(
 void TryxRuntimeOperationsAdaptor::CancelOperation(
     const QString &operationId) {
     manager_->cancelOperation(operationId);
+}
+
+QString TryxRuntimeOperationsAdaptor::callerUniqueName() {
+    return exportedObject_
+        ? exportedObject_->callerUniqueName()
+        : QString();
+}
+
+void TryxRuntimeOperationsAdaptor::sendInvalidArtifactError(
+    const QString &message) {
+    if (!exportedObject_) {
+        return;
+    }
+    exportedObject_->sendCurrentCallError(
+        QStringLiteral("org.tryx.Panorama.Error.InvalidArtifact"),
+        message);
 }

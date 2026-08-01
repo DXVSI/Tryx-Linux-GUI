@@ -1,6 +1,7 @@
 #include "firmwareupdater.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -379,6 +380,317 @@ bool FirmwareUpdater::writeRockchipMarker(const QString &path, quint32 state,
     return true;
 }
 
+bool FirmwareUpdater::fileSha256(
+    const QString &path, QString *sha256,
+    QString *errorMessage) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorMessage) {
+            *errorMessage =
+                tr("Cannot read firmware package: %1")
+                    .arg(file.errorString());
+        }
+        return false;
+    }
+
+    QCryptographicHash hash(
+        QCryptographicHash::Sha256);
+    while (!file.atEnd()) {
+        const QByteArray chunk =
+            file.read(1024 * 1024);
+        if (chunk.isEmpty() &&
+            file.error() !=
+                QFileDevice::NoError) {
+            if (errorMessage) {
+                *errorMessage =
+                    tr("Failed while hashing firmware package: %1")
+                        .arg(file.errorString());
+            }
+            return false;
+        }
+        hash.addData(chunk);
+    }
+    if (sha256) {
+        *sha256 = QString::fromLatin1(
+            hash.result().toHex());
+    }
+    return true;
+}
+
+bool FirmwareUpdater::
+    approvedPackageIdentityMatches(
+        const QString &path,
+        qint64 expectedSize,
+        const QString &expectedSha256,
+        QString *errorMessage) {
+    const QString normalizedSha =
+        expectedSha256.trimmed().toLower();
+    if (expectedSize <= 0 ||
+        normalizedSha.size() != 64 ||
+        QFileInfo(path).size() !=
+            expectedSize) {
+        if (errorMessage) {
+            *errorMessage = tr(
+                "The private firmware copy no longer matches the approved size");
+        }
+        return false;
+    }
+    QString actualSha;
+    if (!fileSha256(
+            path, &actualSha, errorMessage)) {
+        return false;
+    }
+    if (actualSha != normalizedSha) {
+        if (errorMessage) {
+            *errorMessage = tr(
+                "The private firmware copy no longer matches the approved SHA-256");
+        }
+        return false;
+    }
+    if (errorMessage) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+FirmwareUpdater::RockchipLoaderIdentity
+FirmwareUpdater::parseRockchipLoaderIdentity(
+    const QString &output,
+    const QString &requiredSerial) {
+    RockchipLoaderIdentity result;
+    const QRegularExpression deviceLine(
+        QStringLiteral(
+            "^\\s*DevNo\\s*=\\s*(\\d+)\\s+"
+            "Vid\\s*=\\s*0x([0-9A-Fa-f]{4})\\s*,\\s*"
+            "Pid\\s*=\\s*0x([0-9A-Fa-f]{4})\\s*,\\s*"
+            "LocationID\\s*=\\s*(\\S+)\\s+"
+            "Mode\\s*=\\s*(\\S+)\\s+"
+            "SerialNo\\s*=\\s*(\\S*)\\s*$"),
+        QRegularExpression::CaseInsensitiveOption);
+    QList<RockchipLoaderIdentity> devices;
+    bool malformedDeviceLine = false;
+    for (const QString &line :
+         output.split('\n')) {
+        if (!line.contains(
+                QStringLiteral("DevNo"),
+                Qt::CaseInsensitive)) {
+            continue;
+        }
+        const QRegularExpressionMatch match =
+            deviceLine.match(line);
+        if (!match.hasMatch()) {
+            malformedDeviceLine = true;
+            continue;
+        }
+        bool deviceNumberOk = false;
+        bool vendorOk = false;
+        bool productOk = false;
+        RockchipLoaderIdentity identity;
+        identity.deviceNumber =
+            match.captured(1).toInt(
+                &deviceNumberOk);
+        identity.vendorId =
+            match.captured(2).toUShort(
+                &vendorOk, 16);
+        identity.productId =
+            match.captured(3).toUShort(
+                &productOk, 16);
+        identity.locationId =
+            match.captured(4).trimmed();
+        identity.mode =
+            match.captured(5).trimmed();
+        identity.serial =
+            match.captured(6).trimmed();
+        if (!deviceNumberOk || !vendorOk ||
+            !productOk) {
+            malformedDeviceLine = true;
+            continue;
+        }
+        devices.append(identity);
+    }
+
+    const QRegularExpression countExpression(
+        QStringLiteral(
+            "connected\\s*\\(\\s*(\\d+)\\s*\\)"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch countMatch =
+        countExpression.match(output);
+    int reportedCount = -1;
+    if (countMatch.hasMatch()) {
+        bool ok = false;
+        reportedCount =
+            countMatch.captured(1).toInt(&ok);
+        if (!ok) {
+            reportedCount = -1;
+        }
+    }
+
+    if (malformedDeviceLine) {
+        result.status =
+            RockchipProbeStatus::Unsafe;
+        result.error = tr(
+            "upgrade_tool returned a malformed Rockchip device identity");
+        return result;
+    }
+    if (devices.isEmpty()) {
+        if (reportedCount > 0 ||
+            output.contains(
+                QStringLiteral("Maskrom"),
+                Qt::CaseInsensitive)) {
+            result.status =
+                RockchipProbeStatus::Unsafe;
+            result.error = tr(
+                "upgrade_tool reported an unidentifiable Rockchip device");
+            return result;
+        }
+        result.status =
+            RockchipProbeStatus::NoDevice;
+        result.error = tr(
+            "No Rockchip loader device was reported");
+        return result;
+    }
+    if (devices.size() != 1 ||
+        reportedCount != 1) {
+        result.status =
+            RockchipProbeStatus::Unsafe;
+        result.error = tr(
+            "upgrade_tool must explicitly report exactly one Rockchip loader device; disconnect all other Rockchip devices");
+        return result;
+    }
+
+    result = devices.first();
+    result.status = RockchipProbeStatus::Unsafe;
+    if (result.vendorId != 0x2207 ||
+        result.productId != 0x350a) {
+        result.error = tr(
+            "Rockchip device USB identity %1:%2 is not the supported 2207:350a loader")
+                           .arg(
+                               result.vendorId, 4,
+                               16, QLatin1Char('0'))
+                           .arg(
+                               result.productId, 4,
+                               16, QLatin1Char('0'));
+        return result;
+    }
+    if (result.mode.compare(
+            QStringLiteral("Loader"),
+            Qt::CaseInsensitive) != 0) {
+        result.error =
+            result.mode.compare(
+                QStringLiteral("Maskrom"),
+                Qt::CaseInsensitive) == 0
+            ? tr(
+                  "Rockchip Maskrom mode is not accepted for automatic flashing")
+            : tr(
+                  "Rockchip device is not in Loader mode: %1")
+                  .arg(result.mode);
+        return result;
+    }
+    if (result.locationId.isEmpty()) {
+        result.error = tr(
+            "Rockchip loader location identity is empty");
+        return result;
+    }
+    if (result.serial.isEmpty() ||
+        !result.serial.contains(
+            QStringLiteral("TRYX"),
+            Qt::CaseInsensitive)) {
+        result.error = tr(
+            "Rockchip loader serial does not identify a TRYX device");
+        return result;
+    }
+    if (!requiredSerial.trimmed().isEmpty() &&
+        result.serial != requiredSerial.trimmed()) {
+        result.error = tr(
+            "Rockchip loader serial %1 does not match the selected ADB device %2")
+                           .arg(
+                               result.serial,
+                               requiredSerial.trimmed());
+        return result;
+    }
+    result.status = RockchipProbeStatus::Valid;
+    result.error.clear();
+    return result;
+}
+
+bool FirmwareUpdater::rockchipChipInfoIsRk3568(
+    const QString &output,
+    QString *errorMessage) {
+    const QRegularExpression lineExpression(
+        QStringLiteral(
+            "^\\s*Chip\\s+Info\\s*:\\s*(.*)$"),
+        QRegularExpression::CaseInsensitiveOption);
+    for (const QString &line :
+         output.split('\n')) {
+        const QRegularExpressionMatch match =
+            lineExpression.match(line);
+        if (!match.hasMatch()) {
+            continue;
+        }
+        const QStringList tokens =
+            match.captured(1)
+                .split(
+                    QRegularExpression(
+                        QStringLiteral("\\s+")),
+                    Qt::SkipEmptyParts);
+        if (tokens.size() < 4) {
+            break;
+        }
+        QByteArray identifier;
+        for (int index = 0; index < 4;
+             ++index) {
+            bool ok = false;
+            const int value =
+                tokens.at(index).toInt(&ok, 16);
+            if (!ok ||
+                tokens.at(index).size() != 2 ||
+                value < 0 || value > 0xff) {
+                identifier.clear();
+                break;
+            }
+            identifier.append(
+                static_cast<char>(value));
+        }
+        std::reverse(
+            identifier.begin(),
+            identifier.end());
+        if (identifier ==
+            QByteArrayLiteral("3568")) {
+            if (errorMessage) {
+                errorMessage->clear();
+            }
+            return true;
+        }
+        if (errorMessage) {
+            *errorMessage = tr(
+                "Rockchip chip identity is not RK3568");
+        }
+        return false;
+    }
+    if (errorMessage) {
+        *errorMessage = tr(
+            "upgrade_tool RCI did not return a readable chip identity");
+    }
+    return false;
+}
+
+bool FirmwareUpdater::sameRockchipIdentity(
+    const RockchipLoaderIdentity &left,
+    const RockchipLoaderIdentity &right) {
+    return left.status ==
+               RockchipProbeStatus::Valid &&
+           right.status ==
+               RockchipProbeStatus::Valid &&
+           left.deviceNumber ==
+               right.deviceNumber &&
+           left.vendorId == right.vendorId &&
+           left.productId == right.productId &&
+           left.locationId ==
+               right.locationId &&
+           left.mode == right.mode &&
+           left.serial == right.serial;
+}
+
 FirmwareUpdater::PackageInfo FirmwareUpdater::validatePackage(const QString &packagePath) const {
     PackageInfo info;
     info.path = packagePath;
@@ -686,9 +998,24 @@ bool FirmwareUpdater::loadRockchipPartitionOffsets(QString *errorMessage) {
     return true;
 }
 
-void FirmwareUpdater::startLegacyAdbOta(const QString &packagePath) {
+void FirmwareUpdater::startLegacyAdbOta(
+    const QString &packagePath,
+    qint64 expectedSize,
+    const QString &expectedSha256) {
     if (isRunning()) {
         emit statusChanged(tr("Firmware update is already running"));
+        return;
+    }
+    irreversibleStarted_ = false;
+    rockchipWritesStarted_ = false;
+    packageExpectedSize_ = expectedSize;
+    packageSha256_ =
+        expectedSha256.trimmed().toLower();
+    QString identityError;
+    if (!approvedPackageIdentityMatches(
+            packagePath, packageExpectedSize_,
+            packageSha256_, &identityError)) {
+        fail(identityError);
         return;
     }
 
@@ -701,16 +1028,25 @@ void FirmwareUpdater::startLegacyAdbOta(const QString &packagePath) {
         fail(tr("Selected package is not a legacy Android OTA package"));
         return;
     }
+    if (!approvedPackageIdentityMatches(
+            packagePath, packageExpectedSize_,
+            packageSha256_, &identityError)) {
+        fail(identityError);
+        return;
+    }
 
     adbPath_ = adbExecutable();
     if (adbPath_.isEmpty()) {
         fail(tr("adb not found. Install android-tools to flash firmware."));
         return;
     }
-
     updateMode_ = UpdateMode::LegacyAdbOta;
     selectedSerial_.clear();
     currentBuildIncremental_.clear();
+    rockchipLoaderIdentity_ = {};
+    rockchipNextAction_ =
+        RockchipNextAction::None;
+    rockchipWritesStarted_ = false;
     cancelRequested_ = false;
     tempDir_.reset();
 
@@ -719,9 +1055,24 @@ void FirmwareUpdater::startLegacyAdbOta(const QString &packagePath) {
               tr("Searching for TRYX device over ADB..."));
 }
 
-void FirmwareUpdater::startRockchipLoaderUpdate(const QString &packagePath) {
+void FirmwareUpdater::startRockchipLoaderUpdate(
+    const QString &packagePath,
+    qint64 expectedSize,
+    const QString &expectedSha256) {
     if (isRunning()) {
         emit statusChanged(tr("Firmware update is already running"));
+        return;
+    }
+    irreversibleStarted_ = false;
+    rockchipWritesStarted_ = false;
+    packageExpectedSize_ = expectedSize;
+    packageSha256_ =
+        expectedSha256.trimmed().toLower();
+    QString identityError;
+    if (!approvedPackageIdentityMatches(
+            packagePath, packageExpectedSize_,
+            packageSha256_, &identityError)) {
+        fail(identityError);
         return;
     }
 
@@ -737,6 +1088,12 @@ void FirmwareUpdater::startRockchipLoaderUpdate(const QString &packagePath) {
     if (package_.productCode != "PASE") {
         fail(tr("Rockchip bundle product %1 is not supported by this Panorama SE updater")
                  .arg(package_.productCode));
+        return;
+    }
+    if (!approvedPackageIdentityMatches(
+            packagePath, packageExpectedSize_,
+            packageSha256_, &identityError)) {
+        fail(identityError);
         return;
     }
 
@@ -782,6 +1139,10 @@ void FirmwareUpdater::startRockchipLoaderUpdate(const QString &packagePath) {
     lastLoaderOutput_.clear();
     loaderPollAttempts_ = 0;
     rockchipPartitionTotal_ = 0;
+    rockchipLoaderIdentity_ = {};
+    rockchipNextAction_ =
+        RockchipNextAction::None;
+    rockchipWritesStarted_ = false;
     cancelRequested_ = false;
 
     emit progressChanged(0);
@@ -848,6 +1209,15 @@ void FirmwareUpdater::startProgramStep(Step step, const QString &program,
                  .arg(stepProgramName(program), process_->errorString()));
         return;
     }
+    if (!irreversibleStarted_ &&
+        (step == Step::RebootRecovery ||
+         step == Step::WriteStartMarker)) {
+        irreversibleStarted_ = true;
+        if (step == Step::WriteStartMarker) {
+            rockchipWritesStarted_ = true;
+        }
+        emit irreversibleStarted();
+    }
     stepTimer_.start(timeoutMs);
 }
 
@@ -902,6 +1272,18 @@ qint64 FirmwareUpdater::parseRemoteSize(const QString &output) const {
     bool ok = false;
     const qint64 value = match.captured(1).toLongLong(&ok);
     return ok ? value : -1;
+}
+
+QString FirmwareUpdater::parseRemoteSha256(
+    const QString &output) const {
+    const QRegularExpression shaExpression(
+        QStringLiteral(
+            "(?:^|\\s)([0-9A-Fa-f]{64})(?:\\s|$)"));
+    const QRegularExpressionMatch match =
+        shaExpression.match(output);
+    return match.hasMatch()
+        ? match.captured(1).toLower()
+        : QString();
 }
 
 void FirmwareUpdater::onProcessReadyRead() {
@@ -971,6 +1353,17 @@ void FirmwareUpdater::onProcessFinished(int exitCode,
                       tr("Checking copied package size..."));
             return;
         }
+        if (finishedStep ==
+            Step::VerifyRemoteSha256) {
+            startStep(
+                Step::VerifyRemoteSha256Fallback,
+                {"-s", selectedSerial_, "shell",
+                 "toybox", "sha256sum",
+                 kRemotePackagePath},
+                5 * 60 * 1000,
+                tr("Verifying copied package SHA-256 with toybox..."));
+            return;
+        }
         if (finishedStep == Step::RebootLoader && updateMode_ == UpdateMode::RockchipLoader) {
             emit statusChanged(tr("ADB reboot loader command returned an error; checking Rockchip loader anyway."));
             scheduleLoaderPoll(output);
@@ -1010,12 +1403,47 @@ void FirmwareUpdater::onStepTimedOut() {
         scheduleLoaderPoll(tr("upgrade_tool LD timed out"));
         return;
     }
+    const bool irreversibleCommandInFlight =
+        irreversibleStarted_ && process_ &&
+        process_->state() !=
+            QProcess::NotRunning &&
+        (currentStep_ ==
+             Step::RebootRecovery ||
+         currentStep_ ==
+             Step::WriteStartMarker ||
+         currentStep_ ==
+             Step::UpgradeLoader ||
+         currentStep_ ==
+             Step::WriteGpt ||
+         currentStep_ ==
+             Step::FlashPartition ||
+         currentStep_ ==
+             Step::WriteCompleteMarker ||
+         currentStep_ ==
+             Step::RebootRockchip);
+    if (irreversibleCommandInFlight) {
+        emit statusChanged(tr(
+            "%1 exceeded its expected duration. The command is still running and will not be interrupted because firmware state may already be changing.")
+                               .arg(
+                                   stepProgramName(
+                                       currentProgram_)));
+        return;
+    }
     fail(tr("%1 command timed out").arg(stepProgramName(currentProgram_)));
 }
 
 void FirmwareUpdater::handleStepSuccess(const QString &output) {
     switch (currentStep_) {
     case Step::ExtractRockchipPackage: {
+        QString identityError;
+        if (!approvedPackageIdentityMatches(
+                package_.path,
+                packageExpectedSize_,
+                packageSha256_,
+                &identityError)) {
+            fail(identityError);
+            return;
+        }
         rockchipPartitions_.clear();
         for (const QString &partition : kRockchipPartitionOrder) {
             if (QFileInfo::exists(rockchipFirmwareDir_ + "/" + partition + ".img")) {
@@ -1142,6 +1570,38 @@ void FirmwareUpdater::handleStepSuccess(const QString &output) {
                      .arg(package_.sizeBytes));
             return;
         }
+        emit progressChanged(90);
+        startStep(
+            Step::VerifyRemoteSha256,
+            {"-s", selectedSerial_, "shell",
+             "sha256sum", kRemotePackagePath},
+            5 * 60 * 1000,
+            tr("Verifying copied package SHA-256..."));
+        return;
+    }
+
+    case Step::VerifyRemoteSha256:
+    case Step::VerifyRemoteSha256Fallback: {
+        const QString remoteSha =
+            parseRemoteSha256(output);
+        if (remoteSha.isEmpty() &&
+            currentStep_ ==
+                Step::VerifyRemoteSha256) {
+            startStep(
+                Step::VerifyRemoteSha256Fallback,
+                {"-s", selectedSerial_, "shell",
+                 "toybox", "sha256sum",
+                 kRemotePackagePath},
+                5 * 60 * 1000,
+                tr("Verifying copied package SHA-256 with toybox..."));
+            return;
+        }
+        if (remoteSha.isEmpty() ||
+            remoteSha != packageSha256_) {
+            fail(tr(
+                "Copied package SHA-256 mismatch; recovery reboot was not sent"));
+            return;
+        }
         emit progressChanged(95);
         startStep(Step::RebootRecovery,
                   {"-s", selectedSerial_, "reboot", "recovery"},
@@ -1159,30 +1619,77 @@ void FirmwareUpdater::handleStepSuccess(const QString &output) {
         return;
 
     case Step::DetectLoader:
-        if (!rockchipLoaderDetected(output)) {
+    {
+        const RockchipLoaderIdentity identity =
+            parseRockchipLoaderIdentity(
+                output, selectedSerial_);
+        if (identity.status ==
+            RockchipProbeStatus::NoDevice) {
             scheduleLoaderPoll(output);
             return;
         }
+        if (identity.status !=
+            RockchipProbeStatus::Valid) {
+            fail(identity.error);
+            return;
+        }
+        rockchipLoaderIdentity_ = identity;
         emit progressChanged(20);
-        startProgramStep(Step::WriteStartMarker,
-                         upgradeToolPath_,
-                         {"WL", kRockchipMarkerAddress, rockchipStartMarkerPath_},
-                         60000,
-                         tr("Writing Rockchip update marker..."));
+        startProgramStep(
+            Step::ReadChipInfo,
+            upgradeToolPath_, {"RCI"},
+            10000,
+            tr("Confirming RK3568 chip identity..."));
         return;
+    }
+
+    case Step::ReadChipInfo: {
+        QString chipError;
+        if (!rockchipChipInfoIsRk3568(
+                output, &chipError)) {
+            fail(chipError);
+            return;
+        }
+        confirmRockchipLoader(
+            RockchipNextAction::
+                WriteStartMarker,
+            tr("Rechecking the exact Rockchip loader before the first write..."));
+        return;
+    }
+
+    case Step::ConfirmLoader: {
+        const RockchipLoaderIdentity identity =
+            parseRockchipLoaderIdentity(
+                output,
+                rockchipLoaderIdentity_.serial);
+        if (identity.status !=
+                RockchipProbeStatus::Valid ||
+            !sameRockchipIdentity(
+                rockchipLoaderIdentity_,
+                identity)) {
+            fail(
+                identity.error.isEmpty()
+                    ? tr("The Rockchip loader identity changed before a write")
+                    : identity.error);
+            return;
+        }
+        continueRockchipAction();
+        return;
+    }
 
     case Step::WriteStartMarker:
         emit progressChanged(25);
-        startProgramStep(Step::UpgradeLoader,
-                         upgradeToolPath_,
-                         {"UL", rockchipFirmwareDir_ + "/MiniLoaderAll.bin", "-noreset"},
-                         120000,
-                         tr("Uploading Rockchip loader..."));
+        confirmRockchipLoader(
+            RockchipNextAction::
+                UpgradeLoader,
+            tr("Rechecking the exact Rockchip loader before uploading the loader..."));
         return;
 
     case Step::UpgradeLoader:
         emit progressChanged(34);
-        startRockchipGptWrite();
+        confirmRockchipLoader(
+            RockchipNextAction::WriteGpt,
+            tr("Rechecking the exact Rockchip loader before writing GPT..."));
         return;
 
     case Step::WriteGpt:
@@ -1199,11 +1706,10 @@ void FirmwareUpdater::handleStepSuccess(const QString &output) {
 
     case Step::WriteCompleteMarker:
         emit progressChanged(95);
-        startProgramStep(Step::RebootRockchip,
-                         upgradeToolPath_,
-                         {"RD"},
-                         60000,
-                         tr("Rebooting Rockchip device..."));
+        confirmRockchipLoader(
+            RockchipNextAction::
+                RebootRockchip,
+            tr("Rechecking the exact Rockchip loader before rebooting..."));
         return;
 
     case Step::RebootRockchip:
@@ -1227,6 +1733,81 @@ void FirmwareUpdater::scheduleLoaderPoll(const QString &lastOutput) {
         return;
     }
     loaderPollTimer_.start(kLoaderPollIntervalMs);
+}
+
+void FirmwareUpdater::confirmRockchipLoader(
+    RockchipNextAction nextAction,
+    const QString &status) {
+    if (rockchipLoaderIdentity_.status !=
+            RockchipProbeStatus::Valid ||
+        nextAction == RockchipNextAction::None) {
+        fail(tr(
+            "The confirmed Rockchip loader identity is unavailable"));
+        return;
+    }
+    rockchipNextAction_ = nextAction;
+    startProgramStep(
+        Step::ConfirmLoader,
+        upgradeToolPath_, {"LD"}, 10000,
+        status);
+}
+
+void FirmwareUpdater::continueRockchipAction() {
+    const RockchipNextAction nextAction =
+        rockchipNextAction_;
+    rockchipNextAction_ =
+        RockchipNextAction::None;
+    switch (nextAction) {
+    case RockchipNextAction::WriteStartMarker:
+        // upgrade_tool has no per-device selector, so every write is
+        // preceded by an exact, unique LD identity check. The irreversible
+        // lock is published after QProcess confirms that this first WL
+        // command actually started.
+        startProgramStep(
+            Step::WriteStartMarker,
+            upgradeToolPath_,
+            {"WL", kRockchipMarkerAddress,
+             rockchipStartMarkerPath_},
+            60000,
+            tr("Writing Rockchip update marker..."));
+        return;
+    case RockchipNextAction::UpgradeLoader:
+        startProgramStep(
+            Step::UpgradeLoader,
+            upgradeToolPath_,
+            {"UL",
+             rockchipFirmwareDir_ +
+                 "/MiniLoaderAll.bin",
+             "-noreset"},
+            120000,
+            tr("Uploading Rockchip loader..."));
+        return;
+    case RockchipNextAction::WriteGpt:
+        startRockchipGptWrite();
+        return;
+    case RockchipNextAction::FlashPartition:
+        startCurrentRockchipPartitionWrite();
+        return;
+    case RockchipNextAction::WriteCompleteMarker:
+        startProgramStep(
+            Step::WriteCompleteMarker,
+            upgradeToolPath_,
+            {"WL", kRockchipMarkerAddress,
+             rockchipCompleteMarkerPath_},
+            60000,
+            tr("Writing Rockchip completion marker..."));
+        return;
+    case RockchipNextAction::RebootRockchip:
+        startProgramStep(
+            Step::RebootRockchip,
+            upgradeToolPath_, {"RD"}, 60000,
+            tr("Rebooting Rockchip device..."));
+        return;
+    case RockchipNextAction::None:
+        fail(tr(
+            "Rockchip loader confirmation has no pending write"));
+        return;
+    }
 }
 
 void FirmwareUpdater::startRockchipGptWrite() {
@@ -1253,68 +1834,50 @@ void FirmwareUpdater::startNextRockchipFlashPartition() {
             return;
         }
         emit progressChanged(qBound(42, progress, 90));
-        startProgramStep(Step::FlashPartition,
-                         upgradeToolPath_,
-                         {"WL", offset, imagePath},
-                         30 * 60 * 1000,
-                         tr("Flashing Rockchip partition %1...").arg(currentPartition_));
+        confirmRockchipLoader(
+            RockchipNextAction::FlashPartition,
+            tr("Rechecking the exact Rockchip loader before flashing %1...")
+                .arg(currentPartition_));
         return;
     }
 
     currentPartition_.clear();
     emit progressChanged(92);
-    startProgramStep(Step::WriteCompleteMarker,
-                     upgradeToolPath_,
-                     {"WL", kRockchipMarkerAddress, rockchipCompleteMarkerPath_},
-                     60000,
-                     tr("Writing Rockchip completion marker..."));
+    confirmRockchipLoader(
+        RockchipNextAction::
+            WriteCompleteMarker,
+        tr("Rechecking the exact Rockchip loader before the completion marker..."));
 }
 
-bool FirmwareUpdater::rockchipLoaderDetected(const QString &output) const {
-    const QString probe = output.trimmed();
-    if (probe.isEmpty()) {
-        return false;
+void FirmwareUpdater::
+    startCurrentRockchipPartitionWrite() {
+    const QString imagePath =
+        rockchipFirmwareDir_ + "/" +
+        currentPartition_ + ".img";
+    const QString offset =
+        rockchipPartitionOffsets_.value(
+            currentPartition_);
+    if (currentPartition_.isEmpty() ||
+        offset.isEmpty() ||
+        !QFileInfo::exists(imagePath)) {
+        fail(tr(
+            "Rockchip partition %1 is no longer ready for flashing")
+                 .arg(currentPartition_));
+        return;
     }
-    if (probe.contains("not found", Qt::CaseInsensitive) ||
-        probe.contains("no device", Qt::CaseInsensitive)) {
-        return false;
-    }
-    return probe.contains("DevNo", Qt::CaseInsensitive) ||
-           probe.contains("Vid=", Qt::CaseInsensitive) ||
-           probe.contains("Maskrom", Qt::CaseInsensitive) ||
-           probe.contains("Loader", Qt::CaseInsensitive);
+    startProgramStep(
+        Step::FlashPartition,
+        upgradeToolPath_,
+        {"WL", offset, imagePath},
+        30 * 60 * 1000,
+        tr("Flashing Rockchip partition %1...")
+            .arg(currentPartition_));
 }
 
 bool FirmwareUpdater::isRockchipCancelLocked() const {
-    if (updateMode_ != UpdateMode::RockchipLoader) {
-        return false;
-    }
-
-    switch (currentStep_) {
-    case Step::WriteStartMarker:
-    case Step::UpgradeLoader:
-    case Step::WriteGpt:
-    case Step::WriteParameter:
-    case Step::FlashPartition:
-    case Step::WriteCompleteMarker:
-    case Step::RebootRockchip:
-        return true;
-
-    case Step::Idle:
-    case Step::ExtractRockchipPackage:
-    case Step::ListDevices:
-    case Step::GetState:
-    case Step::GetProductDevice:
-    case Step::GetBuildIncremental:
-    case Step::PushPackage:
-    case Step::VerifyRemoteSize:
-    case Step::VerifyRemoteSizeFallback:
-    case Step::RebootRecovery:
-    case Step::RebootLoader:
-    case Step::DetectLoader:
-        return false;
-    }
-    return false;
+    return updateMode_ ==
+               UpdateMode::RockchipLoader &&
+           rockchipWritesStarted_;
 }
 
 void FirmwareUpdater::fail(const QString &message) {

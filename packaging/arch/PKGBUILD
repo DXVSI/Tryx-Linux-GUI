@@ -2,11 +2,11 @@
 # PKGBUILD metadata and directory variables are consumed or provided by makepkg.
 # shellcheck disable=SC2034,SC2154
 pkgname=tryx-panorama-manager
-pkgver=2.0.1
+pkgver=2.1.0
 pkgrel=1
 pkgdesc='Control TRYX Panorama cooler displays on Linux'
 arch=('x86_64')
-url='https://github.com/DXVSI/tryx-panorama-se-360-linux-gui'
+url='https://github.com/DXVSI/Tryx-Linux-GUI'
 license=('MIT' 'BSD-2-Clause')
 depends=(
   'dbus'
@@ -15,6 +15,7 @@ depends=(
   'libusb'
   'protobuf'
   'qt6-base'
+  'qt6-declarative'
   'systemd'
 )
 optdepends=(
@@ -41,13 +42,13 @@ _source_dir="${pkgname}-${pkgver}"
 
 build() {
   cd "${srcdir}/${_source_dir}" || return 1
-  qmake6 tryx-panorama.pro
+  qmake6 tryx-panorama-all.pro
   make
 }
 
 check() {
   cd "${srcdir}/${_source_dir}" || return 1
-  dbus-run-session -- make check
+  dbus-run-session -- make package-check
 }
 
 package() {

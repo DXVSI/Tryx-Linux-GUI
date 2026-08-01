@@ -5,6 +5,7 @@ Maintainer: DXVSI <dxvsi123@gmail.com>
 Build-Depends:
  dbus-daemon,
  debhelper-compat (= 13),
+ ffmpeg,
  g++,
  libprotobuf-dev,
  libudev-dev,
@@ -13,14 +14,28 @@ Build-Depends:
  pkg-config,
  protobuf-compiler,
  qmake6,
+ qml6-module-qt-labs-folderlistmodel,
+ qml6-module-qtqml,
+ qml6-module-qtqml-models,
+ qml6-module-qtqml-workerscript,
+ qml6-module-qtquick,
+ qml6-module-qtquick-controls,
+ qml6-module-qtquick-dialogs,
+ qml6-module-qtquick-layouts,
+ qml6-module-qtquick-shapes,
+ qml6-module-qtquick-templates,
+ qml6-module-qtquick-window,
+ qml6-module-qttest,
  qt6-base-dev,
+ qt6-declarative-dev,
+ qt6-declarative-dev-tools,
  qt6-l10n-tools,
  systemd-dev
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
-Homepage: https://github.com/DXVSI/tryx-panorama-se-360-linux-gui
-Vcs-Browser: https://github.com/DXVSI/tryx-panorama-se-360-linux-gui
-Vcs-Git: https://github.com/DXVSI/tryx-panorama-se-360-linux-gui.git
+Homepage: https://github.com/DXVSI/Tryx-Linux-GUI
+Vcs-Browser: https://github.com/DXVSI/Tryx-Linux-GUI
+Vcs-Git: https://github.com/DXVSI/Tryx-Linux-GUI.git
 
 Package: tryx-panorama-manager
 Architecture: amd64
@@ -28,6 +43,17 @@ Depends:
  dbus-user-session,
  ffmpeg,
  hicolor-icon-theme,
+ qml6-module-qt-labs-folderlistmodel,
+ qml6-module-qtqml,
+ qml6-module-qtqml-models,
+ qml6-module-qtqml-workerscript,
+ qml6-module-qtquick,
+ qml6-module-qtquick-controls,
+ qml6-module-qtquick-dialogs,
+ qml6-module-qtquick-layouts,
+ qml6-module-qtquick-shapes,
+ qml6-module-qtquick-templates,
+ qml6-module-qtquick-window,
  systemd,
  udev,
  ${misc:Depends},

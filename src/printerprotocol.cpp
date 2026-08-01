@@ -38,6 +38,13 @@ constexpr qsizetype kFileTransmitChunkSize = 0x40000;
 constexpr int kTransferChunkWriteTimeoutMs = 15000;
 constexpr int kFileTransmitResponseTimeoutMs = 30000;
 constexpr qint64 kMaxMediaUploadSize = 500LL * 1024LL * 1024LL;
+constexpr qint64 kMaxMediaPullSize = 500LL * 1024LL * 1024LL;
+constexpr int kMaxMediaPullChunks = 16384;
+constexpr qint64 kMediaPullDeadlineBaseMs = 30000;
+constexpr qint64 kMediaPullDeadlinePerMiBMs = 2000;
+constexpr qint64 kMediaPullDeadlineHardLimitMs = 30LL * 60LL * 1000LL;
+constexpr qint64 kBytesPerMiB = 1024LL * 1024LL;
+constexpr qsizetype kMediaPullCancellationCheckInterval = 64 * 1024;
 constexpr quint16 kTryxVendorId = 0x391a;
 constexpr quint16 kTransitionProductId = 0x0006;
 constexpr quint16 kPaseProductId = 0x1021;
@@ -1751,6 +1758,17 @@ QString normalizedMediaName(const panorama::wire::v1::MediaEntry &media) {
     return name;
 }
 
+QString normalizedMediaReference(const std::string &value) {
+    QString reference =
+        QString::fromStdString(value).trimmed();
+    reference.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    const qsizetype separator = reference.lastIndexOf(QLatin1Char('/'));
+    if (separator >= 0) {
+        reference = reference.mid(separator + 1);
+    }
+    return reference.trimmed();
+}
+
 bool isSafeDeviceMediaName(const QString &fileName) {
     if (fileName.isEmpty() || fileName.size() > 128 ||
         fileName.startsWith(QLatin1Char('.')) ||
@@ -1787,6 +1805,147 @@ bool isSafeUploadFileName(const QString &fileName) {
         }
     }
     return false;
+}
+
+struct MediaPullCandidate {
+    QByteArray rawPath;
+    QString mediaName;
+    qint64 fileSize = 0;
+};
+
+bool validateMediaPullPath(const QByteArray &rawPath,
+                           const QString &mediaName) {
+    static const QByteArray prefix =
+        QByteArrayLiteral("/userdata/user/");
+    if (!isSafeUploadFileName(mediaName) ||
+        rawPath.isEmpty() ||
+        rawPath.size() > prefix.size() + 512 ||
+        !rawPath.startsWith(prefix) ||
+        rawPath != prefix + mediaName.toUtf8() ||
+        QString::fromUtf8(rawPath).toUtf8() != rawPath) {
+        return false;
+    }
+
+    for (const char byte : rawPath) {
+        const auto value = static_cast<unsigned char>(byte);
+        if (value == 0 || value < 0x20 || value == 0x7f ||
+            byte == '\\') {
+            return false;
+        }
+    }
+    return true;
+}
+
+QByteArray applyMediaPullXor(const QByteArray &bytes,
+                            quint64 absoluteOffset,
+                            const PrinterProtocol::OperationContext *context,
+                            bool *cancelled) {
+    if (cancelled) {
+        *cancelled = false;
+    }
+    QByteArray transformed = bytes;
+    for (qsizetype index = 0; index < transformed.size(); ++index) {
+        if (context &&
+            index % kMediaPullCancellationCheckInterval == 0 &&
+            operationIsCancelled(*context)) {
+            if (cancelled) {
+                *cancelled = true;
+            }
+            return {};
+        }
+        const quint8 mask = static_cast<quint8>(
+            (absoluteOffset + static_cast<quint64>(index)) & 0xffU);
+        transformed[index] =
+            static_cast<char>(
+                static_cast<quint8>(transformed.at(index)) ^ mask);
+    }
+    return transformed;
+}
+
+qint64 mediaPullDeadlineForSize(qint64 fileSize) {
+    const qint64 roundedMiB =
+        qMax<qint64>(1, (fileSize + kBytesPerMiB - 1) / kBytesPerMiB);
+    return qMin(
+        kMediaPullDeadlineHardLimitMs,
+        kMediaPullDeadlineBaseMs +
+            roundedMiB * kMediaPullDeadlinePerMiBMs);
+}
+
+bool resolveMediaPullCandidate(
+    const panorama::wire::v1::MediaCatalog &catalog,
+    const QString &mediaName, qint64 expectedSize,
+    qint64 maximumBytes, MediaPullCandidate *candidate,
+    QString *errorMessage) {
+    if (!candidate) {
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "Media pull candidate storage is not available");
+        }
+        return false;
+    }
+
+    int matchingEntries = 0;
+    bool matchedPreset = false;
+    panorama::wire::v1::MediaEntry selected;
+    const auto inspect = [&](const auto &entries, bool preset) {
+        for (const auto &entry : entries) {
+            if (normalizedMediaName(entry) != mediaName) {
+                continue;
+            }
+            ++matchingEntries;
+            if (preset) {
+                matchedPreset = true;
+            } else {
+                selected = entry;
+            }
+        }
+    };
+    inspect(catalog.media_file_list(), false);
+    inspect(catalog.preset_file_list(), true);
+
+    if (matchingEntries != 1 || matchedPreset) {
+        if (errorMessage) {
+            *errorMessage = matchingEntries == 0
+                ? QObject::tr(
+                      "Selected media is no longer present in the fresh device catalog")
+                : QObject::tr(
+                      "Selected media is not a unique writable user entry in the fresh device catalog");
+        }
+        return false;
+    }
+    if (selected.read_only()) {
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "Selected media is read-only and cannot be pulled");
+        }
+        return false;
+    }
+    const qint64 catalogSize =
+        static_cast<qint64>(selected.file_size());
+    if (catalogSize <= 0 || catalogSize != expectedSize ||
+        catalogSize > maximumBytes) {
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "Selected media size changed or exceeds the bounded pull limit");
+        }
+        return false;
+    }
+
+    const std::string &path = selected.file_path();
+    const QByteArray rawPath(
+        path.data(), static_cast<qsizetype>(path.size()));
+    if (!validateMediaPullPath(rawPath, mediaName)) {
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "Selected media has an unsafe or ambiguous device path");
+        }
+        return false;
+    }
+
+    candidate->rawPath = rawPath;
+    candidate->mediaName = mediaName;
+    candidate->fileSize = catalogSize;
+    return true;
 }
 
 QString transmitStatusText(panorama::wire::v1::TransferStatus::Code status) {
@@ -2085,8 +2244,26 @@ public:
 
     enum class TransactionProfile {
         Default,
-        FileTransmit
+        FileTransmit,
+        MediaPull
     };
+
+    static bool usesFileTransferProfile(TransactionProfile profile) {
+        return profile == TransactionProfile::FileTransmit ||
+               profile == TransactionProfile::MediaPull;
+    }
+
+    static QString transactionProfileName(TransactionProfile profile) {
+        switch (profile) {
+        case TransactionProfile::Default:
+            return QStringLiteral("default");
+        case TransactionProfile::FileTransmit:
+            return QStringLiteral("file-transmit");
+        case TransactionProfile::MediaPull:
+            return QStringLiteral("media-pull");
+        }
+        return QStringLiteral("unknown");
+    }
 
     explicit Impl(int transactionTimeoutMs, int deviceInfoReadyTimeoutMs,
                   int fileTransmitResponseTimeoutMs)
@@ -2160,6 +2337,13 @@ public:
         fileTransmitResponseTimeoutMs_ = qMax(1, timeoutMs);
     }
 
+    void setMediaPullLimitsForTesting(
+        qint64 maximumBytes, int maximumChunks, int deadlineMs) {
+        mediaPullMaximumBytes_ = qMax<qint64>(1, maximumBytes);
+        mediaPullMaximumChunks_ = qMax(1, maximumChunks);
+        mediaPullDeadlineOverrideMs_ = qMax(1, deadlineMs);
+    }
+
     void setBootstrapZeroByteWriteFailuresForTesting(int failureCount) {
         bootstrapZeroByteWriteFailuresForTesting_ =
             qMax(0, failureCount);
@@ -2210,8 +2394,10 @@ public:
         }
         const quint64 trackId =
             fixedTrackId != 0 ? fixedTrackId : allocateTrackId();
+        const bool fileTransferProfile =
+            usesFileTransferProfile(profile);
         const quint32 requestVersion =
-            profile == TransactionProfile::FileTransmit ? 0U : 1U;
+            fileTransferProfile ? 0U : 1U;
         auto *header = request->mutable_header();
         header->set_version(requestVersion);
         header->set_track_id(trackId);
@@ -2251,7 +2437,7 @@ public:
         qsizetype writtenBytes = 0;
         WriteFailureKind writeFailure = WriteFailureKind::None;
         const int writeTimeoutMs =
-            profile == TransactionProfile::FileTransmit
+            fileTransferProfile
                 ? fileTransmitDataWriteTimeoutMs_
                 : transactionTimeoutMs_;
         if (!writeAll(frame, context, writeTimeoutMs, errorMessage,
@@ -2276,8 +2462,7 @@ public:
 
         const UnframedResponseValidator unframedResponseValidator =
             [trackId, expectedBody, requestVersion,
-             fileTransmit =
-                 profile == TransactionProfile::FileTransmit,
+             fileTransferProfile,
              acceptHeaderOnlySuccess](const QByteArray &candidate) {
                 if (candidate.isEmpty() ||
                     candidate.size() > PrinterFrameCodec::MaxPayloadSize) {
@@ -2289,7 +2474,7 @@ public:
                            static_cast<int>(candidate.size())) &&
                        parsed.has_header() &&
                        (parsed.header().version() == requestVersion ||
-                        (fileTransmit &&
+                        (fileTransferProfile &&
                          parsed.header().version() == 1)) &&
                        parsed.header().track_id() == trackId &&
                        (parsed.body_case() == expectedBody ||
@@ -2299,7 +2484,7 @@ public:
             };
 
         const int responseTimeoutMs =
-            profile == TransactionProfile::FileTransmit
+            fileTransferProfile
                 ? fileTransmitResponseTimeoutMs_
                 : transactionTimeoutMs_;
         QElapsedTimer responseTimer;
@@ -2322,10 +2507,7 @@ public:
                 qWarning().noquote()
                     << QStringLiteral(
                            "TRYX response wait failed: profile=%1 track_id=%2 expected_body=%3 elapsed=%4ms buffered_bytes=%5 input_error_delta=%6 error=%7")
-                           .arg(
-                               profile == TransactionProfile::FileTransmit
-                                   ? QStringLiteral("file-transmit")
-                                   : QStringLiteral("default"))
+                           .arg(transactionProfileName(profile))
                            .arg(trackId)
                            .arg(static_cast<int>(expectedBody))
                            .arg(responseTimer.elapsed())
@@ -2387,6 +2569,20 @@ public:
                 ++skippedFrames;
                 skippedResponseBytes += payload.size() + 8;
                 continue;
+            }
+            if (profile == TransactionProfile::MediaPull &&
+                parsed.header().version() != 0 &&
+                parsed.header().version() != 1) {
+                if (errorMessage) {
+                    *errorMessage = QObject::tr(
+                        "TRYX media pull response protocol version %1 is not supported")
+                                        .arg(parsed.header().version());
+                }
+                if (outcome) {
+                    *outcome = TransactionOutcome::InvalidResponse;
+                }
+                closeDevice();
+                return false;
             }
             if (parsed.has_error() &&
                 parsed.error().code() != panorama::wire::v1::ProtocolError::SUCCESS) {
@@ -3167,6 +3363,12 @@ public:
         // source of truth for application readiness.
         return true;
     }
+
+    MediaPullResult pullUserMedia(
+        const QString &devicePath, const QString &mediaName,
+        qint64 expectedSize, const MediaPullChunkSink &sink,
+        const MediaPullProgress &progress,
+        const OperationContext &context);
 
 #ifdef TRYX_PROTOCOL_TESTING
     void setPersistentUsbInputFailureForTesting(bool persistent) {
@@ -4250,6 +4452,9 @@ private:
     int deviceInfoReadyTimeoutMs_ = 30000;
     int fileTransmitResponseTimeoutMs_ =
         kFileTransmitResponseTimeoutMs;
+    qint64 mediaPullMaximumBytes_ = kMaxMediaPullSize;
+    int mediaPullMaximumChunks_ = kMaxMediaPullChunks;
+    qint64 mediaPullDeadlineOverrideMs_ = 0;
     quint64 nextTrackId_ = 1;
     QString devicePath_;
     QByteArray receiveBuffer_;
@@ -4262,6 +4467,296 @@ private:
 #endif
     QElapsedTimer lastOutboundTimer_;
 };
+
+PrinterProtocol::MediaPullResult
+PrinterProtocol::Impl::pullUserMedia(
+    const QString &devicePath, const QString &mediaName,
+    qint64 expectedSize, const MediaPullChunkSink &sink,
+    const MediaPullProgress &progress,
+    const OperationContext &context) {
+    MediaPullResult result;
+    result.mediaName = mediaName;
+    result.fileSize = expectedSize;
+
+    const auto cancel = [&result]() {
+        result.cancelled = true;
+        result.error = QObject::tr(
+            "TRYX media pull was cancelled because the device state changed");
+        return result;
+    };
+    const auto fail = [&result](const QString &error) {
+        result.error = error;
+        return result;
+    };
+    const auto rejectResponse =
+        [this, &result](const QString &error) {
+            result.error = error;
+            closeDevice();
+            return result;
+        };
+
+    if (isCancelled(context)) {
+        return cancel();
+    }
+    if (!sink) {
+        return fail(QObject::tr(
+            "Media pull requires a bounded decoded-chunk sink"));
+    }
+    if (!isSafeUploadFileName(mediaName) ||
+        expectedSize <= 0 ||
+        expectedSize > mediaPullMaximumBytes_) {
+        return fail(QObject::tr(
+            "Selected media identity is not eligible for a bounded pull"));
+    }
+
+    const qint64 deadlineMs =
+        mediaPullDeadlineOverrideMs_ > 0
+            ? mediaPullDeadlineOverrideMs_
+            : mediaPullDeadlineForSize(expectedSize);
+    QElapsedTimer operationTimer;
+    operationTimer.start();
+    const auto deadlineExpired = [&operationTimer, deadlineMs]() {
+        return operationTimer.elapsed() >= deadlineMs;
+    };
+    OperationContext boundedContext = context;
+    boundedContext.isCancelled =
+        [&context, &deadlineExpired]() {
+            return operationIsCancelled(context) ||
+                   deadlineExpired();
+        };
+
+    panorama::wire::v1::Request catalogRequest;
+    catalogRequest.mutable_media_catalog_query();
+    panorama::wire::v1::Response catalogResponse;
+    QString transactionError;
+    TransactionOutcome transactionOutcome =
+        TransactionOutcome::NotSent;
+    if (!execute(
+            &catalogRequest,
+            panorama::wire::v1::Response::kMediaCatalog,
+            &catalogResponse, devicePath, boundedContext,
+            &transactionError, &transactionOutcome)) {
+        if (deadlineExpired()) {
+            return fail(QObject::tr(
+                "Media pull exceeded its bounded operation deadline during catalog preflight"));
+        }
+        if (transactionOutcome == TransactionOutcome::Cancelled ||
+            isCancelled(context)) {
+            return cancel();
+        }
+        return fail(QObject::tr(
+            "Cannot read the fresh media catalog before pull: %1")
+                        .arg(transactionError));
+    }
+    if (isCancelled(context)) {
+        return cancel();
+    }
+    if (deadlineExpired()) {
+        return fail(QObject::tr(
+            "Media pull exceeded its bounded operation deadline during catalog preflight"));
+    }
+
+    MediaPullCandidate candidate;
+    QString candidateError;
+    if (!resolveMediaPullCandidate(
+            catalogResponse.media_catalog(), mediaName,
+            expectedSize, mediaPullMaximumBytes_,
+            &candidate, &candidateError)) {
+        return fail(candidateError);
+    }
+
+    quint64 sessionId = 0;
+    while (sessionId == 0) {
+        sessionId =
+            QRandomGenerator::global()->generate64();
+    }
+
+    QCryptographicHash rawHash(QCryptographicHash::Sha256);
+    QCryptographicHash decodedHash(QCryptographicHash::Sha256);
+    const quint64 exactFileSize =
+        static_cast<quint64>(candidate.fileSize);
+    quint64 offset = 0;
+    int chunks = 0;
+    while (offset < exactFileSize) {
+        if (isCancelled(context)) {
+            return cancel();
+        }
+        if (deadlineExpired()) {
+            return fail(QObject::tr(
+                "Media pull exceeded its bounded operation deadline"));
+        }
+        if (chunks >= mediaPullMaximumChunks_) {
+            return fail(QObject::tr(
+                "Media pull exceeded the bounded chunk count"));
+        }
+
+        panorama::wire::v1::Request request;
+        auto *read = request.mutable_media_read_chunk();
+        read->set_remote_path(
+            candidate.rawPath.constData(),
+            static_cast<size_t>(candidate.rawPath.size()));
+        read->set_session_id(sessionId);
+        read->set_offset(offset);
+
+        panorama::wire::v1::Response response;
+        transactionError.clear();
+        transactionOutcome = TransactionOutcome::NotSent;
+        if (!execute(
+                &request,
+                panorama::wire::v1::Response::kMediaReadChunk,
+                &response, devicePath, boundedContext,
+                &transactionError, &transactionOutcome,
+                TransactionProfile::MediaPull)) {
+            if (deadlineExpired()) {
+                return fail(QObject::tr(
+                    "Media pull exceeded its bounded operation deadline while waiting for a chunk"));
+            }
+            if (transactionOutcome ==
+                    TransactionOutcome::Cancelled ||
+                isCancelled(context)) {
+                return cancel();
+            }
+            return fail(QObject::tr(
+                "TRYX media pull request failed at offset %1: %2")
+                            .arg(offset)
+                            .arg(transactionError));
+        }
+        if (isCancelled(context)) {
+            return cancel();
+        }
+        if (deadlineExpired()) {
+            return fail(QObject::tr(
+                "Media pull exceeded its bounded operation deadline while receiving a chunk"));
+        }
+
+        const auto &readResponse =
+            response.media_read_chunk();
+        if (readResponse.status() !=
+            panorama::wire::v1::MediaReadChunkResponse::OK) {
+            return fail(
+                readResponse.status() ==
+                        panorama::wire::v1::
+                            MediaReadChunkResponse::FILE_ERROR
+                    ? QObject::tr(
+                          "TRYX device reported a file error while pulling media")
+                    : QObject::tr(
+                          "TRYX device returned an unknown media pull status"));
+        }
+
+        const std::string &responsePath =
+            readResponse.remote_path();
+        const QByteArray echoedPath(
+            responsePath.data(),
+            static_cast<qsizetype>(responsePath.size()));
+        if (echoedPath != candidate.rawPath) {
+            return rejectResponse(QObject::tr(
+                "TRYX media pull response changed the validated device path"));
+        }
+        if (readResponse.session_id() != sessionId) {
+            return rejectResponse(QObject::tr(
+                "TRYX media pull response changed the session identifier"));
+        }
+        if (readResponse.offset() != offset) {
+            return rejectResponse(QObject::tr(
+                "TRYX media pull response offset does not match the requested offset"));
+        }
+        if (readResponse.file_size() != exactFileSize) {
+            return rejectResponse(QObject::tr(
+                "TRYX media pull response changed the fresh catalog file size"));
+        }
+
+        const std::string &responseData =
+            readResponse.data();
+        const QByteArray rawChunk(
+            responseData.data(),
+            static_cast<qsizetype>(responseData.size()));
+        if (rawChunk.isEmpty()) {
+            return rejectResponse(QObject::tr(
+                "TRYX media pull made no progress before end of file"));
+        }
+        const quint64 chunkSize =
+            static_cast<quint64>(rawChunk.size());
+        if (offset >
+                std::numeric_limits<quint64>::max() -
+                    chunkSize ||
+            chunkSize > exactFileSize - offset) {
+            return rejectResponse(QObject::tr(
+                "TRYX media pull chunk exceeds the validated file size"));
+        }
+
+        bool decodeCancelled = false;
+        const QByteArray decodedChunk =
+            applyMediaPullXor(
+                rawChunk, offset, &boundedContext,
+                &decodeCancelled);
+        if (decodeCancelled && deadlineExpired()) {
+            return fail(QObject::tr(
+                "Media pull exceeded its bounded operation deadline while decoding a chunk"));
+        }
+        if (decodeCancelled || isCancelled(context)) {
+            return cancel();
+        }
+        if (decodedChunk.size() != rawChunk.size()) {
+            return rejectResponse(QObject::tr(
+                "TRYX media pull failed to decode a complete chunk"));
+        }
+        if (deadlineExpired()) {
+            return fail(QObject::tr(
+                "Media pull exceeded its bounded operation deadline while decoding a chunk"));
+        }
+
+        QString sinkError;
+        if (!sink(
+                static_cast<qint64>(offset),
+                decodedChunk, &sinkError)) {
+            return fail(
+                sinkError.isEmpty()
+                    ? QObject::tr(
+                          "Decoded media pull sink rejected a chunk")
+                    : sinkError);
+        }
+        if (isCancelled(context)) {
+            return cancel();
+        }
+        if (deadlineExpired()) {
+            return fail(QObject::tr(
+                "Media pull exceeded its bounded operation deadline while storing a chunk"));
+        }
+
+        rawHash.addData(rawChunk);
+        decodedHash.addData(decodedChunk);
+        offset += chunkSize;
+        ++chunks;
+        result.bytesDecoded =
+            static_cast<qint64>(offset);
+        result.chunkCount = chunks;
+        if (progress) {
+            progress(
+                result.bytesDecoded,
+                candidate.fileSize);
+        }
+        if (isCancelled(context)) {
+            return cancel();
+        }
+        if (deadlineExpired()) {
+            return fail(QObject::tr(
+                "Media pull exceeded its bounded operation deadline while reporting progress"));
+        }
+    }
+
+    if (offset != exactFileSize) {
+        return rejectResponse(QObject::tr(
+            "TRYX media pull did not finish at the validated file size"));
+    }
+    result.success = true;
+    result.fileSize = candidate.fileSize;
+    result.rawSha256 =
+        QString::fromLatin1(rawHash.result().toHex());
+    result.decodedSha256 =
+        QString::fromLatin1(decodedHash.result().toHex());
+    result.error.clear();
+    return result;
+}
 
 PrinterProtocol::PrinterProtocol()
     : impl_(std::make_unique<Impl>(
@@ -4690,15 +5185,196 @@ PrinterProtocol::MediaListResult PrinterProtocol::readMediaList(
     return {true, {}, files};
 }
 
+PrinterProtocol::MediaPullResult PrinterProtocol::pullUserMedia(
+    const QString &devicePath, const QString &mediaName,
+    qint64 expectedSize, const MediaPullChunkSink &sink,
+    const MediaPullProgress &progress,
+    const OperationContext &context) {
+    return impl_->pullUserMedia(
+        devicePath, mediaName, expectedSize,
+        sink, progress, context);
+}
+
+PrinterProtocol::MediaReferenceResult
+PrinterProtocol::readUserMediaReferences(
+    const QString &devicePath, const QString &mediaName,
+    qint64 expectedSize,
+    const QString &expectedReplacementName,
+    qint64 expectedReplacementSize,
+    const OperationContext &context) {
+    MediaReferenceResult result;
+    if (!isSafeUploadFileName(mediaName) ||
+        expectedSize <= 0 ||
+        expectedSize >
+            static_cast<qint64>(
+                std::numeric_limits<quint32>::max())) {
+        result.error = QObject::tr(
+            "Selected media identity is not eligible for reference preflight");
+        return result;
+    }
+    const bool replacementExpected =
+        !expectedReplacementName.isEmpty() ||
+        expectedReplacementSize != 0;
+    if (replacementExpected &&
+        (!isSafeUploadFileName(expectedReplacementName) ||
+         expectedReplacementName == mediaName ||
+         expectedReplacementSize <= 0 ||
+         expectedReplacementSize >
+             static_cast<qint64>(
+                 std::numeric_limits<quint32>::max()))) {
+        result.error = QObject::tr(
+            "Expected replacement media identity is not eligible for reference preflight");
+        return result;
+    }
+
+    const MediaListResult currentList =
+        readMediaList(devicePath, context);
+    if (!currentList.success) {
+        result.error = QObject::tr(
+            "Cannot read the fresh media catalog before reference preflight: %1")
+                           .arg(currentList.error);
+        return result;
+    }
+
+    QList<MediaFile> matches;
+    QList<MediaFile> replacementMatches;
+    for (const MediaFile &media : currentList.files) {
+        if (media.name == mediaName) {
+            matches.append(media);
+        }
+        if (replacementExpected &&
+            media.name == expectedReplacementName) {
+            replacementMatches.append(media);
+        }
+    }
+    result.originalIdentityVerified =
+        matches.size() == 1 &&
+        matches.constFirst().source == MediaSource::User &&
+        !matches.constFirst().readOnly &&
+        matches.constFirst().size ==
+            static_cast<quint32>(expectedSize);
+    result.replacementIdentityVerified =
+        replacementExpected &&
+        replacementMatches.size() == 1 &&
+        replacementMatches.constFirst().source ==
+            MediaSource::User &&
+        !replacementMatches.constFirst().readOnly &&
+        replacementMatches.constFirst().size ==
+            static_cast<quint32>(expectedReplacementSize);
+    if (!result.originalIdentityVerified) {
+        result.error = matches.isEmpty()
+            ? QObject::tr(
+                  "Selected media is no longer present in the fresh device catalog")
+            : QObject::tr(
+                  "Selected media identity changed in the fresh device catalog");
+        return result;
+    }
+    result.media = matches.constFirst();
+    if (replacementExpected &&
+        !result.replacementIdentityVerified) {
+        result.error = replacementMatches.isEmpty()
+            ? QObject::tr(
+                  "The expected replacement copy is absent from the fresh device catalog")
+            : QObject::tr(
+                  "The expected replacement identity changed in the fresh device catalog");
+        return result;
+    }
+
+    panorama::wire::v1::Request configRequest;
+    configRequest.mutable_user_configuration_query();
+    panorama::wire::v1::Response configResponse;
+    QString configError;
+    if (!impl_->execute(
+            &configRequest,
+            panorama::wire::v1::Response::kUserConfiguration,
+            &configResponse, devicePath, context,
+            &configError)) {
+        result.error = QObject::tr(
+            "Cannot read device configuration during reference preflight: %1")
+                           .arg(configError);
+        return result;
+    }
+
+    const auto &configuration =
+        configResponse.user_configuration();
+    const auto &work = configuration.work_config();
+    const auto &filter = configuration.filter_config();
+    result.references = {
+        normalizedMediaReference(
+            configuration.poweron_config().media_file()),
+        normalizedMediaReference(
+            configuration.standby_config().media_file()),
+        normalizedMediaReference(
+            work.single_mode_media_file()),
+        normalizedMediaReference(
+            work.dual_mode_left_media_file()),
+        normalizedMediaReference(
+            work.dual_mode_right_media_file()),
+        normalizedMediaReference(
+            work.kaleidoscope_media_file()),
+        normalizedMediaReference(
+            filter.filter_file()),
+        normalizedMediaReference(
+            filter.dual_mode_left_file()),
+        normalizedMediaReference(
+            filter.dual_mode_right_file())};
+    const QStringList referenceSlotNames = {
+        QStringLiteral("PowerOn"),
+        QStringLiteral("Standby"),
+        QStringLiteral("Single"),
+        QStringLiteral("DualLeft"),
+        QStringLiteral("DualRight"),
+        QStringLiteral("Kaleidoscope"),
+        QStringLiteral("FilterSingle"),
+        QStringLiteral("FilterDualLeft"),
+        QStringLiteral("FilterDualRight")};
+    for (qsizetype index = 0;
+         index < result.references.size(); ++index) {
+        if (result.references.at(index) == mediaName) {
+            result.referencingSlots.append(
+                referenceSlotNames.at(index));
+        }
+    }
+    result.success = true;
+    return result;
+}
+
 PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
     const QString &devicePath, const QStringList &fileNames,
     const BeforeDeleteDispatch &beforeDispatch,
     const DeleteProgress &progress,
     const OperationContext &context,
-    bool reconcileOnly) {
+    bool reconcileOnly, qint64 expectedSingleSize,
+    const QString &expectedReplacementName,
+    qint64 expectedReplacementSize) {
     DeleteResult result;
     if (fileNames.isEmpty()) {
         result.error = QObject::tr("No media files were selected for deletion");
+        return result;
+    }
+    if (expectedSingleSize < 0 ||
+        expectedSingleSize >
+            static_cast<qint64>(
+                std::numeric_limits<quint32>::max()) ||
+        (expectedSingleSize > 0 && fileNames.size() != 1)) {
+        result.error = QObject::tr(
+            "Expected delete media identity is invalid");
+        return result;
+    }
+    const bool replacementExpected =
+        !expectedReplacementName.isEmpty() ||
+        expectedReplacementSize != 0;
+    if (replacementExpected &&
+        (fileNames.size() != 1 ||
+         expectedSingleSize <= 0 ||
+         !isSafeUploadFileName(expectedReplacementName) ||
+         expectedReplacementName == fileNames.constFirst() ||
+         expectedReplacementSize <= 0 ||
+         expectedReplacementSize >
+             static_cast<qint64>(
+                 std::numeric_limits<quint32>::max()))) {
+        result.error = QObject::tr(
+            "Expected replacement identity before deletion is invalid");
         return result;
     }
     QSet<QString> uniqueNames;
@@ -4730,33 +5406,38 @@ PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
     if (reconcileOnly) {
         const QString target = fileNames.constFirst();
         result.currentName = target;
-        const bool present = std::any_of(
-            currentList.files.cbegin(), currentList.files.cend(),
-            [&target](const MediaFile &media) {
-                return media.name == target;
-            });
-        if (!present) {
+        QList<MediaFile> matches;
+        for (const MediaFile &media :
+             std::as_const(currentList.files)) {
+            if (media.name == target) {
+                matches.append(media);
+            }
+        }
+        if (matches.isEmpty()) {
             result.success = true;
             result.outcome = MutationOutcome::Succeeded;
             result.deletedNames.append(target);
-        } else {
+        } else if (
+            matches.size() == 1 &&
+            matches.constFirst().source == MediaSource::User &&
+            !matches.constFirst().readOnly &&
+            (expectedSingleSize == 0 ||
+             matches.constFirst().size ==
+                 static_cast<quint32>(
+                     expectedSingleSize))) {
             result.outcome = MutationOutcome::PartialOrUnknown;
             result.error = QObject::tr(
                 "The file is still present during delete reconciliation; FileRemove will not be repeated: %1")
+                               .arg(target);
+        } else {
+            result.outcome = MutationOutcome::PartialOrUnknown;
+            result.error = QObject::tr(
+                "The media identity changed during delete reconciliation; FileRemove will not be repeated: %1")
                                .arg(target);
         }
         return result;
     }
 
-    const auto normalizedReference = [](const std::string &value) {
-        QString reference =
-            QString::fromStdString(value).trimmed();
-        if (reference.contains(QLatin1Char('/')) ||
-            reference.contains(QLatin1Char('\\'))) {
-            reference = QFileInfo(reference).fileName();
-        }
-        return reference;
-    };
     constexpr int kMaxDeleteReconciliationReads = 4;
 
     for (int index = 0; index < fileNames.size(); ++index) {
@@ -4786,12 +5467,21 @@ PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
         }
         if (matches.size() != 1 ||
             matches.constFirst().source != MediaSource::User ||
-            matches.constFirst().readOnly) {
+            matches.constFirst().readOnly ||
+            (expectedSingleSize > 0 &&
+             matches.constFirst().size !=
+                 static_cast<quint32>(
+                     expectedSingleSize))) {
             result.outcome = MutationOutcome::NotStarted;
             result.error = matches.isEmpty()
                 ? QObject::tr("Media file is absent from the fresh device list: %1")
                       .arg(target)
-                : QObject::tr("Media file is protected or ambiguous: %1")
+                : expectedSingleSize > 0
+                    ? QObject::tr(
+                          "Media identity changed before deletion: %1")
+                          .arg(target)
+                    : QObject::tr(
+                          "Media file is protected or ambiguous: %1")
                       .arg(target);
             return result;
         }
@@ -4814,30 +5504,30 @@ PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
             configResponse.user_configuration();
         QStringList references;
         if (config.has_poweron_config()) {
-            references.append(normalizedReference(
+            references.append(normalizedMediaReference(
                 config.poweron_config().media_file()));
         }
         if (config.has_standby_config()) {
-            references.append(normalizedReference(
+            references.append(normalizedMediaReference(
                 config.standby_config().media_file()));
         }
         if (config.has_work_config()) {
             const auto &work = config.work_config();
-            references.append(normalizedReference(
+            references.append(normalizedMediaReference(
                 work.single_mode_media_file()));
-            references.append(normalizedReference(
+            references.append(normalizedMediaReference(
                 work.dual_mode_left_media_file()));
-            references.append(normalizedReference(
+            references.append(normalizedMediaReference(
                 work.dual_mode_right_media_file()));
-            references.append(normalizedReference(
+            references.append(normalizedMediaReference(
                 work.kaleidoscope_media_file()));
         }
         if (config.has_filter_config()) {
             const auto &filter = config.filter_config();
-            references.append(normalizedReference(filter.filter_file()));
-            references.append(normalizedReference(
+            references.append(normalizedMediaReference(filter.filter_file()));
+            references.append(normalizedMediaReference(
                 filter.dual_mode_left_file()));
-            references.append(normalizedReference(
+            references.append(normalizedMediaReference(
                 filter.dual_mode_right_file()));
         }
         references.removeAll(QString());
@@ -4847,6 +5537,69 @@ PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
                 "Media file is referenced by the active device configuration: %1")
                                .arg(target);
             return result;
+        }
+
+        if (expectedSingleSize > 0) {
+            const MediaListResult dispatchList =
+                readMediaList(devicePath, context);
+            if (!dispatchList.success) {
+                result.outcome =
+                    MutationOutcome::NotStarted;
+                result.error = QObject::tr(
+                    "Cannot revalidate media identity immediately before deleting %1: %2")
+                                   .arg(
+                                       target,
+                                       dispatchList.error);
+                return result;
+            }
+            result.files = dispatchList.files;
+            QList<MediaFile> dispatchMatches;
+            for (const MediaFile &media :
+                 dispatchList.files) {
+                if (media.name == target) {
+                    dispatchMatches.append(media);
+                }
+            }
+            if (dispatchMatches.size() != 1 ||
+                dispatchMatches.constFirst().source !=
+                    MediaSource::User ||
+                dispatchMatches.constFirst().readOnly ||
+                dispatchMatches.constFirst().size !=
+                    static_cast<quint32>(
+                        expectedSingleSize)) {
+                result.outcome =
+                    MutationOutcome::NotStarted;
+                result.error = QObject::tr(
+                    "Media identity changed immediately before deletion: %1")
+                                   .arg(target);
+                return result;
+            }
+            if (replacementExpected) {
+                QList<MediaFile> replacementMatches;
+                for (const MediaFile &media :
+                     dispatchList.files) {
+                    if (media.name ==
+                        expectedReplacementName) {
+                        replacementMatches.append(media);
+                    }
+                }
+                if (replacementMatches.size() != 1 ||
+                    replacementMatches.constFirst().source !=
+                        MediaSource::User ||
+                    replacementMatches.constFirst().readOnly ||
+                    replacementMatches.constFirst().size !=
+                        static_cast<quint32>(
+                            expectedReplacementSize)) {
+                    result.outcome =
+                        MutationOutcome::NotStarted;
+                    result.error = QObject::tr(
+                        "Replacement identity changed immediately before deleting the original: %1")
+                                       .arg(
+                                           expectedReplacementName);
+                    return result;
+                }
+            }
+            matches = dispatchMatches;
         }
 
         QString dispatchError;
@@ -5988,6 +6741,12 @@ void PrinterProtocol::setFileTransmitResponseTimeoutForTesting(int timeoutMs) {
     impl_->setFileTransmitResponseTimeoutForTesting(timeoutMs);
 }
 
+void PrinterProtocol::setMediaPullLimitsForTesting(
+    qint64 maximumBytes, int maximumChunks, int deadlineMs) {
+    impl_->setMediaPullLimitsForTesting(
+        maximumBytes, maximumChunks, deadlineMs);
+}
+
 void PrinterProtocol::setPersistentUsbInputFailureForTesting(
     bool persistent) {
     impl_->setPersistentUsbInputFailureForTesting(persistent);
@@ -6014,6 +6773,17 @@ bool PrinterProtocol::validateEndpointForTesting(
     const QString &devRoot, QString *errorMessage) {
     return validatePrinterEndpoint(devicePath, openFd, sysfsRoot, devRoot,
                                    errorMessage);
+}
+
+QByteArray PrinterProtocol::applyMediaPullXorForTesting(
+    const QByteArray &bytes, quint64 absoluteOffset) {
+    return applyMediaPullXor(
+        bytes, absoluteOffset, nullptr, nullptr);
+}
+
+bool PrinterProtocol::validateMediaPullPathForTesting(
+    const QByteArray &rawPath, const QString &mediaName) {
+    return validateMediaPullPath(rawPath, mediaName);
 }
 
 PrinterProtocol::DuplexTestResult
