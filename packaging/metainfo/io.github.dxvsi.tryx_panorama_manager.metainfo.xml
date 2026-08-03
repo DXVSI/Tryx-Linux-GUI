@@ -24,6 +24,16 @@
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.1.1" type="stable" date="2026-08-03">
+      <description>
+        <ul>
+          <li>Start the matching sibling runtime for direct build-tree GUI launches.</li>
+          <li>Fail closed around systemd startup jobs and D-Bus owner replacement.</li>
+          <li>Require an explicit restart for an incompatible installed runtime.</li>
+          <li>Add isolated runtime-bootstrap regression coverage.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.1.0" type="stable" date="2026-08-02">
       <description>
         <ul>

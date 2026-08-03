@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.1.0
+Version:        2.1.1
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX Panorama cooler displays
 
@@ -118,6 +118,12 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx-panorama-manager.1*
 
 %changelog
+* Mon Aug 03 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.1.1-1
+- Start the sibling API 8 runtime for direct build-tree GUI launches
+- Fail closed around systemd startup jobs and D-Bus owner replacement
+- Require an explicit restart for an incompatible installed runtime
+- Add isolated runtime-bootstrap regression coverage
+
 * Sun Aug 02 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.1.0-1
 - Replace the Qt Widgets frontend with one Qt Quick GUI and a private runtime
 - Add StatusNotifierItem, DBusMenu, and freedesktop Notifications integration

@@ -98,6 +98,18 @@ StatusNotifier watcher and host are available, closing the window hides the
 GUI to the native desktop tray. Without a watcher, closing the window exits
 only the GUI; the separate runtime remains available to the user service.
 
+## What's new in 2.1.1
+
+- Launching the GUI directly from `build/quick` now selects the sibling API 8
+  runtime from the same build instead of starting an older installed runtime.
+- Bootstrap checks the systemd unit PID, state, and queued job before starting
+  a development runtime, and fails closed if the D-Bus owner changes or its API
+  cannot be verified.
+- An incompatible installed runtime is never stopped automatically after a
+  non-atomic state probe. The GUI provides an explicit safe restart command.
+- Isolated D-Bus regression tests cover API 6/API 8 selection, systemd startup
+  races, delayed D-Bus readiness, owner replacement, and exact-PID cleanup.
+
 ## What's new in 2.1.0
 
 - The desktop application is now one Qt Quick GUI with no Qt Widgets runtime
@@ -205,13 +217,13 @@ Install a downloaded package with the package manager for your distribution:
 ```fish
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.1.0-1.fc44.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.1.1-1.fc44.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.1.0-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.1.1-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.1.1-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
