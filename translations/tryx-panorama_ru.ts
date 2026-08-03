@@ -5827,19 +5827,18 @@ The operation cannot be undone.</source>
     </message>
     <message>
         <location filename="../src/main.cpp" line="262"/>
-        <location filename="../src/quick/runtimebootstrap.cpp" line="303"/>
         <source>The TRYX runtime remained incompatible after restart: %1</source>
         <translation>После перезапуска служба TRYX осталась несовместимой: %1</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="289"/>
-        <location filename="../src/quick/runtimebootstrap.cpp" line="205"/>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="541"/>
         <source>The systemd unit is not installed and the development runtime could not be started</source>
         <translation>Модуль systemd не установлен, а службу для разработки запустить не удалось</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="307"/>
-        <location filename="../src/quick/runtimebootstrap.cpp" line="338"/>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="760"/>
         <source>The TRYX runtime started, but its API is incompatible: %1</source>
         <translation>Фоновая служба TRYX запущена, но её API несовместим: %1</translation>
     </message>
@@ -5984,14 +5983,79 @@ The operation cannot be undone.</source>
         <translation>Не удалось записать артефакт восстановленного медиафайла: %1</translation>
     </message>
     <message>
-        <location filename="../src/quick/runtimebootstrap.cpp" line="49"/>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="203"/>
         <source>The running TRYX runtime uses API %1, but this client requires API %2</source>
         <translation>Запущенная фоновая служба TRYX использует API %1, а этому клиенту требуется API %2</translation>
     </message>
     <message>
-        <location filename="../src/quick/runtimebootstrap.cpp" line="274"/>
-        <source>The installed TRYX runtime must be restarted, but a media operation is still active</source>
-        <translation>Необходимо перезапустить установленную фоновую службу TRYX, однако медиаоперация всё ещё выполняется</translation>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="611"/>
+        <source>The running TRYX runtime API could not be verified; it was not restarted: %1</source>
+        <translation>Не удалось проверить API запущенной фоновой службы TRYX; перезапуск не выполнялся: %1</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="491"/>
+        <source>The build-tree TRYX runtime is missing or is not an executable regular file: %1</source>
+        <translation>Фоновая служба TRYX из дерева сборки отсутствует либо не является исполняемым обычным файлом: %1</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="507"/>
+        <source>The TRYX runtime executable could not be started: %1</source>
+        <translation>Не удалось запустить исполняемый файл фоновой службы TRYX: %1</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="632"/>
+        <source>An incompatible installed TRYX runtime is already running. Finish or cancel any active operation, restart it with systemctl --user restart tryx-panorama.service, then reopen the GUI: %1</source>
+        <translation>Уже запущена несовместимая установленная фоновая служба TRYX. Завершите или отмените активную операцию, перезапустите службу командой systemctl --user restart tryx-panorama.service, затем снова откройте интерфейс: %1</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="625"/>
+        <source>An incompatible TRYX runtime is already running. Stop the existing runtime (for the installed service: systemctl --user stop tryx-panorama.service), then reopen this build: %1</source>
+        <translation>Уже запущена несовместимая фоновая служба TRYX. Остановите существующую службу (для установленной службы: systemctl --user stop tryx-panorama.service), затем снова откройте эту сборку: %1</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="247"/>
+        <source>The TRYX runtime D-Bus API was not ready before the startup deadline</source>
+        <translation>API D-Bus фоновой службы TRYX не стало доступно до истечения времени запуска</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="384"/>
+        <source>systemctl did not return the TRYX runtime state before the deadline</source>
+        <translation>systemctl не вернул состояние фоновой службы TRYX до истечения времени ожидания</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="439"/>
+        <source>systemctl returned an incomplete TRYX runtime state</source>
+        <translation>systemctl вернул неполное состояние фоновой службы TRYX</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="230"/>
+        <source>The TRYX runtime D-Bus owner changed while its API was being checked</source>
+        <translation>Владелец D-Bus фоновой службы TRYX сменился во время проверки API</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="657"/>
+        <source>The installed TRYX runtime state could not be verified; the build-tree runtime was not started: %1</source>
+        <translation>Не удалось проверить состояние установленной фоновой службы TRYX; служба из дерева сборки не запущена: %1</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="665"/>
+        <source>The installed TRYX runtime is still running, starting, or stopping (%1/%2, PID %3, job %4), so the build-tree runtime was not started. Stop it with systemctl --user stop tryx-panorama.service, then reopen this build.</source>
+        <translation>Установленная фоновая служба TRYX всё ещё работает, запускается или останавливается (%1/%2, PID %3, задание %4), поэтому служба из дерева сборки не запущена. Остановите её командой systemctl --user stop tryx-panorama.service, затем снова откройте эту сборку.</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="686"/>
+        <source>A TRYX runtime appeared while the installed unit state was being checked; the build-tree runtime was not started. Reopen this build: %1</source>
+        <translation>Во время проверки установленного модуля появилась фоновая служба TRYX; служба из дерева сборки не запущена. Снова откройте эту сборку: %1</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="745"/>
+        <source>The TRYX runtime exited before its D-Bus API became ready</source>
+        <translation>Фоновая служба TRYX завершилась до готовности её API D-Bus</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimebootstrap.cpp" line="763"/>
+        <source>The TRYX runtime started, but its D-Bus API did not become available: %1</source>
+        <translation>Фоновая служба TRYX запущена, но её API D-Bus не стало доступно: %1</translation>
     </message>
     <message>
         <location filename="../src/quick/mediapreviewcontroller.cpp" line="465"/>

@@ -22,6 +22,7 @@ DESTDIR = $$PWD/build/quick
 OBJECTS_DIR = $$PWD/build/quick/obj
 MOC_DIR = $$PWD/build/quick/moc
 RCC_DIR = $$PWD/build/quick/rcc
+DEFINES += TRYX_BUILD_QUICK_DIRECTORY=\\\"$$clean_path($$DESTDIR)\\\"
 
 HEADERS += \
     src/applicationpaths.h \
@@ -97,6 +98,8 @@ DISTFILES += \
     $$QML_FILES \
     resources/tryx-panorama.png \
     tests/quick/quick_tests.pro \
+    tests/quick/runtimebootstrap_tests.pro \
+    tests/quick/runtimebootstrap_tests.cpp \
     tests/quick/linuxtraycontroller_tests.pro \
     tests/quick/linuxtraycontroller_tests.cpp \
     tests/quick/tst_quickmodels.cpp \
@@ -132,6 +135,10 @@ quick_tests.commands = \
         TRYX_QML_ROOT=$$shell_path($$PWD/qml) \
         TRYX_QML_IMPORT_PATH=$$shell_path($$[QT_INSTALL_QML]) \
             $$shell_path($$PWD/build/quick-tests/tryx-quick-tests) && \
+        $$QMAKE_QMAKE runtimebootstrap_tests.pro && $(MAKE) && \
+        TRYX_RUNTIMEBOOTSTRAP_TEST_ISOLATED=1 dbus-run-session -- \
+            $$shell_path($$PWD/build/runtimebootstrap-tests/quick/tryx-runtimebootstrap-tests) \
+                -txt && \
         $$QMAKE_QMAKE linuxtraycontroller_tests.pro && $(MAKE) && \
         dbus-run-session -- \
             $$shell_path($$PWD/build/linuxtray-tests/linuxtraycontroller-tests) \

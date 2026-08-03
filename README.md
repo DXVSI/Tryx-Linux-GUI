@@ -364,16 +364,31 @@ make
 dbus-run-session -- make package-check
 ```
 
-For a development run, start the runtime in one terminal:
-
-```fish
-./build/runtime/tryx-panorama-runtime
-```
-
-Then start the GUI from another terminal in the same user session:
+For a development run, launch the build-tree GUI. If no compatible runtime
+already owns the D-Bus service, the GUI first verifies that the installed
+systemd unit has no process or queued job, then starts the sibling runtime from
+`build/runtime`. It does not start the installed service first:
 
 ```fish
 ./build/quick/tryx-panorama-manager
+```
+
+If an incompatible installed runtime already owns the D-Bus service, first
+finish or cancel its active operation, stop that service, and retry the GUI:
+
+```fish
+systemctl --user stop tryx-panorama.service
+./build/quick/tryx-panorama-manager
+```
+
+To keep runtime logs in a dedicated terminal, stop the installed service and
+run `./build/runtime/tryx-panorama-runtime` there before launching the GUI.
+
+If the installed service was masked while diagnosing an older runtime, unmask
+it before returning to the installed GUI:
+
+```fish
+systemctl --user unmask tryx-panorama.service; and systemctl --user daemon-reload
 ```
 
 System installation includes the public GUI, private runtime, user service,
