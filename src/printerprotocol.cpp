@@ -48,6 +48,7 @@ constexpr qsizetype kMediaPullCancellationCheckInterval = 64 * 1024;
 constexpr quint16 kTryxVendorId = 0x391a;
 constexpr quint16 kTransitionProductId = 0x0006;
 constexpr quint16 kPaseProductId = 0x1021;
+constexpr quint16 kPanoProductId = 0x1011;
 constexpr int kPollCancellationSliceMs = 100;
 constexpr int kMaxSkippedResponseFrames = 256;
 constexpr qsizetype kMaxSkippedResponseBytes = 4 * 1024 * 1024;
@@ -173,6 +174,7 @@ UdevEventPolicy udevEventPolicy(const QByteArray &subsystem,
     const QByteArray normalizedProduct = product.toLower();
     const bool tryxDevice =
         normalizedProduct.startsWith(QByteArrayLiteral("391a/1021/")) ||
+        normalizedProduct.startsWith(QByteArrayLiteral("391a/1011/")) ||
         normalizedProduct.startsWith(QByteArrayLiteral("391a/6/")) ||
         normalizedProduct.startsWith(QByteArrayLiteral("391a/0006/"));
     if (!tryxDevice && !touchesCurrentEndpoint) {
@@ -614,7 +616,8 @@ QList<LibusbPrinterCandidate> enumerateLibusbPrinterCandidates(
             }
             continue;
         }
-        if (descriptor.idProduct != kPaseProductId) {
+        if (descriptor.idProduct != kPaseProductId &&
+            descriptor.idProduct != kPanoProductId) {
             continue;
         }
         if (workingDeviceCount) {
@@ -748,7 +751,8 @@ public:
             if (libusb_get_device_descriptor(device, &descriptor) !=
                     LIBUSB_SUCCESS ||
                 descriptor.idVendor != kTryxVendorId ||
-                descriptor.idProduct != kPaseProductId ||
+                (descriptor.idProduct != kPaseProductId &&
+                descriptor.idProduct != kPanoProductId) ||
                 libusbStableDeviceId(device) != deviceId ||
                 !findLibusbPrinterInterface(device, &openedInterface)) {
                 continue;
@@ -1693,7 +1697,8 @@ bool validatePrinterEndpoint(const QString &devicePath, int openFd,
             QStringLiteral("02") ||
         !readHexU16(QDir(usbDevicePath).filePath(QStringLiteral("idVendor")), &vendorId) ||
         !readHexU16(QDir(usbDevicePath).filePath(QStringLiteral("idProduct")), &productId) ||
-        vendorId != kTryxVendorId || productId != kPaseProductId) {
+        vendorId != kTryxVendorId ||
+        (productId != kPaseProductId && productId != kPanoProductId)) {
         if (errorMessage) {
             *errorMessage = QObject::tr("Endpoint %1 is not the expected 391a:1021 printer interface")
                                 .arg(devicePath);
@@ -2141,7 +2146,8 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
         countedUsbDevices.insert(usbPath);
         if (productId == kTransitionProductId) {
             ++snapshot.rockchipGadgetDeviceCount;
-        } else if (productId == kPaseProductId) {
+        } else if (productId == kPaseProductId ||
+            productId == kPanoProductId) {
             ++snapshot.workingUsbDeviceCount;
         }
     }
@@ -2173,7 +2179,9 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
         if (usbDevicePath.isEmpty() ||
             !readHexU16(QDir(usbDevicePath).filePath(QStringLiteral("idVendor")), &vendorId) ||
             !readHexU16(QDir(usbDevicePath).filePath(QStringLiteral("idProduct")), &productId) ||
-            vendorId != kTryxVendorId || productId != kPaseProductId) {
+            vendorId != kTryxVendorId ||
+            (productId != kPaseProductId &&
+            productId != kPanoProductId)) {
             continue;
         }
 
