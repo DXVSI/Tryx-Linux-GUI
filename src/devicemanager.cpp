@@ -8921,6 +8921,14 @@ void DeviceManager::connectDevice(const QString &port) {
     printerSessionResumeSerial_.clear();
     printerSessionResumeProductId_ = 0;
     autoConnectMode_ = port.isEmpty();
+    const bool wasLegacyConnected =
+        connected_ && !printerClassConnected_;
+    legacyProductId_.clear();
+    if (wasLegacyConnected) {
+        connected_ = false;
+        emit mediaListUpdated({});
+        emit deviceDisconnected();
+    }
 
     if (port.isEmpty()) {
         if (printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready &&

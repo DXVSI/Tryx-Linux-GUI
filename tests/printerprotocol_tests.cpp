@@ -733,6 +733,7 @@ private slots:
     void unsupportedProductFirmwareIsRejectedBeforeQuiesce();
     void unidentifiedFirmwareTargetIsRejectedBeforeQuiesce();
     void identifiedLegacyFirmwareTargetCanBeQuiesced();
+    void identifiedLegacyFirmwareRequestPassesPreflight();
     void firmwareExclusiveGateRejectsDeviceWork();
     void firmwareExclusiveGateRejectsUnresolvedDeviceState();
     void firmwareExclusiveGateSuppressesReconnectUntilRelease();
@@ -10080,6 +10081,30 @@ void PrinterProtocolTests::
     QVERIFY(manager->connected_);
     QVERIFY(!manager->printerClassConnected_);
 
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestConnect,
+        manager->worker_, &DeviceWorker::connectDevice);
+    QSignalSpy reconnectSpy(
+        manager.get(), &DeviceManager::requestConnect);
+    QSignalSpy disconnectedSpy(
+        manager.get(), &DeviceManager::deviceDisconnected);
+    manager->connectDevice(
+        QStringLiteral("/dev/tty-new-target"));
+    QCOMPARE(reconnectSpy.count(), 1);
+    QCOMPARE(disconnectedSpy.count(), 1);
+    QVERIFY(!manager->connected_);
+    QVERIFY(manager->legacyProductId_.isEmpty());
+    QString staleIdentityError;
+    QVERIFY(!manager->acquireFirmwareExclusive(
+        QStringLiteral("stale-legacy-firmware"),
+        &staleIdentityError));
+
+    manager->worker_->connected(
+        QStringLiteral("cm01"), QStringLiteral("legacy-serial"),
+        QStringLiteral("legacy-firmware"),
+        QStringLiteral("legacy-app"));
+    QVERIFY(manager->connected_);
+
     QSignalSpy quiesceSpy(
         manager.get(),
         &DeviceManager::requestFirmwareTransportQuiesce);
@@ -10089,6 +10114,64 @@ void PrinterProtocolTests::
              qPrintable(error));
     QCOMPARE(quiesceSpy.count(), 1);
     QVERIFY(manager->firmwareExclusiveActive());
+}
+
+void PrinterProtocolTests::
+    identifiedLegacyFirmwareRequestPassesPreflight() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->worker_->connected(
+        QStringLiteral("cm01"), QStringLiteral("legacy-serial"),
+        QStringLiteral("legacy-firmware"),
+        QStringLiteral("legacy-app"));
+
+    const QString journalPath =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("recovery/interlock.json"));
+    FirmwareBridge bridge(manager.get(), nullptr, journalPath);
+    QTRY_VERIFY(bridge.workerReady_);
+
+    QSemaphore workerEntered;
+    QSemaphore releaseWorker;
+    QVERIFY(QMetaObject::invokeMethod(
+        bridge.firmwareThreadContext_,
+        [&workerEntered, &releaseWorker]() {
+            workerEntered.release();
+            releaseWorker.acquire();
+        },
+        Qt::QueuedConnection));
+    QVERIFY(workerEntered.tryAcquire(1, 5000));
+
+    FirmwareBridge::Approval approval;
+    approval.token = QStringLiteral("legacy-approval-token");
+    approval.ownerUniqueName = QStringLiteral(":1.70");
+    approval.canonicalPath =
+        QDir(temporaryDirectory.path())
+            .filePath(QStringLiteral("missing-update.zip"));
+    approval.sha256 = QString(64, QLatin1Char('a'));
+    approval.kind = QStringLiteral("LegacyAndroidOta");
+    approval.size = 1;
+    approval.mtimeUtcMs = 1;
+    approval.expiresUtcMs =
+        QDateTime::currentMSecsSinceEpoch() + 60000;
+    bridge.approval_ = approval;
+
+    QVERIFY(bridge.requestFlash(
+        approval.token, approval.ownerUniqueName));
+    QVERIFY(bridge.flashBusy_);
+    QVERIFY(bridge.pendingFlash_.has_value());
+    QCOMPARE(bridge.pendingFlash_->kind,
+             QStringLiteral("LegacyAndroidOta"));
+
+    releaseWorker.release();
+    QTRY_VERIFY(!bridge.flashBusy_);
+    QVERIFY(!manager->firmwareExclusiveActive());
 }
 
 void PrinterProtocolTests::
