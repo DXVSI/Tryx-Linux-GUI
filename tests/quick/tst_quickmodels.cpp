@@ -38,11 +38,13 @@ class QuickClientTests final : public QObject {
 private slots:
     void sharedApplicationDataPathUsesStableManagerNamespace();
     void transformDefaultsAreCanonical();
+    void runtimeMediaTargetFollowsProductId();
     void nonCropFieldsAreNeutral();
     void cropRotationResetsViewport();
     void previewUsesCanonicalTransformFilter();
     void renderedTransformPreservesDisplayGeometry();
     void previewGenerationIsDebounced();
+    void restoredProtectedSourceSchedulesCurrentProfilePreview();
     void sourceSnapshotIsImmutableAfterCopy();
     void sourceSnapshotPreservesExistingFinal();
     void stageHelperRejectsSymlinkDotDotEscape();
@@ -156,6 +158,54 @@ void QuickClientTests::transformDefaultsAreCanonical() {
     QCOMPARE(transform.backgroundRgb, 0U);
 }
 
+void QuickClientTests::runtimeMediaTargetFollowsProductId() {
+    RuntimeClient runtime(true);
+    MediaEditorController editor(&runtime);
+
+    QVERIFY(runtime.productId().isEmpty());
+    QCOMPARE(runtime.mediaTargetWidth(), 2240);
+    QCOMPARE(runtime.mediaTargetHeight(), 1080);
+    QCOMPARE(editor.targetWidth(), 2240);
+    QCOMPARE(editor.targetHeight(), 1080);
+
+    QSignalSpy targetChanged(
+        &editor, &MediaEditorController::targetChanged);
+    quint64 revision = 1;
+    const QStringList panoramaProductIds{
+        QStringLiteral("1011"),
+        QStringLiteral("391a:1021"),
+        QStringLiteral("unknown"),
+    };
+    for (const QString &productId : panoramaProductIds) {
+        TryxRuntimeSnapshot snapshot;
+        snapshot.revision = revision++;
+        snapshot.productId = productId;
+        runtime.applyConnectionSnapshot(snapshot);
+        QCOMPARE(runtime.productId(), productId);
+        QCOMPARE(runtime.mediaTargetWidth(), 2240);
+        QCOMPARE(runtime.mediaTargetHeight(), 1080);
+        QCOMPARE(editor.targetWidth(), 2240);
+        QCOMPARE(editor.targetHeight(), 1080);
+    }
+
+    TryxRuntimeSnapshot turris;
+    turris.revision = revision++;
+    turris.productId = QStringLiteral("391a:2011");
+    runtime.applyConnectionSnapshot(turris);
+    QCOMPARE(runtime.productId(), QStringLiteral("391a:2011"));
+    QCOMPARE(runtime.mediaTargetWidth(), 1280);
+    QCOMPARE(runtime.mediaTargetHeight(), 720);
+    QCOMPARE(editor.targetWidth(), 1280);
+    QCOMPARE(editor.targetHeight(), 720);
+
+    turris.revision = revision;
+    turris.productId = QStringLiteral("0x2011");
+    runtime.applyConnectionSnapshot(turris);
+    QCOMPARE(runtime.mediaTargetWidth(), 1280);
+    QCOMPARE(runtime.mediaTargetHeight(), 720);
+    QCOMPARE(targetChanged.count(), 5);
+}
+
 void QuickClientTests::nonCropFieldsAreNeutral() {
     RuntimeClient runtime(true);
     MediaEditorController editor(&runtime);
@@ -210,6 +260,14 @@ void QuickClientTests::previewUsesCanonicalTransformFilter() {
         MediaPreviewController::previewFilter(transform),
         canonical +
             QStringLiteral(",scale=1120:540:flags=lanczos"));
+    const QString turrisCanonical =
+        tryxMediaTransformFfmpegFilter(transform, 1280, 720);
+    QVERIFY(!turrisCanonical.isEmpty());
+    QCOMPARE(
+        MediaPreviewController::previewFilter(
+            transform, 1280, 720),
+        turrisCanonical +
+            QStringLiteral(",scale=640:360:flags=lanczos"));
     QVERIFY(canonical.startsWith(
         QStringLiteral("transpose=clock,")));
     QVERIFY(canonical.contains(
@@ -217,11 +275,19 @@ void QuickClientTests::previewUsesCanonicalTransformFilter() {
             "crop=2240:1080:"
             "'trunc((iw-2240)*10000/10000/2)*2':"
             "'trunc((ih-1080)*0/10000/2)*2'")));
+    QVERIFY(turrisCanonical.contains(
+        QStringLiteral(
+            "crop=1280:720:"
+            "'trunc((iw-1280)*10000/10000/2)*2':"
+            "'trunc((ih-720)*0/10000/2)*2'")));
 
     for (quint32 rotation = 0; rotation < 4; ++rotation) {
         transform.rotationQuarterTurns = rotation;
         QVERIFY(!MediaPreviewController::previewFilter(
                      transform)
+                     .isEmpty());
+        QVERIFY(!MediaPreviewController::previewFilter(
+                     transform, 1280, 720)
                      .isEmpty());
     }
 }
@@ -384,6 +450,32 @@ void QuickClientTests::previewGenerationIsDebounced() {
     QCOMPARE(
         preview.requestedRenderGeneration_,
         initialGeneration + 2);
+}
+
+void QuickClientTests::
+    restoredProtectedSourceSchedulesCurrentProfilePreview() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString stagedPath =
+        QDir(directory.path()).filePath(QStringLiteral("source.png"));
+    QFile staged(stagedPath);
+    QVERIFY(staged.open(QIODevice::WriteOnly));
+    QCOMPARE(staged.write("snapshot"), qint64(8));
+    staged.close();
+
+    MediaPreviewController preview;
+    preview.stagedPath_ = stagedPath;
+    preview.sourceKind_ =
+        MediaPreviewController::SourceKind::InboxSnapshot;
+    preview.sourceProtected_ = true;
+    preview.ready_ = true;
+
+    preview.setTargetSize(1280, 720);
+    QVERIFY(!preview.renderDebounce_.isActive());
+
+    preview.restoreStagedSourceOwnership();
+    QVERIFY(!preview.sourceProtected_);
+    QVERIFY(preview.renderDebounce_.isActive());
 }
 
 void QuickClientTests::sourceSnapshotIsImmutableAfterCopy() {

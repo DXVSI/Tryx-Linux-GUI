@@ -24,6 +24,22 @@ namespace {
 
 constexpr int kRuntimeCallTimeoutMs = 5000;
 constexpr int kLegacyUploadTimeoutMs = 15 * 60 * 1000;
+constexpr int kTurrisMediaTargetWidth = 1280;
+constexpr int kTurrisMediaTargetHeight = 720;
+
+bool isTurrisProductId(QString productId) {
+    productId = productId.trimmed();
+    const qsizetype separator = productId.lastIndexOf(QLatin1Char(':'));
+    if (separator >= 0) {
+        productId = productId.mid(separator + 1);
+    }
+    if (productId.startsWith(QStringLiteral("0x"),
+                             Qt::CaseInsensitive)) {
+        productId.remove(0, 2);
+    }
+    return productId.compare(QStringLiteral("2011"),
+                             Qt::CaseInsensitive) == 0;
+}
 
 bool isPlayMode(const QString &value, bool split) {
     return value == QStringLiteral("Single") ||
@@ -116,6 +132,22 @@ bool RuntimeClient::displaySessionActive() const {
     return connection_.displaySessionActive;
 }
 
+QString RuntimeClient::productId() const {
+    return connection_.productId;
+}
+
+int RuntimeClient::mediaTargetWidth() const {
+    return isTurrisProductId(connection_.productId)
+        ? kTurrisMediaTargetWidth
+        : kTryxMediaTargetWidth;
+}
+
+int RuntimeClient::mediaTargetHeight() const {
+    return isTurrisProductId(connection_.productId)
+        ? kTurrisMediaTargetHeight
+        : kTryxMediaTargetHeight;
+}
+
 QString RuntimeClient::connectionStatus() const {
     if (!serviceAvailable_) {
         return tr("Runtime service is not running");
@@ -127,12 +159,12 @@ QString RuntimeClient::connectionStatus() const {
         return tr("Legacy serial/ADB device is connected");
     }
     if (!connection_.printerClassDevicePresent) {
-        return tr("PASE printer-class device is not present");
+        return tr("TRYX printer-class device is not present");
     }
     if (!connection_.displaySessionActive) {
-        return tr("PASE is present, but the display session is not ready");
+        return tr("TRYX device is present, but the display session is not ready");
     }
-    return tr("PASE display session is active");
+    return tr("TRYX display session is active");
 }
 
 QString RuntimeClient::diagnostic() const {
@@ -665,7 +697,7 @@ void RuntimeClient::setRotation(int degrees) {
         !legacyConnected()) {
         if (ready() && !legacyConnected()) {
             setDiagnostic(tr(
-                "The legacy rotation command is unavailable for PASE"));
+                "The legacy rotation command is unavailable for printer-class devices"));
             emit userMessage(diagnostic_, true);
         }
         return;
@@ -690,7 +722,7 @@ void RuntimeClient::rebootDevice() {
         !legacyConnected()) {
         if (ready() && !legacyConnected()) {
             setDiagnostic(tr(
-                "The legacy reboot command is unavailable for PASE"));
+                "The legacy reboot command is unavailable for printer-class devices"));
             emit userMessage(diagnostic_, true);
         }
         return;
@@ -704,7 +736,7 @@ void RuntimeClient::startKeepalive(int intervalSec) {
         !legacyConnected()) {
         if (ready() && !legacyConnected()) {
             setDiagnostic(tr(
-                "Legacy keepalive is unavailable for PASE"));
+                "Legacy keepalive is unavailable for printer-class devices"));
             emit userMessage(diagnostic_, true);
         }
         return;
@@ -719,7 +751,7 @@ void RuntimeClient::stopKeepalive() {
         !legacyConnected()) {
         if (ready() && !legacyConnected()) {
             setDiagnostic(tr(
-                "Legacy keepalive is unavailable for PASE"));
+                "Legacy keepalive is unavailable for printer-class devices"));
             emit userMessage(diagnostic_, true);
         }
         return;
@@ -1434,11 +1466,11 @@ bool RuntimeClient::mutationReady(const QString &action) {
         setDiagnostic(tr("%1 is blocked while another operation is active")
                           .arg(action));
     } else if (!connection_.printerClassDevicePresent) {
-        setDiagnostic(tr("%1 requires a PASE printer-class device")
+        setDiagnostic(tr("%1 requires a TRYX printer-class device")
                           .arg(action));
     } else if (!connection_.displaySessionActive) {
         setDiagnostic(tr(
-            "%1 is blocked until the PASE display session is active")
+            "%1 is blocked until the TRYX display session is active")
                           .arg(action));
     } else if (operationBusy()) {
         setDiagnostic(tr("%1 is blocked while another operation is active")

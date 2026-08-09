@@ -1,6 +1,6 @@
-.TH TRYX-PANORAMA-MANAGER 1 "2026-08-03" "TRYX Panorama Manager 2.1.1" "User Commands"
+.TH TRYX-PANORAMA-MANAGER 1 "2026-08-09" "TRYX Panorama Manager 2.2.0" "User Commands"
 .SH NAME
-tryx-panorama-manager \- control compatible TRYX Panorama cooler displays
+tryx-panorama-manager \- control compatible TRYX cooler displays
 .SH SYNOPSIS
 .B tryx-panorama-manager
 .br
@@ -9,13 +9,14 @@ tryx-panorama-manager \- control compatible TRYX Panorama cooler displays
 .br
 .SH DESCRIPTION
 .B TRYX Panorama Manager
-is a Qt 6 Quick application for controlling compatible TRYX Panorama and
-Panorama SE cooler displays on Linux.
+is a Qt 6 Quick application for controlling compatible TRYX Panorama,
+Panorama SE, and Turris 620 cooler displays on Linux.
 The desktop GUI communicates over the user D-Bus session with a separately
 packaged private runtime that owns USB, legacy serial/ADB, media, live-metrics,
 and firmware operations.
-The application manages custom media, display settings, and devices using the
-PASE printer-class USB protocol without bundling vendor media.
+The application uses model-specific media profiles and enables only the
+printer-class USB capabilities supported by each device, without bundling
+vendor media.
 .PP
 Starting the graphical application starts the packaged systemd user service on
 demand.
@@ -41,10 +42,10 @@ Systemd user unit for the background runtime.
 Preset that keeps the user unit disabled after package installation.
 .TP
 .I /usr/lib/udev/rules.d/70-tryx-pase-access.rules
-Early PASE device-access rule.
+Early supported-device access rule.
 .TP
 .I /usr/lib/udev/rules.d/99-tryx-pase-printer.rules
-Late rule that prevents printer-service activation for the PASE interface.
+Late rule that prevents printer-service activation for supported interfaces.
 .SH BUGS
 Report issues at
 .UR https://github.com/DXVSI/Tryx-Linux-GUI/issues

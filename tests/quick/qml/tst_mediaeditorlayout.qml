@@ -39,6 +39,8 @@ TestCase {
             property int focusY: 5000
             property int rotation: 0
             property string backgroundColor: "#000000"
+            property int targetWidth: 2240
+            property int targetHeight: 1080
 
             function reset() {}
             function cancel() {}
@@ -61,6 +63,8 @@ TestCase {
         controller.replaceBlockReason = ""
         controller.submissionPending = false
         controller.submissionAction = ""
+        controller.targetWidth = 2240
+        controller.targetHeight = 1080
         controller.open = false
         wait(0)
         controller.open = true
@@ -84,14 +88,31 @@ TestCase {
 
     function test_previewCanvasKeepsDeviceAspectRatio() {
         const canvas = findChild(editor, "mediaPreviewCanvas")
+        const resolution =
+            findChild(editor, "mediaTargetResolution")
         verify(canvas !== null)
+        verify(resolution !== null)
         verify(canvas.width > 0)
         verify(canvas.height > 0)
-        const expectedRatio = 2240 / 1080
-        verify(Math.abs(canvas.width / canvas.height -
-                        expectedRatio) < 0.001)
-        verify(canvas.width <= 1000)
-        verify(canvas.height <= 420)
+        const profiles = [
+            {"width": 2240, "height": 1080},
+            {"width": 1280, "height": 720}
+        ]
+        for (const profile of profiles) {
+            controller.targetWidth = profile.width
+            controller.targetHeight = profile.height
+            wait(0)
+            const expectedRatio =
+                profile.width / profile.height
+            verify(Math.abs(canvas.width / canvas.height -
+                            expectedRatio) < 0.001)
+            verify(canvas.width <= 1000)
+            verify(canvas.height <= 420)
+            verify(resolution.text.indexOf(
+                       profile.width.toString()) >= 0)
+            verify(resolution.text.indexOf(
+                       profile.height.toString()) >= 0)
+        }
         verify(editor.width <= host.width - 32)
         verify(editor.height <= host.height - 32)
     }
@@ -160,6 +181,7 @@ TestCase {
         verify(notice.visible)
         verify(noticeText !== null)
         verify(noticeText.text.indexOf("2240") >= 0)
+        verify(noticeText.text.indexOf("1080") >= 0)
         verify(noticeText.text.indexOf("Crop") >= 0)
         verify(noticeText.text.indexOf("Zoom") >= 0)
         verify(noticeText.text.indexOf(
@@ -173,6 +195,13 @@ TestCase {
         verify(replace !== null)
         verify(replace.visible)
         verify(replace.enabled)
+
+        controller.targetWidth = 1280
+        controller.targetHeight = 720
+        wait(0)
+        verify(noticeText.text.indexOf("2240") >= 0)
+        verify(noticeText.text.indexOf("1080") >= 0)
+        verify(noticeText.text.indexOf("1280") < 0)
 
         controller.submissionPending = true
         controller.submissionAction = "Replace"

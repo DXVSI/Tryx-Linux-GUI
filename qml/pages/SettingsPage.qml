@@ -263,7 +263,7 @@ ScrollView {
 
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("Used by legacy serial/ADB devices. PASE printer-class devices are detected automatically.")
+                        text: qsTr("Used by legacy serial/ADB devices. TRYX printer-class devices are detected automatically.")
                         color: "#7f8991"
                         wrapMode: Text.WordWrap
                     }
@@ -328,7 +328,7 @@ ScrollView {
                     Label {
                         Layout.fillWidth: true
                         text: root.runtime.printerClassDevicePresent
-                              ? qsTr("PASE printer class")
+                              ? qsTr("TRYX printer class")
                               : (root.runtime.legacyConnected
                                  ? qsTr("Legacy serial / ADB")
                                  : qsTr("Waiting for device"))

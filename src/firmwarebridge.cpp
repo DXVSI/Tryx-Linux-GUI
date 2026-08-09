@@ -671,6 +671,17 @@ bool FirmwareBridge::requestFlash(
         setFailure(tr("Firmware approval has expired; validate the package again"));
         return false;
     }
+    if (!deviceManager_) {
+        setFailure(
+            tr("The device runtime is unavailable for firmware flashing"));
+        return false;
+    }
+    QString productError;
+    if (!deviceManager_->firmwareFlashAllowedForCurrentDevice(
+            &productError)) {
+        setFailure(productError);
+        return false;
+    }
 
     // Consume before any asynchronous work. A failed identity check requires a
     // fresh validation and can never replay this flash request automatically.

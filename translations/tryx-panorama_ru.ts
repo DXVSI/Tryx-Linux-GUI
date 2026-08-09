@@ -161,8 +161,8 @@
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="5860"/>
-        <source>The PASE transfer ended in an unknown partial state. Power-cycle the device before Retry or Save; the prepared media has been preserved.</source>
-        <translation>Передача на PASE завершилась в неопределённом частичном состоянии. Выполните полное выключение и включение устройства перед повтором или сохранением. Подготовленный файл сохранён.</translation>
+        <source>The printer-class transfer ended in an unknown partial state. Power-cycle the device before continuing; the prepared media has been preserved.</source>
+        <translation>Передача через класс принтера завершилась в неопределённом частичном состоянии. Перед продолжением полностью выключите и включите устройство. Подготовленный файл сохранён.</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="5871"/>
@@ -1092,8 +1092,8 @@
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="11533"/>
-        <source>%1 Power-cycle PASE before Retry or Save; the current firmware transfer session cannot be reused safely.</source>
-        <translation>%1 Полностью выключите и включите PASE перед повтором или сохранением. Текущий сеанс передачи прошивки нельзя безопасно использовать повторно.</translation>
+        <source>%1 Power-cycle the printer-class device before Retry or another media action; the current firmware transfer session cannot be reused safely.</source>
+        <translation>%1 Полностью выключите и включите устройство класса принтера перед повтором или другой операцией с медиафайлом. Текущую сессию передачи прошивки нельзя безопасно использовать повторно.</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="11549"/>
@@ -1537,6 +1537,110 @@
         <source>The runtime stopped during the device media action</source>
         <translation>Среда выполнения остановилась во время действия с медиафайлом устройства</translation>
     </message>
+    <message>
+        <source>Media upload is not supported for USB product %1</source>
+        <translation>Загрузка медиафайла не поддерживается для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>Prepared media is not bound to a supported USB product profile</source>
+        <translation>Подготовленный медиафайл не привязан к поддерживаемому профилю USB-продукта</translation>
+    </message>
+    <message>
+        <source>Media was uploaded and activated, but obsolete retry-cache files require manual cleanup</source>
+        <translation>Медиафайл загружен и активирован, но устаревшие файлы кэша повтора требуют ручной очистки</translation>
+    </message>
+    <message>
+        <source>The acknowledged upload cannot be retried, but obsolete retry-cache files could not be removed: %1</source>
+        <translation>Подтверждённую загрузку нельзя повторить, но устаревшие файлы кэша повтора не удалось удалить: %1</translation>
+    </message>
+    <message>
+        <source>Could not allocate a new media name for retry</source>
+        <translation>Не удалось выбрать новое имя медиафайла для повтора</translation>
+    </message>
+    <message>
+        <source>Display configuration is not supported for USB product %1</source>
+        <translation>Настройка дисплея не поддерживается для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>Display configuration is not supported for this product</source>
+        <translation>Настройка дисплея не поддерживается для этого продукта</translation>
+    </message>
+    <message>
+        <source>Firmware flashing is not supported for USB product %1</source>
+        <translation>Прошивка не поддерживается для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>Firmware flashing requires a connected, identified firmware-capable TRYX device</source>
+        <translation>Для прошивки требуется подключённое и распознанное устройство TRYX с поддержкой прошивки</translation>
+    </message>
+    <message>
+        <source>Media catalog export is not supported for USB product %1</source>
+        <translation>Экспорт из каталога медиафайлов не поддерживается для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>Media catalog refresh is not supported for USB product %1</source>
+        <translation>Обновление каталога медиафайлов не поддерживается для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>Media deletion is not supported for USB product %1</source>
+        <translation>Удаление медиафайлов не поддерживается для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>Media uploaded and activated</source>
+        <translation>Медиафайл загружен и активирован</translation>
+    </message>
+    <message>
+        <source>Media was uploaded and activated before cancellation completed</source>
+        <translation>Медиафайл был загружен и активирован до завершения отмены</translation>
+    </message>
+    <message>
+        <source>Overlay metrics are not supported for USB product %1</source>
+        <translation>Метрики оверлея не поддерживаются для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>Prepared media belongs to USB product %1, but the connected device is %2</source>
+        <translation>Подготовленный медиафайл предназначен для USB-продукта %1, а подключено устройство %2</translation>
+    </message>
+    <message>
+        <source>Prepared media belongs to USB product %1, but the reconnected device is %2</source>
+        <translation>Подготовленный медиафайл предназначен для USB-продукта %1, а переподключено устройство %2</translation>
+    </message>
+    <message>
+        <source>Prepared media is validated and ready for direct upload</source>
+        <translation>Подготовленный медиафайл проверен и готов к прямой загрузке</translation>
+    </message>
+    <message>
+        <source>Prepared media workflow does not match its USB product profile</source>
+        <translation>Процесс подготовки медиафайла не соответствует его профилю USB-продукта</translation>
+    </message>
+    <message>
+        <source>Recovered media and replacement are not supported for USB product %1</source>
+        <translation>Восстановление и замена медиафайлов не поддерживаются для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>The completed upload could not be reconciled safely because the USB product changed</source>
+        <translation>Завершённую загрузку нельзя безопасно сверить, поскольку USB-продукт изменился</translation>
+    </message>
+    <message>
+        <source>The final upload acknowledgement was lost on a product without a supported media catalog. Power-cycle the device before another upload.</source>
+        <translation>Итоговое подтверждение загрузки потеряно на продукте без поддерживаемого каталога медиафайлов. Перед следующей загрузкой полностью выключите и включите устройство.</translation>
+    </message>
+    <message>
+        <source>The reconnected USB product does not match the product that accepted the upload. Power-cycle the original device before a manual retry.</source>
+        <translation>Переподключённый USB-продукт не совпадает с продуктом, принявшим загрузку. Перед ручным повтором полностью выключите и включите исходное устройство.</translation>
+    </message>
+    <message>
+        <source>The upload outcome cannot be verified on this product</source>
+        <translation>Результат загрузки нельзя проверить на этом продукте</translation>
+    </message>
+    <message>
+        <source>This device has no supported media catalog, so an upload with a lost final acknowledgement cannot be reconciled safely. Power-cycle it before a manual retry.</source>
+        <translation>У этого устройства нет поддерживаемого каталога медиафайлов, поэтому загрузку с потерянным итоговым подтверждением нельзя безопасно сверить. Перед ручным повтором полностью выключите и включите устройство.</translation>
+    </message>
+    <message>
+        <source>This media workflow is not supported for USB product %1</source>
+        <translation>Этот процесс работы с медиафайлами не поддерживается для USB-продукта %1</translation>
+    </message>
 </context>
 <context>
     <name>DeviceWorker</name>
@@ -1853,13 +1957,13 @@
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="3648"/>
-        <source>Printer-class display session is already starting</source>
-        <translation>Сессия дисплея printer-class уже запускается</translation>
+        <source>Printer-class session is already starting</source>
+        <translation>Сессия класса принтера уже запускается</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="3654"/>
-        <source>Printer-class display session is lost until a new USB endpoint generation appears</source>
-        <translation>Сеанс дисплея класса принтера потерян до появления нового поколения USB-подключения</translation>
+        <source>Printer-class session is lost until a new USB endpoint generation appears</source>
+        <translation>Сессия класса принтера потеряна до появления нового поколения USB-подключения</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="3672"/>
@@ -1874,18 +1978,18 @@
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="3746"/>
-        <source>Failed to start the printer-class display session</source>
-        <translation>Не удалось запустить сессию дисплея printer-class</translation>
+        <source>Failed to start the printer-class session</source>
+        <translation>Не удалось запустить сессию класса принтера</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="3747"/>
-        <source>Failed to start the printer-class display session: %1</source>
-        <translation>Не удалось запустить сессию дисплея printer-class: %1</translation>
+        <source>Failed to start the printer-class session: %1</source>
+        <translation>Не удалось запустить сессию класса принтера: %1</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="3758"/>
-        <source>Printer-class display session was cancelled because the USB device changed</source>
-        <translation>Сессия дисплея printer-class отменена из-за изменения USB-устройства</translation>
+        <source>Printer-class session was cancelled because the USB device changed</source>
+        <translation>Сессия класса принтера отменена из-за изменения USB-устройства</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="3801"/>
@@ -1928,6 +2032,18 @@
         <location filename="../src/devicemanager.cpp" line="2518"/>
         <source>Failed to retrieve file list</source>
         <translation>Не удалось получить список файлов</translation>
+    </message>
+    <message>
+        <source>Opening the TRYX transfer session...</source>
+        <translation>Открытие сессии передачи TRYX...</translation>
+    </message>
+    <message>
+        <source>TRYX transfer session is ready</source>
+        <translation>Сессия передачи TRYX готова</translation>
+    </message>
+    <message>
+        <source>Unsupported TRYX USB product %1</source>
+        <translation>Неподдерживаемый USB-продукт TRYX %1</translation>
     </message>
 </context>
 <context>
@@ -3150,6 +3266,11 @@ Planned features:
         <translation>Вместить</translation>
     </message>
     <message>
+        <location filename="../qml/components/MediaEditor.qml" line="36"/>
+        <source>%1 × %2</source>
+        <translation>%1 × %2</translation>
+    </message>
+    <message>
         <location filename="../qml/components/MediaEditor.qml" line="24"/>
         <source>Fill</source>
         <translation>Заполнить</translation>
@@ -3227,9 +3348,9 @@ Planned features:
         <translation type="vanished">Фокус по Y</translation>
     </message>
     <message>
-        <location filename="../qml/components/MediaEditor.qml" line="137"/>
-        <source>This device copy is already encoded at 2240 × 1080, so the current settings will not visibly change it. Existing padding is baked into the video. Choose Crop and raise Zoom above 100%, or rotate the video. Save as new does not change the active display; select the new copy in the library and apply it. Previously lost areas cannot be restored.</source>
-        <translation>Эта копия с устройства уже закодирована в разрешении 2240 × 1080, поэтому текущие настройки визуально её не изменят. Существующие поля уже встроены в видео. Выберите Crop и увеличьте Zoom выше 100% либо поверните видео. Действие Save as new не меняет содержимое активного дисплея: выберите новую копию в медиатеке и примените её. Ранее потерянные области восстановить невозможно.</translation>
+        <location filename="../qml/components/MediaEditor.qml" line="144"/>
+        <source>This device copy is already encoded at %1, so the current settings will not visibly change it. Existing padding is baked into the video. Choose Crop and raise Zoom above 100%, or rotate the video. Save as new does not change the active display; select the new copy in the library and apply it. Previously lost areas cannot be restored.</source>
+        <translation>Эта копия с устройства уже закодирована в разрешении %1, поэтому текущие настройки визуально её не изменят. Существующие поля уже встроены в видео. Выберите Crop и увеличьте Zoom выше 100% либо поверните видео. Действие Save as new не меняет содержимое активного дисплея: выберите новую копию в медиатеке и примените её. Ранее потерянные области восстановить невозможно.</translation>
     </message>
     <message>
         <location filename="../qml/components/MediaEditor.qml" line="138"/>
@@ -4654,6 +4775,42 @@ The operation cannot be undone.</source>
         <location filename="../src/devicemanager.cpp" line="1931"/>
         <source>Prepared media hash does not match the retry cache</source>
         <translation>Хэш подготовленного медиафайла не совпадает с кэшем повтора</translation>
+    </message>
+    <message>
+        <source>Media upload is not supported for USB product %1</source>
+        <translation>Загрузка медиафайла не поддерживается для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>ffprobe is required to prepare Turris media</source>
+        <translation>Для подготовки медиафайла Turris требуется ffprobe</translation>
+    </message>
+    <message>
+        <source>Turris media preparation timed out</source>
+        <translation>Истекло время подготовки медиафайла Turris</translation>
+    </message>
+    <message>
+        <source>Counting exact Turris media frames...</source>
+        <translation>Подсчёт точного числа кадров медиафайла Turris...</translation>
+    </message>
+    <message>
+        <source>Turris frame counting timed out</source>
+        <translation>Истекло время подсчёта кадров Turris</translation>
+    </message>
+    <message>
+        <source>Could not determine the exact Turris frame count</source>
+        <translation>Не удалось определить точное число кадров Turris</translation>
+    </message>
+    <message>
+        <source>Could not determine the exact Turris frame count: %1</source>
+        <translation>Не удалось определить точное число кадров Turris: %1</translation>
+    </message>
+    <message>
+        <source>Finalizing Turris media blob...</source>
+        <translation>Формирование медиафайла Turris...</translation>
+    </message>
+    <message>
+        <source>Could not finalize the Turris media blob</source>
+        <translation>Не удалось сформировать медиафайл Turris</translation>
     </message>
 </context>
 <context>
@@ -6110,6 +6267,86 @@ The operation cannot be undone.</source>
         <source>The media operation did not complete</source>
         <translation>Операция с медиафайлом не завершена</translation>
     </message>
+    <message>
+        <source>Turris media attributes are invalid</source>
+        <translation>Недопустимые атрибуты медиафайла Turris</translation>
+    </message>
+    <message>
+        <source>Turris media metadata is invalid</source>
+        <translation>Недопустимые метаданные медиафайла Turris</translation>
+    </message>
+    <message>
+        <source>Prepared Turris H264 is not a bounded regular file</source>
+        <translation>Подготовленный H264-файл Turris не является допустимым обычным файлом ограниченного размера</translation>
+    </message>
+    <message>
+        <source>Cannot open prepared Turris H264: %1</source>
+        <translation>Не удалось открыть подготовленный H264-файл Turris: %1</translation>
+    </message>
+    <message>
+        <source>Cannot create Turris media blob: %1</source>
+        <translation>Не удалось создать медиафайл Turris: %1</translation>
+    </message>
+    <message>
+        <source>Cannot restrict Turris media blob permissions</source>
+        <translation>Не удалось ограничить права доступа к медиафайлу Turris</translation>
+    </message>
+    <message>
+        <source>Cannot write Turris media metadata: %1</source>
+        <translation>Не удалось записать метаданные медиафайла Turris: %1</translation>
+    </message>
+    <message>
+        <source>Cannot read prepared Turris H264: %1</source>
+        <translation>Не удалось прочитать подготовленный H264-файл Turris: %1</translation>
+    </message>
+    <message>
+        <source>Cannot write Turris media payload: %1</source>
+        <translation>Не удалось записать данные медиафайла Turris: %1</translation>
+    </message>
+    <message>
+        <source>Prepared Turris H264 changed while it was wrapped</source>
+        <translation>Подготовленный H264-файл Turris изменился во время упаковки</translation>
+    </message>
+    <message>
+        <source>Cannot commit Turris media blob: %1</source>
+        <translation>Не удалось завершить запись медиафайла Turris: %1</translation>
+    </message>
+    <message>
+        <source>Committed Turris media blob failed size verification</source>
+        <translation>Записанный медиафайл Turris не прошёл проверку размера</translation>
+    </message>
+    <message>
+        <source>Turris media container is invalid: %1</source>
+        <translation>Недопустимый контейнер медиафайла Turris: %1</translation>
+    </message>
+    <message>
+        <source>Prepared Turris media changed during validation</source>
+        <translation>Подготовленный медиафайл Turris изменился во время проверки</translation>
+    </message>
+    <message>
+        <source>TRYX %1 does not support %2</source>
+        <translation>TRYX %1 не поддерживает %2</translation>
+    </message>
+    <message>
+        <source>Media file name is not supported for %1: %2</source>
+        <translation>Имя медиафайла не поддерживается для %1: %2</translation>
+    </message>
+    <message>
+        <source>Cannot open %1: permission denied. Grant read/write access to %2.</source>
+        <translation>Не удалось открыть %1: доступ запрещён. Предоставьте доступ на чтение и запись к %2.</translation>
+    </message>
+    <message>
+        <source>Endpoint %1 is not the expected %2 printer interface</source>
+        <translation>Endpoint %1 не является ожидаемым интерфейсом принтера %2</translation>
+    </message>
+    <message>
+        <source>TRYX device is enumerating; waiting for a valid USB printer interface</source>
+        <translation>Устройство TRYX перечисляется; ожидается допустимый USB-интерфейс принтера</translation>
+    </message>
+    <message>
+        <source>TRYX display is in 391a:0006 Rockchip gadget mode; printer mode is not ready</source>
+        <translation>Дисплей TRYX находится в режиме Rockchip gadget 391a:0006; режим принтера ещё не готов</translation>
+    </message>
 </context>
 <context>
     <name>RuntimeClient</name>
@@ -6131,18 +6368,18 @@ The operation cannot be undone.</source>
     </message>
     <message>
         <location filename="../src/quick/runtimeclient.cpp" line="98"/>
-        <source>PASE printer-class device is not present</source>
-        <translation>Printer-class устройство PASE не обнаружено</translation>
+        <source>TRYX printer-class device is not present</source>
+        <translation>Printer-class устройство TRYX не обнаружено</translation>
     </message>
     <message>
         <location filename="../src/quick/runtimeclient.cpp" line="101"/>
-        <source>PASE is present, but the display session is not ready</source>
-        <translation>PASE обнаружено, но сеанс дисплея не готов</translation>
+        <source>TRYX device is present, but the display session is not ready</source>
+        <translation>Устройство TRYX обнаружено, но сеанс дисплея не готов</translation>
     </message>
     <message>
         <location filename="../src/quick/runtimeclient.cpp" line="103"/>
-        <source>PASE display session is active</source>
-        <translation>Сеанс дисплея PASE активен</translation>
+        <source>TRYX display session is active</source>
+        <translation>Сеанс дисплея TRYX активен</translation>
     </message>
     <message>
         <location filename="../src/quick/runtimeclient.cpp" line="147"/>
@@ -6269,6 +6506,22 @@ The operation cannot be undone.</source>
         <translation>Метрики</translation>
     </message>
     <message>
+        <location filename="../src/quick/runtimeclient.cpp" line="700"/>
+        <source>The legacy rotation command is unavailable for printer-class devices</source>
+        <translation>Команда поворота для старых serial/ADB-устройств недоступна для printer-class устройств</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimeclient.cpp" line="725"/>
+        <source>The legacy reboot command is unavailable for printer-class devices</source>
+        <translation>Команда перезагрузки для старых serial/ADB-устройств недоступна для printer-class устройств</translation>
+    </message>
+    <message>
+        <location filename="../src/quick/runtimeclient.cpp" line="739"/>
+        <location filename="../src/quick/runtimeclient.cpp" line="754"/>
+        <source>Legacy keepalive is unavailable for printer-class devices</source>
+        <translation>Keepalive для старых serial/ADB-устройств недоступен для printer-class устройств</translation>
+    </message>
+    <message>
         <source>Select at most three metrics</source>
         <translation type="vanished">Выберите не более трёх метрик</translation>
     </message>
@@ -6317,13 +6570,13 @@ The operation cannot be undone.</source>
     </message>
     <message>
         <location filename="../src/quick/runtimeclient.cpp" line="1053"/>
-        <source>%1 requires a PASE printer-class device</source>
-        <translation>%1: требуется printer-class устройство PASE</translation>
+        <source>%1 requires a TRYX printer-class device</source>
+        <translation>%1: требуется printer-class устройство TRYX</translation>
     </message>
     <message>
         <location filename="../src/quick/runtimeclient.cpp" line="1056"/>
-        <source>%1 is blocked until the PASE display session is active</source>
-        <translation>Невозможно выполнить «%1», пока сеанс дисплея PASE не станет активным</translation>
+        <source>%1 is blocked until the TRYX display session is active</source>
+        <translation>Невозможно выполнить «%1», пока сеанс дисплея TRYX не станет активным</translation>
     </message>
     <message>
         <location filename="../src/quick/runtimeclient.cpp" line="1060"/>
@@ -6886,6 +7139,16 @@ If the cooler is visible over ADB, it will reboot into Rockchip Loader mode. If 
         <location filename="../qml/pages/SettingsPage.qml" line="232"/>
         <source>Waiting</source>
         <translation>Ожидание</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/SettingsPage.qml" line="266"/>
+        <source>Used by legacy serial/ADB devices. TRYX printer-class devices are detected automatically.</source>
+        <translation>Используется для старых устройств с serial/ADB. TRYX printer-class устройства обнаруживаются автоматически.</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/SettingsPage.qml" line="331"/>
+        <source>TRYX printer class</source>
+        <translation>Класс принтера TRYX</translation>
     </message>
     <message>
         <location filename="../qml/pages/SettingsPage.qml" line="274"/>

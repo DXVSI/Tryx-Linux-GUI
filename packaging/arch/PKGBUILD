@@ -2,9 +2,9 @@
 # PKGBUILD metadata and directory variables are consumed or provided by makepkg.
 # shellcheck disable=SC2034,SC2154
 pkgname=tryx-panorama-manager
-pkgver=2.1.1
+pkgver=2.2.0
 pkgrel=1
-pkgdesc='Control TRYX Panorama cooler displays on Linux'
+pkgdesc='Control compatible TRYX cooler displays on Linux'
 arch=('x86_64')
 url='https://github.com/DXVSI/Tryx-Linux-GUI'
 license=('MIT' 'BSD-2-Clause')

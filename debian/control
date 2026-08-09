@@ -66,7 +66,7 @@ Suggests:
  mesa-utils,
  pciutils,
  unzip
-Description: control TRYX Panorama cooler displays on Linux
- TRYX Panorama Manager controls compatible TRYX Panorama and Panorama SE
- cooler displays. It supports custom media, display settings, system metrics,
- and the PASE printer-class USB protocol.
+Description: control compatible TRYX cooler displays on Linux
+ TRYX Panorama Manager controls compatible TRYX Panorama, Panorama SE, and
+ Turris 620 cooler displays. It uses model-specific media profiles and enables
+ only the printer-class USB capabilities supported by each device.

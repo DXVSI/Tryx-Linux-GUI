@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QSocketNotifier;
 struct udev;
@@ -21,6 +22,27 @@ class UserConfiguration;
 }
 }
 }
+
+enum class PrinterIdleMode {
+    OverlayLayout,
+    TransferOnly
+};
+
+struct PrinterProductProfile {
+    quint16 productId = 0;
+    int mediaWidth = 0;
+    int mediaHeight = 0;
+    PrinterIdleMode idleMode = PrinterIdleMode::TransferOnly;
+    bool mediaUploadSupported = false;
+    bool mediaCatalogSupported = false;
+    bool displayConfigurationSupported = false;
+    bool overlayMetricsSupported = false;
+    bool firmwareFlashSupported = false;
+};
+
+std::optional<PrinterProductProfile> printerProductProfileForId(
+    quint16 productId);
+QString printerProductIdString(quint16 productId);
 
 class PrinterFrameCodec {
 public:
@@ -42,7 +64,8 @@ public:
     enum class DiscoveryState {
         Absent,
         RockchipGadget391a0006,
-        Enumerating391a1021,
+        EnumeratingPrinterClass,
+        Enumerating391a1021 = EnumeratingPrinterClass,
         Ready,
         PermissionDenied,
         Ambiguous,
@@ -52,6 +75,7 @@ public:
     struct UsbPrinterDevice {
         QString devicePath;
         QString sysfsPath;
+        quint16 productId = 0;
         QString manufacturer;
         QString product;
         QString serial;
@@ -260,12 +284,19 @@ public:
     PrinterProtocol();
     explicit PrinterProtocol(int transactionTimeoutMs);
     PrinterProtocol(int transactionTimeoutMs, int deviceInfoReadyTimeoutMs);
+    explicit PrinterProtocol(const PrinterProductProfile &productProfile);
+    PrinterProtocol(const PrinterProductProfile &productProfile,
+                    int transactionTimeoutMs);
+    PrinterProtocol(const PrinterProductProfile &productProfile,
+                    int transactionTimeoutMs,
+                    int deviceInfoReadyTimeoutMs);
     ~PrinterProtocol();
 
     PrinterProtocol(const PrinterProtocol &) = delete;
     PrinterProtocol &operator=(const PrinterProtocol &) = delete;
 
     void close();
+    const PrinterProductProfile &productProfile() const;
     bool persistentUsbInputFailure() const;
     Result startDisplaySession(
         const QString &devicePath, const OperationContext &context);
@@ -398,6 +429,11 @@ public:
                                            const QString &sysfsRoot,
                                            const QString &devRoot,
                                            QString *errorMessage);
+    static bool validateEndpointForTesting(const QString &devicePath, int openFd,
+                                           const QString &sysfsRoot,
+                                           const QString &devRoot,
+                                           quint16 expectedProductId,
+                                           QString *errorMessage);
     static DuplexTestResult runDuplexTransportScenarioForTesting(
         const QList<DuplexTestEvent> &events,
         const QByteArray &request,
@@ -428,6 +464,7 @@ private:
                               MutationDetails *mutationDetails = nullptr);
 
     class Impl;
+    const PrinterProductProfile productProfile_;
     std::unique_ptr<Impl> impl_;
 };
 

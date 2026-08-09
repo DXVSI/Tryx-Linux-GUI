@@ -1,3 +1,6 @@
-# TRYX PANORAMA SE is not a CUPS printer. Clear printer units selected by
+# Supported TRYX displays are not CUPS printers. Clear printer units selected by
 # generic distro rules. Access is assigned earlier by 70-tryx-pase-access.rules.
+
 ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="1021", ENV{SYSTEMD_WANTS}="", ENV{SYSTEMD_USER_WANTS}=""
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="1011", ENV{SYSTEMD_WANTS}="", ENV{SYSTEMD_USER_WANTS}=""
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="2011", ENV{SYSTEMD_WANTS}="", ENV{SYSTEMD_USER_WANTS}=""

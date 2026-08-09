@@ -41,6 +41,44 @@ require_file /usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.
 require_file /usr/share/licenses/tryx-panorama-manager/LICENSE
 require_file /usr/share/licenses/tryx-panorama-manager/picojson-BSD-2-Clause.txt
 
+expected_usb_product_ids=$(printf '%s\n' 1011 1021 2011)
+
+udev_product_ids() {
+    sed -n \
+        's/.*ATTR{idVendor}=="391a".*ATTR{idProduct}=="\([[:xdigit:]]\{4\}\)".*/\1/p' \
+        "$1" |
+        tr '[:upper:]' '[:lower:]' |
+        LC_ALL=C sort
+}
+
+appstream_product_ids() {
+    sed -n \
+        's|.*<modalias>usb:v391Ap\([[:xdigit:]]\{4\}\)d\*</modalias>.*|\1|p' \
+        "$1" |
+        tr '[:upper:]' '[:lower:]' |
+        LC_ALL=C sort
+}
+
+for usb_product_source in \
+    "$staged_root/usr/lib/udev/rules.d/70-tryx-pase-access.rules" \
+    "$staged_root/usr/lib/udev/rules.d/99-tryx-pase-printer.rules"
+do
+    packaged_usb_product_ids=$(udev_product_ids "$usb_product_source")
+    if [ "$packaged_usb_product_ids" != "$expected_usb_product_ids" ]; then
+        echo "unexpected supported USB product IDs in ${usb_product_source#"$staged_root"}:" >&2
+        printf '%s\n' "$packaged_usb_product_ids" >&2
+        exit 1
+    fi
+done
+
+metainfo_path=$staged_root/usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
+packaged_usb_product_ids=$(appstream_product_ids "$metainfo_path")
+if [ "$packaged_usb_product_ids" != "$expected_usb_product_ids" ]; then
+    echo "unexpected supported USB product IDs in ${metainfo_path#"$staged_root"}:" >&2
+    printf '%s\n' "$packaged_usb_product_ids" >&2
+    exit 1
+fi
+
 if [ -e "$staged_root/usr/bin/tryx-panorama-quick" ]; then
     echo "package contains the retired secondary Quick launcher" >&2
     exit 1

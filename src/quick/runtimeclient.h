@@ -23,6 +23,11 @@ class RuntimeClient final : public QObject {
                    READ printerClassDevicePresent NOTIFY connectionChanged)
     Q_PROPERTY(bool displaySessionActive READ displaySessionActive
                    NOTIFY connectionChanged)
+    Q_PROPERTY(QString productId READ productId NOTIFY connectionChanged)
+    Q_PROPERTY(int mediaTargetWidth READ mediaTargetWidth
+                   NOTIFY connectionChanged)
+    Q_PROPERTY(int mediaTargetHeight READ mediaTargetHeight
+                   NOTIFY connectionChanged)
     Q_PROPERTY(QString connectionStatus READ connectionStatus
                    NOTIFY connectionChanged)
     Q_PROPERTY(QString diagnostic READ diagnostic NOTIFY diagnosticChanged)
@@ -83,6 +88,9 @@ public:
     bool legacyConnected() const;
     bool printerClassDevicePresent() const;
     bool displaySessionActive() const;
+    QString productId() const;
+    int mediaTargetWidth() const;
+    int mediaTargetHeight() const;
     QString connectionStatus() const;
     QString diagnostic() const;
     quint32 apiVersion() const;

@@ -48,11 +48,10 @@
 namespace {
 
 constexpr int kMaxPrinterKeepaliveWriteRetries = 3;
-constexpr int kPaseDisplayWidth = 2240;
-constexpr int kPaseDisplayHeight = 1080;
 constexpr int kPrinterKeepaliveRetryBackoffMs = 500;
 constexpr int kMaxTerminalOperationHistory = 32;
-constexpr int kRetryCacheFormatVersion = 9;
+constexpr int kRetryCacheFormatVersion = 10;
+constexpr int kRetryCacheStrictApplyVersion = 9;
 constexpr int kMediaCatalogFormatVersion = 2;
 constexpr int kDeleteIntentFormatVersion = 1;
 constexpr int kPaseMetricsConfigFormatVersion = 2;
@@ -74,6 +73,14 @@ constexpr qint64 kRecoveredMediaValidationDeadlineMs =
     15LL * 60LL * 1000LL;
 constexpr qint64 kRecoveredMediaFreeSpaceReserveBytes =
     16LL * 1024LL * 1024LL;
+constexpr quint16 kTurrisProductId = 0x2011;
+constexpr quint32 kTurrisMediaMagic = 0x4D584844U;
+constexpr quint32 kTurrisImageKind = 2U;
+constexpr quint32 kTurrisVideoKind = 4U;
+constexpr quint32 kTurrisMediaHeaderVersion = 1U;
+constexpr quint32 kTurrisMediaFps = 30U;
+constexpr quint32 kTurrisMediaWidth = 1280U;
+constexpr quint32 kTurrisMediaHeight = 720U;
 
 QString cleanAbsolutePath(const QString &path) {
     return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
@@ -476,8 +483,8 @@ QString printerDiscoveryStateName(
         return QStringLiteral("absent");
     case PrinterProtocol::DiscoveryState::RockchipGadget391a0006:
         return QStringLiteral("rockchip-gadget-391a-0006");
-    case PrinterProtocol::DiscoveryState::Enumerating391a1021:
-        return QStringLiteral("enumerating-391a-1021");
+    case PrinterProtocol::DiscoveryState::EnumeratingPrinterClass:
+        return QStringLiteral("enumerating-printer-class");
     case PrinterProtocol::DiscoveryState::Ready:
         return QStringLiteral("ready");
     case PrinterProtocol::DiscoveryState::PermissionDenied:
@@ -551,6 +558,189 @@ QString sha256File(
         return {};
     }
     return QString::fromLatin1(hash.result().toHex());
+}
+
+void appendProtoVarint(QByteArray *output, quint64 value) {
+    while (value >= 0x80U) {
+        output->append(static_cast<char>((value & 0x7fU) | 0x80U));
+        value >>= 7U;
+    }
+    output->append(static_cast<char>(value));
+}
+
+void appendProtoVarintField(QByteArray *output, quint32 fieldNumber,
+                            quint64 value) {
+    appendProtoVarint(output, static_cast<quint64>(fieldNumber) << 3U);
+    appendProtoVarint(output, value);
+}
+
+void appendProtoStringField(QByteArray *output, quint32 fieldNumber,
+                            const QByteArray &value) {
+    appendProtoVarint(output,
+                      (static_cast<quint64>(fieldNumber) << 3U) | 2U);
+    appendProtoVarint(output, static_cast<quint64>(value.size()));
+    output->append(value);
+}
+
+QByteArray turrisMediaMetadata(quint32 kind, quint64 frameCount) {
+    QByteArray metadata;
+    appendProtoVarintField(&metadata, 1U, kTurrisMediaMagic);
+    appendProtoStringField(
+        &metadata, 2U,
+        QByteArrayLiteral("Tryx media header v1, fps=30, size=1280x720"));
+    appendProtoVarintField(&metadata, 3U, kind);
+    appendProtoVarintField(&metadata, 4U, kTurrisMediaHeaderVersion);
+    appendProtoVarintField(&metadata, 5U, kTurrisMediaFps);
+    appendProtoVarintField(&metadata, 6U, kTurrisMediaWidth);
+    appendProtoVarintField(&metadata, 7U, kTurrisMediaHeight);
+    appendProtoVarintField(&metadata, 8U, frameCount);
+    return metadata;
+}
+
+bool writeAll(QIODevice *device, const QByteArray &bytes) {
+    qint64 offset = 0;
+    while (offset < bytes.size()) {
+        const qint64 written = device->write(
+            bytes.constData() + offset, bytes.size() - offset);
+        if (written <= 0) {
+            return false;
+        }
+        offset += written;
+    }
+    return true;
+}
+
+struct TurrisMediaBlobResult {
+    QString sha256;
+    QString error;
+    bool cancelled = false;
+};
+
+TurrisMediaBlobResult writeTurrisMediaBlob(
+    const QString &rawPath, const QString &outputPath, quint32 kind,
+    quint64 frameCount, const std::function<bool()> &isCancelled) {
+    TurrisMediaBlobResult result;
+    if (isCancelled && isCancelled()) {
+        result.cancelled = true;
+        return result;
+    }
+    if ((kind != kTurrisImageKind && kind != kTurrisVideoKind) ||
+        frameCount == 0 || frameCount > 0xffffffffULL ||
+        (kind == kTurrisImageKind && frameCount != 1)) {
+        result.error = QObject::tr("Turris media attributes are invalid");
+        return result;
+    }
+
+    const QByteArray metadata = turrisMediaMetadata(kind, frameCount);
+    if (metadata.isEmpty() ||
+        metadata.size() > static_cast<qsizetype>(0xffffffffU)) {
+        result.error = QObject::tr("Turris media metadata is invalid");
+        return result;
+    }
+    QByteArray metadataLength(4, Qt::Uninitialized);
+    const quint32 length = static_cast<quint32>(metadata.size());
+    metadataLength[0] = static_cast<char>(length & 0xffU);
+    metadataLength[1] = static_cast<char>((length >> 8U) & 0xffU);
+    metadataLength[2] = static_cast<char>((length >> 16U) & 0xffU);
+    metadataLength[3] = static_cast<char>((length >> 24U) & 0xffU);
+
+    const QFileInfo rawInfo(rawPath);
+    const qint64 prefixSize = metadataLength.size() + metadata.size();
+    if (!rawInfo.exists() || !rawInfo.isFile() || rawInfo.isSymLink() ||
+        rawInfo.size() <= 0 ||
+        rawInfo.size() > kMaxRetryCacheBytes - prefixSize) {
+        result.error = QObject::tr(
+            "Prepared Turris H264 is not a bounded regular file");
+        return result;
+    }
+
+    QFile rawFile(rawPath);
+    if (!rawFile.open(QIODevice::ReadOnly)) {
+        result.error = QObject::tr("Cannot open prepared Turris H264: %1")
+                           .arg(rawFile.errorString());
+        return result;
+    }
+    QSaveFile outputFile(outputPath);
+    outputFile.setDirectWriteFallback(false);
+    if (!outputFile.open(QIODevice::WriteOnly)) {
+        result.error = QObject::tr("Cannot create Turris media blob: %1")
+                           .arg(outputFile.errorString());
+        return result;
+    }
+    if (!outputFile.setPermissions(QFileDevice::ReadOwner |
+                                   QFileDevice::WriteOwner)) {
+        result.error = QObject::tr(
+            "Cannot restrict Turris media blob permissions");
+        outputFile.cancelWriting();
+        return result;
+    }
+
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!writeAll(&outputFile, metadataLength) ||
+        !writeAll(&outputFile, metadata)) {
+        result.error = QObject::tr("Cannot write Turris media metadata: %1")
+                           .arg(outputFile.errorString());
+        outputFile.cancelWriting();
+        return result;
+    }
+    hash.addData(metadataLength);
+    hash.addData(metadata);
+
+    qint64 copied = 0;
+    while (!rawFile.atEnd()) {
+        if (isCancelled && isCancelled()) {
+            result.cancelled = true;
+            outputFile.cancelWriting();
+            return result;
+        }
+        const QByteArray chunk = rawFile.read(256 * 1024);
+        if (chunk.isEmpty()) {
+            if (rawFile.error() != QFileDevice::NoError) {
+                result.error = QObject::tr("Cannot read prepared Turris H264: %1")
+                                   .arg(rawFile.errorString());
+                outputFile.cancelWriting();
+                return result;
+            }
+            break;
+        }
+        if (!writeAll(&outputFile, chunk)) {
+            result.error = QObject::tr("Cannot write Turris media payload: %1")
+                               .arg(outputFile.errorString());
+            outputFile.cancelWriting();
+            return result;
+        }
+        hash.addData(chunk);
+        copied += chunk.size();
+    }
+    if (copied != rawInfo.size() ||
+        QFileInfo(rawPath).size() != rawInfo.size()) {
+        result.error = QObject::tr(
+            "Prepared Turris H264 changed while it was wrapped");
+        outputFile.cancelWriting();
+        return result;
+    }
+    if (isCancelled && isCancelled()) {
+        result.cancelled = true;
+        outputFile.cancelWriting();
+        return result;
+    }
+    if (!outputFile.commit()) {
+        result.error = QObject::tr("Cannot commit Turris media blob: %1")
+                           .arg(outputFile.errorString());
+        return result;
+    }
+
+    const QFileInfo outputInfo(outputPath);
+    if (!outputInfo.exists() || !outputInfo.isFile() ||
+        outputInfo.isSymLink() ||
+        outputInfo.size() != prefixSize + rawInfo.size()) {
+        QFile::remove(outputPath);
+        result.error = QObject::tr(
+            "Committed Turris media blob failed size verification");
+        return result;
+    }
+    result.sha256 = QString::fromLatin1(hash.result().toHex());
+    return result;
 }
 
 struct SafeSourceHashResult {
@@ -658,7 +848,13 @@ QString sourceFingerprint(const QString &path) {
 
 QString printerConversionProfile(
     const QString &path,
-    const TryxRuntimeMediaTransform &transform) {
+    const TryxRuntimeMediaTransform &transform,
+    quint16 productId) {
+    const std::optional<PrinterProductProfile> productProfile =
+        printerProductProfileForId(productId);
+    if (!productProfile || !productProfile->mediaUploadSupported) {
+        return {};
+    }
     const QString transformFingerprint =
         tryxMediaTransformFingerprint(transform);
     if (transformFingerprint.isEmpty()) {
@@ -667,7 +863,9 @@ QString printerConversionProfile(
     QString typeName;
     switch (panorama::Media::detect_type(path.toStdString())) {
     case panorama::MediaType::Image:
-        typeName = QStringLiteral("image-60s");
+        typeName = productId == kTurrisProductId
+            ? QStringLiteral("image")
+            : QStringLiteral("image-60s");
         break;
     case panorama::MediaType::Video:
         typeName = QStringLiteral("video");
@@ -677,6 +875,19 @@ QString printerConversionProfile(
         break;
     case panorama::MediaType::Unknown:
         return {};
+    }
+    if (productId == kTurrisProductId) {
+        const QString base = typeName == QStringLiteral("image")
+            ? QStringLiteral(
+                  "turris-mxhd-v1-image-single-frame-1280x720-yuv420p-30fps-libx264-main40-medium-crf18")
+            : QStringLiteral(
+                  "turris-mxhd-v1-%1-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps")
+                  .arg(typeName);
+        if (tryxMediaTransformIsLegacyFit(transform)) {
+            return base;
+        }
+        return base + QStringLiteral("-transform-") +
+               transformFingerprint;
     }
     const QString base = QStringLiteral(
         "pase-h264-%1-%2-2240x1080-yuv420p-30fps-libx264-veryfast-crf23");
@@ -707,11 +918,69 @@ QString mutationOutcomeName(PrinterProtocol::MutationOutcome outcome) {
     return QStringLiteral("PartialOrUnknown");
 }
 
-QString h264PrinterName(const QString &baseName) {
+QString h264PrinterName(const QString &baseName, quint16 productId) {
+    const std::optional<PrinterProductProfile> productProfile =
+        printerProductProfileForId(productId);
+    if (!productProfile || !productProfile->mediaUploadSupported) {
+        return {};
+    }
     return QStringLiteral("%1.h264_%2x%3")
         .arg(baseName)
-        .arg(kPaseDisplayWidth)
-        .arg(kPaseDisplayHeight);
+        .arg(productProfile->mediaWidth)
+        .arg(productProfile->mediaHeight);
+}
+
+QString printerMediaConversionIdentity(
+    const PrinterProductProfile &profile) {
+    if (profile.productId == kTurrisProductId) {
+        return QStringLiteral("turris-mxhd-v1-1280x720-30fps");
+    }
+    return QStringLiteral("h264-yuv420p-%1x%2-30fps")
+        .arg(profile.mediaWidth)
+        .arg(profile.mediaHeight);
+}
+
+bool printerMediaNameMatchesProfile(
+    const QString &fileName,
+    const PrinterProductProfile &profile) {
+    return PrinterProtocol::isSafeUploadMediaName(fileName) &&
+           fileName.endsWith(
+               QStringLiteral(".h264_%1x%2")
+                   .arg(profile.mediaWidth)
+                   .arg(profile.mediaHeight),
+               Qt::CaseInsensitive);
+}
+
+bool printerConversionProfileMatchesProduct(
+    const QString &conversionProfile,
+    const PrinterProductProfile &profile) {
+    if (profile.productId == kTurrisProductId) {
+        static const QStringList validBases{
+            QStringLiteral(
+                "turris-mxhd-v1-image-single-frame-1280x720-yuv420p-30fps-libx264-main40-medium-crf18"),
+            QStringLiteral(
+                "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"),
+            QStringLiteral(
+                "turris-mxhd-v1-gif-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"),
+        };
+        for (const QString &base : validBases) {
+            if (conversionProfile == base) {
+                return true;
+            }
+            const QString transformPrefix =
+                base + QStringLiteral("-transform-");
+            if (conversionProfile.startsWith(transformPrefix) &&
+                isSha256Hex(conversionProfile.mid(transformPrefix.size()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return conversionProfile.startsWith(QStringLiteral("pase-h264-")) &&
+           conversionProfile.contains(
+               QStringLiteral("-%1x%2-yuv420p-30fps-")
+                   .arg(profile.mediaWidth)
+                   .arg(profile.mediaHeight));
 }
 
 QString printerPresetMediaFile(const QString &presetId) {
@@ -1348,7 +1617,8 @@ PrinterMediaPreparer::~PrinterMediaPreparer() {
 void PrinterMediaPreparer::analyzeSource(
     const QString &operationId, const QString &localPath,
     quint64 generation,
-    const TryxRuntimeMediaTransform &transform) {
+    const TryxRuntimeMediaTransform &transform,
+    quint16 productId) {
     const auto isCancelled = [this, operationId, generation]() {
         const quint64 gate = preparationGenerationGate_.load(
             std::memory_order_acquire);
@@ -1358,7 +1628,8 @@ void PrinterMediaPreparer::analyzeSource(
         QMutexLocker locker(&preparationCancellationMutex_);
         return cancelledPreparationOperations_.contains(operationId);
     };
-    const QString profile = printerConversionProfile(localPath, transform);
+    const QString profile = printerConversionProfile(
+        localPath, transform, productId);
     if (profile.isEmpty()) {
         emit failed(operationId,
                     tryxMediaTransformIsValid(transform)
@@ -1425,7 +1696,8 @@ void PrinterMediaPreparer::prepare(const QString &operationId,
                                    const QString &localPath,
                                    const QString &expectedSourceSha256,
                                    quint64 generation,
-                                   const TryxRuntimeMediaTransform &transform) {
+                                   const TryxRuntimeMediaTransform &transform,
+                                   quint16 productId) {
     if (shuttingDown_) {
         return;
     }
@@ -1436,6 +1708,7 @@ void PrinterMediaPreparer::prepare(const QString &operationId,
         pendingExpectedSourceSha256_ = expectedSourceSha256;
         pendingTransform_ = transform;
         pendingRecoveredVideo_ = false;
+        pendingProductId_ = productId;
         pendingGeneration_ = generation;
         hasPending_ = true;
         cancelling_ = true;
@@ -1443,13 +1716,15 @@ void PrinterMediaPreparer::prepare(const QString &operationId,
         return;
     }
     startPreparation(operationId, devicePath, localPath,
-                     expectedSourceSha256, generation, transform, false);
+                     expectedSourceSha256, generation, transform, false,
+                     productId);
 }
 
 void PrinterMediaPreparer::prepareRecovered(
     const QString &operationId, const QString &devicePath,
     const QString &localPath, const QString &expectedSourceSha256,
-    quint64 generation, const TryxRuntimeMediaTransform &transform) {
+    quint64 generation, const TryxRuntimeMediaTransform &transform,
+    quint16 productId) {
     if (shuttingDown_) {
         return;
     }
@@ -1460,6 +1735,7 @@ void PrinterMediaPreparer::prepareRecovered(
         pendingExpectedSourceSha256_ = expectedSourceSha256;
         pendingTransform_ = transform;
         pendingRecoveredVideo_ = true;
+        pendingProductId_ = productId;
         pendingGeneration_ = generation;
         hasPending_ = true;
         cancelling_ = true;
@@ -1467,7 +1743,8 @@ void PrinterMediaPreparer::prepareRecovered(
         return;
     }
     startPreparation(operationId, devicePath, localPath,
-                     expectedSourceSha256, generation, transform, true);
+                     expectedSourceSha256, generation, transform, true,
+                     productId);
 }
 
 void PrinterMediaPreparer::startPreparation(const QString &operationId,
@@ -1476,7 +1753,8 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                                             const QString &expectedSourceSha256,
                                             quint64 generation,
                                             const TryxRuntimeMediaTransform &transform,
-                                            bool recoveredVideo) {
+                                            bool recoveredVideo,
+                                            quint16 productId) {
     const auto isCancelled = [this, operationId, generation]() {
         const quint64 gate = preparationGenerationGate_.load(
             std::memory_order_acquire);
@@ -1494,6 +1772,16 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         emit failed(operationId,
                     tr("Media preparation was cancelled before it started"),
                     generation);
+        return;
+    }
+    const std::optional<PrinterProductProfile> productProfile =
+        printerProductProfileForId(productId);
+    if (!productProfile || !productProfile->mediaUploadSupported) {
+        emit failed(
+            operationId,
+            tr("Media upload is not supported for USB product %1")
+                .arg(printerProductIdString(productId)),
+            generation);
         return;
     }
     const QFileInfo inputInfo(localPath);
@@ -1543,55 +1831,124 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                     generation);
         return;
     }
+    const bool turrisMedia = productId == kTurrisProductId;
+    if (turrisMedia &&
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        emit failed(operationId,
+                    tr("ffprobe is required to prepare Turris media"),
+                    generation);
+        return;
+    }
 
     const QString remoteBaseName = generatedPrinterMediaName(baseExtension);
-    const QString remoteName = h264PrinterName(remoteBaseName);
+    const QString remoteName = h264PrinterName(remoteBaseName, productId);
     const QString outputPath = printerTempPath(remoteName);
+    const QString rawMediaPath = turrisMedia
+        ? outputPath + QStringLiteral(".raw.h264")
+        : QString();
+    const QString mediaOutputPath = turrisMedia
+        ? rawMediaPath
+        : outputPath;
     const QString stagedThumbnailPath = outputPath + QStringLiteral(".jpg");
     const QString stagedThumbnailTempPath =
         outputPath + QStringLiteral(".part.jpg");
     QFile::remove(outputPath);
+    QFile::remove(rawMediaPath);
     QFile::remove(stagedThumbnailPath);
     QFile::remove(stagedThumbnailTempPath);
 
     QStringList arguments{QStringLiteral("-y")};
     if (type == panorama::MediaType::Image) {
         arguments << QStringLiteral("-loop") << QStringLiteral("1")
-                  << QStringLiteral("-framerate") << QStringLiteral("30")
-                  << QStringLiteral("-t") << QStringLiteral("60");
+                  << QStringLiteral("-framerate") << QStringLiteral("30");
+        if (!turrisMedia) {
+            arguments << QStringLiteral("-t") << QStringLiteral("60");
+        }
     } else if (recoveredVideo) {
         arguments << QStringLiteral("-f") << QStringLiteral("h264")
                   << QStringLiteral("-framerate") << QStringLiteral("30");
     }
     const QString filter = tryxMediaTransformFfmpegFilter(
-        transform, kPaseDisplayWidth, kPaseDisplayHeight);
+        transform, productProfile->mediaWidth,
+        productProfile->mediaHeight);
     if (filter.isEmpty()) {
         emit failed(operationId, tr("Media transform filter is invalid"),
                     generation);
         return;
     }
     arguments << QStringLiteral("-i") << localPath
-              << QStringLiteral("-c:v") << QStringLiteral("libx264")
-              << QStringLiteral("-preset") << QStringLiteral("veryfast")
-              << QStringLiteral("-crf") << QStringLiteral("23")
-              << QStringLiteral("-vf") << filter
-              << QStringLiteral("-an")
-              << QStringLiteral("-f") << QStringLiteral("h264")
+              << QStringLiteral("-c:v") << QStringLiteral("libx264");
+    if (turrisMedia) {
+        const bool turrisImage = type == panorama::MediaType::Image;
+        const QString turrisFilter = filter + QStringLiteral(
+            ",scale=in_range=auto:out_range=full:out_color_matrix=bt709");
+        arguments << QStringLiteral("-preset")
+                  << (turrisImage ? QStringLiteral("medium")
+                                  : QStringLiteral("fast"));
+        if (turrisImage) {
+            arguments << QStringLiteral("-crf") << QStringLiteral("18");
+        } else {
+            arguments << QStringLiteral("-b:v") << QStringLiteral("12M")
+                      << QStringLiteral("-maxrate") << QStringLiteral("12M")
+                      << QStringLiteral("-bufsize") << QStringLiteral("24M");
+        }
+        arguments << QStringLiteral("-vf") << turrisFilter
+                  << QStringLiteral("-an")
+                  << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p")
+                  << QStringLiteral("-r") << QStringLiteral("30")
+                  << QStringLiteral("-fps_mode") << QStringLiteral("cfr")
+                  << QStringLiteral("-profile:v") << QStringLiteral("main")
+                  << QStringLiteral("-level:v")
+                  << (turrisImage
+                          ? QStringLiteral("4.0")
+                          : QStringLiteral("4.1"))
+                  << QStringLiteral("-g")
+                  << (turrisImage ? QStringLiteral("30")
+                                  : QStringLiteral("60"))
+                  << QStringLiteral("-keyint_min")
+                  << (turrisImage ? QStringLiteral("30")
+                                  : QStringLiteral("60"))
+                  << QStringLiteral("-sc_threshold") << QStringLiteral("0")
+                  << QStringLiteral("-bf") << QStringLiteral("0")
+                  << QStringLiteral("-flags") << QStringLiteral("+cgop")
+                  << QStringLiteral("-color_range") << QStringLiteral("pc")
+                  << QStringLiteral("-colorspace") << QStringLiteral("bt709")
+                  << QStringLiteral("-color_primaries") << QStringLiteral("bt709")
+                  << QStringLiteral("-color_trc") << QStringLiteral("bt709")
+                  << QStringLiteral("-x264-params")
+                  << QStringLiteral(
+                         "aud=1:repeat-headers=1:open-gop=0:force-cfr=1:fullrange=on:colorprim=bt709:transfer=bt709:colormatrix=bt709");
+        if (turrisImage) {
+            arguments << QStringLiteral("-frames:v") << QStringLiteral("1");
+        }
+    } else {
+        arguments << QStringLiteral("-preset") << QStringLiteral("veryfast")
+                  << QStringLiteral("-crf") << QStringLiteral("23")
+                  << QStringLiteral("-vf") << filter
+                  << QStringLiteral("-an");
+    }
+    arguments << QStringLiteral("-f") << QStringLiteral("h264")
               << QStringLiteral("-fs")
               << QString::number(kMediaPreparationOutputCapBytes)
-              << outputPath;
+              << mediaOutputPath;
 
     operationId_ = operationId;
     devicePath_ = devicePath;
     sourcePath_ = localPath;
     uploadPath_ = outputPath;
+    rawMediaPath_ = rawMediaPath;
     remoteName_ = remoteName;
     stagedThumbnailTempPath_ = stagedThumbnailTempPath;
     stagedThumbnailPath_ = stagedThumbnailPath;
+    stagedThumbnailSha256_.clear();
     preparedSha256_.clear();
     expectedSourceSha256_ = expectedSourceSha256;
     transform_ = transform;
     recoveredVideo_ = recoveredVideo;
+    productId_ = productId;
+    turrisMediaKind_ = type == panorama::MediaType::Image
+        ? kTurrisImageKind
+        : kTurrisVideoKind;
     generation_ = generation;
     processOutput_.clear();
     cancelling_ = false;
@@ -1618,6 +1975,8 @@ void PrinterMediaPreparer::finishPreparation(int exitCode, bool normalExit) {
         finishMediaPreparation(exitCode, normalExit);
     } else if (phase_ == PreparationPhase::Thumbnail) {
         finishThumbnailPreparation(exitCode, normalExit);
+    } else if (phase_ == PreparationPhase::FrameCount) {
+        finishTurrisFrameCountPreparation(exitCode, normalExit);
     }
 }
 
@@ -1629,7 +1988,10 @@ void PrinterMediaPreparer::finishMediaPreparation(int exitCode,
         return;
     }
     const bool cancelled = cancelling_ || shuttingDown_;
-    const QFileInfo outputInfo(uploadPath_);
+    const QString encodedMediaPath = productId_ == kTurrisProductId
+        ? rawMediaPath_
+        : uploadPath_;
+    const QFileInfo outputInfo(encodedMediaPath);
     if (!cancelled && outputInfo.exists() && outputInfo.isFile() &&
         outputInfo.size() > kMaxRetryCacheBytes) {
         failPreparation(
@@ -1667,19 +2029,21 @@ void PrinterMediaPreparer::finishMediaPreparation(int exitCode,
         QMutexLocker locker(&preparationCancellationMutex_);
         return cancelledPreparationOperations_.contains(activeOperationId);
     };
-    preparedSha256_ = sha256File(uploadPath_, hashCancelled);
-    if (preparedSha256_.isEmpty()) {
-        if (mediaPreparationDeadline_.hasExpired()) {
-            failPreparation(
-                tr("Conversion to printer-class H264 timed out"), false);
+    if (productId_ != kTurrisProductId) {
+        preparedSha256_ = sha256File(uploadPath_, hashCancelled);
+        if (preparedSha256_.isEmpty()) {
+            if (mediaPreparationDeadline_.hasExpired()) {
+                failPreparation(
+                    tr("Conversion to printer-class H264 timed out"), false);
+                return;
+            }
+            if (hashCancelled()) {
+                failPreparation(QString(), true);
+                return;
+            }
+            failPreparation(tr("Could not verify the prepared H264 file"), false);
             return;
         }
-        if (hashCancelled()) {
-            failPreparation(QString(), true);
-            return;
-        }
-        failPreparation(tr("Could not verify the prepared H264 file"), false);
-        return;
     }
 
     if (!expectedSourceSha256_.isEmpty()) {
@@ -1710,7 +2074,7 @@ void PrinterMediaPreparer::finishMediaPreparation(int exitCode,
     process_->setArguments(
         {QStringLiteral("-y"), QStringLiteral("-f"),
          QStringLiteral("h264"), QStringLiteral("-framerate"),
-         QStringLiteral("30"), QStringLiteral("-i"), uploadPath_,
+         QStringLiteral("30"), QStringLiteral("-i"), encodedMediaPath,
          QStringLiteral("-vf"), QStringLiteral("scale=384:-2"),
          QStringLiteral("-frames:v"), QStringLiteral("1"),
          QStringLiteral("-q:v"), QStringLiteral("4"),
@@ -1728,7 +2092,11 @@ void PrinterMediaPreparer::finishThumbnailPreparation(int exitCode,
             operationId_,
             tr("Persistent preview timed out; continuing with a placeholder"),
             generation_);
-        completePreparation(QString());
+        if (productId_ == kTurrisProductId) {
+            startTurrisFrameCountPreparation(QString());
+        } else {
+            completePreparation(QString());
+        }
         return;
     }
     const bool cancelled = cancelling_ || shuttingDown_;
@@ -1752,7 +2120,149 @@ void PrinterMediaPreparer::finishThumbnailPreparation(int exitCode,
         QFile::remove(stagedThumbnailTempPath_);
         QFile::remove(stagedThumbnailPath_);
     }
-    completePreparation(thumbnailSha256);
+    if (productId_ == kTurrisProductId) {
+        startTurrisFrameCountPreparation(thumbnailSha256);
+    } else {
+        completePreparation(thumbnailSha256);
+    }
+}
+
+void PrinterMediaPreparer::startTurrisFrameCountPreparation(
+    const QString &thumbnailSha256) {
+    if (mediaPreparationDeadline_.hasExpired()) {
+        failPreparation(tr("Turris media preparation timed out"), false);
+        return;
+    }
+    const QString ffprobe =
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffprobe.isEmpty()) {
+        failPreparation(tr("ffprobe is required to prepare Turris media"),
+                        false);
+        return;
+    }
+    const qint64 remainingMs = mediaPreparationDeadline_.remainingTime();
+    if (remainingMs <= 0) {
+        failPreparation(tr("Turris media preparation timed out"), false);
+        return;
+    }
+
+    stagedThumbnailSha256_ = thumbnailSha256;
+    processOutput_.clear();
+    preparationTimedOut_ = false;
+    phase_ = PreparationPhase::FrameCount;
+    emit progress(operationId_,
+                  tr("Counting exact Turris media frames..."), generation_);
+    process_->setProgram(ffprobe);
+    process_->setArguments(
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-count_frames"), QStringLiteral("-show_entries"),
+         QStringLiteral("stream=width,height,nb_read_frames"),
+         QStringLiteral("-of"),
+         QStringLiteral("default=noprint_wrappers=1"),
+         rawMediaPath_});
+    process_->start();
+    processDeadlineTimer_->start(static_cast<int>(remainingMs));
+}
+
+void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
+    int exitCode, bool normalExit) {
+    if (preparationTimedOut_) {
+        failPreparation(tr("Turris frame counting timed out"), false);
+        return;
+    }
+    const bool cancelled = cancelling_ || shuttingDown_;
+    if (cancelled) {
+        failPreparation(QString(), true);
+        return;
+    }
+    QHash<QString, QString> probeValues;
+    QString probeText = QString::fromLatin1(processOutput_);
+    probeText.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    const QStringList probeLines =
+        probeText.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    bool probeShapeValid = true;
+    for (const QString &rawLine : probeLines) {
+        const QString line = rawLine.trimmed();
+        const qsizetype separator = line.indexOf(QLatin1Char('='));
+        if (separator <= 0) {
+            probeShapeValid = false;
+            break;
+        }
+        const QString key = line.left(separator);
+        if ((key != QStringLiteral("width") &&
+             key != QStringLiteral("height") &&
+             key != QStringLiteral("nb_read_frames")) ||
+            probeValues.contains(key)) {
+            probeShapeValid = false;
+            break;
+        }
+        probeValues.insert(key, line.mid(separator + 1));
+    }
+    bool frameCountOk = false;
+    const quint64 frameCount =
+        probeValues.value(QStringLiteral("nb_read_frames")).toULongLong(
+            &frameCountOk);
+    const bool geometryValid =
+        probeValues.value(QStringLiteral("width")) ==
+            QString::number(kTurrisMediaWidth) &&
+        probeValues.value(QStringLiteral("height")) ==
+            QString::number(kTurrisMediaHeight);
+    if (!normalExit || exitCode != 0 || !probeShapeValid ||
+        probeValues.size() != 3 || !geometryValid || !frameCountOk ||
+        frameCount == 0 || frameCount > 0xffffffffULL ||
+        (turrisMediaKind_ == kTurrisImageKind && frameCount != 1)) {
+        QString detail = QString::fromLocal8Bit(processOutput_).trimmed();
+        if (detail.size() > 1000) {
+            detail = detail.right(1000);
+        }
+        failPreparation(
+            detail.isEmpty()
+                ? tr("Could not determine the exact Turris frame count")
+                : tr("Could not determine the exact Turris frame count: %1")
+                      .arg(detail),
+            false);
+        return;
+    }
+
+    const QString activeOperationId = operationId_;
+    const quint64 activeGeneration = generation_;
+    const auto isCancelled = [this, activeOperationId,
+                              activeGeneration]() {
+        if (mediaPreparationDeadline_.hasExpired()) {
+            return true;
+        }
+        const quint64 gate = preparationGenerationGate_.load(
+            std::memory_order_acquire);
+        if (gate != 0 && gate != activeGeneration) {
+            return true;
+        }
+        QMutexLocker locker(&preparationCancellationMutex_);
+        return cancelledPreparationOperations_.contains(activeOperationId);
+    };
+    emit progress(operationId_, tr("Finalizing Turris media blob..."),
+                  generation_);
+    const TurrisMediaBlobResult blob = writeTurrisMediaBlob(
+        rawMediaPath_, uploadPath_, turrisMediaKind_, frameCount,
+        isCancelled);
+    if (blob.sha256.isEmpty()) {
+        if (mediaPreparationDeadline_.hasExpired()) {
+            failPreparation(tr("Turris media preparation timed out"), false);
+        } else if (blob.cancelled || isCancelled()) {
+            failPreparation(QString(), true);
+        } else {
+            failPreparation(
+                blob.error.isEmpty()
+                    ? tr("Could not finalize the Turris media blob")
+                    : blob.error,
+                false);
+        }
+        return;
+    }
+    preparedSha256_ = blob.sha256;
+    QFile::remove(rawMediaPath_);
+    completePreparation(stagedThumbnailSha256_);
 }
 
 void PrinterMediaPreparer::completePreparation(
@@ -1783,10 +2293,14 @@ void PrinterMediaPreparer::failPreparation(const QString &message,
                                            bool cancelled) {
     const QString operationId = operationId_;
     const QString outputPath = uploadPath_;
+    const QString rawMediaPath = rawMediaPath_;
     const QString thumbnailPath = stagedThumbnailPath_;
     const quint64 generation = generation_;
     if (!outputPath.isEmpty()) {
         QFile::remove(outputPath);
+    }
+    if (!rawMediaPath.isEmpty()) {
+        QFile::remove(rawMediaPath);
     }
     if (!stagedThumbnailTempPath_.isEmpty()) {
         QFile::remove(stagedThumbnailTempPath_);
@@ -1813,13 +2327,17 @@ void PrinterMediaPreparer::resetPreparationState() {
     devicePath_.clear();
     sourcePath_.clear();
     uploadPath_.clear();
+    rawMediaPath_.clear();
     remoteName_.clear();
     stagedThumbnailTempPath_.clear();
     stagedThumbnailPath_.clear();
+    stagedThumbnailSha256_.clear();
     preparedSha256_.clear();
     expectedSourceSha256_.clear();
     transform_ = tryxLegacyFitMediaTransform();
     recoveredVideo_ = false;
+    productId_ = 0x1021;
+    turrisMediaKind_ = 0;
     generation_ = 0;
     processOutput_.clear();
     if (!completedOperationId.isEmpty()) {
@@ -1840,6 +2358,7 @@ void PrinterMediaPreparer::startPendingIfAvailable() {
         pendingExpectedSourceSha256_;
     const TryxRuntimeMediaTransform transform = pendingTransform_;
     const bool recoveredVideo = pendingRecoveredVideo_;
+    const quint16 productId = pendingProductId_;
     const quint64 generation = pendingGeneration_;
     hasPending_ = false;
     pendingOperationId_.clear();
@@ -1848,10 +2367,11 @@ void PrinterMediaPreparer::startPendingIfAvailable() {
     pendingExpectedSourceSha256_.clear();
     pendingTransform_ = tryxLegacyFitMediaTransform();
     pendingRecoveredVideo_ = false;
+    pendingProductId_ = 0x1021;
     pendingGeneration_ = 0;
     startPreparation(operationId, devicePath, localPath,
                      expectedSourceSha256, generation, transform,
-                     recoveredVideo);
+                     recoveredVideo, productId);
 }
 
 void PrinterMediaPreparer::cancelStale(quint64 currentGeneration) {
@@ -1864,6 +2384,7 @@ void PrinterMediaPreparer::cancelStale(quint64 currentGeneration) {
         pendingExpectedSourceSha256_.clear();
         pendingTransform_ = tryxLegacyFitMediaTransform();
         pendingRecoveredVideo_ = false;
+        pendingProductId_ = 0x1021;
         pendingGeneration_ = 0;
     }
     if (active_ && generation_ != currentGeneration) {
@@ -1883,6 +2404,7 @@ void PrinterMediaPreparer::cancelOperation(const QString &operationId) {
         pendingExpectedSourceSha256_.clear();
         pendingTransform_ = tryxLegacyFitMediaTransform();
         pendingRecoveredVideo_ = false;
+        pendingProductId_ = 0x1021;
         pendingGeneration_ = 0;
         operationRemovedBeforeStart = true;
     }
@@ -1953,6 +2475,7 @@ void PrinterMediaPreparer::shutdown() {
     pendingExpectedSourceSha256_.clear();
     pendingTransform_ = tryxLegacyFitMediaTransform();
     pendingRecoveredVideo_ = false;
+    pendingProductId_ = 0x1021;
     pendingGeneration_ = 0;
     if (active_) {
         cancelling_ = true;
@@ -1964,6 +2487,7 @@ void PrinterMediaPreparer::shutdown() {
         }
         if (active_) {
             QFile::remove(uploadPath_);
+            QFile::remove(rawMediaPath_);
             QFile::remove(stagedThumbnailTempPath_);
             QFile::remove(stagedThumbnailPath_);
             resetPreparationState();
@@ -2467,7 +2991,9 @@ void DeviceWorker::uploadPreparedPrinterMedia(const QString &devicePath,
             errorMessage, generation);
         return;
     }
-    context.maintainKeepalive = true;
+    context.maintainKeepalive =
+        printerProtocol_->productProfile().idleMode ==
+        PrinterIdleMode::OverlayLayout;
 
     emit printerForegroundProgress(
         operationId, QStringLiteral("Beginning"), 0, preparedInfo.size(),
@@ -2557,14 +3083,28 @@ void DeviceWorker::refreshMediaList() {
 
 void DeviceWorker::configurePrinterDevice(const QString &devicePath,
                                           const QString &deviceSerial,
+                                          quint16 productId,
                                           quint64 generation) {
     stopPrinterSession();
-    printerProtocol_ = std::make_unique<PrinterProtocol>();
+    const std::optional<PrinterProductProfile> productProfile =
+        printerProductProfileForId(productId);
+    if (!productProfile) {
+        printerProtocol_.reset();
+        printerProductId_ = 0;
+        emit printerOperationError(
+            tr("Unsupported TRYX USB product %1")
+                .arg(printerProductIdString(productId)),
+            generation);
+        return;
+    }
+    printerProtocol_ =
+        std::make_unique<PrinterProtocol>(*productProfile);
     printerSessionRecoveryAttempt_ = 0;
     printerOverlayActivationPending_ = false;
     printerOverlayLeaseRefreshNext_ = false;
     printerDevicePath_ = devicePath;
     printerDeviceSerial_ = deviceSerial.trimmed();
+    printerProductId_ = productId;
     foregroundPrinterOperationId_.clear();
     printerOverlayConfig_ = {};
     configuredPrinterGeneration_ = generation;
@@ -2585,6 +3125,12 @@ void DeviceWorker::restorePrinterOverlay(
                                          quint64 generation) {
     if (generation != configuredPrinterGeneration_ ||
         !printerGenerationIsCurrent(generation)) {
+        return;
+    }
+    if (!printerProtocol_ ||
+        !printerProtocol_->productProfile().overlayMetricsSupported) {
+        printerOverlayConfig_ = {};
+        printerMetricsTimer_->stop();
         return;
     }
     printerOverlayConfig_ = overlay;
@@ -2643,6 +3189,7 @@ void DeviceWorker::clearPrinterDevice(quint64 generation) {
     printerOverlayActivationPending_ = false;
     printerDevicePath_.clear();
     printerDeviceSerial_.clear();
+    printerProductId_ = 0;
     foregroundPrinterOperationId_.clear();
     printerOverlayConfig_ = {};
     configuredPrinterGeneration_ = generation;
@@ -2672,6 +3219,7 @@ void DeviceWorker::quiesceForFirmware(const QString &leaseId,
     printerOverlayLeaseRefreshNext_ = false;
     printerDevicePath_.clear();
     printerDeviceSerial_.clear();
+    printerProductId_ = 0;
     foregroundPrinterOperationId_.clear();
     printerOverlayConfig_ = {};
     configuredPrinterGeneration_ = qMax(
@@ -3386,6 +3934,8 @@ void DeviceWorker::startPrinterMetrics() {
     printerMetricsTimer_->stop();
     if (!foregroundPrinterOperationId_.isEmpty() ||
         printerSessionState_ != PrinterSessionState::Active ||
+        !printerProtocol_ ||
+        !printerProtocol_->productProfile().overlayMetricsSupported ||
         !printerGenerationIsCurrent(configuredPrinterGeneration_)) {
         return;
     }
@@ -3403,6 +3953,8 @@ void DeviceWorker::startPrinterMetrics() {
 void DeviceWorker::sendPrinterMetrics() {
     if (printerSessionState_ != PrinterSessionState::Active ||
         !foregroundPrinterOperationId_.isEmpty() ||
+        !printerProtocol_ ||
+        !printerProtocol_->productProfile().overlayMetricsSupported ||
         !printerGenerationIsCurrent(configuredPrinterGeneration_)) {
         return;
     }
@@ -3515,6 +4067,12 @@ void DeviceWorker::attemptPrinterSessionStart(const QString &devicePath,
 }
 
 void DeviceWorker::sendPrinterKeepalive() {
+    if (!printerProtocol_ ||
+        printerProtocol_->productProfile().idleMode ==
+            PrinterIdleMode::TransferOnly) {
+        printerKeepaliveTimer_->stop();
+        return;
+    }
     if ((printerSessionState_ != PrinterSessionState::Active &&
          printerSessionState_ !=
              PrinterSessionState::AwaitingOverlayActivation) ||
@@ -3538,6 +4096,8 @@ void DeviceWorker::sendPrinterKeepalive() {
 
     const bool refreshOverlayLease =
         printerSessionState_ == PrinterSessionState::Active &&
+        printerProtocol_ &&
+        printerProtocol_->productProfile().overlayMetricsSupported &&
         printerOverlayLeaseMode_ ==
             PrinterOverlayLeaseMode::PingAndOverlayLease &&
         printerOverlayLeaseRefreshNext_ &&
@@ -3634,6 +4194,8 @@ void DeviceWorker::sendPrinterKeepalive() {
     }
     if (printerOverlayLeaseMode_ ==
             PrinterOverlayLeaseMode::PingAndOverlayLease &&
+        printerProtocol_ &&
+        printerProtocol_->productProfile().overlayMetricsSupported &&
         paseOverlayHasContent(printerOverlayConfig_)) {
         printerOverlayLeaseRefreshNext_ =
             !printerOverlayLeaseRefreshNext_;
@@ -3713,14 +4275,14 @@ bool DeviceWorker::ensurePrinterSession(
             PrinterSessionState::AwaitingProtocolReadiness ||
         printerSessionState_ == PrinterSessionState::Starting) {
         if (errorMessage) {
-            *errorMessage = tr("Printer-class display session is already starting");
+            *errorMessage = tr("Printer-class session is already starting");
         }
         return false;
     }
     if (printerSessionState_ == PrinterSessionState::Lost) {
         if (errorMessage) {
             *errorMessage = tr(
-                "Printer-class display session is lost until a new USB endpoint generation appears");
+                "Printer-class session is lost until a new USB endpoint generation appears");
         }
         return false;
     }
@@ -3732,16 +4294,30 @@ bool DeviceWorker::ensurePrinterSession(
         return false;
     }
 
+    const bool transferOnly =
+        printerProtocol_ &&
+        printerProtocol_->productProfile().idleMode ==
+            PrinterIdleMode::TransferOnly;
+
     transitionPrinterSessionState(
-        PrinterSessionState::AwaitingProtocolReadiness,
-        QStringLiteral("protocol_readiness_started"));
+        transferOnly
+            ? PrinterSessionState::Starting
+            : PrinterSessionState::AwaitingProtocolReadiness,
+        transferOnly
+            ? QStringLiteral("transfer_transport_open_started")
+            : QStringLiteral("protocol_readiness_started"));
     printerKeepaliveTimer_->stop();
     printerMetricsTimer_->stop();
-    emit printerUploadProgress(tr("Starting PASE display session..."), generation);
+    emit printerUploadProgress(
+        transferOnly
+            ? tr("Opening the TRYX transfer session...")
+            : tr("Starting PASE display session..."),
+        generation);
     PrinterProtocol::OperationContext sessionContext = context;
-    sessionContext.onReadinessProbeRetry =
-        [this, generation](
-            const PrinterProtocol::ReadinessRetryInfo &retry) {
+    if (!transferOnly) {
+        sessionContext.onReadinessProbeRetry =
+            [this, generation](
+                const PrinterProtocol::ReadinessRetryInfo &retry) {
             if (generation != configuredPrinterGeneration_ ||
                 !printerGenerationIsCurrent(generation) ||
                 printerSessionState_ !=
@@ -3768,18 +4344,19 @@ bool DeviceWorker::ensurePrinterSession(
                     {QStringLiteral("elapsed_ms"),
                      QString::number(retry.elapsedMs)}
                 });
+            };
+        sessionContext.onDeviceInfoReady = [this, generation]() {
+            if (generation != configuredPrinterGeneration_ ||
+                !printerGenerationIsCurrent(generation) ||
+                printerSessionState_ !=
+                    PrinterSessionState::AwaitingProtocolReadiness) {
+                return;
+            }
+            transitionPrinterSessionState(
+                PrinterSessionState::Starting,
+                QStringLiteral("device_info_confirmed"));
         };
-    sessionContext.onDeviceInfoReady = [this, generation]() {
-        if (generation != configuredPrinterGeneration_ ||
-            !printerGenerationIsCurrent(generation) ||
-            printerSessionState_ !=
-                PrinterSessionState::AwaitingProtocolReadiness) {
-            return;
-        }
-        transitionPrinterSessionState(
-            PrinterSessionState::Starting,
-            QStringLiteral("device_info_confirmed"));
-    };
+    }
     const PrinterProtocol::Result sessionResult =
         printerProtocol_->startDisplaySession(devicePath,
                                               sessionContext);
@@ -3792,7 +4369,9 @@ bool DeviceWorker::ensurePrinterSession(
                 {QStringLiteral("failure_class"),
                  persistentFailure
                      ? QStringLiteral("persistent-input-transport")
-                     : QStringLiteral("bootstrap-failed")},
+                     : transferOnly
+                         ? QStringLiteral("transport-open-failed")
+                         : QStringLiteral("bootstrap-failed")},
                 {QStringLiteral("elapsed_ms"),
                  printerSessionElapsedTimer_.isValid()
                      ? QString::number(
@@ -3811,8 +4390,8 @@ bool DeviceWorker::ensurePrinterSession(
         stopPrinterSession();
         if (errorMessage) {
             *errorMessage = sessionResult.error.isEmpty()
-                ? tr("Failed to start the printer-class display session")
-                : tr("Failed to start the printer-class display session: %1")
+                ? tr("Failed to start the printer-class session")
+                : tr("Failed to start the printer-class session: %1")
                       .arg(sessionResult.error);
         }
         return false;
@@ -3823,7 +4402,7 @@ bool DeviceWorker::ensurePrinterSession(
         stopPrinterSession();
         if (errorMessage) {
             *errorMessage =
-                tr("Printer-class display session was cancelled because the USB device changed");
+                tr("Printer-class session was cancelled because the USB device changed");
         }
         return false;
     }
@@ -3846,6 +4425,31 @@ bool DeviceWorker::ensurePrinterSession(
                 "PASE bootstrap completed without an exact DeviceInfo readiness confirmation");
         }
         return false;
+    }
+    if (transferOnly) {
+        logPrinterLifecycleEvent(
+            QStringLiteral("transfer_transport_open_completed"), generation,
+            {
+                {QStringLiteral("session_state"),
+                 printerSessionStateName(printerSessionState_)},
+                {QStringLiteral("elapsed_ms"),
+                 printerSessionElapsedTimer_.isValid()
+                     ? QString::number(
+                           printerSessionElapsedTimer_.elapsed())
+                     : QStringLiteral("-1")}
+            });
+        transitionPrinterSessionState(
+            PrinterSessionState::Active,
+            QStringLiteral("transfer_session_active"));
+        printerSessionRecoveryAttempt_ = 0;
+        printerKeepaliveRetryCount_ = 0;
+        printerOverlayActivationPending_ = false;
+        printerOverlayLeaseRefreshNext_ = false;
+        emit printerSessionStarted(generation);
+        emit printerUploadProgress(
+            tr("TRYX transfer session is ready"), generation);
+        emit printerTransportReady(generation);
+        return true;
     }
     logPrinterLifecycleEvent(
         QStringLiteral("bootstrap_completed"), generation,
@@ -4021,6 +4625,12 @@ void DeviceWorker::schedulePrinterSessionRecovery(
 }
 
 void DeviceWorker::restartPrinterKeepaliveAfterActivity() {
+    if (!printerProtocol_ ||
+        printerProtocol_->productProfile().idleMode ==
+            PrinterIdleMode::TransferOnly) {
+        printerKeepaliveTimer_->stop();
+        return;
+    }
     if ((printerSessionState_ == PrinterSessionState::Active ||
          printerSessionState_ ==
              PrinterSessionState::AwaitingOverlayActivation) &&
@@ -4209,6 +4819,10 @@ bool DeviceManager::acquireFirmwareExclusive(
         return fail(tr(
             "The local device transport is unavailable for firmware flashing"));
     }
+    QString productError;
+    if (!firmwareFlashAllowedForCurrentDevice(&productError)) {
+        return fail(productError);
+    }
     const QString normalizedLease = leaseId.trimmed();
     if (normalizedLease.isEmpty()) {
         return fail(tr("The firmware transport lease is invalid"));
@@ -4269,6 +4883,7 @@ bool DeviceManager::acquireFirmwareExclusive(
     setPrinterDisplaySessionActive(false);
     printerSessionResumePending_ = false;
     printerSessionResumeSerial_.clear();
+    printerSessionResumeProductId_ = 0;
     stopKeepalive();
     emit requestCancelPrinterPreparation(printerGeneration_);
     worker_->updatePrinterGenerationGate(printerGeneration_, false);
@@ -5235,6 +5850,7 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     emit requestDisconnect();
                     return;
                 }
+                legacyProductId_ = pid.trimmed();
                 connected_ = true;
                 printerClassConnected_ = false;
                 emit deviceConnected(pid, serial, fw, app);
@@ -5243,6 +5859,7 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
         if (printerClassConnected_ || firmwareExclusiveActive()) {
             return;
         }
+        legacyProductId_.clear();
         connected_ = false;
         emit deviceDisconnected();
     });
@@ -5312,7 +5929,8 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 found->info.deviceGeneration != generation) {
                 return false;
             }
-            return printerResultIsCurrent(generation) ||
+            return (printerResultIsCurrent(generation) &&
+                    operationMatchesCurrentPrinterProduct(*found)) ||
                    found->deviceChangePending;
         };
     connect(worker_, &DeviceWorker::printerOperationError, this,
@@ -5364,7 +5982,9 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 setPrinterDisplaySessionActive(true);
                 printerSessionResumePending_ = false;
                 printerSessionResumeSerial_.clear();
-                if ((!displayState_.valid ||
+                printerSessionResumeProductId_ = 0;
+                if (currentPrinterSupportsDisplayConfiguration() &&
+                    (!displayState_.valid ||
                      displayState_.deviceSerial !=
                          printerDeviceSerial_.trimmed()) &&
                     displayStateReadGeneration_ != generation) {
@@ -5379,6 +5999,40 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     if (record.uploadFinalizationReconciliationPending &&
                         record.info.stage ==
                             QStringLiteral("RecoveringFinalization")) {
+                        if (!operationMatchesCurrentPrinterProduct(record)) {
+                            const QString operationId =
+                                activeOperationId_;
+                            record.uploadFinalizationReconciliationPending =
+                                false;
+                            record.requiresDeviceRecovery = true;
+                            record.retryMustUseNewRemoteName = true;
+                            requirePrinterRecovery(tr(
+                                "The reconnected USB product does not match the product that accepted the upload. Power-cycle the original device before a manual retry."));
+                            handlePreparedUploadFailure(
+                                operationId,
+                                tr("The completed upload could not be reconciled safely because the USB product changed"),
+                                PrinterProtocol::MutationOutcome::
+                                    PartialOrUnknown);
+                            emit printerOperationsCancelled();
+                            return;
+                        }
+                        if (!currentPrinterSupportsMediaCatalog()) {
+                            const QString operationId =
+                                activeOperationId_;
+                            record.uploadFinalizationReconciliationPending =
+                                false;
+                            record.requiresDeviceRecovery = true;
+                            record.retryMustUseNewRemoteName = true;
+                            requirePrinterRecovery(tr(
+                                "This device has no supported media catalog, so an upload with a lost final acknowledgement cannot be reconciled safely. Power-cycle it before a manual retry."));
+                            handlePreparedUploadFailure(
+                                operationId,
+                                tr("The upload outcome cannot be verified on this product"),
+                                PrinterProtocol::MutationOutcome::
+                                    PartialOrUnknown);
+                            emit printerOperationsCancelled();
+                            return;
+                        }
                         const QString currentDeviceIdentity =
                             printerDeviceSerial_.trimmed();
                         if (record.uploadDeviceIdentity.isEmpty() ||
@@ -5415,14 +6069,18 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                             printerGeneration_);
                     }
                 }
-                const bool samplingActive = metricsState_.enabled &&
+                const bool samplingActive =
+                    currentPrinterSupportsOverlayMetrics() &&
+                    metricsState_.enabled &&
                     !metricsState_.metrics.isEmpty();
                 if (metricsState_.samplingActive != samplingActive) {
                     metricsState_.samplingActive = samplingActive;
                     publishMetricsState();
                 }
-                resumePendingDeleteReconciliation();
-                resumePendingReplaceReconciliation();
+                if (currentPrinterSupportsMediaCatalog()) {
+                    resumePendingDeleteReconciliation();
+                    resumePendingReplaceReconciliation();
+                }
             });
     connect(worker_, &DeviceWorker::printerSessionStopped, this,
             [this](quint64 generation) {
@@ -5430,6 +6088,7 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     setPrinterDisplaySessionActive(false);
                     printerSessionResumePending_ = false;
                     printerSessionResumeSerial_.clear();
+                    printerSessionResumeProductId_ = 0;
                     if (metricsState_.samplingActive) {
                         metricsState_.samplingActive = false;
                         publishMetricsState();
@@ -5444,10 +6103,12 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 }
                 const bool wasConnected = connected_;
                 detachPrinterClassDevice(false);
+                legacyProductId_.clear();
                 connected_ = false;
                 setPrinterDisplaySessionActive(false);
                 printerSessionResumePending_ = false;
                 printerSessionResumeSerial_.clear();
+                printerSessionResumeProductId_ = 0;
                 emit mediaListUpdated({});
                 if (wasConnected) {
                     emit deviceDisconnected();
@@ -5516,6 +6177,7 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 setPrinterDisplaySessionActive(false);
                 printerSessionResumePending_ = false;
                 printerSessionResumeSerial_.clear();
+                printerSessionResumeProductId_ = 0;
                 if (metricsState_.samplingActive) {
                     metricsState_.samplingActive = false;
                     publishMetricsState();
@@ -6060,7 +6722,8 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 operationId, currentPrinterPath(),
                 record.sourcePath,
                 record.sourceContentSha256, generation,
-                record.mediaTransform);
+                record.mediaTransform,
+                record.printerProductId);
         });
     connect(worker_, &DeviceWorker::printerUploadFinished, this,
             [this, printerOperationResultIsExpected](
@@ -6093,6 +6756,20 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     if (outcome ==
                         PrinterProtocol::MutationOutcome::
                             FinalizationUnknown) {
+                        if (!currentPrinterSupportsMediaCatalog()) {
+                            record.requiresDeviceRecovery = true;
+                            record.retryMustUseNewRemoteName = true;
+                            record.uploadFinalizationReconciliationPending =
+                                false;
+                            requirePrinterRecovery(tr(
+                                "The final upload acknowledgement was lost on a product without a supported media catalog. Power-cycle the device before another upload."));
+                            handlePreparedUploadFailure(
+                                operationId,
+                                tr("The upload outcome cannot be verified on this product"),
+                                PrinterProtocol::MutationOutcome::
+                                    PartialOrUnknown);
+                            return;
+                        }
                         record.info.confirmedBytes =
                             qMax(record.info.confirmedBytes,
                                  record.info.total);
@@ -6129,7 +6806,7 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                         record.requiresDeviceRecovery = true;
                         record.retryMustUseNewRemoteName = true;
                         requirePrinterRecovery(tr(
-                            "The PASE transfer ended in an unknown partial state. Power-cycle the device before Retry or Save; the prepared media has been preserved."));
+                            "The printer-class transfer ended in an unknown partial state. Power-cycle the device before continuing; the prepared media has been preserved."));
                     }
                     handlePreparedUploadFailure(operationId, errorMessage,
                                                 outcome);
@@ -6146,6 +6823,36 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 }
                 if (record.cancelRequested) {
                     worker_->clearPrinterOperationCancellation(operationId);
+                }
+                if (!currentPrinterSupportsMediaCatalog()) {
+                    if (record.info.applyAfterUpload) {
+                        handlePreparedUploadFailure(
+                            operationId,
+                            tr("Display configuration is not supported for this product"),
+                            PrinterProtocol::MutationOutcome::Rejected);
+                        return;
+                    }
+                    const bool ownsRetryCache =
+                        retryCacheOperationId_ == operationId &&
+                        retryCachePreparedPath_ == record.preparedPath;
+                    const bool retryCacheCleared =
+                        !ownsRetryCache ||
+                        consumeAcknowledgedRetryCache();
+                    removePreparedFileForOperation(operationId);
+                    emit mediaUploaded(record.remoteName);
+                    finishOperation(
+                        operationId, QStringLiteral("Succeeded"),
+                        retryCacheCleared
+                            ? QString()
+                            : QStringLiteral(
+                                  "RetryCacheCleanupFailed"),
+                        QString(),
+                        !retryCacheCleared
+                            ? tr("Media was uploaded and activated, but obsolete retry-cache files require manual cleanup")
+                            : record.cancelRequested
+                                ? tr("Media was uploaded and activated before cancellation completed")
+                                : tr("Media uploaded and activated"));
+                    return;
                 }
                 record.info.state = QStringLiteral("Refreshing");
                 record.info.stage = QStringLiteral("RefreshingMedia");
@@ -6232,7 +6939,8 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     emit requestPreparePrinterMedia(
                         operationId, currentPrinterPath(),
                         record.sourcePath, record.sourceContentSha256,
-                        printerGeneration_, record.mediaTransform);
+                        printerGeneration_, record.mediaTransform,
+                        record.printerProductId);
                     return;
                 }
                 const QFileInfo preparedInfo(record.preparedPath);
@@ -6315,7 +7023,8 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                         QString replacementName;
                         for (int attempt = 0; attempt < 8; ++attempt) {
                             const QString candidate = h264PrinterName(
-                                generatedPrinterMediaName(originalSuffix));
+                                generatedPrinterMediaName(originalSuffix),
+                                record.printerProductId);
                             if (candidate != previousRemoteName &&
                                 candidate != record.originalRemoteName &&
                                 !files.contains(candidate)) {
@@ -6477,7 +7186,8 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                                     : QStringLiteral("mp4");
                         for (int attempt = 0; attempt < 8; ++attempt) {
                             const QString candidate = h264PrinterName(
-                                generatedPrinterMediaName(originalSuffix));
+                                generatedPrinterMediaName(originalSuffix),
+                                record.printerProductId);
                             if (!files.contains(candidate)) {
                                 record.remoteName = candidate;
                                 break;
@@ -7963,6 +8673,7 @@ void DeviceManager::handlePrinterSnapshot(
     const bool wasPrinterConnected = printerClassConnected_;
     const QString oldPath = printerDevicePath_;
     const QString oldSerial = printerDeviceSerial_;
+    const quint16 oldProductId = printerProductId_;
 
     if (printerRecoveryRequired_ &&
         snapshot.state == PrinterProtocol::DiscoveryState::Absent) {
@@ -7977,6 +8688,7 @@ void DeviceManager::handlePrinterSnapshot(
         !oldSerial.isEmpty()) {
         printerSessionResumePending_ = true;
         printerSessionResumeSerial_ = oldSerial;
+        printerSessionResumeProductId_ = oldProductId;
     }
     setPrinterDisplaySessionActive(false);
 
@@ -7994,9 +8706,11 @@ void DeviceManager::handlePrinterSnapshot(
         worker_->updatePrinterGenerationGate(
             printerGeneration_, false);
         detachPrinterClassDevice(false);
+        legacyProductId_.clear();
         connected_ = false;
         printerSessionResumePending_ = false;
         printerSessionResumeSerial_.clear();
+        printerSessionResumeProductId_ = 0;
         emit mediaListUpdated({});
         if (wasConnected) {
             emit deviceDisconnected();
@@ -8061,14 +8775,18 @@ void DeviceManager::handlePrinterSnapshot(
         (!printerRecoveryRequired_ ||
          (endpointSelected &&
           completePrinterRecoveryAfterRemoval(
-              snapshot.devices.first().serial)));
+              snapshot.devices.first().serial,
+              snapshot.devices.first().productId)));
     const bool resumeSelectedSession =
         endpointSelected && printerSessionResumePending_ &&
         !snapshot.devices.first().serial.isEmpty() &&
-        snapshot.devices.first().serial == printerSessionResumeSerial_;
+        snapshot.devices.first().serial == printerSessionResumeSerial_ &&
+        snapshot.devices.first().productId ==
+            printerSessionResumeProductId_;
     if (ready && printerSessionResumePending_ && !resumeSelectedSession) {
         printerSessionResumePending_ = false;
         printerSessionResumeSerial_.clear();
+        printerSessionResumeProductId_ = 0;
     }
     worker_->updatePrinterGenerationGate(
         printerGeneration_, endpointSelected && recoveryAllowsSession);
@@ -8076,14 +8794,20 @@ void DeviceManager::handlePrinterSnapshot(
     if (endpointSelected) {
         const QString newPath = snapshot.devices.first().devicePath;
         const QString newSerial = snapshot.devices.first().serial;
+        const quint16 newProductId = snapshot.devices.first().productId;
         if (wasPrinterConnected &&
-            (oldPath != newPath || oldSerial != newSerial)) {
+            (oldPath != newPath || oldSerial != newSerial ||
+             oldProductId != newProductId)) {
             detachPrinterClassDevice(true);
         }
         emit requestConfigurePrinter(
-            newPath, newSerial, printerGeneration_);
+            newPath, newSerial, newProductId, printerGeneration_);
+        const std::optional<PrinterProductProfile> productProfile =
+            printerProductProfileForId(newProductId);
         const PrinterProtocol::PaseOverlayConfig restoredOverlay =
-            persistedPaseOverlayForDevice(newSerial);
+            productProfile && productProfile->overlayMetricsSupported
+                ? persistedPaseOverlayForDevice(newSerial)
+                : PrinterProtocol::PaseOverlayConfig{};
         metricsState_.deviceSerial = newSerial.trimmed();
         metricsState_.enabled = paseOverlayHasMetrics(restoredOverlay);
         metricsState_.samplingActive = false;
@@ -8094,6 +8818,7 @@ void DeviceManager::handlePrinterSnapshot(
         metricsState_.diagnostic.clear();
         publishMetricsState();
         if (recoveryAllowsSession &&
+            productProfile && productProfile->overlayMetricsSupported &&
             paseOverlayHasContent(restoredOverlay)) {
             emit requestRestorePrinterOverlay(
                 restoredOverlay, printerGeneration_);
@@ -8127,6 +8852,7 @@ void DeviceManager::handlePrinterSnapshot(
 
     if (snapshot.blocksLegacyTransport() && connected_ &&
         !printerClassConnected_) {
+        legacyProductId_.clear();
         connected_ = false;
         emit mediaListUpdated({});
         emit requestDisconnect();
@@ -8148,7 +8874,7 @@ void DeviceManager::handlePrinterSnapshot(
         }
         break;
     case PrinterProtocol::DiscoveryState::RockchipGadget391a0006:
-    case PrinterProtocol::DiscoveryState::Enumerating391a1021:
+    case PrinterProtocol::DiscoveryState::EnumeratingPrinterClass:
         emit uploadStatus(snapshot.statusText());
         break;
     case PrinterProtocol::DiscoveryState::PermissionDenied:
@@ -8193,7 +8919,16 @@ void DeviceManager::connectDevice(const QString &port) {
     setPrinterDisplaySessionActive(false);
     printerSessionResumePending_ = false;
     printerSessionResumeSerial_.clear();
+    printerSessionResumeProductId_ = 0;
     autoConnectMode_ = port.isEmpty();
+    const bool wasLegacyConnected =
+        connected_ && !printerClassConnected_;
+    legacyProductId_.clear();
+    if (wasLegacyConnected) {
+        connected_ = false;
+        emit mediaListUpdated({});
+        emit deviceDisconnected();
+    }
 
     if (port.isEmpty()) {
         if (printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready &&
@@ -8213,16 +8948,23 @@ void DeviceManager::connectDevice(const QString &port) {
                 sessionLossAllowsSession &&
                 (!printerRecoveryRequired_ ||
                  completePrinterRecoveryAfterRemoval(
-                     printerSnapshot_.devices.first().serial));
+                     printerSnapshot_.devices.first().serial,
+                     printerSnapshot_.devices.first().productId));
             worker_->updatePrinterGenerationGate(
                 printerGeneration_, recoveryAllowsSession);
             emit requestConfigurePrinter(
                 printerSnapshot_.devices.first().devicePath,
                 printerSnapshot_.devices.first().serial,
+                printerSnapshot_.devices.first().productId,
                 printerGeneration_);
+            const std::optional<PrinterProductProfile> productProfile =
+                printerProductProfileForId(
+                    printerSnapshot_.devices.first().productId);
             const PrinterProtocol::PaseOverlayConfig restoredOverlay =
-                persistedPaseOverlayForDevice(
-                    printerSnapshot_.devices.first().serial);
+                productProfile && productProfile->overlayMetricsSupported
+                    ? persistedPaseOverlayForDevice(
+                          printerSnapshot_.devices.first().serial)
+                    : PrinterProtocol::PaseOverlayConfig{};
             metricsState_.deviceSerial =
                 printerSnapshot_.devices.first().serial.trimmed();
             metricsState_.enabled =
@@ -8237,6 +8979,8 @@ void DeviceManager::connectDevice(const QString &port) {
             metricsState_.diagnostic.clear();
             publishMetricsState();
             if (recoveryAllowsSession &&
+                productProfile &&
+                productProfile->overlayMetricsSupported &&
                 paseOverlayHasContent(restoredOverlay)) {
                 emit requestRestorePrinterOverlay(
                     restoredOverlay, printerGeneration_);
@@ -8260,6 +9004,7 @@ void DeviceManager::connectDevice(const QString &port) {
             return;
         }
         if (printerSnapshot_.blocksLegacyTransport()) {
+            legacyProductId_.clear();
             connected_ = false;
             printerClassConnected_ = false;
             printerDevicePath_.clear();
@@ -8277,6 +9022,7 @@ void DeviceManager::connectDevice(const QString &port) {
 
         const auto legacyPort = panorama::Device::find_device();
         if (!legacyPort) {
+            legacyProductId_.clear();
             connected_ = false;
             printerClassConnected_ = false;
             printerDevicePath_.clear();
@@ -8305,6 +9051,7 @@ void DeviceManager::disconnectDevice() {
     setPrinterDisplaySessionActive(false);
     printerSessionResumePending_ = false;
     printerSessionResumeSerial_.clear();
+    printerSessionResumeProductId_ = 0;
     stopKeepalive();
     const bool notifyPrinterDisconnect = printerClassConnected_;
     detachPrinterClassDevice(false);
@@ -8319,6 +9066,7 @@ void DeviceManager::disconnectDevice() {
     emit requestClearPrinter(printerGeneration_);
     emit requestDisconnect();
     connected_ = false;
+    legacyProductId_.clear();
     emit mediaListUpdated({});
     if (notifyPrinterDisconnect) {
         emit deviceDisconnected();
@@ -8366,18 +9114,21 @@ bool DeviceManager::isPrinterClassDevicePresent() const {
 
 void DeviceManager::attachPrinterClassDevice(
     const PrinterProtocol::UsbPrinterDevice &device) {
-    if (printerClassConnected_ && printerDevicePath_ == device.devicePath) {
+    if (printerClassConnected_ && printerDevicePath_ == device.devicePath &&
+        printerProductId_ == device.productId) {
         return;
     }
     stopKeepalive();
     connected_ = true;
     printerClassConnected_ = true;
+    legacyProductId_.clear();
     setPrinterDisplaySessionActive(false);
     printerDevicePath_ = device.devicePath;
     printerDeviceSerial_ = device.serial;
+    printerProductId_ = device.productId;
     clearMediaCatalogView();
     emit mediaListUpdated({});
-    emit deviceConnected(tr("USB printer-class"),
+    emit deviceConnected(printerProductIdString(device.productId),
                          device.serial.isEmpty() ? device.devicePath : device.serial,
                          QString(), QString());
 }
@@ -8387,6 +9138,7 @@ void DeviceManager::detachPrinterClassDevice(bool notify) {
     printerClassConnected_ = false;
     printerDevicePath_.clear();
     printerDeviceSerial_.clear();
+    printerProductId_ = 0;
     if (wasConnected) {
         displayStateReadGeneration_ = 0;
         const quint64 metricsRevision = metricsState_.revision;
@@ -8413,6 +9165,62 @@ QString DeviceManager::currentPrinterPath() const {
         return {};
     }
     return printerSnapshot_.devices.first().devicePath;
+}
+
+std::optional<PrinterProductProfile>
+DeviceManager::currentPrinterProductProfile() const {
+    quint16 productId = printerProductId_;
+    if (productId == 0 &&
+        printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready &&
+        printerSnapshot_.devices.size() == 1) {
+        productId = printerSnapshot_.devices.first().productId;
+    }
+    return printerProductProfileForId(productId);
+}
+
+bool DeviceManager::currentPrinterSupportsMediaCatalog() const {
+    const auto profile = currentPrinterProductProfile();
+    return profile && profile->mediaCatalogSupported;
+}
+
+bool DeviceManager::currentPrinterSupportsDisplayConfiguration() const {
+    const auto profile = currentPrinterProductProfile();
+    return profile && profile->displayConfigurationSupported;
+}
+
+bool DeviceManager::currentPrinterSupportsOverlayMetrics() const {
+    const auto profile = currentPrinterProductProfile();
+    return profile && profile->overlayMetricsSupported;
+}
+
+bool DeviceManager::operationMatchesCurrentPrinterProduct(
+    const OperationRecord &record) const {
+    const auto profile = currentPrinterProductProfile();
+    return profile && record.printerProductId != 0 &&
+           record.printerProductId == profile->productId;
+}
+
+bool DeviceManager::firmwareFlashAllowedForCurrentDevice(
+    QString *errorMessage) const {
+    const auto profile = currentPrinterProductProfile();
+    if (profile && profile->firmwareFlashSupported) {
+        return true;
+    }
+    const bool identifiedLegacyPanoramaSe =
+        !profile && connected_ && !printerClassConnected_ &&
+        !printerSnapshot_.blocksLegacyTransport() &&
+        legacyProductId_.compare(
+            QStringLiteral("cm01"), Qt::CaseInsensitive) == 0;
+    if (identifiedLegacyPanoramaSe) {
+        return true;
+    }
+    if (errorMessage) {
+        *errorMessage = profile
+            ? tr("Firmware flashing is not supported for USB product %1")
+                  .arg(printerProductIdString(profile->productId))
+            : tr("Firmware flashing requires a connected, identified firmware-capable TRYX device");
+    }
+    return false;
 }
 
 QString DeviceManager::printerUnavailableStatusText() const {
@@ -8472,8 +9280,11 @@ void DeviceManager::resumePrinterSessionAfterRetryCacheValidation() {
 
     worker_->updatePrinterGenerationGate(printerGeneration_, true);
     const PrinterProtocol::PaseOverlayConfig restoredOverlay =
-        persistedPaseOverlayForDevice(printerDeviceSerial_);
-    if (paseOverlayHasContent(restoredOverlay)) {
+        currentPrinterSupportsOverlayMetrics()
+            ? persistedPaseOverlayForDevice(printerDeviceSerial_)
+            : PrinterProtocol::PaseOverlayConfig{};
+    if (currentPrinterSupportsOverlayMetrics() &&
+        paseOverlayHasContent(restoredOverlay)) {
         emit requestRestorePrinterOverlay(
             restoredOverlay, printerGeneration_);
     }
@@ -8493,6 +9304,7 @@ void DeviceManager::requirePrinterRecovery(const QString &message) {
     setPrinterDisplaySessionActive(false);
     printerSessionResumePending_ = false;
     printerSessionResumeSerial_.clear();
+    printerSessionResumeProductId_ = 0;
     if (!remoteMode_ && worker_) {
         if (enteringRecovery) {
             ++printerGeneration_;
@@ -8507,17 +9319,29 @@ void DeviceManager::requirePrinterRecovery(const QString &message) {
 }
 
 bool DeviceManager::completePrinterRecoveryAfterRemoval(
-    const QString &currentDeviceIdentity) {
+    const QString &currentDeviceIdentity,
+    quint16 currentProductId) {
     if (!printerRecoveryRequired_) {
         return true;
     }
     if (!printerRecoveryRemovalObserved_) {
         return false;
     }
-
     if (!retryCacheOperationId_.isEmpty() &&
         operations_.contains(retryCacheOperationId_)) {
         OperationRecord &record = operations_[retryCacheOperationId_];
+        if (record.printerProductId == 0 ||
+            record.printerProductId != currentProductId) {
+            record.info.message = tr(
+                "Prepared media belongs to USB product %1, but the reconnected device is %2")
+                                      .arg(printerProductIdString(
+                                               record.printerProductId),
+                                           printerProductIdString(
+                                               currentProductId));
+            publishOperation(retryCacheOperationId_);
+            emit deviceError(record.info.message);
+            return false;
+        }
         const QString observedIdentity = currentDeviceIdentity.trimmed();
         const QString expectedIdentity =
             record.uploadDeviceIdentity.trimmed();
@@ -10349,6 +11173,12 @@ QString DeviceManager::queueStageDeviceMediaOperation(
             QStringLiteral("RetryCacheValidationPending"),
             tr("Stored retry media is still being validated; retry this operation when startup validation finishes"));
     }
+    if (!currentPrinterSupportsMediaCatalog()) {
+        return reject(
+            QStringLiteral("UnsupportedProduct"),
+            tr("Media catalog export is not supported for USB product %1")
+                .arg(printerProductIdString(printerProductId_)));
+    }
     if (!activeOperationId_.isEmpty()) {
         return reject(
             QStringLiteral("Busy"),
@@ -10457,6 +11287,7 @@ QString DeviceManager::queueStageDeviceMediaOperation(
     record.info.total =
         static_cast<qint64>(entry->size);
     record.info.deviceGeneration = printerGeneration_;
+    record.printerProductId = printerProductId_;
     record.artifactId = artifactId;
     record.artifactOwner = ownerUniqueName;
     record.originalMediaId = mediaId;
@@ -10713,16 +11544,23 @@ QString DeviceManager::queueRecoveredOperation(
             tr("Media transform is invalid: %1")
                 .arg(transformError));
     }
+    if (!pendingRetryValidationId_.isEmpty()) {
+        return reject(
+            QStringLiteral("RetryCacheValidationPending"),
+            tr("Stored retry media is still being validated; retry this operation when startup validation finishes"));
+    }
+    if (!currentPrinterSupportsMediaCatalog() ||
+        !currentPrinterSupportsDisplayConfiguration()) {
+        return reject(
+            QStringLiteral("UnsupportedProduct"),
+            tr("Recovered media and replacement are not supported for USB product %1")
+                .arg(printerProductIdString(printerProductId_)));
+    }
     if (!activeOperationId_.isEmpty()) {
         return reject(
             QStringLiteral("Busy"),
             tr("Another operation is active: %1")
                 .arg(activeOperationId_));
-    }
-    if (!pendingRetryValidationId_.isEmpty()) {
-        return reject(
-            QStringLiteral("RetryCacheValidationPending"),
-            tr("Stored retry media is still being validated; retry this operation when startup validation finishes"));
     }
     if (replace &&
         (!pendingDeleteOperationId_.isEmpty() ||
@@ -10824,6 +11662,7 @@ QString DeviceManager::queueRecoveredOperation(
         ? tr("Checking every device reference before replacement...")
         : tr("Preparing the recovered device copy as new media...");
     record.info.deviceGeneration = printerGeneration_;
+    record.printerProductId = printerProductId_;
     record.info.applyAfterUpload = replace;
     record.sourcePath = artifact->canonicalPath;
     record.sourceContentSha256 =
@@ -10870,7 +11709,7 @@ QString DeviceManager::queueRecoveredOperation(
         emit requestPrepareRecoveredPrinterMedia(
             operationId, devicePath, record.sourcePath,
             record.sourceContentSha256, printerGeneration_,
-            record.mediaTransform);
+            record.mediaTransform, record.printerProductId);
     }
     return operationId;
 }
@@ -10969,7 +11808,27 @@ QString DeviceManager::queueUploadOperation(const QString &requestedOperationId,
             tr("Stored retry media is still being validated; retry this operation when startup validation finishes"));
         return rejectedResult();
     }
-
+    const std::optional<PrinterProductProfile> productProfile =
+        currentPrinterProductProfile();
+    if (!productProfile || !productProfile->mediaUploadSupported) {
+        rejectOperation(
+            operationId, kind, subject,
+            QStringLiteral("UnsupportedProduct"),
+            tr("Media upload is not supported for USB product %1")
+                .arg(printerProductIdString(printerProductId_)));
+        return rejectedResult();
+    }
+    if ((applyAfterUpload &&
+         !productProfile->displayConfigurationSupported) ||
+        (ensureExisting && !productProfile->mediaCatalogSupported) ||
+        (updateMetrics && !productProfile->overlayMetricsSupported)) {
+        rejectOperation(
+            operationId, kind, subject,
+            QStringLiteral("UnsupportedProduct"),
+            tr("This media workflow is not supported for USB product %1")
+                .arg(printerProductIdString(productProfile->productId)));
+        return rejectedResult();
+    }
     if (!activeOperationId_.isEmpty()) {
         rejectOperation(
             operationId, kind, subject, QStringLiteral("Busy"),
@@ -10999,7 +11858,8 @@ QString DeviceManager::queueUploadOperation(const QString &requestedOperationId,
                         printerUnavailableStatusText());
         return rejectedResult();
     }
-    if (printerDeviceSerial_.trimmed().isEmpty()) {
+    if (productProfile->mediaCatalogSupported &&
+        printerDeviceSerial_.trimmed().isEmpty()) {
         rejectOperation(
             operationId, kind, subject,
             QStringLiteral("DeviceIdentityUnavailable"),
@@ -11116,6 +11976,7 @@ QString DeviceManager::queueUploadOperation(const QString &requestedOperationId,
         ? tr("Calculating the source media content identity...")
         : tr("Preparing media for printer-class upload...");
     record.info.deviceGeneration = printerGeneration_;
+    record.printerProductId = productProfile->productId;
     record.info.applyAfterUpload = applyAfterUpload;
     record.uploadDeviceIdentity = printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = printerGeneration_;
@@ -11125,6 +11986,9 @@ QString DeviceManager::queueUploadOperation(const QString &requestedOperationId,
         updateMetrics || normalizedApplyRequest.replaceOverlay;
     record.ensureExisting = ensureExisting;
     record.sourcePath = effectiveSourcePath;
+    record.conversionProfile = printerConversionProfile(
+        record.sourcePath, record.mediaTransform,
+        record.printerProductId);
     record.sourceFingerprint = sourceFingerprint(record.sourcePath);
     record.ownsSourcePath = ownsSourcePath;
     operations_.insert(operationId, record);
@@ -11134,12 +11998,14 @@ QString DeviceManager::queueUploadOperation(const QString &requestedOperationId,
     if (ensureExisting) {
         emit requestAnalyzePrinterSource(operationId, record.sourcePath,
                                          printerGeneration_,
-                                         record.mediaTransform);
+                                         record.mediaTransform,
+                                         record.printerProductId);
     } else {
         emit requestPreparePrinterMedia(operationId, devicePath,
                                         record.sourcePath, QString(),
                                         printerGeneration_,
-                                        record.mediaTransform);
+                                        record.mediaTransform,
+                                        record.printerProductId);
     }
     return operationId;
 }
@@ -11180,6 +12046,21 @@ QString DeviceManager::queueDeleteMediaOperation(
             operationId, kind, subject,
             QStringLiteral("FirmwareUpdateActive"),
             firmwareExclusiveStatusText());
+        return operationId;
+    }
+    if (!pendingRetryValidationId_.isEmpty()) {
+        rejectOperation(
+            operationId, kind, subject,
+            QStringLiteral("RetryCacheValidationPending"),
+            tr("Stored retry media is still being validated; retry this operation when startup validation finishes"));
+        return operationId;
+    }
+    if (!currentPrinterSupportsMediaCatalog()) {
+        rejectOperation(
+            operationId, kind, subject,
+            QStringLiteral("UnsupportedProduct"),
+            tr("Media deletion is not supported for USB product %1")
+                .arg(printerProductIdString(printerProductId_)));
         return operationId;
     }
     if (!pendingDeleteOperationId_.isEmpty() ||
@@ -11257,6 +12138,7 @@ QString DeviceManager::queueDeleteMediaOperation(
     record.info.message = tr(
         "Preparing a safe delete operation...");
     record.info.deviceGeneration = printerGeneration_;
+    record.printerProductId = printerProductId_;
     record.deleteNames = fileNames;
     operations_.insert(operationId, record);
     operationOrder_.append(operationId);
@@ -11368,7 +12250,15 @@ QString DeviceManager::queueApplyOperation(const QString &requestedOperationId,
             tr("Stored retry media is still being validated; retry this operation when startup validation finishes"));
         return operationId;
     }
-
+    if (!currentPrinterSupportsDisplayConfiguration() ||
+        (overlayRequested && !currentPrinterSupportsOverlayMetrics())) {
+        rejectOperation(
+            operationId, QStringLiteral("Apply"), subject,
+            QStringLiteral("UnsupportedProduct"),
+            tr("Display configuration is not supported for USB product %1")
+                .arg(printerProductIdString(printerProductId_)));
+        return operationId;
+    }
     if (!activeOperationId_.isEmpty()) {
         rejectOperation(
             operationId, QStringLiteral("Apply"), subject,
@@ -11470,6 +12360,7 @@ QString DeviceManager::queueApplyOperation(const QString &requestedOperationId,
         ? tr("Preparing to apply printer-class media...")
         : tr("Preparing to apply printer-class display settings...");
     record.info.deviceGeneration = printerGeneration_;
+    record.printerProductId = printerProductId_;
     record.mediaFile = hasMediaChange
         ? printerMediaConfigName(normalizedRequest.media.constFirst())
         : QString();
@@ -11524,6 +12415,14 @@ QString DeviceManager::queueMetricsConfigOperation(
             operationId, QStringLiteral("MetricsConfig"), subject,
             QStringLiteral("RetryCacheValidationPending"),
             tr("Stored retry media is still being validated; retry this operation when startup validation finishes"));
+        return operationId;
+    }
+    if (!currentPrinterSupportsOverlayMetrics()) {
+        rejectOperation(
+            operationId, QStringLiteral("MetricsConfig"), subject,
+            QStringLiteral("UnsupportedProduct"),
+            tr("Overlay metrics are not supported for USB product %1")
+                .arg(printerProductIdString(printerProductId_)));
         return operationId;
     }
     if (!activeOperationId_.isEmpty()) {
@@ -11589,6 +12488,7 @@ QString DeviceManager::queueMetricsConfigOperation(
         ? tr("Preparing to configure PASE metrics...")
         : tr("Preparing to disable PASE metrics...");
     record.info.deviceGeneration = printerGeneration_;
+    record.printerProductId = printerProductId_;
     record.metricsRequest = request;
     operations_.insert(operationId, record);
     operationOrder_.append(operationId);
@@ -11641,6 +12541,16 @@ QString DeviceManager::retryOperation(const QString &sourceOperationId,
         rejectOperation(newOperationId, QStringLiteral("UploadRetry"),
                         QString(), QStringLiteral("RetryUnavailable"),
                         tr("This operation has no safe prepared-media retry"));
+        return newOperationId;
+    }
+    if (!operationMatchesCurrentPrinterProduct(*source)) {
+        rejectOperation(
+            newOperationId, QStringLiteral("UploadRetry"),
+            source->info.subject,
+            QStringLiteral("DeviceProfileMismatch"),
+            tr("Prepared media belongs to USB product %1, but the connected device is %2")
+                .arg(printerProductIdString(source->printerProductId),
+                     printerProductIdString(printerProductId_)));
         return newOperationId;
     }
     if (!activeOperationId_.isEmpty()) {
@@ -11901,7 +12811,7 @@ void DeviceManager::handlePreparedUploadFailure(
         found->retryMustUseNewRemoteName = true;
     }
     const QString terminalMessage = found->requiresDeviceRecovery
-        ? tr("%1 Power-cycle PASE before Retry or Save; the current firmware transfer session cannot be reused safely.")
+        ? tr("%1 Power-cycle the printer-class device before Retry or another media action; the current firmware transfer session cannot be reused safely.")
               .arg(message)
         : message;
     const bool cancellationWasProvenBeforeMutation =
@@ -12157,6 +13067,9 @@ void DeviceManager::loadReplaceJournal() {
         : loaded.record.uploadVerified
             ? tr("A replacement upload was verified before restart. The new copy is ready; Apply and Delete were not resumed.")
             : tr("A replacement stopped before upload was verified. The original media was retained.");
+    // Version 1 replace journals predate multi-product support and therefore
+    // can only describe the original 391a:1021 workflow.
+    record.printerProductId = 0x1021;
     record.originalMediaId =
         loaded.record.originalMediaId;
     record.originalRemoteNameForReplace =
@@ -12196,6 +13109,7 @@ void DeviceManager::resumePendingReplaceReconciliation() {
         operations_[pendingReplaceJournalOperationId_];
     if (!record.replaceOperation ||
         !record.replaceJournalActive ||
+        !operationMatchesCurrentPrinterProduct(record) ||
         record.replaceJournal.deviceIdentity !=
             printerDeviceSerial_.trimmed() ||
         !PrinterProtocol::isSafeUploadMediaName(
@@ -12440,6 +13354,8 @@ void DeviceManager::loadDeleteIntent() {
     record.info.resultName = currentName;
     record.info.message = tr(
         "A previous delete command requires read-only FileList reconciliation");
+    // Version 1 delete intents predate multi-product support.
+    record.printerProductId = 0x1021;
     record.deleteNames = requestedNames;
     record.deletedNames = deletedNames;
     record.deleteReconcileOnly = true;
@@ -12477,6 +13393,9 @@ void DeviceManager::resumePendingDeleteReconciliation() {
     }
     OperationRecord &record =
         operations_[pendingDeleteOperationId_];
+    if (!operationMatchesCurrentPrinterProduct(record)) {
+        return;
+    }
     record.deviceChangePending = false;
     record.deviceChangeMessage.clear();
     record.info.state = QStringLiteral("Refreshing");
@@ -12522,6 +13441,17 @@ bool DeviceManager::writeRetryCache(const QString &operationId,
         }
         return false;
     }
+    const std::optional<PrinterProductProfile> productProfile =
+        printerProductProfileForId(found->printerProductId);
+    if (!productProfile || !productProfile->mediaUploadSupported ||
+        !printerMediaNameMatchesProfile(found->remoteName,
+                                        *productProfile)) {
+        if (errorMessage) {
+            *errorMessage = tr(
+                "Prepared media is not bound to a supported USB product profile");
+        }
+        return false;
+    }
     if (found->info.terminalOutcome.isEmpty()) {
         found->info.terminalOutcome = terminalOutcome;
     }
@@ -12560,7 +13490,8 @@ bool DeviceManager::writeRetryCache(const QString &operationId,
         found->uploadFinalizationReconciliationPending = false;
     } else if (effectiveTerminalOutcome ==
                QStringLiteral("FinalizationUnknown")) {
-        if (!found->uploadFinalizationReconciliationPending) {
+        if (!productProfile->mediaCatalogSupported ||
+            !found->uploadFinalizationReconciliationPending) {
             if (errorMessage) {
                 *errorMessage = tr(
                     "Finalization recovery is not marked as reconciliation-only");
@@ -12581,6 +13512,31 @@ bool DeviceManager::writeRetryCache(const QString &operationId,
     }
     if (found->originalRemoteName.isEmpty()) {
         found->originalRemoteName = found->remoteName;
+    }
+    const bool conversionProfileValid =
+        productProfile->productId == kTurrisProductId
+            ? !found->conversionProfile.isEmpty() &&
+                  printerConversionProfileMatchesProduct(
+                      found->conversionProfile, *productProfile)
+            : found->conversionProfile.isEmpty() ||
+                  printerConversionProfileMatchesProduct(
+                      found->conversionProfile, *productProfile);
+    const bool retryProfileValid =
+        printerMediaNameMatchesProfile(found->originalRemoteName,
+                                       *productProfile) &&
+        conversionProfileValid &&
+        (!found->info.applyAfterUpload ||
+         productProfile->displayConfigurationSupported) &&
+        (!found->updateMetrics ||
+         productProfile->overlayMetricsSupported) &&
+        (found->info.kind != QStringLiteral("EnsureMediaAndApply") ||
+         productProfile->mediaCatalogSupported);
+    if (!retryProfileValid) {
+        if (errorMessage) {
+            *errorMessage = tr(
+                "Prepared media workflow does not match its USB product profile");
+        }
+        return false;
     }
     const QFileInfo preparedInfo(found->preparedPath);
     if (!preparedInfo.exists() || !preparedInfo.isFile() ||
@@ -12675,8 +13631,10 @@ bool DeviceManager::writeRetryCache(const QString &operationId,
                     found->updateMetrics);
     manifest.insert(QStringLiteral("attempt"),
                     static_cast<int>(found->info.attempt));
+    manifest.insert(QStringLiteral("productId"),
+                    static_cast<int>(found->printerProductId));
     manifest.insert(QStringLiteral("conversion"),
-                    QStringLiteral("h264-yuv420p-2240x1080-30fps"));
+                    printerMediaConversionIdentity(*productProfile));
     manifest.insert(QStringLiteral("sourcePath"), found->sourcePath);
     manifest.insert(QStringLiteral("sourceSize"), sourceInfo.size());
     manifest.insert(QStringLiteral("sourceFingerprint"),
@@ -12833,6 +13791,49 @@ bool DeviceManager::clearRetryCache(bool removePreparedFile) {
     return true;
 }
 
+bool DeviceManager::consumeAcknowledgedRetryCache() {
+    const QString manifestPath = retryCacheManifestPath();
+    QStringList cleanupFailures;
+    if (QFileInfo::exists(manifestPath) &&
+        !QFile::remove(manifestPath) && QFileInfo::exists(manifestPath)) {
+        cleanupFailures.append(manifestPath);
+    }
+
+    const QString preparedPath = retryCachePreparedPath_;
+    const QString thumbnailPath = retryCacheThumbnailPath_;
+    retryCachePreparedPath_.clear();
+    retryCacheThumbnailPath_.clear();
+    retryCacheOperationId_.clear();
+    pendingRetryValidationId_.clear();
+    pendingRetryManifest_ = {};
+
+    if (!preparedPath.isEmpty()) {
+        if (!QFile::remove(preparedPath) &&
+            QFileInfo::exists(preparedPath)) {
+            cleanupFailures.append(preparedPath);
+        }
+        emit requestReleasePrinterPreparation(preparedPath);
+    }
+    if (!thumbnailPath.isEmpty()) {
+        if (!QFile::remove(thumbnailPath) &&
+            QFileInfo::exists(thumbnailPath)) {
+            cleanupFailures.append(thumbnailPath);
+        }
+        emit requestReleasePrinterPreparation(thumbnailPath);
+    }
+
+    if (!cleanupFailures.isEmpty()) {
+        const QString message = tr(
+            "The acknowledged upload cannot be retried, but obsolete retry-cache files could not be removed: %1")
+                                    .arg(cleanupFailures.join(
+                                        QStringLiteral(", ")));
+        qWarning().noquote() << message;
+        emit deviceError(message);
+        return false;
+    }
+    return true;
+}
+
 void DeviceManager::loadRetryCache() {
     const QString directory = retryCacheDirectory();
     QDir cacheDirectory(directory);
@@ -12888,12 +13889,31 @@ void DeviceManager::loadRetryCache() {
         manifest.value(QStringLiteral("sourceFingerprint")).toString();
     const int manifestVersion =
         manifest.value(QStringLiteral("version")).toInt(-1);
+    bool productIdValid = manifestVersion >= 1 && manifestVersion <= 9;
+    quint16 manifestProductId = 0x1021;
+    if (manifestVersion == kRetryCacheFormatVersion) {
+        const int storedProductId =
+            manifest.value(QStringLiteral("productId")).toInt(-1);
+        productIdValid = storedProductId > 0 &&
+                         storedProductId <= 0xFFFF;
+        if (productIdValid) {
+            manifestProductId =
+                static_cast<quint16>(storedProductId);
+        }
+    }
+    const std::optional<PrinterProductProfile> manifestProductProfile =
+        productIdValid
+            ? printerProductProfileForId(manifestProductId)
+            : std::nullopt;
     bool valid =
         (manifestVersion == 1 || manifestVersion == 2 ||
          manifestVersion == 3 || manifestVersion == 4 ||
          manifestVersion == 5 || manifestVersion == 6 ||
          manifestVersion == 7 || manifestVersion == 8 ||
+         manifestVersion == 9 ||
          manifestVersion == kRetryCacheFormatVersion) &&
+        manifestProductProfile &&
+        manifestProductProfile->mediaUploadSupported &&
         !QUuid(storedId).isNull() &&
         (storedKind == QStringLiteral("Upload") ||
          storedKind == QStringLiteral("UploadAndApply") ||
@@ -12901,11 +13921,29 @@ void DeviceManager::loadRetryCache() {
          storedKind == QStringLiteral("UploadRetry")) &&
         (manifestVersion < 5 ||
          manifest.value(QStringLiteral("requiresDeviceRecovery")).isBool()) &&
-        PrinterProtocol::isSafeUploadMediaName(remoteName) &&
+        printerMediaNameMatchesProfile(
+            remoteName, *manifestProductProfile) &&
         pathIsContained && preparedInfo.isFile() &&
         !preparedInfo.isSymLink() &&
         expectedSize > 0 && expectedSize <= kMaxRetryCacheBytes &&
         preparedInfo.size() == expectedSize && isSha256Hex(expectedHash);
+
+    if (valid && manifestVersion == kRetryCacheFormatVersion) {
+        valid = manifest.value(QStringLiteral("productId")).isDouble() &&
+                manifest.value(QStringLiteral("conversion")).toString() ==
+                    printerMediaConversionIdentity(
+                        *manifestProductProfile) &&
+                (!manifest.value(QStringLiteral("applyAfterUpload"))
+                      .toBool(false) ||
+                 manifestProductProfile
+                     ->displayConfigurationSupported) &&
+                (!manifest.value(QStringLiteral("updateMetrics"))
+                      .toBool(false) ||
+                 manifestProductProfile->overlayMetricsSupported) &&
+                (storedKind !=
+                         QStringLiteral("EnsureMediaAndApply") ||
+                 manifestProductProfile->mediaCatalogSupported);
+    }
 
     const bool manifestUpdatesMetrics =
         manifestVersion == 3
@@ -12921,7 +13959,7 @@ void DeviceManager::loadRetryCache() {
             runtimeApplyRequestFromJson(
                 manifest.value(QStringLiteral("applyRequest")).toObject(),
                 &applyRequest,
-                manifestVersion >= kRetryCacheFormatVersion);
+                manifestVersion >= kRetryCacheStrictApplyVersion);
         if (valid && manifestVersion == 8 &&
             applyRequest.display.standbyPresent) {
             applyRequest.display.standbyPresent = false;
@@ -12984,6 +14022,16 @@ void DeviceManager::loadRetryCache() {
         valid = (originEmpty || originComplete) &&
             (storedKind != QStringLiteral("EnsureMediaAndApply") ||
              originComplete);
+        if (valid && manifestVersion == kRetryCacheFormatVersion) {
+            if (manifestProductProfile->productId == kTurrisProductId) {
+                valid = originComplete &&
+                    printerConversionProfileMatchesProduct(
+                        conversionProfile, *manifestProductProfile);
+            } else if (originComplete) {
+                valid = printerConversionProfileMatchesProduct(
+                    conversionProfile, *manifestProductProfile);
+            }
+        }
     }
 
     if (valid && manifestVersion >= 7) {
@@ -13033,8 +14081,8 @@ void DeviceManager::loadRetryCache() {
                 ? !deviceIdentity.isEmpty()
                 : true;
         valid =
-            PrinterProtocol::isSafeUploadMediaName(
-                originalRemoteName) &&
+            printerMediaNameMatchesProfile(
+                originalRemoteName, *manifestProductProfile) &&
             manifest.value(QStringLiteral("retryRemoteName"))
                 .isString() &&
             terminalOutcomeKnown &&
@@ -13061,6 +14109,10 @@ void DeviceManager::loadRetryCache() {
             outcomeSafetyFlagsValid &&
             outcomeIdentityValid &&
             uploadGenerationOk;
+        if (valid && manifestVersion == kRetryCacheFormatVersion &&
+            finalizationOnly) {
+            valid = manifestProductProfile->mediaCatalogSupported;
+        }
     }
 
     if (!valid) {
@@ -13143,6 +14195,12 @@ void DeviceManager::handleRetryCacheValidation(
             manifest.value(QStringLiteral("sourceFingerprint")).toString();
         const int manifestVersion =
             manifest.value(QStringLiteral("version")).toInt(-1);
+        const quint16 manifestProductId =
+            manifestVersion == kRetryCacheFormatVersion
+                ? static_cast<quint16>(
+                      manifest.value(QStringLiteral("productId"))
+                          .toInt())
+                : quint16{0x1021};
         if (!valid) {
             QFile::remove(retryCacheManifestPath());
             const QFileInfoList files = cacheDirectory.entryInfoList(
@@ -13161,6 +14219,7 @@ void DeviceManager::handleRetryCacheValidation(
         const qint64 expectedSize = static_cast<qint64>(
             manifest.value(QStringLiteral("preparedSize")).toDouble(-1));
         OperationRecord record;
+        record.printerProductId = manifestProductId;
         record.info.id = normalizedOperationId(
             manifest.value(QStringLiteral("operationId")).toString());
         if (operations_.contains(record.info.id)) {
@@ -13274,7 +14333,7 @@ void DeviceManager::handleRetryCacheValidation(
             const bool parsed = runtimeApplyRequestFromJson(
                 manifest.value(QStringLiteral("applyRequest")).toObject(),
                 &record.applyRequest,
-                manifestVersion >= kRetryCacheFormatVersion);
+                manifestVersion >= kRetryCacheStrictApplyVersion);
             Q_ASSERT(parsed);
         } else {
             record.applyRequest.screenMode =
@@ -13441,6 +14500,15 @@ void DeviceManager::handleRetryCacheValidation(
         return;
     }
     found->retryValidationPending = false;
+    if (!operationMatchesCurrentPrinterProduct(*found)) {
+        handlePreparedUploadFailure(
+            validationId,
+            tr("Prepared media belongs to USB product %1, but the connected device is %2")
+                .arg(printerProductIdString(found->printerProductId),
+                     printerProductIdString(printerProductId_)),
+            PrinterProtocol::MutationOutcome::NotStarted);
+        return;
+    }
     if (found->cancelRequested) {
         handlePreparedUploadFailure(
             validationId, tr("Operation cancelled by the user"),
@@ -13480,6 +14548,71 @@ void DeviceManager::handleRetryCacheValidation(
                 ? tr("Prepared-media validation was interrupted")
                 : message,
             PrinterProtocol::MutationOutcome::NotStarted);
+        return;
+    }
+    if (!currentPrinterSupportsMediaCatalog()) {
+        if (found->retryMustUseNewRemoteName) {
+            const QString previousRemoteName = found->remoteName;
+            const QString originalSuffix =
+                previousRemoteName.contains(
+                    QStringLiteral(".png.h264_"))
+                    ? QStringLiteral("png")
+                    : previousRemoteName.contains(
+                          QStringLiteral(".gif.h264_"))
+                        ? QStringLiteral("gif")
+                        : QStringLiteral("mp4");
+            QString replacementName;
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                const QString candidate = h264PrinterName(
+                    generatedPrinterMediaName(originalSuffix),
+                    found->printerProductId);
+                if (!candidate.isEmpty() &&
+                    candidate != previousRemoteName &&
+                    candidate != found->originalRemoteName) {
+                    replacementName = candidate;
+                    break;
+                }
+            }
+            if (replacementName.isEmpty()) {
+                handlePreparedUploadFailure(
+                    validationId,
+                    tr("Could not allocate a new media name for retry"),
+                    PrinterProtocol::MutationOutcome::NotStarted);
+                return;
+            }
+            found->remoteName = replacementName;
+            found->info.resultName = replacementName;
+            QString cacheError;
+            if (!writeRetryCache(
+                    validationId,
+                    found->info.terminalOutcome.isEmpty()
+                        ? QStringLiteral("PartialOrUnknown")
+                        : found->info.terminalOutcome,
+                    &cacheError)) {
+                found->remoteName = previousRemoteName;
+                found->info.resultName = previousRemoteName;
+                handlePreparedUploadFailure(
+                    validationId,
+                    tr("Cannot persist the new retry target before upload: %1")
+                        .arg(cacheError),
+                    PrinterProtocol::MutationOutcome::NotStarted);
+                return;
+            }
+        }
+        found->info.confirmedBytes = 0;
+        found->info.lastConfirmedChunkIndex = -1;
+        found->info.terminalOutcome.clear();
+        found->info.state = QStringLiteral("Preflight");
+        found->info.stage = QStringLiteral("EnsuringSession");
+        found->info.message = tr(
+            "Prepared media is validated and ready for direct upload");
+        publishOperation(validationId);
+        emit requestBeginPrinterForegroundOperation(
+            validationId, printerGeneration_);
+        emit requestPrinterUploadPrepared(
+            currentPrinterPath(), found->preparedPath,
+            found->remoteName, found->preparedSha256,
+            validationId, printerGeneration_);
         return;
     }
     found->info.state = QStringLiteral("Refreshing");
@@ -13582,6 +14715,13 @@ void DeviceManager::sendSysinfo(const QStringList &labels,
         return;
     }
     if (isPrinterClassDevicePresent()) {
+        if (!currentPrinterSupportsOverlayMetrics()) {
+            emit deviceError(tr(
+                "Overlay metrics are not supported for USB product %1")
+                                 .arg(printerProductIdString(
+                                     printerProductId_)));
+            return;
+        }
         const QString devicePath = currentPrinterPath();
         if (devicePath.isEmpty() || !printerDisplaySessionActive_ ||
             !pendingRetryValidationId_.isEmpty() ||
@@ -13678,6 +14818,13 @@ void DeviceManager::refreshMediaList() {
         return;
     }
     if (isPrinterClassDevicePresent()) {
+        if (!currentPrinterSupportsMediaCatalog()) {
+            emit deviceError(tr(
+                "Media catalog refresh is not supported for USB product %1")
+                                 .arg(printerProductIdString(
+                                     printerProductId_)));
+            return;
+        }
         const QString devicePath = currentPrinterPath();
         if (devicePath.isEmpty()) {
             emit deviceError(printerUnavailableStatusText());

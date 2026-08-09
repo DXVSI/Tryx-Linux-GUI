@@ -152,7 +152,9 @@ void cleanupOldFiles(const QString &directoryPath,
 }  // namespace
 
 MediaPreviewController::MediaPreviewController(QObject *parent)
-    : QObject(parent) {
+    : QObject(parent),
+      targetWidth_(kTryxMediaTargetWidth),
+      targetHeight_(kTryxMediaTargetHeight) {
     cleanupStaleArtifacts();
     process_.setProcessChannelMode(QProcess::MergedChannels);
     processDeadline_.setSingleShot(true);
@@ -332,6 +334,21 @@ void MediaPreviewController::setTransform(
     }
 }
 
+void MediaPreviewController::setTargetSize(int width, int height) {
+    if (width <= 0 || height <= 0 || width % 2 != 0 ||
+        height % 2 != 0 ||
+        (targetWidth_ == width && targetHeight_ == height)) {
+        return;
+    }
+    targetWidth_ = width;
+    targetHeight_ = height;
+    ++requestedRenderGeneration_;
+    if (!stagedPath_.isEmpty() && !staging_ &&
+        !sourceProtected_) {
+        schedulePreview();
+    }
+}
+
 void MediaPreviewController::cancel() {
     if (sourceProtected_) {
         error_ = tr(
@@ -383,8 +400,10 @@ void MediaPreviewController::restoreStagedSourceOwnership() {
         previewUrl_.clear();
         error_ = tr(
             "The runtime rejected the upload after the staged source disappeared");
+        emit stateChanged();
+        return;
     }
-    emit stateChanged();
+    schedulePreview();
 }
 
 void MediaPreviewController::releaseStagedSource() {
@@ -400,15 +419,24 @@ void MediaPreviewController::releaseStagedSource() {
 
 QString MediaPreviewController::previewFilter(
     const TryxRuntimeMediaTransform &transform) {
+    return previewFilter(
+        transform, kTryxMediaTargetWidth,
+        kTryxMediaTargetHeight);
+}
+
+QString MediaPreviewController::previewFilter(
+    const TryxRuntimeMediaTransform &transform,
+    int targetWidth, int targetHeight) {
     const QString canonical =
         tryxMediaTransformFfmpegFilter(
-            transform, kTryxMediaTargetWidth,
-            kTryxMediaTargetHeight);
+            transform, targetWidth, targetHeight);
     if (canonical.isEmpty()) {
         return {};
     }
     return canonical +
-           QStringLiteral(",scale=1120:540:flags=lanczos");
+           QStringLiteral(",scale=%1:%2:flags=lanczos")
+               .arg(targetWidth / 2)
+               .arg(targetHeight / 2);
 }
 
 int MediaPreviewController::runStageCopyHelper(
@@ -1102,7 +1130,8 @@ void MediaPreviewController::startPreview() {
         fail(tr("ffmpeg was not found"));
         return;
     }
-    const QString filter = previewFilter(transform_);
+    const QString filter = previewFilter(
+        transform_, targetWidth_, targetHeight_);
     if (filter.isEmpty()) {
         fail(tr("The selected media transform is invalid"));
         return;

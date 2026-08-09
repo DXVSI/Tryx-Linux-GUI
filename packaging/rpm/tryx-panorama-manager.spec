@@ -1,7 +1,7 @@
 Name:           tryx-panorama-manager
-Version:        2.1.1
+Version:        2.2.0
 Release:        1%{?dist}
-Summary:        Linux manager for supported TRYX Panorama cooler displays
+Summary:        Linux manager for supported TRYX cooler displays
 
 License:        MIT AND BSD-2-Clause
 URL:            https://github.com/DXVSI/Tryx-Linux-GUI
@@ -14,7 +14,7 @@ ExclusiveArch:  x86_64
 BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  dbus-daemon
-BuildRequires:  ffmpeg-free
+BuildRequires:  ffmpeg
 BuildRequires:  qt6-rpm-macros
 BuildRequires:  qt6-linguist
 BuildRequires:  qt6-qtdeclarative-devel
@@ -46,7 +46,7 @@ Requires:       qt6-qtdeclarative%{?_isa}
 Requires:       ffmpeg
 
 # Native Wayland support and the legacy/firmware discovery helpers are useful
-# but are not required for the PASE printer-class control path.
+# but are not required for the printer-class control path.
 Recommends:     qt6-qtwayland%{?_isa}
 Suggests:       /usr/bin/adb
 Suggests:       /usr/bin/unzip
@@ -58,9 +58,9 @@ Suggests:       /usr/bin/lspci
 
 %description
 TRYX Panorama Manager is a Qt 6 application for controlling supported TRYX
-Panorama and Panorama SE cooler displays on Linux. It manages custom media,
-display settings, live system metrics, and devices using the PASE
-printer-class USB protocol.
+Panorama, Panorama SE, and Turris 620 cooler displays on Linux. It uses
+model-specific media profiles and enables only the printer-class USB
+capabilities supported by each device.
 
 The package contains open-source project components and host integration. It
 does not contain vendor media, firmware archives, or the proprietary Rockchip
@@ -118,6 +118,13 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx-panorama-manager.1*
 
 %changelog
+* Sun Aug 09 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.2.0-1
+- Add community-tested Panorama 391a:1011 printer-class support
+- Add Turris 620 391a:2011 media upload with 1280x720 MXHD preparation
+- Select media geometry and capabilities from the exact USB product
+- Bind retry, recovery, and firmware gates to the identified device model
+- Ship udev and AppStream metadata for all supported printer-class IDs
+
 * Mon Aug 03 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.1.1-1
 - Start the sibling API 8 runtime for direct build-tree GUI launches
 - Fail closed around systemd startup jobs and D-Bus owner replacement
