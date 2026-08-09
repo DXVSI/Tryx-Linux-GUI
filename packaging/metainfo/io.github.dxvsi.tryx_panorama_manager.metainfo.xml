@@ -26,6 +26,17 @@
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.2.0" type="stable" date="2026-08-09">
+      <description>
+        <ul>
+          <li>Add community-tested Panorama 391a:1011 printer-class support.</li>
+          <li>Add Turris 620 media preparation and acknowledged upload at 1280 by 720.</li>
+          <li>Adapt media editing and preview geometry to the connected model.</li>
+          <li>Reject unsupported operations before USB dispatch using exact product capabilities.</li>
+          <li>Bind session recovery and prepared-media retries to the exact USB product.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.1.1" type="stable" date="2026-08-03">
       <description>
         <ul>

@@ -1,3 +1,13 @@
+tryx-panorama-manager (2.2.0-1) noble; urgency=medium
+
+  * Add community-tested Panorama 391a:1011 printer-class support.
+  * Add Turris 620 391a:2011 media upload with 1280x720 MXHD preparation.
+  * Select media geometry and capabilities from the exact USB product.
+  * Bind retry, recovery, and firmware gates to the identified device model.
+  * Ship udev and AppStream metadata for all supported printer-class IDs.
+
+ -- DXVSI <dxvsi123@gmail.com>  Sun, 09 Aug 2026 13:26:08 +0700
+
 tryx-panorama-manager (2.1.1-1) noble; urgency=medium
 
   * Start the sibling API 8 runtime for direct build-tree GUI launches.

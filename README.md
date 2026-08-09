@@ -115,6 +115,35 @@ StatusNotifier watcher and host are available, closing the window hides the
 GUI to the native desktop tray. Without a watcher, closing the window exits
 only the GUI; the separate runtime remains available to the user service.
 
+## What's new in 2.2.0
+
+- Added community-tested printer-class support for Panorama devices with USB
+  ID `391a:1011`, including 2240 × 1080 media, display configuration, and
+  overlay metrics.
+- Added community-tested Turris 620 support for USB ID `391a:2011`. Images,
+  GIFs, and videos are prepared at the native 1280 × 720 resolution, wrapped
+  as MXHD media, uploaded with exact acknowledgements, and activated
+  immediately.
+- The editor and preview now follow the connected model's native geometry and
+  regenerate stale previews when the target profile changes.
+- Device capabilities are selected from the exact USB product profile, so
+  unsupported catalog, display, overlay, and firmware operations are rejected
+  before USB traffic starts.
+- Session recovery, prepared-media retries, and upload reconciliation are
+  bound to the exact USB product, preventing state from one model from being
+  reused on another model at the same path.
+- Firmware safety checks keep the identified legacy `cm01` serial/ADB path and
+  supported PASE path available while rejecting Panorama `391a:1011`, Turris
+  `391a:2011`, and unidentified targets.
+- Updated udev rules, package descriptions, AppStream metadata, user-facing
+  text, and Russian translations for all supported printer-class IDs.
+
+Turris support in this release is intentionally limited to acknowledged media
+upload with immediate activation. Device catalog, export, Save as new,
+Replace, delete, Apply, display configuration, brightness, metrics, presets,
+keepalive, and firmware operations remain disabled. Panorama `391a:1011` and
+Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
+
 ## What's new in 2.1.1
 
 - Launching the GUI directly from `build/quick` now selects the sibling API 8
@@ -234,13 +263,13 @@ Install a downloaded package with the package manager for your distribution:
 ```fish
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.1.1-1.fc44.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.2.0-1.fc44.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.1.1-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.2.0-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.2.0-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download

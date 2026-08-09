@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.1.1
+Version:        2.2.0
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -118,6 +118,13 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx-panorama-manager.1*
 
 %changelog
+* Sun Aug 09 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.2.0-1
+- Add community-tested Panorama 391a:1011 printer-class support
+- Add Turris 620 391a:2011 media upload with 1280x720 MXHD preparation
+- Select media geometry and capabilities from the exact USB product
+- Bind retry, recovery, and firmware gates to the identified device model
+- Ship udev and AppStream metadata for all supported printer-class IDs
+
 * Mon Aug 03 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.1.1-1
 - Start the sibling API 8 runtime for direct build-tree GUI launches
 - Fail closed around systemd startup jobs and D-Bus owner replacement
