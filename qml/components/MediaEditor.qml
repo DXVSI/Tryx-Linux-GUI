@@ -30,6 +30,21 @@ Popup {
         controller.rotation === 0 &&
         (controller.mode !== "Crop" ||
          controller.zoomPercent === 100)
+    readonly property real targetAspectRatio:
+        controller.targetWidth > 0 && controller.targetHeight > 0
+        ? controller.targetWidth / controller.targetHeight
+        : 1
+    readonly property string targetResolution:
+        qsTr("%1 × %2").arg(controller.targetWidth)
+                       .arg(controller.targetHeight)
+    readonly property string recoveredSourceResolution:
+        controller.originalMediaName.toLowerCase()
+                  .endsWith(".h264_1280x720")
+        ? qsTr("%1 × %2").arg(1280).arg(720)
+        : (controller.originalMediaName.toLowerCase()
+                     .endsWith(".h264_2240x1080")
+           ? qsTr("%1 × %2").arg(2240).arg(1080)
+           : targetResolution)
 
     function synchronizeVisibility() {
         if (controller.open && !root.opened)
@@ -134,7 +149,7 @@ Popup {
                         anchors.rightMargin: 12
                         text:
                             root.recoveredTransformIsGeometryNeutral
-                            ? qsTr("This device copy is already encoded at 2240 × 1080, so the current settings will not visibly change it. Existing padding is baked into the video. Choose Crop and raise Zoom above 100%, or rotate the video. Save as new does not change the active display; select the new copy in the library and apply it. Previously lost areas cannot be restored.")
+                            ? qsTr("This device copy is already encoded at %1, so the current settings will not visibly change it. Existing padding is baked into the video. Choose Crop and raise Zoom above 100%, or rotate the video. Save as new does not change the active display; select the new copy in the library and apply it. Previously lost areas cannot be restored.").arg(root.recoveredSourceResolution)
                             : qsTr("This is a private working copy recovered from the device. Save as new stores another media item but does not change the active display; select the new copy in the library and apply it. Replace original updates the original item. Saving re-encodes the video; areas lost before the original upload cannot be restored.")
                         color:
                             root.recoveredTransformIsGeometryNeutral
@@ -147,7 +162,9 @@ Popup {
                     id: previewViewport
                     Layout.fillWidth: true
                     Layout.preferredHeight:
-                        Math.min(420, width * 1080 / 2240)
+                        Math.min(
+                            420,
+                            width / root.targetAspectRatio)
                     Layout.minimumHeight: 220
 
                     Rectangle {
@@ -157,8 +174,9 @@ Popup {
                         anchors.centerIn: parent
                         width: Math.min(
                             parent.width,
-                            parent.height * 2240 / 1080)
-                        height: width * 1080 / 2240
+                            parent.height *
+                            root.targetAspectRatio)
+                        height: width / root.targetAspectRatio
                         color: "#000000"
                         border.color: "#6b6f80"
                         radius: 6
@@ -253,10 +271,11 @@ Popup {
                         }
 
                         Label {
+                            objectName: "mediaTargetResolution"
                             anchors.right: parent.right
                             anchors.bottom: parent.bottom
                             anchors.margins: 8
-                            text: "2240 × 1080"
+                            text: root.targetResolution
                             color: "#b7bac7"
                             font.pixelSize: 11
                         }

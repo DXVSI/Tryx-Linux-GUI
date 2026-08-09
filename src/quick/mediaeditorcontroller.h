@@ -41,6 +41,8 @@ class MediaEditorController final : public QObject {
                    NOTIFY transformChanged)
     Q_PROPERTY(QString backgroundColor READ backgroundColor
                    WRITE setBackgroundColor NOTIFY transformChanged)
+    Q_PROPERTY(int targetWidth READ targetWidth NOTIFY targetChanged)
+    Q_PROPERTY(int targetHeight READ targetHeight NOTIFY targetChanged)
     Q_PROPERTY(QUrl homeFolder READ homeFolder CONSTANT)
 
 public:
@@ -66,6 +68,8 @@ public:
     int focusY() const;
     int rotation() const;
     QString backgroundColor() const;
+    int targetWidth() const;
+    int targetHeight() const;
     QUrl homeFolder() const;
     TryxRuntimeMediaTransform transform() const;
     void beginRecoveredVideo(
@@ -96,6 +100,7 @@ signals:
     void openChanged();
     void previewChanged();
     void transformChanged();
+    void targetChanged();
     void submitted();
     void cancelled();
     void recoveredSaveAsNewRequested(

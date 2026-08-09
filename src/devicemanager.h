@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 
 #include <panorama/adb.hpp>
 #include <panorama/config.hpp>
@@ -55,20 +56,23 @@ public slots:
                        const QString &localPath,
                        quint64 generation,
                        const TryxRuntimeMediaTransform &transform =
-                           TryxRuntimeMediaTransform{});
+                           TryxRuntimeMediaTransform{},
+                       quint16 productId = 0x1021);
     void prepare(const QString &operationId, const QString &devicePath,
                  const QString &localPath,
                  const QString &expectedSourceSha256,
                  quint64 generation,
                  const TryxRuntimeMediaTransform &transform =
-                     TryxRuntimeMediaTransform{});
+                     TryxRuntimeMediaTransform{},
+                 quint16 productId = 0x1021);
     void prepareRecovered(const QString &operationId,
                           const QString &devicePath,
                           const QString &localPath,
                           const QString &expectedSourceSha256,
                           quint64 generation,
                           const TryxRuntimeMediaTransform &transform =
-                              TryxRuntimeMediaTransform{});
+                              TryxRuntimeMediaTransform{},
+                          quint16 productId = 0x1021);
     void cancelStale(quint64 currentGeneration);
     void cancelOperation(const QString &operationId);
     void validateRetryCache(const QString &validationId,
@@ -101,7 +105,8 @@ private:
     enum class PreparationPhase {
         Idle,
         Media,
-        Thumbnail
+        Thumbnail,
+        FrameCount
     };
 
     void startPreparation(const QString &operationId,
@@ -111,10 +116,14 @@ private:
                           quint64 generation,
                           const TryxRuntimeMediaTransform &transform =
                               TryxRuntimeMediaTransform{},
-                          bool recoveredVideo = false);
+                          bool recoveredVideo = false,
+                          quint16 productId = 0x1021);
     void finishPreparation(int exitCode, bool normalExit);
     void finishMediaPreparation(int exitCode, bool normalExit);
     void finishThumbnailPreparation(int exitCode, bool normalExit);
+    void startTurrisFrameCountPreparation(
+        const QString &thumbnailSha256);
+    void finishTurrisFrameCountPreparation(int exitCode, bool normalExit);
     void completePreparation(const QString &thumbnailSha256);
     void failPreparation(const QString &message, bool cancelled);
     void resetPreparationState();
@@ -127,12 +136,16 @@ private:
     QString devicePath_;
     QString sourcePath_;
     QString uploadPath_;
+    QString rawMediaPath_;
     QString remoteName_;
     QString stagedThumbnailTempPath_;
     QString stagedThumbnailPath_;
+    QString stagedThumbnailSha256_;
     QString preparedSha256_;
     QString expectedSourceSha256_;
     TryxRuntimeMediaTransform transform_;
+    quint16 productId_ = 0x1021;
+    quint32 turrisMediaKind_ = 0;
     bool recoveredVideo_ = false;
     quint64 generation_ = 0;
     QByteArray processOutput_;
@@ -148,6 +161,7 @@ private:
     QString pendingExpectedSourceSha256_;
     TryxRuntimeMediaTransform pendingTransform_;
     bool pendingRecoveredVideo_ = false;
+    quint16 pendingProductId_ = 0x1021;
     quint64 pendingGeneration_ = 0;
     QSet<QString> deliveredPaths_;
     mutable QMutex retryValidationMutex_;
@@ -210,6 +224,7 @@ public slots:
 
     void configurePrinterDevice(const QString &devicePath,
                                 const QString &deviceSerial,
+                                quint16 productId,
                                 quint64 generation);
     void restorePrinterOverlay(
                                const PrinterProtocol::PaseOverlayConfig &overlay,
@@ -427,6 +442,7 @@ private:
     int printerOperationCancellationFd_ = -1;
     QString printerDevicePath_;
     QString printerDeviceSerial_;
+    quint16 printerProductId_ = 0;
     quint64 configuredPrinterGeneration_ = 0;
     PrinterSessionState printerSessionState_ = PrinterSessionState::Passive;
     int printerKeepaliveRetryCount_ = 0;
@@ -457,9 +473,14 @@ public:
     }
     bool isRemote() const { return remoteMode_; }
     void setPrinterOverlayLeaseMode(PrinterOverlayLeaseMode mode);
+    bool firmwareFlashAllowedForCurrentDevice(
+        QString *errorMessage = nullptr) const;
     bool hasTypedMediaCatalog() const {
-        return isPrinterClassDevicePresent() &&
-               (!remoteMode_ || remoteTypedMediaCatalogAvailable_);
+        return remoteMode_
+            ? isPrinterClassDevicePresent() &&
+                  remoteTypedMediaCatalogAvailable_
+            : isPrinterClassDevicePresent() &&
+                  currentPrinterSupportsMediaCatalog();
     }
 
 #ifdef TRYX_PROTOCOL_TESTING
@@ -642,6 +663,7 @@ signals:
                         const QStringList &units);
     void requestConfigurePrinter(const QString &devicePath,
                                  const QString &deviceSerial,
+                                 quint16 productId,
                                  quint64 generation);
     void requestRestorePrinterOverlay(
                                       const PrinterProtocol::PaseOverlayConfig &overlay,
@@ -658,20 +680,23 @@ signals:
                                      const QString &localPath,
                                      quint64 generation,
                                      const TryxRuntimeMediaTransform &transform =
-                                         TryxRuntimeMediaTransform{});
+                                         TryxRuntimeMediaTransform{},
+                                     quint16 productId = 0x1021);
     void requestPreparePrinterMedia(const QString &operationId,
                                     const QString &devicePath,
                                     const QString &localPath,
                                     const QString &expectedSourceSha256,
                                     quint64 generation,
                                     const TryxRuntimeMediaTransform &transform =
-                                        TryxRuntimeMediaTransform{});
+                                        TryxRuntimeMediaTransform{},
+                                    quint16 productId = 0x1021);
     void requestPrepareRecoveredPrinterMedia(
         const QString &operationId, const QString &devicePath,
         const QString &localPath,
         const QString &expectedSourceSha256, quint64 generation,
         const TryxRuntimeMediaTransform &transform =
-            TryxRuntimeMediaTransform{});
+            TryxRuntimeMediaTransform{},
+        quint16 productId = 0x1021);
     void requestCancelPrinterPreparation(quint64 currentGeneration);
     void requestCancelPrinterPreparationOperation(const QString &operationId);
     void requestReleasePrinterPreparation(const QString &uploadPath);
@@ -761,12 +786,19 @@ private:
     void attachPrinterClassDevice(const PrinterProtocol::UsbPrinterDevice &device);
     void detachPrinterClassDevice(bool notify);
     QString currentPrinterPath() const;
+    std::optional<PrinterProductProfile> currentPrinterProductProfile() const;
+    bool currentPrinterSupportsMediaCatalog() const;
+    bool currentPrinterSupportsDisplayConfiguration() const;
+    bool currentPrinterSupportsOverlayMetrics() const;
+    bool operationMatchesCurrentPrinterProduct(
+        const OperationRecord &record) const;
     QString printerUnavailableStatusText() const;
     QString printerMutationUnavailableStatusText() const;
     QString firmwareExclusiveStatusText() const;
     void resumePrinterSessionAfterRetryCacheValidation();
     bool completePrinterRecoveryAfterRemoval(
-        const QString &currentDeviceIdentity);
+        const QString &currentDeviceIdentity,
+        quint16 currentProductId);
     void requirePrinterRecovery(const QString &message);
     QString normalizedOperationId(const QString &requestedId) const;
     bool operationIsTerminal(const QString &state) const;
@@ -861,6 +893,7 @@ private:
                          const QString &terminalOutcome,
                          QString *errorMessage);
     bool clearRetryCache(bool removePreparedFile);
+    bool consumeAcknowledgedRetryCache();
     void removePreparedFileForOperation(const QString &operationId);
     void preserveActivePreparedMediaForShutdown();
     QString deleteIntentPath() const;
@@ -936,6 +969,7 @@ private:
         QString sourceContentSha256;
         qint64 sourceSize = 0;
         QString conversionProfile;
+        quint16 printerProductId = 0;
         QString remoteName;
         QString originalRemoteName;
         QString mediaFile;
@@ -999,7 +1033,9 @@ private:
     PrinterProtocol::DiscoverySnapshot printerSnapshot_;
     QString printerDevicePath_;
     QString printerDeviceSerial_;
+    quint16 printerProductId_ = 0;
     QString printerSessionResumeSerial_;
+    quint16 printerSessionResumeProductId_ = 0;
     quint64 printerGeneration_ = 0;
     QElapsedTimer printerGenerationElapsedTimer_;
     quint64 printerDisconnectCount_ = 0;
@@ -1033,6 +1069,7 @@ private:
     QString pendingDeleteOperationId_;
     QJsonObject pendingDeleteIntent_;
     QString pendingReplaceJournalOperationId_;
+    QString legacyProductId_;
     QString firmwareExclusiveLeaseId_;
     QString firmwareReleasePendingLeaseId_;
     quint64 firmwareQuiesceGeneration_ = 0;

@@ -2,8 +2,8 @@
 Type=Application
 Name=TRYX Panorama Manager
 Name[ru]=Менеджер TRYX Panorama
-Comment=Manage TRYX Panorama cooler displays
-Comment[ru]=Управление дисплеями систем охлаждения TRYX Panorama
+Comment=Manage compatible TRYX cooler displays
+Comment[ru]=Управление совместимыми дисплеями систем охлаждения TRYX
 Exec=tryx-panorama-manager
 Icon=tryx-panorama
 Terminal=false

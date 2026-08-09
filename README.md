@@ -1,7 +1,7 @@
 # TRYX Panorama Linux GUI
 
-Linux-only Qt 6 Quick application for managing TRYX Panorama AIO cooler
-displays.
+Linux-only Qt 6 Quick application for managing compatible TRYX cooler
+displays, including Panorama models and the Turris 620.
 
 The project ships one desktop GUI backed by a separate headless runtime. The
 GUI owns presentation and user interaction; the runtime owns device discovery,
@@ -31,7 +31,9 @@ If TRYX Panorama Manager is useful to you, you can support continued development
 
 ## Supported and Planned Models
 
-Only models marked **Tested on real hardware** are verified by the maintainer. Other entries are community reports or roadmap targets and must not be treated as currently compatible.
+Only models marked **Tested on real hardware** are verified by the maintainer.
+Community-tested entries may be supported, but have not been reproduced by
+the maintainer; roadmap entries do not imply current compatibility.
 
 | Product | Type | Display | Project status |
 |---------|------|---------|----------------|
@@ -41,7 +43,7 @@ Only models marked **Tested on real hardware** are verified by the maintainer. O
 | [PANORAMA SE ARGB 240](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-se/black-360) | AIO liquid cooler | 6.67-inch curved AMOLED, 2240 × 1080 | Hardware needed; protocol unverified |
 | [PANORAMA WB](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-wb/black) | Custom-loop CPU water block | 6.5-inch curved AMOLED | Planned; hardware and protocol research required |
 | [STAGE ARGB 360](https://www.tryx.com/en/products/liquid-cooling/stage/stage/white) | AIO liquid cooler | Dual 4.0-inch IPS, 720 × 720 each | Planned; hardware and protocol research required |
-| [TURRIS 620](https://www.tryx.com/en/products/liquid-cooling/turris/turris-620/black) | Dual-tower air cooler | 5.0-inch IPS, 1280 × 720 | Planned; hardware and protocol research required |
+| [TURRIS 620](https://www.tryx.com/en/products/liquid-cooling/turris/turris-620/black) | Dual-tower air cooler | 5.0-inch IPS, 1280 × 720 | Community-tested upstream; not maintainer-tested |
 | [HOLO ARGB 360](https://www.tryx.com/en/products/liquid-cooling/holo/holo/white-360) | AIO liquid cooler | Holographic display, 640 × 480 | Planned; hardware and protocol research required |
 | [PANORAMA V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
 | [PANORAMA SE V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
@@ -52,6 +54,21 @@ Only models marked **Tested on real hardware** are verified by the maintainer. O
 - **Community-tested** - reported working by an external user, but not reproduced by the maintainer.
 - **Hardware needed** - a physical device is required before compatibility can be claimed.
 - **Planned** - support is on the roadmap, but no current compatibility or implementation is implied.
+
+Printer-class support is selected from the USB product ID rather than assuming
+that every TRYX display has the same geometry or capabilities:
+
+| USB identity | Product profile | Prepared media | Enabled capability set |
+|--------------|-----------------|----------------|------------------------|
+| `391a:1021` | Panorama SE / PASE | 2240 × 1080 | Current PASE printer-class features |
+| `391a:1011` | Panorama | 2240 × 1080 | PASE media, display, and overlay features; firmware flashing disabled; community-tested |
+| `391a:2011` | Turris 620 | 1280 × 720 | Acknowledged user-media upload only; no PASE bootstrap, Ping, catalog, display configuration, or firmware |
+
+Turris support is based on the independently reported hardware results from
+[MrEssentials/tryx-linux-display-manager](https://github.com/MrEssentials/tryx-linux-display-manager).
+It has not been reproduced on maintainer-owned hardware. Metrics and overlay
+layouts, split or waterfall modes, factory presets, and firmware operations
+remain disabled for Turris through model capability gates.
 
 <div align="center">
 
@@ -141,19 +158,19 @@ only the GUI; the separate runtime remains available to the user service.
 ## Features
 
 - Upload images, videos, GIFs (auto-converts non-MP4 formats)
-- Modern desktop interface with a preview-first PASE media editor
+- Modern desktop interface with a preview-first, model-aware media editor
 - Explicit Fit, Fill, Crop, Stretch, Zoom, pan, rotation, and Fit background controls before upload
-- Exact transformed preview rendered through the same canonical FFmpeg filter used for the final 2240 × 1080 media
+- Exact transformed preview rendered through the same canonical FFmpeg filter used for the final model-specific media: 2240 × 1080 for Panorama/PASE or 1280 × 720 for Turris
 - Immutable private upload snapshot with atomic client-to-runtime ownership transfer before D-Bus acceptance
 - Origin-aware PASE media catalog that labels device presets separately from user uploads
 - Export of writable PASE user media as an honest raw H264 device copy
 - Edit of an existing PASE user-media copy with Save as new or crash-safe Replace
 - Real-time system metrics on display (temperature, usage, frequency, power and date/time)
 - Hardware name badges (auto-detected from system)
-- Brightness control (0-100)
-- Display settings: position, alignment, color, filter
-- Runtime-owned keepalive for persistent display
-- Auto-detects legacy devices through `/dev/ttyACM*` and PASE firmware through direct libusb discovery
+- Brightness control (0-100) on capable Panorama/PASE profiles
+- Display settings on capable Panorama/PASE profiles: position, alignment, color, filter
+- Runtime-owned keepalive for capable Panorama/PASE display sessions
+- Auto-detects legacy devices through `/dev/ttyACM*` and supported printer-class devices through direct libusb discovery
 - Native Linux StatusNotifierItem tray integration with DBusMenu and desktop notifications when a watcher is available
 - Settings persistence between sessions
 - Async device communication (non-blocking GUI)
@@ -233,24 +250,24 @@ commands above instead of `rpm -i` or `dpkg -i`, because those tools do not
 download missing dependencies.
 
 Optional helpers such as ADB, `unzip`, `debugfs`, `glxinfo`, and `lspci` may
-not be installed automatically. They are not required for basic PASE
-printer-class operation and are only used by the corresponding legacy
-firmware, archive inspection, or hardware detection features.
+not be installed automatically. They are not required for basic printer-class
+operation and are only used by the corresponding legacy firmware, archive
+inspection, or hardware detection features.
 
 For Fedora, follow the
 [RPM Fusion configuration instructions](https://rpmfusion.org/Configuration)
 before installing the RPM. Fedora's `ffmpeg-free` can provide an `ffmpeg`
-executable without the `libx264` encoder required by PASE media preparation.
+executable without the `libx264` encoder required by device media preparation.
 Use `--allowerasing` when installing the RPM so DNF can replace an existing
 `ffmpeg-free` package with RPM Fusion's full `ffmpeg` build.
 
 Native packages install the Qt Quick GUI at
 `/usr/bin/tryx-panorama-manager`, the private background runtime at
 `/usr/lib/tryx-panorama-manager/tryx-panorama-runtime`, the desktop entry,
-icon, systemd user unit, and two PASE udev rules. Packages do not enable
-autostart or restart an existing runtime during an upgrade. Reconnect the PASE
-USB cable after installation, launch the application once, and enable
-autostart in Settings only if wanted.
+icon, systemd user unit, and two TRYX printer-class udev rules. Packages do not
+enable autostart or restart an existing runtime during an upgrade. Reconnect
+the supported TRYX display USB cable after installation, launch the application
+once, and enable autostart in Settings only if wanted.
 
 The committed Arch PKGBUILD intentionally accepts only a local release source
 archive with an explicit checksum. From a clean release checkout, build it
@@ -320,7 +337,7 @@ sudo dnf install -y android-tools unzip e2fsprogs ffmpeg mesa-demos
 
 **Permissions:**
 - User must be in `dialout` group (or `uucp` on Arch) for serial access
-- New KANALI firmware exposes Panorama SE as USB printer-class `391a:1021`; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
+- Supported printer-class devices use `391a:1011` for Panorama, `391a:1021` for Panorama SE / PASE, and `391a:2011` for Turris 620; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
 - Fedora's generic printer rule must not start CUPS `configure-printer` for this vendor protocol. The qmake install target places an early access rule and a late printer-suppression rule in `/usr/lib/udev/rules.d`; do not create same-named overrides in `/etc/udev/rules.d`, because they would shadow packaged updates.
 
 ## Firmware Updates
@@ -335,7 +352,7 @@ arbitrary package is safe for a different model.
 The local validator recognizes two Panorama SE package formats:
 
 - Legacy Android OTA `update.zip` for `cm01_se` devices. The runtime validates `META-INF/com/android/metadata`, copies an approved package to `/sdcard/update.zip` over ADB, verifies the copied size, and requests recovery reboot.
-- New KANALI Rockchip loader ZIP bundles for `PASE`. The runtime validates the required Rockchip files, checks `parameter.txt` for `RK3568`, and inspects `rootfs:/usr/bin/panorama` for the product marker. It can invoke an external Rockchip `upgrade_tool` only when the backend and device-state checks pass. If an ADB device is present, it may request reboot into Loader first; if RockUSB Loader or Maskrom is already present, the external backend can continue without ADB.
+- New KANALI Rockchip loader ZIP bundles for `PASE`. The runtime validates the required Rockchip files, checks `parameter.txt` for `RK3568`, and inspects `rootfs:/usr/bin/panorama` for the product marker. It can invoke an external Rockchip `upgrade_tool` only when the backend and device-state checks pass. If an identified firmware-capable device is present over ADB or the `391a:1021` printer interface, the authorized update may reboot it into Loader and continue there. A cold, unidentified Loader device and Maskrom mode are rejected because their original product profile cannot be proven.
 
 The `upgrade_tool` executable is not bundled in this open source repository because its redistribution rights are not clear. The app looks for it in `TRYX_UPGRADE_TOOL`, `PATH`, next to the app binary, `tools/upgrade_tool`, and `~/.local/bin/upgrade_tool`.
 
@@ -350,14 +367,24 @@ updater finishes, wait for the cooler to boot, inspect the physical display,
 then use **I inspected the display; resume connection** in Quick Settings.
 That explicit action removes the exact journal entry, releases the gate, and
 starts a fresh connection. It is not an automated firmware-version or boot
-verification. A new locally approved recovery flash remains possible while
-the device is still in Rockchip Loader mode.
+verification. A new flash cannot be started from an unidentified Loader-only
+device; the runtime must first identify a firmware-capable TRYX product before
+authorizing the transition into Loader mode.
 
 After updating to the new KANALI firmware, the cooler no longer exposes ADB by default. It appears as `391a:1021 RK PASE` with a bidirectional printer interface. The app generates C++ types from three minimal, project-owned schemas under `protocol/wire-v1`; recovered vendor descriptor sources are not a build or release dependency. The production path does not read or write `/dev/usb/lp*`: it claims the `07/01/02` interface through usbfs, temporarily detaches `usblp`, arms one bulk IN before each request, never re-arms that endpoint while the matching bulk OUT is still active, drains optional periodic responses to a complete frame boundary after OUT, and releases the interface on shutdown.
 
-All printer operations are serialized by one worker-owned session, while cancellable ffmpeg conversion runs outside the USB worker. Passive udev discovery recognizes the `391a:0006 rk3xxx` Rockchip gadget identity but never opens it. Discovery is based on physical USB device events and stable bus/port identity, so the app does not mistake its own `usblp` detach or attach for a physical reconnect. Printer Class `GET_PORT_STATUS` is deliberately not used because PASE does not provide a reliable readiness signal through that request. A physical remove/add creates a new connection generation, interrupts old I/O through its cancellation gate, and discards stale results. Recovery confirms protocol readiness through an exact DeviceInfo response, completes the remaining bootstrap once, sends one post-bootstrap Ping, restores the confirmed overlay at most once, and only then starts metrics. It never retries a complete bootstrap in the same physical generation or automatically replays user configuration, upload, delete, or apply mutations.
+Turris 620 exposes the supported `391a:2011` printer-class identity. Its
+community-tested contract is deliberately narrower than PASE: media is prepared
+at `1280x720`, wrapped as MXHD, and sent only through the acknowledged
+FileTransmit sequence `400` (begin), `401` (data), and `402` (end), with exact
+successful responses `800`, `801`, and `802`. The final `802` acknowledgement is
+the success and activation boundary. Turris does not use the PASE bootstrap,
+Ping or display keepalive, FileList/media-catalog queries, user/display
+configuration, overlay metrics, presets, deletion, or firmware operations.
 
-The readiness phase has a 20-second monotonic deadline. It retries only a DeviceInfo request whose USB OUT is confirmed to have transferred zero bytes, keeping the same claimed handle and using capped `500`, `1000`, then `2000` millisecond backoff. A partial or unknown OUT, cancellation, malformed response, or a complete OUT without the exact DeviceInfo response is terminal for that physical generation. System configuration and authentication queries are each sent at most once after readiness. Keepalive uses the observed untracked Ping frame and drains an optional asynchronous Pong. Metrics sampling and mutations start only after the post-bootstrap barrier. Manual upload uses the response-driven begin/data/end flow, converts media to the device's raw H264 format, gives data chunks a dedicated 15-second OUT deadline, and verifies the exact new name, prepared size, writable flag, and user source through a fresh media catalog before reporting success or applying it. Save first hashes the opened source file, looks up the source hash and transform-aware versioned conversion profile in the device-scoped catalog, refreshes that catalog, and applies an exact verified match without conversion or retransmission. No completed IN transfer is re-armed while any OUT remains active, preventing queued response fragments or `EPROTO` completions from starving the writer. Periodic write-only commands perform a bounded post-OUT drain; no response is acceptable, but a partial or malformed frame closes the session fail-closed. A persistent bulk-IN failure latches the current USB endpoint generation as lost. Production does not call `libusb_reset_device`, retry the same generation, or replay its last mutation; recovery requires an observed physical remove/add cycle or a full PASE power cycle that creates a new generation. Conversion and preview subprocesses have bounded deadlines; a preview timeout falls back to an honest placeholder without discarding valid H264. The direct USB reader can recover a complete tracked protobuf when faulty PASE firmware drops only the `TRYX` frame header after an IN transport error; recovery still requires the exact transaction ID and expected response body. Manager2 API version 8 adds FilePull-backed trusted device-media artifacts with owner-bound leases and crash-safe Save as new or Replace operations while preserving the API 7 media-transform and upload semantics. It also exposes stable UUIDs, structured operation states, origin-aware catalog entries, typed display mutations, confirmed display state, per-side overlay configuration, and explicit backlight power control. Manager1 retains its original catalog tuple for ABI compatibility. A verified prepared file and its staged JPEG preview are cached atomically after a failed transfer and can only be retried manually after prepared-file hash, device-generation, and media-catalog checks; the original source file is not required after conversion. If a data transfer ends partially or with an unknown outcome, its recovery requirement remains sticky across retries and daemon restarts. Upload, Retry, Apply, Delete, and metrics changes remain blocked until the runtime observes removal and reconnection of the current PASE endpoint, because closing libusb or issuing a generic USB reset does not prove that firmware discarded its hidden transfer session. A successful verification promotes the preview and content identity into the XDG media catalog. Apply is not atomic: uncertain writes are reported as partial or unknown, the session is closed, and no automatic rollback or replay is attempted.
+All printer operations are serialized by one worker-owned session, while cancellable ffmpeg conversion runs outside the USB worker. Passive udev discovery recognizes the `391a:0006 rk3xxx` Rockchip gadget identity but never opens it. Discovery is based on physical USB device events and stable bus/port identity, so the app does not mistake its own `usblp` detach or attach for a physical reconnect. Printer Class `GET_PORT_STATUS` is deliberately not used because PASE does not provide a reliable readiness signal through that request. A physical remove/add creates a new connection generation, interrupts old I/O through its cancellation gate, and discards stale results. On Panorama/PASE profiles, recovery confirms protocol readiness through an exact DeviceInfo response, completes the remaining bootstrap once, sends one post-bootstrap Ping, restores the confirmed overlay at most once, and only then starts metrics. It never retries a complete bootstrap in the same physical generation or automatically replays user configuration, upload, delete, or apply mutations. Turris bypasses this PASE readiness/bootstrap path and opens its bounded transfer path only for an explicit user upload.
+
+The Panorama/PASE readiness phase has a 20-second monotonic deadline. It retries only a DeviceInfo request whose USB OUT is confirmed to have transferred zero bytes, keeping the same claimed handle and using capped `500`, `1000`, then `2000` millisecond backoff. A partial or unknown OUT, cancellation, malformed response, or a complete OUT without the exact DeviceInfo response is terminal for that physical generation. System configuration and authentication queries are each sent at most once after readiness. Panorama/PASE keepalive uses the observed untracked Ping frame and drains an optional asynchronous Pong. Metrics sampling and mutations start only after the post-bootstrap barrier. Manual upload converts media to the active product profile and gives data chunks a dedicated 15-second OUT deadline. Panorama/PASE verifies the exact new name, prepared size, writable flag, and user source through a fresh media catalog before reporting success or applying it. Turris requires an exact successful response to every MXHD-wrapped FileTransmit stage, and the successful `802` response completes and activates the upload without a subsequent FileList or Apply request. Save and origin reuse are catalog-backed Panorama/PASE workflows and are unavailable for Turris. No completed IN transfer is re-armed while any OUT remains active, preventing queued response fragments or `EPROTO` completions from starving the writer. Periodic Panorama/PASE write-only commands perform a bounded post-OUT drain; no response is acceptable, but a partial or malformed frame closes the session fail-closed. A persistent bulk-IN failure latches the current USB endpoint generation as lost. Production does not call `libusb_reset_device`, retry the same generation, or replay its last mutation; recovery requires an observed physical remove/add cycle or a full printer-class device power cycle that creates a new generation. Conversion and preview subprocesses have bounded deadlines; a preview timeout falls back to an honest placeholder without discarding valid H264. The direct USB reader can recover a complete tracked protobuf when faulty PASE firmware drops only the `TRYX` frame header after an IN transport error; recovery still requires the exact transaction ID and expected response body. Manager2 API version 8 adds FilePull-backed trusted device-media artifacts with owner-bound leases and crash-safe Save as new or Replace operations while preserving the API 7 media-transform and upload semantics. It also exposes stable UUIDs, structured operation states, origin-aware catalog entries, typed display mutations, confirmed display state, per-side overlay configuration, and explicit backlight power control. Manager1 retains its original catalog tuple for ABI compatibility. A verified prepared file and its staged JPEG preview are cached atomically after a failed transfer and can only be retried manually after prepared-file hash and exact product and device-generation checks; catalog-capable Panorama/PASE profiles additionally require media-catalog validation. The original source file is not required after conversion. If a data transfer ends partially or with an unknown outcome, its recovery requirement remains sticky across retries and daemon restarts. Mutations supported by the active product profile remain blocked until the runtime observes removal and reconnection of the same printer-class product, because closing libusb or issuing a generic USB reset does not prove that firmware discarded its hidden transfer session. A successful Panorama/PASE verification promotes the preview and content identity into the XDG media catalog. Apply is not atomic: uncertain writes are reported as partial or unknown, the session is closed, and no automatic rollback or replay is attempted.
 
 PASE full-screen mode supports up to three exact protocol metrics selected from CPU temperature, frequency, usage and power; GPU temperature, frequency, usage and power; memory frequency and usage; and date/time. A separate Manager2 operation sends the overlay layout, then the background daemon sends live values through a headerless metric batch every second. The two-second background scheduler supports two measured arms through `pase_overlay_lease_mode` in the existing XDG `config.json`: `ping-and-overlay-lease` alternates Ping with a full overlay lease, while `ping-only` sends only Ping after the initial reconnect overlay restoration. The default preserves the current `ping-and-overlay-lease` behavior until the A/B monitor selects an arm. The lease never writes user configuration or media state. An explicit protocol error from either metric update or layout lease is fail-closed instead of being discarded. Metric sampling pauses during upload or Apply and coalesces to the latest sample, while a delayed tracked response can still receive one bounded liveness command without replaying the mutation. The confirmed layout is stored only for the same non-empty device serial and survives GUI or daemon restarts. Missing sensors remain unavailable instead of being reported as zero. The Memory Frequency protocol label is retained for compatibility, but the current Linux runtime reports it as unavailable because upstream Linux does not expose a portable unprivileged source for the live DRAM clock; static SMBIOS transfer rates are not mislabeled as MHz.
 
@@ -404,11 +431,11 @@ systemctl --user unmask tryx-panorama.service; and systemctl --user daemon-reloa
 ```
 
 System installation includes the public GUI, private runtime, user service,
-PASE usbfs rules, desktop entry, icon, and translations. It does not install a
-video library:
+TRYX printer-class usbfs rules, desktop entry, icon, and translations. It does
+not install a video library:
 
 ```fish
-sudo make install; and sudo udevadm control --reload-rules; and sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=391a --attr-match=idProduct=1021; and sudo udevadm settle --timeout=10
+sudo make install; and sudo udevadm control --reload-rules; and sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=391a; and sudo udevadm settle --timeout=10
 systemctl --user daemon-reload; and systemctl --user start tryx-panorama.service; and systemctl --user is-active tryx-panorama.service
 ```
 

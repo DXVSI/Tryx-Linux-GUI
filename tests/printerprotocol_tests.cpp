@@ -396,6 +396,90 @@ bool writeTextFile(const QString &path, const QByteArray &contents) {
            file.write(contents) == contents.size();
 }
 
+void appendTurrisVarint(QByteArray *output, quint64 value) {
+    do {
+        quint8 byte = static_cast<quint8>(value & 0x7fU);
+        value >>= 7U;
+        if (value != 0) {
+            byte |= 0x80U;
+        }
+        output->append(static_cast<char>(byte));
+    } while (value != 0);
+}
+
+void appendTurrisVarintField(QByteArray *output, quint32 field,
+                             quint64 value) {
+    appendTurrisVarint(output, static_cast<quint64>(field) << 3U);
+    appendTurrisVarint(output, value);
+}
+
+void appendTurrisBytesField(QByteArray *output, quint32 field,
+                            const QByteArray &value) {
+    appendTurrisVarint(
+        output, (static_cast<quint64>(field) << 3U) | 2U);
+    appendTurrisVarint(output, static_cast<quint64>(value.size()));
+    output->append(value);
+}
+
+QByteArray turrisMediaMetadata(quint32 mediaKind,
+                               quint64 frameCount) {
+    QByteArray metadata;
+    appendTurrisVarintField(&metadata, 1, 0x4D584844U);
+    appendTurrisBytesField(
+        &metadata, 2,
+        QByteArrayLiteral(
+            "Tryx media header v1, fps=30, size=1280x720"));
+    appendTurrisVarintField(&metadata, 3, mediaKind);
+    appendTurrisVarintField(&metadata, 4, 1);
+    appendTurrisVarintField(&metadata, 5, 30);
+    appendTurrisVarintField(&metadata, 6, 1280);
+    appendTurrisVarintField(&metadata, 7, 720);
+    appendTurrisVarintField(&metadata, 8, frameCount);
+    return metadata;
+}
+
+QByteArray turrisMediaBlob(quint32 mediaKind = 4,
+                           quint64 frameCount = 2) {
+    const QByteArray metadata =
+        turrisMediaMetadata(mediaKind, frameCount);
+    QByteArray blob;
+    const quint32 metadataSize =
+        static_cast<quint32>(metadata.size());
+    blob.append(static_cast<char>(metadataSize & 0xffU));
+    blob.append(static_cast<char>((metadataSize >> 8U) & 0xffU));
+    blob.append(static_cast<char>((metadataSize >> 16U) & 0xffU));
+    blob.append(static_cast<char>((metadataSize >> 24U) & 0xffU));
+    blob.append(metadata);
+    blob.append(QByteArray::fromHex(
+        "000000016764001facd9405005bb0110000003001000000303c0f1831960"
+        "0000000168ebe3cb22c0"
+        "00000001658884000affff"));
+    return blob;
+}
+
+bool splitTurrisMediaBlob(const QByteArray &blob, QByteArray *metadata,
+                          QByteArray *h264) {
+    if (blob.size() < 5) {
+        return false;
+    }
+    const quint32 metadataSize =
+        static_cast<quint8>(blob.at(0)) |
+        (static_cast<quint32>(static_cast<quint8>(blob.at(1))) << 8U) |
+        (static_cast<quint32>(static_cast<quint8>(blob.at(2))) << 16U) |
+        (static_cast<quint32>(static_cast<quint8>(blob.at(3))) << 24U);
+    if (metadataSize == 0 ||
+        metadataSize > static_cast<quint32>(blob.size() - 4)) {
+        return false;
+    }
+    if (metadata) {
+        *metadata = blob.mid(4, static_cast<qsizetype>(metadataSize));
+    }
+    if (h264) {
+        *h264 = blob.mid(4 + static_cast<qsizetype>(metadataSize));
+    }
+    return true;
+}
+
 TryxFirmwareRecoveryRecord firmwareRecoveryRecord(
     const QString &phase = QStringLiteral("Armed"),
     QChar hashCharacter = QLatin1Char('a')) {
@@ -544,6 +628,9 @@ private slots:
     void runtimeMediaTransformDbusRoundTrip();
     void mediaTransformValidationAndFilters();
     void mediaTransformChangesConversionProfile();
+    void productProfilesExposeExactCapabilities();
+    void turrisMediaAnalysisUses1280Profile();
+    void turrisImagePreparationBuildsMxhdBlob();
     void runtimeUploadAdaptorsPreserveMediaTransform();
     void invalidMediaTransformDoesNotStartPreparation();
     void pendingPreparationPreservesMediaTransform();
@@ -598,10 +685,12 @@ private slots:
     void retryPreflightAlwaysUsesFreshNameAfterPartialUpload();
     void startupRetryCacheValidationSerializesMutations();
     void retryV9PreservesApplyRequest();
+    void retryCacheEnforcesProductProfile();
     void ensureRetryManifestRequiresOriginIdentity();
     void retryCacheHashValidationRejectsMismatch();
     void retryCacheHashValidationHonorsPreStartCancellation();
     void retryCancellationRetainsOwnershipOnManifestRemovalFailure();
+    void acknowledgedTurrisUploadIsNotRetryableWhenCleanupFails();
     void mediaPreparationBoundsAndThumbnailFallback();
     void shutdownPreservesPreparedMediaAsUnknownRetry();
     void postUploadRefreshFailureRemainsUnknownAndRetryable();
@@ -638,6 +727,12 @@ private slots:
     void lostPrinterSessionRejectsMutationsBeforeDispatch();
     void lostPrinterSessionRequiresObservedRemovalBeforeReconnect();
     void sessionNotReadyRejectsMutationsBeforeDispatch();
+    void productChangeDoesNotReuseSessionOrRecovery();
+    void turrisAcknowledgedUploadSkipsCatalog();
+    void turrisLostFinalAckDoesNotReconcileOrRetransmit();
+    void unsupportedProductFirmwareIsRejectedBeforeQuiesce();
+    void unidentifiedFirmwareTargetIsRejectedBeforeQuiesce();
+    void identifiedLegacyFirmwareTargetCanBeQuiesced();
     void firmwareExclusiveGateRejectsDeviceWork();
     void firmwareExclusiveGateRejectsUnresolvedDeviceState();
     void firmwareExclusiveGateSuppressesReconnectUntilRelease();
@@ -669,6 +764,8 @@ private slots:
     void unframedTrackedResponseRequiresTransportError();
     void unframedWrongTrackOrBodyDoesNotBypassMatching();
     void udbSessionBootstrapUsesExactSequence();
+    void turrisSessionUsesTransferOnlyTransport();
+    void turrisWorkerSessionSendsNoPaseTraffic();
     void udbSessionBootstrapWaitsForLateDeviceInfo();
     void udbSessionBootstrapResynchronizesAfterStaleTail();
     void udbSessionBootstrapSkipsStaleTrackedResponse();
@@ -724,6 +821,8 @@ private slots:
     void duplexInputErrorDefersRearmWithoutStarvingOutput();
     void duplexInputRetryBudgetIsBounded();
     void uploadIsResponseDriven();
+    void turrisUploadUses1280Profile();
+    void turrisUploadRejectsMalformedMxhdBeforeUsb();
     void uploadDataUsesDedicatedWriteDeadline();
     void uploadWaitsForDelayedBoundaryAckWithIdleKeepalive();
     void uploadEndTimeoutIsFinalizationUnknown();
@@ -1592,6 +1691,7 @@ void PrinterProtocolTests::
             const QString &original,
             const QString &replacement) {
             DeviceManager::OperationRecord record;
+            record.printerProductId = 0x1021;
             record.info.id = operationId;
             record.info.kind =
                 QStringLiteral("ReplaceDeviceMedia");
@@ -1849,6 +1949,7 @@ void PrinterProtocolTests::
     const QString original =
         QStringLiteral("apply-old.mp4.h264_2240x1080");
     DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind =
         QStringLiteral("ReplaceDeviceMedia");
@@ -2315,6 +2416,197 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
         tryxMediaTransformFingerprint(crop)));
     QVERIFY(cropProfile != legacyProfile);
     QVERIFY(cropProfile.size() <= 256);
+}
+
+void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
+    const auto pase = printerProductProfileForId(0x1021);
+    const auto pano = printerProductProfileForId(0x1011);
+    const auto turris = printerProductProfileForId(0x2011);
+    QVERIFY(pase.has_value());
+    QVERIFY(pano.has_value());
+    QVERIFY(turris.has_value());
+    QVERIFY(!printerProductProfileForId(0x9999).has_value());
+
+    QCOMPARE(pase->mediaWidth, 2240);
+    QCOMPARE(pase->mediaHeight, 1080);
+    QCOMPARE(pase->idleMode, PrinterIdleMode::OverlayLayout);
+    QVERIFY(pase->mediaUploadSupported);
+    QVERIFY(pase->mediaCatalogSupported);
+    QVERIFY(pase->displayConfigurationSupported);
+    QVERIFY(pase->overlayMetricsSupported);
+    QVERIFY(pase->firmwareFlashSupported);
+
+    QCOMPARE(pano->mediaWidth, 2240);
+    QCOMPARE(pano->mediaHeight, 1080);
+    QCOMPARE(pano->idleMode, PrinterIdleMode::OverlayLayout);
+    QVERIFY(pano->mediaUploadSupported);
+    QVERIFY(pano->mediaCatalogSupported);
+    QVERIFY(pano->displayConfigurationSupported);
+    QVERIFY(pano->overlayMetricsSupported);
+    QVERIFY(!pano->firmwareFlashSupported);
+
+    QCOMPARE(turris->mediaWidth, 1280);
+    QCOMPARE(turris->mediaHeight, 720);
+    QCOMPARE(turris->idleMode, PrinterIdleMode::TransferOnly);
+    QVERIFY(turris->mediaUploadSupported);
+    QVERIFY(!turris->mediaCatalogSupported);
+    QVERIFY(!turris->displayConfigurationSupported);
+    QVERIFY(!turris->overlayMetricsSupported);
+    QVERIFY(!turris->firmwareFlashSupported);
+
+    PrinterProtocol turrisProtocol(*turris, 100);
+    const PrinterProtocol::MediaListResult mediaList =
+        turrisProtocol.readMediaList(QStringLiteral("unused"), {});
+    QVERIFY(!mediaList.success);
+    QVERIFY(mediaList.error.contains(QStringLiteral("391a:2011")));
+    const PrinterProtocol::DeleteResult deleteResult =
+        turrisProtocol.removeUserMedia(
+            QStringLiteral("unused"),
+            {QStringLiteral("turris.mp4.h264_1280x720")},
+            PrinterProtocol::BeforeDeleteDispatch{},
+            PrinterProtocol::DeleteProgress{},
+            PrinterProtocol::OperationContext{});
+    QVERIFY(!deleteResult.success);
+    QCOMPARE(deleteResult.outcome,
+             PrinterProtocol::MutationOutcome::Rejected);
+
+    const PrinterProtocol::PaseDisplayStateResult displayState =
+        turrisProtocol.readPaseDisplayState(
+            QStringLiteral("unused"), {});
+    QVERIFY(!displayState.success);
+    QVERIFY(displayState.error.contains(QStringLiteral("391a:2011")));
+    PrinterProtocol::PaseApplyConfig applyConfig;
+    applyConfig.mediaPresent = true;
+    applyConfig.media = {
+        QStringLiteral("turris.mp4.h264_1280x720")};
+    PrinterProtocol::MutationDetails mutation;
+    QString error;
+    QVERIFY(!turrisProtocol.applyPaseConfiguration(
+        QStringLiteral("unused"), applyConfig, &error, {}, &mutation));
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY(error.contains(QStringLiteral("391a:2011")));
+    error.clear();
+    mutation = {};
+    QVERIFY(!turrisProtocol.configurePaseOverlay(
+        QStringLiteral("unused"), PrinterProtocol::PaseOverlayConfig{},
+        &error, {}, &mutation));
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY(error.contains(QStringLiteral("391a:2011")));
+}
+
+void PrinterProtocolTests::turrisMediaAnalysisUses1280Profile() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("turris-source.mp4"));
+    QVERIFY(writeTextFile(sourcePath, QByteArray("turris-source")));
+
+    PrinterMediaPreparer preparer;
+    QSignalSpy analyzedSpy(&preparer,
+                           &PrinterMediaPreparer::sourceAnalyzed);
+    preparer.analyzeSource(
+        QStringLiteral("20112011-2011-4011-8011-201120112011"),
+        sourcePath, 7, tryxLegacyFitMediaTransform(), 0x2011);
+    QCOMPARE(analyzedSpy.count(), 1);
+    QCOMPARE(
+        analyzedSpy.first().at(4).toString(),
+        QStringLiteral(
+            "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"));
+}
+
+void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
+    if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty() ||
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("turris-image.png"));
+    QImage image(32, 18, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#336699")));
+    QVERIFY(image.save(sourcePath));
+
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer,
+                           &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer,
+                         &PrinterMediaPreparer::failed);
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112016");
+    preparer.prepare(
+        operationId, QStringLiteral("turris-endpoint"), sourcePath,
+        QString(), 11, tryxLegacyFitMediaTransform(), 0x2011);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    QCOMPARE(preparedSpy.count(), 1);
+    const QList<QVariant> prepared = preparedSpy.first();
+    QCOMPARE(prepared.at(0).toString(), operationId);
+    const QString outputPath = prepared.at(3).toString();
+    const QString remoteName = prepared.at(4).toString();
+    const QString expectedSha256 = prepared.at(5).toString();
+    QVERIFY(remoteName.endsWith(
+        QStringLiteral(".png.h264_1280x720")));
+
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    QVERIFY(blob.size() > 4);
+    QCOMPARE(static_cast<quint8>(blob.at(0)), quint8{65});
+    QCOMPARE(static_cast<quint8>(blob.at(1)), quint8{0});
+    QCOMPARE(static_cast<quint8>(blob.at(2)), quint8{0});
+    QCOMPARE(static_cast<quint8>(blob.at(3)), quint8{0});
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata, turrisMediaMetadata(2, 1));
+    QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
+            h264.startsWith(QByteArray::fromHex("000001")));
+    const QString rawPath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("turris-image.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")),
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-count_frames"),
+         QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,level,width,height,color_range,color_space,color_transfer,color_primaries,nb_read_frames"),
+         QStringLiteral("-of"),
+         QStringLiteral("default=noprint_wrappers=1"), rawPath});
+    QVERIFY(probe.waitForFinished(10000));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("level=40"),
+             QStringLiteral("width=1280"),
+             QStringLiteral("height=720"),
+             QStringLiteral("color_range=pc"),
+             QStringLiteral("color_space=bt709"),
+             QStringLiteral("color_transfer=bt709"),
+             QStringLiteral("color_primaries=bt709"),
+             QStringLiteral("nb_read_frames=1")}) {
+        QVERIFY2(properties.contains(expected), qPrintable(expected));
+    }
+    QCOMPARE(
+        expectedSha256,
+        QString::fromLatin1(
+            QCryptographicHash::hash(blob, QCryptographicHash::Sha256)
+                .toHex()));
 }
 
 void PrinterProtocolTests::runtimeUploadAdaptorsPreserveMediaTransform() {
@@ -4380,7 +4672,7 @@ verificationFailureKeepsHealthySessionActive() {
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"),
-        generation);
+        0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(
         sockets[0], endpoint);
     worker.printerSessionState_ =
@@ -4457,7 +4749,7 @@ applyFailureResultPrecedesSessionLoss() {
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"),
-        generation);
+        0x1021, generation);
     worker.printerProtocol_ =
         std::make_unique<PrinterProtocol>(75);
     worker.adoptPrinterFileDescriptorForTesting(
@@ -5144,7 +5436,7 @@ void PrinterProtocolTests::daemonMetricsBatchRunsWithoutGui() {
     constexpr quint64 generation = 17;
     DeviceWorker worker;
     worker.configurePrinterDevice(devicePath, QStringLiteral("PASE-17"),
-                                  generation);
+                                  0x1021, generation);
     worker.updatePrinterGenerationGate(generation, true);
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], devicePath);
     worker.printerSessionState_ = DeviceWorker::PrinterSessionState::Active;
@@ -5190,7 +5482,7 @@ void PrinterProtocolTests::foregroundOperationPausesMetricsAndKeepalive() {
     constexpr quint64 generation = 23;
     worker.configurePrinterDevice(
         QStringLiteral("/dev/usb/lp-pase-pause"),
-        QStringLiteral("PASE-23"), generation);
+        QStringLiteral("PASE-23"), 0x1021, generation);
     worker.updatePrinterGenerationGate(generation, true);
     worker.printerSessionState_ = DeviceWorker::PrinterSessionState::Active;
     worker.printerOverlayConfig_.left.metrics = {
@@ -6220,6 +6512,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     const QString remoteName =
         QStringLiteral("verified.mp4.h264_2240x1080");
     DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Refreshing");
@@ -6386,6 +6679,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     const QString oldId =
         QStringLiteral("24242424-2424-4424-8424-242424242424");
     DeviceManager::OperationRecord oldRecord;
+    oldRecord.printerProductId = 0x1021;
     oldRecord.info.id = oldId;
     oldRecord.info.kind = QStringLiteral("Upload");
     oldRecord.info.state = QStringLiteral("RetryAvailable");
@@ -6423,6 +6717,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     const QString newName =
         QStringLiteral("new-success.mp4.h264_2240x1080");
     DeviceManager::OperationRecord newRecord;
+    newRecord.printerProductId = 0x1021;
     newRecord.info.id = newId;
     newRecord.info.kind = QStringLiteral("Upload");
     newRecord.info.state = QStringLiteral("Refreshing");
@@ -6650,6 +6945,7 @@ void PrinterProtocolTests::retryPreflightAlwaysUsesFreshNameAfterPartialUpload()
     const QString uncertainName =
         QStringLiteral("uncertain.mp4.h264_2240x1080");
     DeviceManager::OperationRecord sourceRecord;
+    sourceRecord.printerProductId = 0x1021;
     sourceRecord.info.id = sourceId;
     sourceRecord.info.kind = QStringLiteral("Upload");
     sourceRecord.info.state = QStringLiteral("RetryAvailable");
@@ -6768,6 +7064,7 @@ void PrinterProtocolTests::startupRetryCacheValidationSerializesMutations() {
 
         DeviceManager::OperationRecord record;
         record.info.id = cachedOperationId;
+        record.printerProductId = 0x1021;
         record.info.kind = QStringLiteral("Upload");
         record.info.state = QStringLiteral("RetryAvailable");
         record.info.stage = QStringLiteral("RetryAvailable");
@@ -6894,6 +7191,7 @@ void PrinterProtocolTests::retryV9PreservesApplyRequest() {
         DeviceManager::OperationRecord record;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("UploadAndApply");
+        record.printerProductId = 0x1021;
         record.info.state = QStringLiteral("RetryAvailable");
         record.info.stage = QStringLiteral("RetryAvailable");
         record.info.terminalOutcome = QStringLiteral("NotStarted");
@@ -6959,11 +7257,17 @@ void PrinterProtocolTests::retryV9PreservesApplyRequest() {
         QCOMPARE(document.object()
                      .value(QStringLiteral("version"))
                      .toInt(),
-                 9);
+                 10);
         QVERIFY(document.object()
                     .value(QStringLiteral("applyRequest"))
                     .isObject());
         baseManifest = document.object();
+        baseManifest.insert(QStringLiteral("version"), 9);
+        baseManifest.remove(QStringLiteral("productId"));
+        QVERIFY(writeTextFile(
+            writer->retryCacheManifestPath(),
+            QJsonDocument(baseManifest).toJson(
+                QJsonDocument::Compact)));
     }
 
     std::unique_ptr<DeviceManager> reader(
@@ -6997,6 +7301,19 @@ void PrinterProtocolTests::retryV9PreservesApplyRequest() {
     QCOMPARE(restored.display.orientationPresent, true);
     QCOMPARE(restored.display.mirrorMode, true);
     QCOMPARE(restored.display.waterfallMode, true);
+    QFile migratedManifestFile(reader->retryCacheManifestPath());
+    QVERIFY(migratedManifestFile.open(QIODevice::ReadOnly));
+    const QJsonDocument migratedManifest = QJsonDocument::fromJson(
+        migratedManifestFile.readAll());
+    QVERIFY(migratedManifest.isObject());
+    QCOMPARE(migratedManifest.object()
+                 .value(QStringLiteral("version"))
+                 .toInt(),
+             10);
+    QCOMPARE(migratedManifest.object()
+                 .value(QStringLiteral("productId"))
+                 .toInt(),
+             0x1021);
     reader.reset();
 
     const auto writeManifestClone =
@@ -7131,13 +7448,86 @@ void PrinterProtocolTests::retryV9PreservesApplyRequest() {
                 migratedFile.readAll()).object();
         QCOMPARE(migratedManifest
                      .value(QStringLiteral("version")).toInt(),
-                 9);
+                 10);
         QVERIFY(!migratedManifest
                      .value(QStringLiteral("applyAfterUpload"))
                      .toBool(true));
         QVERIFY(!migratedManifest.contains(
             QStringLiteral("applyRequest")));
     }
+}
+
+void PrinterProtocolTests::retryCacheEnforcesProductProfile() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+
+    const QString cacheDirectory = manager->retryCacheDirectory();
+    QVERIFY(QDir().mkpath(cacheDirectory));
+    const QString preparedPath =
+        QDir(cacheDirectory).filePath(QStringLiteral("turris-retry.h264"));
+    const QByteArray preparedBytes(4096, '\x20');
+    QVERIFY(writeTextFile(preparedPath, preparedBytes));
+
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112012");
+    DeviceManager::OperationRecord record;
+    record.printerProductId = 0x2011;
+    record.info.id = operationId;
+    record.info.kind = QStringLiteral("Upload");
+    record.info.terminalOutcome = QStringLiteral("NotStarted");
+    record.info.primaryErrorCategory = QStringLiteral("NotStarted");
+    record.info.primaryErrorMessage = QStringLiteral("prepared");
+    record.info.confirmedBytes = 0;
+    record.info.lastConfirmedChunkIndex = -1;
+    record.preparedPath = preparedPath;
+    record.preparedSha256 = QString::fromLatin1(
+        QCryptographicHash::hash(preparedBytes,
+                                 QCryptographicHash::Sha256)
+            .toHex());
+    record.remoteName =
+        QStringLiteral("turris.mp4.h264_1280x720");
+    record.originalRemoteName = record.remoteName;
+    record.conversionProfile = QStringLiteral(
+        "pase-h264-v1-video-2240x1080-yuv420p-30fps-libx264-veryfast-crf23");
+    manager->operations_.insert(operationId, record);
+    manager->operationOrder_.append(operationId);
+
+    QString error;
+    QVERIFY(!manager->writeRetryCache(
+        operationId, QStringLiteral("NotStarted"), &error));
+    QVERIFY(error.contains(QStringLiteral("product profile"),
+                           Qt::CaseInsensitive));
+
+    manager->operations_[operationId].conversionProfile = QStringLiteral(
+        "turris-h264-v1-video-1280x720-yuv420p-30fps-libx264-veryfast-crf23");
+    QVERIFY(!manager->writeRetryCache(
+        operationId, QStringLiteral("NotStarted"), &error));
+    QVERIFY(error.contains(QStringLiteral("product profile"),
+                           Qt::CaseInsensitive));
+
+    manager->operations_[operationId].conversionProfile = QStringLiteral(
+        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
+    QVERIFY2(manager->writeRetryCache(
+                 operationId, QStringLiteral("NotStarted"), &error),
+             qPrintable(error));
+    QVERIFY(QFileInfo::exists(manager->retryCacheManifestPath()));
+    QVERIFY(manager->clearRetryCache(false));
+
+    manager->operations_[operationId].originalRemoteName =
+        QStringLiteral("pase.mp4.h264_2240x1080");
+    QVERIFY(!manager->writeRetryCache(
+        operationId, QStringLiteral("NotStarted"), &error));
+    manager->operations_[operationId].originalRemoteName =
+        manager->operations_[operationId].remoteName;
+    manager->operations_[operationId].info.applyAfterUpload = true;
+    QVERIFY(!manager->writeRetryCache(
+        operationId, QStringLiteral("NotStarted"), &error));
 }
 
 void PrinterProtocolTests::ensureRetryManifestRequiresOriginIdentity() {
@@ -7260,6 +7650,7 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
         QStringLiteral("31313131-3131-4131-8131-313131313131");
     DeviceManager::OperationRecord record;
     record.info.id = operationId;
+    record.printerProductId = 0x1021;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("RetryAvailable");
     record.info.stage = QStringLiteral("RetryAvailable");
@@ -7306,6 +7697,96 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
     QVERIFY(QFileInfo::exists(sentinelPath));
     QVERIFY(QFileInfo::exists(preparedPath));
     QVERIFY(errorSpy.count() >= 1);
+
+    QVERIFY(QDir(manifestPath).removeRecursively());
+}
+
+void PrinterProtocolTests::
+    acknowledgedTurrisUploadIsNotRetryableWhenCleanupFails() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "2011"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QCOMPARE(manager->printerProductId_, quint16{0x2011});
+
+    const QString cacheDirectory = manager->retryCacheDirectory();
+    QVERIFY(QDir().mkpath(cacheDirectory));
+    const QString preparedPath =
+        QDir(cacheDirectory).filePath(
+            QStringLiteral("acknowledged-turris.h264"));
+    const QByteArray preparedBytes = turrisMediaBlob();
+    QVERIFY(writeTextFile(preparedPath, preparedBytes));
+
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112014");
+    DeviceManager::OperationRecord record;
+    record.printerProductId = 0x2011;
+    record.info.id = operationId;
+    record.info.kind = QStringLiteral("Upload");
+    record.info.state = QStringLiteral("Ending");
+    record.info.stage = QStringLiteral("Ending");
+    record.info.total = preparedBytes.size();
+    record.info.deviceGeneration = manager->printerGeneration_;
+    record.preparedPath = preparedPath;
+    record.preparedSha256 = QString::fromLatin1(
+        QCryptographicHash::hash(preparedBytes,
+                                 QCryptographicHash::Sha256)
+            .toHex());
+    record.remoteName =
+        QStringLiteral("turris.mp4.h264_1280x720");
+    manager->operations_.insert(operationId, record);
+    manager->operationOrder_.append(operationId);
+    manager->activeOperationId_ = operationId;
+    manager->retryCacheOperationId_ = operationId;
+    manager->retryCachePreparedPath_ = preparedPath;
+
+    const QString manifestPath = manager->retryCacheManifestPath();
+    QVERIFY(QDir().mkpath(manifestPath));
+    const QString sentinelPath =
+        QDir(manifestPath).filePath(QStringLiteral("sentinel"));
+    QVERIFY(writeTextFile(sentinelPath, QByteArrayLiteral("keep")));
+
+    QSignalSpy errorSpy(manager.get(), &DeviceManager::deviceError);
+    QSignalSpy retryUploadSpy(
+        manager.get(), &DeviceManager::requestPrinterUploadPrepared);
+    manager->worker_->printerUploadFinished(
+        operationId, preparedPath, record.remoteName, true,
+        PrinterProtocol::MutationOutcome::Succeeded,
+        QString(), manager->printerGeneration_);
+
+    const TryxRuntimeOperationInfo acknowledged =
+        manager->operationInfo(operationId);
+    QCOMPARE(acknowledged.state, QStringLiteral("Succeeded"));
+    QCOMPARE(acknowledged.errorCategory,
+             QStringLiteral("RetryCacheCleanupFailed"));
+    QVERIFY(acknowledged.retryMode.isEmpty());
+    QVERIFY(manager->retryCacheOperationId_.isEmpty());
+    QVERIFY(manager->retryCachePreparedPath_.isEmpty());
+    QVERIFY(QFileInfo(manifestPath).isDir());
+    QVERIFY(QFileInfo::exists(sentinelPath));
+    QVERIFY(!QFileInfo::exists(preparedPath));
+    QVERIFY(errorSpy.count() >= 1);
+
+    const QString retryId =
+        QStringLiteral("20112011-2011-4011-8011-201120112015");
+    QCOMPARE(manager->retryOperation(operationId, retryId), retryId);
+    QCOMPARE(manager->operationInfo(retryId).errorCategory,
+             QStringLiteral("RetryUnavailable"));
+    QCOMPARE(retryUploadSpy.count(), 0);
 
     QVERIFY(QDir(manifestPath).removeRecursively());
 }
@@ -7437,6 +7918,7 @@ void PrinterProtocolTests::shutdownPreservesPreparedMediaAsUnknownRetry() {
     const QString operationId =
         QStringLiteral("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
     DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Transferring");
@@ -7512,6 +7994,7 @@ void PrinterProtocolTests::postUploadRefreshFailureRemainsUnknownAndRetryable() 
     const QString operationId =
         QStringLiteral("66666666-6666-4666-8666-666666666666");
     DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Refreshing");
@@ -7584,6 +8067,7 @@ void PrinterProtocolTests::
     const QString remoteName =
         QStringLiteral("finalized.mp4.h264_2240x1080");
     DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Ending");
@@ -7677,6 +8161,7 @@ void PrinterProtocolTests::
     const QString remoteName =
         QStringLiteral("generation.mp4.h264_2240x1080");
     DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Ending");
@@ -7778,6 +8263,7 @@ void PrinterProtocolTests::
     const QString remoteName =
         QStringLiteral("replacement.mp4.h264_2240x1080");
     DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Ending");
@@ -7866,6 +8352,7 @@ void PrinterProtocolTests::
         DeviceManager::OperationRecord record;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("Upload");
+        record.printerProductId = 0x1021;
         record.info.state = QStringLiteral("Refreshing");
         record.info.stage =
             QStringLiteral("RecoveringFinalization");
@@ -8001,6 +8488,7 @@ void PrinterProtocolTests::
         DeviceManager::OperationRecord record;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("Upload");
+        record.printerProductId = 0x1021;
         record.info.state = QStringLiteral("Refreshing");
         record.info.stage =
             QStringLiteral("RecoveringFinalization");
@@ -8542,9 +9030,10 @@ void PrinterProtocolTests::discoveryStateSequence() {
 
     QVERIFY(writeTextFile(
         QDir(sysRoot).filePath(QStringLiteral("bus/usb/devices/1-1/idProduct")),
-        "1021\n"));
+        "1011\n"));
     snapshot = PrinterProtocol::discover(sysRoot, devRoot);
-    QVERIFY(snapshot.state == PrinterProtocol::DiscoveryState::Enumerating391a1021);
+    QVERIFY(snapshot.state ==
+            PrinterProtocol::DiscoveryState::EnumeratingPrinterClass);
 
     QVERIFY(createPrinterEndpoint(sysRoot, devRoot,
                                   QStringLiteral("1-1"), QStringLiteral("lp0")));
@@ -8552,13 +9041,29 @@ void PrinterProtocolTests::discoveryStateSequence() {
     QVERIFY(snapshot.state == PrinterProtocol::DiscoveryState::Ready);
     QCOMPARE(snapshot.devices.size(), 1);
     QVERIFY(snapshot.devices.first().accessible);
+    QCOMPARE(snapshot.devices.first().productId, quint16{0x1011});
+
+    QVERIFY(writeTextFile(
+        QDir(sysRoot).filePath(QStringLiteral("bus/usb/devices/1-1/idProduct")),
+        "2011\n"));
+    snapshot = PrinterProtocol::discover(sysRoot, devRoot);
+    QVERIFY(snapshot.state == PrinterProtocol::DiscoveryState::Ready);
+    QCOMPARE(snapshot.devices.first().productId, quint16{0x2011});
+
+    QVERIFY(writeTextFile(
+        QDir(sysRoot).filePath(QStringLiteral("bus/usb/devices/1-1/idProduct")),
+        "1021\n"));
+    snapshot = PrinterProtocol::discover(sysRoot, devRoot);
+    QVERIFY(snapshot.state == PrinterProtocol::DiscoveryState::Ready);
+    QCOMPARE(snapshot.devices.first().productId, quint16{0x1021});
 
     QVERIFY(writeTextFile(
         QDir(sysRoot).filePath(
             QStringLiteral("bus/usb/devices/1-1/1-1:1.0/bInterfaceProtocol")),
         "01\n"));
     snapshot = PrinterProtocol::discover(sysRoot, devRoot);
-    QVERIFY(snapshot.state == PrinterProtocol::DiscoveryState::Enumerating391a1021);
+    QVERIFY(snapshot.state ==
+            PrinterProtocol::DiscoveryState::EnumeratingPrinterClass);
     QVERIFY(writeTextFile(
         QDir(sysRoot).filePath(
             QStringLiteral("bus/usb/devices/1-1/1-1:1.0/bInterfaceProtocol")),
@@ -8615,17 +9120,29 @@ void PrinterProtocolTests::productionEndpointValidationWithOfflineSysfs() {
         QByteArray::number(major(nullStatus.st_rdev)) + ':' +
         QByteArray::number(minor(nullStatus.st_rdev)) + '\n';
     QVERIFY(writeTextFile(sysfsDevPath, expectedDeviceNumber));
+    const QString productPath = QDir(sysRoot).filePath(
+        QStringLiteral("bus/usb/devices/1-1/idProduct"));
 
     const int endpointFd = ::open(encodedEndpoint.constData(),
                                   O_RDWR | O_CLOEXEC | O_NONBLOCK);
     QVERIFY(endpointFd >= 0);
     QString error;
     QVERIFY2(PrinterProtocol::validateEndpointForTesting(
-                 endpointPath, endpointFd, sysRoot, devRoot, &error),
+                 endpointPath, endpointFd, sysRoot, devRoot, 0x1021,
+                 &error),
              qPrintable(error));
 
-    const QString productPath = QDir(sysRoot).filePath(
-        QStringLiteral("bus/usb/devices/1-1/idProduct"));
+    QVERIFY(writeTextFile(productPath, "2011\n"));
+    QVERIFY2(PrinterProtocol::validateEndpointForTesting(
+                 endpointPath, endpointFd, sysRoot, devRoot, 0x2011,
+                 &error),
+             qPrintable(error));
+    QVERIFY(!PrinterProtocol::validateEndpointForTesting(
+        endpointPath, endpointFd, sysRoot, devRoot, 0x1021,
+        &error));
+    QVERIFY(error.contains(QStringLiteral("391a:1021")));
+    QVERIFY(writeTextFile(productPath, "1021\n"));
+
     QVERIFY(writeTextFile(productPath, "0006\n"));
     QVERIFY(!PrinterProtocol::validateEndpointForTesting(
         endpointPath, endpointFd, sysRoot, devRoot, &error));
@@ -8704,10 +9221,15 @@ void PrinterProtocolTests::samePathEndpointEventForcesNewEpochSignal() {
 }
 
 void PrinterProtocolTests::paseUdevReadinessUsesUsbDeviceEvents() {
-    const auto usbAdd = PrinterDeviceMonitor::eventPolicyForTesting(
-        QByteArrayLiteral("usb"), QByteArrayLiteral("add"),
-        QByteArrayLiteral("391a/1021/100"));
-    QCOMPARE(usbAdd, qMakePair(true, false));
+    for (const QByteArray &productId :
+         {QByteArrayLiteral("1021"), QByteArrayLiteral("1011"),
+          QByteArrayLiteral("2011")}) {
+        const auto usbAdd = PrinterDeviceMonitor::eventPolicyForTesting(
+            QByteArrayLiteral("usb"), QByteArrayLiteral("add"),
+            QByteArrayLiteral("391a/") + productId +
+                QByteArrayLiteral("/100"));
+        QCOMPARE(usbAdd, qMakePair(true, false));
+    }
 
     const auto usbBind = PrinterDeviceMonitor::eventPolicyForTesting(
         QByteArrayLiteral("usb"), QByteArrayLiteral("bind"),
@@ -9247,6 +9769,7 @@ void PrinterProtocolTests::
     const QString retrySourceId =
         QStringLiteral("69696969-6969-4969-8969-696969696965");
     DeviceManager::OperationRecord retrySource;
+    retrySource.printerProductId = 0x1021;
     retrySource.info.id = retrySourceId;
     retrySource.info.kind = QStringLiteral("Upload");
     retrySource.info.state = QStringLiteral("RetryAvailable");
@@ -9270,6 +9793,304 @@ void PrinterProtocolTests::
     QVERIFY(manager->activeOperationInfo().id.isEmpty());
 }
 
+void PrinterProtocolTests::productChangeDoesNotReuseSessionOrRecovery() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    const QString usbName = QStringLiteral("1-1");
+    QVERIFY(createUsbDevice(sysRoot, usbName, "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, usbName, QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
+    QCOMPARE(manager->printerProductId_, quint16{0x1021});
+    manager->printerDisplaySessionActive_ = true;
+
+    QSignalSpy sessionStartSpy(
+        manager.get(), &DeviceManager::requestStartPrinterSession);
+    const QString productPath = QDir(sysRoot).filePath(
+        QStringLiteral("bus/usb/devices/1-1/idProduct"));
+    QVERIFY(writeTextFile(productPath, "2011\n"));
+    manager->rescanPrinterForTesting();
+
+    QCOMPARE(manager->printerProductId_, quint16{0x2011});
+    QVERIFY(!manager->printerSessionResumePending_);
+    QVERIFY(manager->printerSessionResumeSerial_.isEmpty());
+    QCOMPARE(manager->printerSessionResumeProductId_, quint16{0});
+    QCOMPARE(sessionStartSpy.count(), 1);
+
+    const QString operationId =
+        QStringLiteral("10212011-1021-4021-8021-102120111021");
+    DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
+    record.info.id = operationId;
+    record.info.kind = QStringLiteral("Upload");
+    record.uploadDeviceIdentity = usbName;
+    manager->operations_.insert(operationId, record);
+    manager->retryCacheOperationId_ = operationId;
+    manager->printerRecoveryRequired_ = true;
+    manager->printerRecoveryRemovalObserved_ = true;
+
+    QVERIFY(!manager->completePrinterRecoveryAfterRemoval(
+        usbName, 0x2011));
+    QVERIFY(manager->printerRecoveryRequired_);
+    QVERIFY(manager->operations_.value(operationId).info.message.contains(
+        QStringLiteral("391a:1021")));
+    QVERIFY(manager->operations_.value(operationId).info.message.contains(
+        QStringLiteral("391a:2011")));
+}
+
+void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "2011"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QCOMPARE(manager->printerProductId_, quint16{0x2011});
+
+    const QString preparedPath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("turris-upload.h264"));
+    const QByteArray preparedBytes(4096, '\x55');
+    QVERIFY(writeTextFile(preparedPath, preparedBytes));
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112013");
+    const QString remoteName =
+        QStringLiteral("turris.mp4.h264_1280x720");
+    DeviceManager::OperationRecord record;
+    record.printerProductId = 0x2011;
+    record.info.id = operationId;
+    record.info.kind = QStringLiteral("Upload");
+    record.info.state = QStringLiteral("Ending");
+    record.info.stage = QStringLiteral("Ending");
+    record.info.total = preparedBytes.size();
+    record.info.deviceGeneration = manager->printerGeneration_;
+    record.preparedPath = preparedPath;
+    record.preparedSha256 = QString::fromLatin1(
+        QCryptographicHash::hash(preparedBytes,
+                                 QCryptographicHash::Sha256)
+            .toHex());
+    record.remoteName = remoteName;
+    manager->operations_.insert(operationId, record);
+    manager->operationOrder_.append(operationId);
+    manager->activeOperationId_ = operationId;
+
+    QSignalSpy refreshSpy(
+        manager.get(), &DeviceManager::requestPrinterRefreshMedia);
+    QSignalSpy uploadedSpy(manager.get(), &DeviceManager::mediaUploaded);
+    manager->worker_->printerUploadFinished(
+        operationId, preparedPath, remoteName, true,
+        PrinterProtocol::MutationOutcome::Succeeded,
+        QString(), manager->printerGeneration_);
+
+    QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Succeeded"));
+    QCOMPARE(refreshSpy.count(), 0);
+    QCOMPARE(uploadedSpy.count(), 1);
+    QVERIFY(!QFileInfo::exists(preparedPath));
+    QVERIFY(manager->activeOperationId_.isEmpty());
+}
+
+void PrinterProtocolTests::
+    turrisLostFinalAckDoesNotReconcileOrRetransmit() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "2011"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QCOMPARE(manager->printerProductId_, quint16{0x2011});
+
+    const QString cacheDirectory = manager->retryCacheDirectory();
+    QVERIFY(QDir().mkpath(cacheDirectory));
+    const QString preparedPath = QDir(cacheDirectory).filePath(
+        QStringLiteral("turris-finalization-unknown.h264"));
+    const QByteArray preparedBytes = turrisMediaBlob();
+    QVERIFY(writeTextFile(preparedPath, preparedBytes));
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112017");
+    const QString remoteName =
+        QStringLiteral("turris.mp4.h264_1280x720");
+    DeviceManager::OperationRecord record;
+    record.printerProductId = 0x2011;
+    record.info.id = operationId;
+    record.info.kind = QStringLiteral("Upload");
+    record.info.state = QStringLiteral("Ending");
+    record.info.stage = QStringLiteral("Ending");
+    record.info.total = preparedBytes.size();
+    record.info.deviceGeneration = manager->printerGeneration_;
+    record.uploadDeviceIdentity =
+        manager->printerDeviceSerial_.trimmed();
+    record.uploadDeviceGeneration = manager->printerGeneration_;
+    record.preparedPath = preparedPath;
+    record.preparedSha256 = QString::fromLatin1(
+        QCryptographicHash::hash(preparedBytes,
+                                 QCryptographicHash::Sha256)
+            .toHex());
+    record.remoteName = remoteName;
+    record.originalRemoteName = remoteName;
+    record.conversionProfile = QStringLiteral(
+        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
+    manager->operations_.insert(operationId, record);
+    manager->operationOrder_.append(operationId);
+    manager->activeOperationId_ = operationId;
+
+    QSignalSpy refreshSpy(
+        manager.get(), &DeviceManager::requestPrinterRefreshMedia);
+    QSignalSpy retransmitSpy(
+        manager.get(), &DeviceManager::requestPrinterUploadPrepared);
+    manager->worker_->printerUploadFinished(
+        operationId, preparedPath, remoteName, false,
+        PrinterProtocol::MutationOutcome::FinalizationUnknown,
+        QStringLiteral("FileTransmitEnd status timed out"),
+        manager->printerGeneration_);
+
+    const TryxRuntimeOperationInfo failed =
+        manager->operationInfo(operationId);
+    QCOMPARE(failed.state, QStringLiteral("RetryAvailable"));
+    QCOMPARE(failed.errorCategory, QStringLiteral("PartialOrUnknown"));
+    QCOMPARE(failed.retryMode, QStringLiteral("PreparedMedia"));
+    QVERIFY(failed.message.contains(QStringLiteral("Power-cycle"),
+                                    Qt::CaseInsensitive));
+    QVERIFY(manager->operations_.value(operationId)
+                .requiresDeviceRecovery);
+    QVERIFY(manager->operations_.value(operationId)
+                .retryMustUseNewRemoteName);
+    QVERIFY(!manager->operations_.value(operationId)
+                 .uploadFinalizationReconciliationPending);
+    QVERIFY(manager->printerRecoveryRequired_);
+    QCOMPARE(refreshSpy.count(), 0);
+    QCOMPARE(retransmitSpy.count(), 0);
+    QVERIFY(QFileInfo::exists(preparedPath));
+    QVERIFY(QFileInfo::exists(manager->retryCacheManifestPath()));
+
+    manager->cancelOperation(operationId);
+    QVERIFY(!QFileInfo::exists(preparedPath));
+    QVERIFY(!QFileInfo::exists(manager->retryCacheManifestPath()));
+}
+
+void PrinterProtocolTests::
+    unsupportedProductFirmwareIsRejectedBeforeQuiesce() {
+    for (const quint16 productId : {quint16{0x1011}, quint16{0x2011}}) {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString sysRoot =
+            QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+        const QString devRoot =
+            QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+        QVERIFY(createUsbDevice(
+            sysRoot, QStringLiteral("1-1"),
+            QByteArray::number(productId, 16)));
+        QVERIFY(createPrinterEndpoint(
+            sysRoot, devRoot, QStringLiteral("1-1"),
+            QStringLiteral("lp0")));
+
+        std::unique_ptr<DeviceManager> manager(
+            DeviceManager::createForTesting(sysRoot, devRoot));
+        manager->setAutoConnectModeForTesting(true);
+        manager->rescanPrinterForTesting();
+        QCOMPARE(manager->printerProductId_, productId);
+        QSignalSpy quiesceSpy(
+            manager.get(),
+            &DeviceManager::requestFirmwareTransportQuiesce);
+        const quint64 generation = manager->printerGeneration_;
+        QString error;
+        QVERIFY(!manager->acquireFirmwareExclusive(
+            QStringLiteral("unsupported-product-firmware"), &error));
+        QVERIFY(error.contains(printerProductIdString(productId)));
+        QCOMPARE(manager->printerGeneration_, generation);
+        QCOMPARE(quiesceSpy.count(), 0);
+        QVERIFY(manager->firmwareExclusiveLeaseId_.isEmpty());
+    }
+}
+
+void PrinterProtocolTests::
+    unidentifiedFirmwareTargetIsRejectedBeforeQuiesce() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->connected_ = true;
+    manager->printerClassConnected_ = false;
+    QSignalSpy quiesceSpy(
+        manager.get(),
+        &DeviceManager::requestFirmwareTransportQuiesce);
+
+    QString error;
+    QVERIFY(!manager->acquireFirmwareExclusive(
+        QStringLiteral("unidentified-firmware-target"), &error));
+    QVERIFY(error.contains(QStringLiteral("identified"),
+                           Qt::CaseInsensitive));
+    QCOMPARE(quiesceSpy.count(), 0);
+    QVERIFY(!manager->firmwareExclusiveActive());
+}
+
+void PrinterProtocolTests::
+    identifiedLegacyFirmwareTargetCanBeQuiesced() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->worker_->connected(
+        QStringLiteral("cm01"), QStringLiteral("legacy-serial"),
+        QStringLiteral("legacy-firmware"),
+        QStringLiteral("legacy-app"));
+    QVERIFY(manager->connected_);
+    QVERIFY(!manager->printerClassConnected_);
+
+    QSignalSpy quiesceSpy(
+        manager.get(),
+        &DeviceManager::requestFirmwareTransportQuiesce);
+    QString error;
+    QVERIFY2(manager->acquireFirmwareExclusive(
+                 QStringLiteral("identified-legacy-firmware"), &error),
+             qPrintable(error));
+    QCOMPARE(quiesceSpy.count(), 1);
+    QVERIFY(manager->firmwareExclusiveActive());
+}
+
 void PrinterProtocolTests::
     firmwareExclusiveGateRejectsDeviceWork() {
     QTemporaryDir temporaryDirectory;
@@ -9280,9 +10101,17 @@ void PrinterProtocolTests::
     const QString devRoot =
         QDir(temporaryDirectory.path()).filePath(
             QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(
+        sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(
             sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
 
     QSignalSpy quiescedSpy(
         manager.get(),
@@ -9458,6 +10287,7 @@ void PrinterProtocolTests::
     QTRY_VERIFY(
         !manager->firmwareExclusiveActive());
 
+    manager->connected_ = true;
     manager->activeOperationId_ =
         QStringLiteral("active-operation");
     QString activeError;
@@ -9540,9 +10370,17 @@ void PrinterProtocolTests::
     const QString devRoot =
         QDir(temporaryDirectory.path()).filePath(
             QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(
+        sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"),
+        QStringLiteral("lp0")));
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(
             sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
 
     const auto expectRejected =
         [&manager](const QString &leaseId,
@@ -10998,7 +11836,7 @@ void PrinterProtocolTests::
     DeviceWorker worker;
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
-        endpoint, QStringLiteral("test-serial"), generation);
+        endpoint, QStringLiteral("test-serial"), 0x1021, generation);
     worker.printerSessionState_ =
         DeviceWorker::PrinterSessionState::Active;
     worker.printerOverlayActivationPending_ = true;
@@ -11042,7 +11880,7 @@ void PrinterProtocolTests::
     const quint64 newGeneration = generation + 1;
     worker.updatePrinterGenerationGate(newGeneration, true);
     worker.configurePrinterDevice(
-        endpoint, QStringLiteral("test-serial"), newGeneration);
+        endpoint, QStringLiteral("test-serial"), 0x1021, newGeneration);
     QCOMPARE(worker.printerSessionState_,
              DeviceWorker::PrinterSessionState::Passive);
     QVERIFY(!worker.printerProtocol_
@@ -11080,6 +11918,7 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     const QString operationId =
         QStringLiteral("64646464-6464-4464-8464-646464646464");
     DeviceManager::OperationRecord record;
+    record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Transferring");
@@ -11127,7 +11966,7 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     QVERIFY(manifestFile.open(QIODevice::ReadOnly));
     const QJsonObject manifest =
         QJsonDocument::fromJson(manifestFile.readAll()).object();
-    QCOMPARE(manifest.value(QStringLiteral("version")).toInt(), 9);
+    QCOMPARE(manifest.value(QStringLiteral("version")).toInt(), 10);
     QVERIFY(manifest.value(QStringLiteral("requiresDeviceRecovery")).toBool());
     QVERIFY(manifest.value(QStringLiteral("requiresNewRemoteName")).toBool());
     QCOMPARE(
@@ -11221,6 +12060,7 @@ void PrinterProtocolTests::tamperedV8RetryManifestIsRejected() {
         DeviceManager::OperationRecord record;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("Upload");
+        record.printerProductId = 0x1021;
         record.info.state = QStringLiteral("RetryAvailable");
         record.info.stage = QStringLiteral("RetryAvailable");
         record.info.errorCategory = terminalOutcome;
@@ -11339,6 +12179,7 @@ void PrinterProtocolTests::legacyRetryManifestRestoresPartialTransferHazard() {
         DeviceManager::OperationRecord record;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("UploadRetry");
+        record.printerProductId = 0x1021;
         record.info.state = QStringLiteral("RetryAvailable");
         record.info.stage = QStringLiteral("RetryAvailable");
         record.info.errorCategory = QStringLiteral("NotStarted");
@@ -11440,6 +12281,7 @@ void PrinterProtocolTests::legacyUnknownOutcomeRequiresObservedRecovery() {
         DeviceManager::OperationRecord record;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("Upload");
+        record.printerProductId = 0x1021;
         record.info.state = QStringLiteral("RetryAvailable");
         record.info.stage = QStringLiteral("RetryAvailable");
         record.info.errorCategory = QStringLiteral("NotStarted");
@@ -11530,7 +12372,7 @@ void PrinterProtocolTests::legacyUnknownOutcomeRequiresObservedRecovery() {
     QVERIFY(migratedManifest.open(QIODevice::ReadOnly));
     const QJsonObject migrated =
         QJsonDocument::fromJson(migratedManifest.readAll()).object();
-    QCOMPARE(migrated.value(QStringLiteral("version")).toInt(), 9);
+    QCOMPARE(migrated.value(QStringLiteral("version")).toInt(), 10);
     QCOMPARE(migrated.value(QStringLiteral("terminalOutcome")).toString(),
              QStringLiteral("PartialOrUnknown"));
     QVERIFY(migrated.value(QStringLiteral("requiresNewRemoteName"))
@@ -11567,6 +12409,7 @@ void PrinterProtocolTests::recoveredV6ManifestMigratesToFreshNameRetry() {
         DeviceManager::OperationRecord record;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("Upload");
+        record.printerProductId = 0x1021;
         record.info.state = QStringLiteral("RetryAvailable");
         record.info.stage = QStringLiteral("RetryAvailable");
         record.info.errorCategory =
@@ -11654,7 +12497,7 @@ void PrinterProtocolTests::recoveredV6ManifestMigratesToFreshNameRetry() {
     QVERIFY(migratedManifest.open(QIODevice::ReadOnly));
     const QJsonObject migrated =
         QJsonDocument::fromJson(migratedManifest.readAll()).object();
-    QCOMPARE(migrated.value(QStringLiteral("version")).toInt(), 9);
+    QCOMPARE(migrated.value(QStringLiteral("version")).toInt(), 10);
     QCOMPARE(migrated.value(QStringLiteral("terminalOutcome")).toString(),
              QStringLiteral("PartialOrUnknown"));
     QVERIFY(migrated.value(QStringLiteral("requiresNewRemoteName"))
@@ -11888,6 +12731,66 @@ void PrinterProtocolTests::udbSessionBootstrapUsesExactSequence() {
              QStringLiteral("test-firmware"));
     QCOMPARE(result.deviceInfo.serialNumber, QStringLiteral("test-serial"));
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+void PrinterProtocolTests::turrisSessionUsesTransferOnlyTransport() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    PrinterProtocol protocol(*profile, 500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    const PrinterProtocol::Result result = protocol.startDisplaySession(
+        QStringLiteral("turris-endpoint"), {});
+    QString peerError;
+    QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+             qPrintable(peerError));
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.deviceInfo.devicePath,
+             QStringLiteral("turris-endpoint"));
+    QCOMPARE(result.deviceInfo.productName,
+             QStringLiteral("391a:2011"));
+}
+
+void PrinterProtocolTests::turrisWorkerSessionSendsNoPaseTraffic() {
+    const QString endpoint = QStringLiteral("turris-endpoint");
+    constexpr quint64 generation = 2011;
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    DeviceWorker worker;
+    worker.updatePrinterGenerationGate(generation, true);
+    worker.configurePrinterDevice(
+        endpoint, QStringLiteral("turris-test"), 0x2011, generation);
+    worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
+    QSignalSpy startedSpy(&worker, &DeviceWorker::printerSessionStarted);
+    QSignalSpy readySpy(&worker, &DeviceWorker::printerTransportReady);
+    QSignalSpy infoSpy(&worker, &DeviceWorker::printerDeviceInfoReady);
+
+    worker.startPrinterDisplaySession(endpoint, generation);
+    QVERIFY(worker.printerSessionActiveForTesting());
+    QCOMPARE(startedSpy.count(), 1);
+    QCOMPARE(readySpy.count(), 1);
+    QVERIFY(!worker.printerKeepaliveTimer_->isActive());
+
+    worker.readPrinterDeviceInfo(endpoint, generation);
+    QCOMPARE(infoSpy.count(), 1);
+    worker.restartPrinterKeepaliveAfterActivity();
+    worker.sendPrinterKeepalive();
+    QVERIFY(!worker.printerKeepaliveTimer_->isActive());
+
+    QString peerError;
+    QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+             qPrintable(peerError));
+    ::close(sockets[1]);
 }
 
 void PrinterProtocolTests::udbSessionBootstrapWaitsForLateDeviceInfo() {
@@ -13529,7 +14432,8 @@ void PrinterProtocolTests::userCancellationDoesNotInterruptSessionRecovery() {
         [worker, sockets, endpoint]() {
             worker->updatePrinterGenerationGate(generation, true);
             worker->configurePrinterDevice(
-                endpoint, QStringLiteral("test-serial"), generation);
+                endpoint, QStringLiteral("test-serial"), 0x1021,
+                generation);
             worker->adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
         },
         Qt::BlockingQueuedConnection));
@@ -14347,7 +15251,7 @@ void PrinterProtocolTests::passivePrinterWorkerSendsNoFrames() {
     DeviceWorker worker;
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
-        endpoint, QStringLiteral("test-serial"), generation);
+        endpoint, QStringLiteral("test-serial"), 0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
     QVERIFY(!worker.printerSessionActiveForTesting());
     QVERIFY(QMetaObject::invokeMethod(&worker, "sendPrinterKeepalive",
@@ -14488,7 +15392,7 @@ void PrinterProtocolTests::printerRefreshStartsSessionAndKeepalive() {
     DeviceWorker worker;
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
-        endpoint, QStringLiteral("test-serial"), generation);
+        endpoint, QStringLiteral("test-serial"), 0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
     QSignalSpy listSpy(&worker, &DeviceWorker::printerMediaListReady);
     QSignalSpy errorSpy(&worker, &DeviceWorker::printerMediaListFailed);
@@ -14572,7 +15476,7 @@ runConfigErrorResponseRejectsSessionStart() {
     DeviceWorker worker;
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
-        endpoint, QStringLiteral("test-serial"), generation);
+        endpoint, QStringLiteral("test-serial"), 0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
     QSignalSpy listSpy(&worker, &DeviceWorker::printerMediaListReady);
     QSignalSpy errorSpy(&worker, &DeviceWorker::printerMediaListFailed);
@@ -14782,7 +15686,7 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"),
-        generation);
+        0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(
         sockets[0], endpoint);
     PrinterProtocol::PaseOverlayConfig overlay;
@@ -14948,7 +15852,7 @@ restoredOverlayFailureBecomesLostWithoutReplay() {
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"),
-        generation);
+        0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(
         sockets[0], endpoint);
     PrinterProtocol::PaseOverlayConfig overlay;
@@ -15033,7 +15937,7 @@ overlayLeaseRejectionBecomesLostWithoutRecovery() {
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"),
-        generation);
+        0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(
         sockets[0], endpoint);
     worker.printerSessionState_ =
@@ -15890,6 +16794,160 @@ void PrinterProtocolTests::uploadIsResponseDriven() {
     QVERIFY(nextTrackId != 0);
     QVERIFY(nextTrackId != transferTrackId);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+void PrinterProtocolTests::turrisUploadUses1280Profile() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    QTemporaryFile media;
+    QVERIFY(media.open());
+    const QByteArray contents = turrisMediaBlob();
+    QCOMPARE(media.write(contents), static_cast<qint64>(contents.size()));
+    media.flush();
+
+    PrinterProtocol rejected(*profile, 100);
+    QString uploadedName;
+    QString error;
+    PrinterProtocol::MutationDetails rejectedMutation;
+    QVERIFY(!rejected.uploadMedia(
+        QStringLiteral("unused"), media.fileName(),
+        QStringLiteral("wrong.mp4.h264_2240x1080"),
+        &uploadedName, &error, {}, {}, &rejectedMutation));
+    QCOMPARE(rejectedMutation.outcome,
+             PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY(error.contains(QStringLiteral("391a:2011")));
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+    QString peerError;
+    std::thread peer([&]() {
+        const QList<panorama::wire::v1::Request::BodyCase> expected = {
+            panorama::wire::v1::Request::kTransferBegin,
+            panorama::wire::v1::Request::kTransferChunk,
+            panorama::wire::v1::Request::kTransferEnd};
+        quint64 transferTrackId = 0;
+        for (int index = 0; index < expected.size(); ++index) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError) ||
+                request.body_case() != expected.at(index)) {
+                if (peerError.isEmpty()) {
+                    peerError = QStringLiteral(
+                        "unexpected Turris upload request %1").arg(index);
+                }
+                return;
+            }
+            if (request.header().version() != 0 ||
+                request.header().track_id() != 981521) {
+                peerError = QStringLiteral(
+                    "Turris FileTransmit header is invalid");
+                return;
+            }
+            if (transferTrackId == 0) {
+                transferTrackId = request.header().track_id();
+            } else if (request.header().track_id() != transferTrackId) {
+                peerError = QStringLiteral(
+                    "Turris FileTransmit changed track ID");
+                return;
+            }
+
+            auto response = baseResponse(request);
+            if (index == 0) {
+                if (request.transfer_begin().file_name() !=
+                        "turris.mp4.h264_1280x720" ||
+                    request.transfer_begin().file_size() !=
+                        static_cast<quint32>(contents.size())) {
+                    peerError = QStringLiteral(
+                        "invalid Turris upload begin fields");
+                    return;
+                }
+                if (!verifyNoPeerPayload(sockets[1], 2200,
+                                         &peerError)) {
+                    return;
+                }
+                response.mutable_transfer_begin_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            } else if (index == 1) {
+                const std::string &chunk =
+                    request.transfer_chunk().file_data();
+                if (QByteArray(chunk.data(),
+                               static_cast<qsizetype>(chunk.size())) !=
+                    contents) {
+                    peerError = QStringLiteral(
+                        "invalid Turris MXHD upload chunk");
+                    return;
+                }
+                response.mutable_transfer_chunk_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            } else {
+                response.mutable_transfer_end_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+        }
+    });
+
+    PrinterProtocol protocol(*profile, 500);
+    protocol.setFileTransmitResponseTimeoutForTesting(3000);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    PrinterProtocol::MutationDetails mutation;
+    error.clear();
+    PrinterProtocol::OperationContext context;
+    context.maintainKeepalive = true;
+    QVERIFY2(protocol.uploadMedia(
+                 QStringLiteral("turris-endpoint"), media.fileName(),
+                 QStringLiteral("turris.mp4.h264_1280x720"),
+                 &uploadedName, &error, {}, context, &mutation),
+             qPrintable(error));
+    peer.join();
+    ::close(sockets[1]);
+
+    QCOMPARE(uploadedName,
+             QStringLiteral("turris.mp4.h264_1280x720"));
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::Succeeded);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+void PrinterProtocolTests::
+    turrisUploadRejectsMalformedMxhdBeforeUsb() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    QTemporaryFile media;
+    QVERIFY(media.open());
+    const QByteArray rawH264 = QByteArray::fromHex(
+        "000000016764001facd9405005bb0110");
+    QCOMPARE(media.write(rawH264),
+             static_cast<qint64>(rawH264.size()));
+    media.flush();
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+    PrinterProtocol protocol(*profile, 100);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    QString uploadedName;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    QVERIFY(!protocol.uploadMedia(
+        QStringLiteral("turris-endpoint"), media.fileName(),
+        QStringLiteral("turris.mp4.h264_1280x720"),
+        &uploadedName, &error, {}, {}, &mutation));
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY(error.contains(QStringLiteral("container"),
+                           Qt::CaseInsensitive));
+
+    QString peerError;
+    QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+             qPrintable(peerError));
+    ::close(sockets[1]);
 }
 
 void PrinterProtocolTests::uploadDataUsesDedicatedWriteDeadline() {

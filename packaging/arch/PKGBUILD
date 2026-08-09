@@ -4,7 +4,7 @@
 pkgname=tryx-panorama-manager
 pkgver=2.1.1
 pkgrel=1
-pkgdesc='Control TRYX Panorama cooler displays on Linux'
+pkgdesc='Control compatible TRYX cooler displays on Linux'
 arch=('x86_64')
 url='https://github.com/DXVSI/Tryx-Linux-GUI'
 license=('MIT' 'BSD-2-Clause')

@@ -32,6 +32,32 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
+std::optional<PrinterProductProfile> printerProductProfileForId(
+    quint16 productId) {
+    switch (productId) {
+    case 0x1021:
+        return PrinterProductProfile{
+            0x1021, 2240, 1080, PrinterIdleMode::OverlayLayout,
+            true, true, true, true, true};
+    case 0x1011:
+        return PrinterProductProfile{
+            0x1011, 2240, 1080, PrinterIdleMode::OverlayLayout,
+            true, true, true, true, false};
+    case 0x2011:
+        return PrinterProductProfile{
+            0x2011, 1280, 720, PrinterIdleMode::TransferOnly,
+            true, false, false, false, false};
+    default:
+        return std::nullopt;
+    }
+}
+
+QString printerProductIdString(quint16 productId) {
+    return QStringLiteral("391a:%1")
+        .arg(productId, 4, 16, QLatin1Char('0'))
+        .toLower();
+}
+
 namespace {
 
 constexpr qsizetype kFileTransmitChunkSize = 0x40000;
@@ -49,6 +75,12 @@ constexpr quint16 kTryxVendorId = 0x391a;
 constexpr quint16 kTransitionProductId = 0x0006;
 constexpr quint16 kPaseProductId = 0x1021;
 constexpr quint16 kPanoProductId = 0x1011;
+constexpr quint16 kTurrisProductId = 0x2011;
+constexpr quint64 kTurrisTransferTrackId = 981521;
+constexpr quint32 kTurrisMediaMagic = 0x4d584844;
+constexpr qsizetype kMaxTurrisMediaMetadataSize = 4096;
+constexpr char kTurrisMediaDescription[] =
+    "Tryx media header v1, fps=30, size=1280x720";
 constexpr int kPollCancellationSliceMs = 100;
 constexpr int kMaxSkippedResponseFrames = 256;
 constexpr qsizetype kMaxSkippedResponseBytes = 4 * 1024 * 1024;
@@ -155,6 +187,24 @@ struct UdevEventPolicy {
     bool forceNewEpoch = false;
 };
 
+bool isSupportedPrinterProductId(quint16 productId) {
+    return printerProductProfileForId(productId).has_value();
+}
+
+bool isTryxUdevProduct(const QByteArray &product) {
+    const QList<QByteArray> components = product.toLower().split('/');
+    if (components.size() < 2) {
+        return false;
+    }
+    bool vendorOk = false;
+    bool productOk = false;
+    const quint16 vendorId = components.at(0).toUShort(&vendorOk, 16);
+    const quint16 productId = components.at(1).toUShort(&productOk, 16);
+    return vendorOk && productOk && vendorId == kTryxVendorId &&
+           (productId == kTransitionProductId ||
+            isSupportedPrinterProductId(productId));
+}
+
 UdevEventPolicy udevEventPolicy(const QByteArray &subsystem,
                                 const QByteArray &action,
                                 const QByteArray &product,
@@ -171,12 +221,7 @@ UdevEventPolicy udevEventPolicy(const QByteArray &subsystem,
         return policy;
     }
 
-    const QByteArray normalizedProduct = product.toLower();
-    const bool tryxDevice =
-        normalizedProduct.startsWith(QByteArrayLiteral("391a/1021/")) ||
-        normalizedProduct.startsWith(QByteArrayLiteral("391a/1011/")) ||
-        normalizedProduct.startsWith(QByteArrayLiteral("391a/6/")) ||
-        normalizedProduct.startsWith(QByteArrayLiteral("391a/0006/"));
+    const bool tryxDevice = isTryxUdevProduct(product);
     if (!tryxDevice && !touchesCurrentEndpoint) {
         return policy;
     }
@@ -463,6 +508,7 @@ struct LibusbPrinterInterface {
 struct LibusbPrinterCandidate {
     QString deviceId;
     QString sysfsPath;
+    quint16 productId = 0;
     QString manufacturer;
     QString product;
     QString serial;
@@ -616,8 +662,7 @@ QList<LibusbPrinterCandidate> enumerateLibusbPrinterCandidates(
             }
             continue;
         }
-        if (descriptor.idProduct != kPaseProductId &&
-            descriptor.idProduct != kPanoProductId) {
+        if (!isSupportedPrinterProductId(descriptor.idProduct)) {
             continue;
         }
         if (workingDeviceCount) {
@@ -632,6 +677,7 @@ QList<LibusbPrinterCandidate> enumerateLibusbPrinterCandidates(
         LibusbPrinterCandidate candidate;
         candidate.deviceId = libusbStableDeviceId(device);
         candidate.sysfsPath = libusbSysfsPath(device);
+        candidate.productId = descriptor.idProduct;
         candidate.busNumber = libusb_get_bus_number(device);
         candidate.deviceAddress = libusb_get_device_address(device);
         candidate.printerInterface = printerInterface;
@@ -719,8 +765,10 @@ public:
         }
     }
 
-    bool open(const QString &deviceId, QString *errorMessage) {
+    bool open(const QString &deviceId, quint16 expectedProductId,
+              QString *errorMessage) {
         if (sessionOpen_ && deviceId_ == deviceId &&
+            productId_ == expectedProductId &&
             fatalError_.isEmpty()) {
             return true;
         }
@@ -751,8 +799,8 @@ public:
             if (libusb_get_device_descriptor(device, &descriptor) !=
                     LIBUSB_SUCCESS ||
                 descriptor.idVendor != kTryxVendorId ||
-                (descriptor.idProduct != kPaseProductId &&
-                descriptor.idProduct != kPanoProductId) ||
+                descriptor.idProduct != expectedProductId ||
+                !isSupportedPrinterProductId(descriptor.idProduct) ||
                 libusbStableDeviceId(device) != deviceId ||
                 !findLibusbPrinterInterface(device, &openedInterface)) {
                 continue;
@@ -866,6 +914,7 @@ public:
         handle_ = openedHandle;
         sessionOpen_ = true;
         deviceId_ = deviceId;
+        productId_ = expectedProductId;
         interface_ = openedInterface;
         detachedKernelDriver_ = detachedKernelDriver;
         closing_ = false;
@@ -942,6 +991,7 @@ public:
             inputState_ = nullptr;
             outputState_ = nullptr;
             deviceId_.clear();
+            productId_ = 0;
             interface_ = {};
             detachedKernelDriver_ = false;
             receiveQueue_.clear();
@@ -997,6 +1047,7 @@ public:
         }
         sessionOpen_ = false;
         deviceId_.clear();
+        productId_ = 0;
         interface_ = {};
         detachedKernelDriver_ = false;
         receiveQueue_.clear();
@@ -1011,8 +1062,10 @@ public:
         testingSession_ = false;
     }
 
-    bool isOpenFor(const QString &deviceId) const {
+    bool isOpenFor(const QString &deviceId,
+                   quint16 expectedProductId) const {
         return sessionOpen_ && deviceId_ == deviceId &&
+               productId_ == expectedProductId &&
                fatalError_.isEmpty();
     }
 
@@ -1623,6 +1676,7 @@ private:
     libusb_device_handle *handle_ = nullptr;
     bool sessionOpen_ = false;
     QString deviceId_;
+    quint16 productId_ = 0;
     LibusbPrinterInterface interface_;
     bool detachedKernelDriver_ = false;
     int lastReattachResult_ = LIBUSB_SUCCESS;
@@ -1649,6 +1703,7 @@ private:
 
 bool validatePrinterEndpoint(const QString &devicePath, int openFd,
                              const QString &sysfsRoot, const QString &devRoot,
+                             quint16 expectedProductId,
                              QString *errorMessage) {
     const QFileInfo endpointInfo(devicePath);
     const QString endpointName = endpointInfo.fileName();
@@ -1698,10 +1753,14 @@ bool validatePrinterEndpoint(const QString &devicePath, int openFd,
         !readHexU16(QDir(usbDevicePath).filePath(QStringLiteral("idVendor")), &vendorId) ||
         !readHexU16(QDir(usbDevicePath).filePath(QStringLiteral("idProduct")), &productId) ||
         vendorId != kTryxVendorId ||
-        (productId != kPaseProductId && productId != kPanoProductId)) {
+        productId != expectedProductId ||
+        !isSupportedPrinterProductId(productId)) {
         if (errorMessage) {
-            *errorMessage = QObject::tr("Endpoint %1 is not the expected 391a:1021 printer interface")
-                                .arg(devicePath);
+            *errorMessage = QObject::tr(
+                "Endpoint %1 is not the expected %2 printer interface")
+                                .arg(devicePath,
+                                     printerProductIdString(
+                                         expectedProductId));
         }
         return false;
     }
@@ -1804,12 +1863,252 @@ bool isSafeUploadFileName(const QString &fileName) {
              QStringLiteral(".mp4.h264_2240x1080"),
              QStringLiteral(".png.h264_2240x1080"),
              QStringLiteral(".gif.h264_2240x1080"),
+             QStringLiteral(".mp4.h264_1280x720"),
+             QStringLiteral(".png.h264_1280x720"),
+             QStringLiteral(".gif.h264_1280x720"),
          }) {
         if (lowerName.endsWith(suffix)) {
             return true;
         }
     }
     return false;
+}
+
+bool isSafeUploadFileNameForProfile(
+    const QString &fileName,
+    const PrinterProductProfile &productProfile) {
+    if (!isSafeUploadFileName(fileName)) {
+        return false;
+    }
+    const bool turrisMedia = fileName.endsWith(
+        QStringLiteral(".h264_1280x720"), Qt::CaseInsensitive);
+    return productProfile.productId == kTurrisProductId
+        ? turrisMedia
+        : !turrisMedia;
+}
+
+struct TurrisMediaMetadata {
+    std::array<bool, 9> seen{};
+    quint64 magic = 0;
+    QByteArray description;
+    quint64 kind = 0;
+    quint64 headerVersion = 0;
+    quint64 framesPerSecond = 0;
+    quint64 width = 0;
+    quint64 height = 0;
+    quint64 frameCount = 0;
+};
+
+bool takeCanonicalProtoVarint(const QByteArray &bytes, qsizetype *offset,
+                              quint64 *value) {
+    if (!offset || !value || *offset < 0 || *offset >= bytes.size()) {
+        return false;
+    }
+
+    quint64 decoded = 0;
+    for (int index = 0; index < 10; ++index) {
+        if (*offset >= bytes.size()) {
+            return false;
+        }
+        const quint8 byte = static_cast<quint8>(bytes.at((*offset)++));
+        const quint8 payload = byte & 0x7fU;
+        if (index == 9 && payload > 1U) {
+            return false;
+        }
+        decoded |= static_cast<quint64>(payload) << (index * 7);
+        if ((byte & 0x80U) == 0) {
+            int canonicalSize = 1;
+            for (quint64 remaining = decoded; remaining >= 0x80U;
+                 remaining >>= 7U) {
+                ++canonicalSize;
+            }
+            if (canonicalSize != index + 1) {
+                return false;
+            }
+            *value = decoded;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool parseTurrisMediaMetadata(const QByteArray &bytes,
+                              TurrisMediaMetadata *metadata,
+                              QString *errorMessage) {
+    const auto reject = [errorMessage](const QString &reason) {
+        if (errorMessage) {
+            *errorMessage = reason;
+        }
+        return false;
+    };
+    if (!metadata || bytes.isEmpty() ||
+        bytes.size() > kMaxTurrisMediaMetadataSize) {
+        return reject(QStringLiteral("metadata size is invalid"));
+    }
+
+    qsizetype offset = 0;
+    while (offset < bytes.size()) {
+        quint64 key = 0;
+        if (!takeCanonicalProtoVarint(bytes, &offset, &key) || key == 0) {
+            return reject(QStringLiteral("metadata field key is invalid"));
+        }
+        const quint64 fieldNumber = key >> 3U;
+        const quint64 wireType = key & 0x07U;
+        if (fieldNumber < 1 || fieldNumber > 8 ||
+            metadata->seen.at(static_cast<size_t>(fieldNumber))) {
+            return reject(QStringLiteral(
+                "metadata contains an unknown or duplicate field"));
+        }
+
+        if (fieldNumber == 2) {
+            if (wireType != 2) {
+                return reject(QStringLiteral(
+                    "metadata description has the wrong wire type"));
+            }
+            quint64 length = 0;
+            if (!takeCanonicalProtoVarint(bytes, &offset, &length) ||
+                length != sizeof(kTurrisMediaDescription) - 1 ||
+                length > static_cast<quint64>(bytes.size() - offset)) {
+                return reject(QStringLiteral(
+                    "metadata description length is invalid"));
+            }
+            metadata->description = bytes.mid(
+                offset, static_cast<qsizetype>(length));
+            offset += static_cast<qsizetype>(length);
+        } else {
+            if (wireType != 0) {
+                return reject(QStringLiteral(
+                    "metadata numeric field has the wrong wire type"));
+            }
+            quint64 fieldValue = 0;
+            if (!takeCanonicalProtoVarint(bytes, &offset, &fieldValue)) {
+                return reject(QStringLiteral(
+                    "metadata numeric field is invalid"));
+            }
+            switch (fieldNumber) {
+            case 1:
+                metadata->magic = fieldValue;
+                break;
+            case 3:
+                metadata->kind = fieldValue;
+                break;
+            case 4:
+                metadata->headerVersion = fieldValue;
+                break;
+            case 5:
+                metadata->framesPerSecond = fieldValue;
+                break;
+            case 6:
+                metadata->width = fieldValue;
+                break;
+            case 7:
+                metadata->height = fieldValue;
+                break;
+            case 8:
+                metadata->frameCount = fieldValue;
+                break;
+            default:
+                return reject(QStringLiteral("metadata field is invalid"));
+            }
+        }
+        metadata->seen.at(static_cast<size_t>(fieldNumber)) = true;
+    }
+
+    for (size_t fieldNumber = 1; fieldNumber < metadata->seen.size();
+         ++fieldNumber) {
+        if (!metadata->seen.at(fieldNumber)) {
+            return reject(QStringLiteral("metadata is missing a field"));
+        }
+    }
+    return true;
+}
+
+bool validateTurrisMediaBlob(QFile *file, qint64 declaredSize,
+                             const QString &remoteFileName,
+                             QString *errorMessage) {
+    const auto reject = [errorMessage](const QString &reason) {
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "Turris media container is invalid: %1")
+                                .arg(reason);
+        }
+        return false;
+    };
+    if (!file || declaredSize < 8 || !file->seek(0)) {
+        return reject(QStringLiteral("container header is unavailable"));
+    }
+
+    const QByteArray lengthBytes = file->read(4);
+    if (lengthBytes.size() != 4) {
+        return reject(QStringLiteral("metadata length is truncated"));
+    }
+    const auto byteAt = [&lengthBytes](qsizetype index) {
+        return static_cast<quint32>(
+            static_cast<quint8>(lengthBytes.at(index)));
+    };
+    const quint32 metadataLength =
+        byteAt(0) | (byteAt(1) << 8U) | (byteAt(2) << 16U) |
+        (byteAt(3) << 24U);
+    const qint64 rawPayloadOffset =
+        4 + static_cast<qint64>(metadataLength);
+    if (metadataLength == 0 ||
+        metadataLength >
+            static_cast<quint32>(kMaxTurrisMediaMetadataSize) ||
+        rawPayloadOffset > declaredSize - 4) {
+        return reject(QStringLiteral("metadata length is out of bounds"));
+    }
+
+    const QByteArray metadataBytes = file->read(metadataLength);
+    if (metadataBytes.size() != static_cast<qsizetype>(metadataLength)) {
+        return reject(QStringLiteral("metadata is truncated"));
+    }
+    TurrisMediaMetadata metadata;
+    QString metadataError;
+    if (!parseTurrisMediaMetadata(metadataBytes, &metadata,
+                                  &metadataError)) {
+        return reject(metadataError);
+    }
+
+    const QString lowerName = remoteFileName.toLower();
+    quint64 expectedKind = 0;
+    if (lowerName.endsWith(
+            QStringLiteral(".png.h264_1280x720"))) {
+        expectedKind = 2;
+    } else if (lowerName.endsWith(
+                   QStringLiteral(".mp4.h264_1280x720")) ||
+               lowerName.endsWith(
+                   QStringLiteral(".gif.h264_1280x720"))) {
+        expectedKind = 4;
+    } else {
+        return reject(QStringLiteral("file name does not identify media kind"));
+    }
+
+    if (metadata.magic != kTurrisMediaMagic ||
+        metadata.description != QByteArray(kTurrisMediaDescription) ||
+        metadata.kind != expectedKind || metadata.headerVersion != 1 ||
+        metadata.framesPerSecond != 30 || metadata.width != 1280 ||
+        metadata.height != 720 || metadata.frameCount == 0 ||
+        metadata.frameCount > std::numeric_limits<quint32>::max() ||
+        (metadata.kind == 2 && metadata.frameCount != 1)) {
+        return reject(QStringLiteral("metadata values do not match the profile"));
+    }
+
+    const QByteArray rawPrefix = file->read(5);
+    const bool startsWithThreeByteAnnexB =
+        rawPrefix.size() >= 4 && rawPrefix.at(0) == '\0' &&
+        rawPrefix.at(1) == '\0' && rawPrefix.at(2) == '\1';
+    const bool startsWithFourByteAnnexB =
+        rawPrefix.size() >= 5 && rawPrefix.at(0) == '\0' &&
+        rawPrefix.at(1) == '\0' && rawPrefix.at(2) == '\0' &&
+        rawPrefix.at(3) == '\1';
+    if (!startsWithThreeByteAnnexB && !startsWithFourByteAnnexB) {
+        return reject(QStringLiteral(
+            "raw payload does not start with an Annex-B NAL unit"));
+    }
+    if (!file->seek(0)) {
+        return reject(QStringLiteral("container cannot be rewound"));
+    }
+    return true;
 }
 
 struct MediaPullCandidate {
@@ -2037,6 +2336,7 @@ PrinterFrameCodec::DecodeStatus PrinterFrameCodec::takeFrame(
 
 bool PrinterProtocol::UsbPrinterDevice::operator==(const UsbPrinterDevice &other) const {
     return devicePath == other.devicePath && sysfsPath == other.sysfsPath &&
+           productId == other.productId &&
            manufacturer == other.manufacturer && product == other.product &&
            serial == other.serial && accessible == other.accessible;
 }
@@ -2056,9 +2356,9 @@ QString PrinterProtocol::DiscoverySnapshot::statusText() const {
     case DiscoveryState::Absent:
         return QObject::tr("TRYX printer-class device is absent");
     case DiscoveryState::RockchipGadget391a0006:
-        return QObject::tr("TRYX display is in 391a:0006 Rockchip gadget mode; PASE printer mode is not ready");
-    case DiscoveryState::Enumerating391a1021:
-        return QObject::tr("TRYX 391a:1021 is enumerating; waiting for a valid USB printer interface");
+        return QObject::tr("TRYX display is in 391a:0006 Rockchip gadget mode; printer mode is not ready");
+    case DiscoveryState::EnumeratingPrinterClass:
+        return QObject::tr("TRYX device is enumerating; waiting for a valid USB printer interface");
     case DiscoveryState::Ready:
         return QObject::tr("TRYX direct USB printer interface is ready");
     case DiscoveryState::PermissionDenied:
@@ -2096,6 +2396,7 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
             snapshot.devices.append({
                 candidate.deviceId,
                 candidate.sysfsPath,
+                candidate.productId,
                 candidate.manufacturer,
                 candidate.product,
                 candidate.serial,
@@ -2111,7 +2412,7 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
                 ? DiscoveryState::Ready
                 : DiscoveryState::PermissionDenied;
         } else if (workingDeviceCount > 0) {
-            snapshot.state = DiscoveryState::Enumerating391a1021;
+            snapshot.state = DiscoveryState::EnumeratingPrinterClass;
         } else if (transitionDeviceCount > 0) {
             snapshot.state = DiscoveryState::RockchipGadget391a0006;
         }
@@ -2146,8 +2447,7 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
         countedUsbDevices.insert(usbPath);
         if (productId == kTransitionProductId) {
             ++snapshot.rockchipGadgetDeviceCount;
-        } else if (productId == kPaseProductId ||
-            productId == kPanoProductId) {
+        } else if (isSupportedPrinterProductId(productId)) {
             ++snapshot.workingUsbDeviceCount;
         }
     }
@@ -2180,8 +2480,7 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
             !readHexU16(QDir(usbDevicePath).filePath(QStringLiteral("idVendor")), &vendorId) ||
             !readHexU16(QDir(usbDevicePath).filePath(QStringLiteral("idProduct")), &productId) ||
             vendorId != kTryxVendorId ||
-            (productId != kPaseProductId &&
-            productId != kPanoProductId)) {
+            !isSupportedPrinterProductId(productId)) {
             continue;
         }
 
@@ -2194,6 +2493,7 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
         snapshot.devices.append({
             devicePath,
             interfacePath,
+            productId,
             readTextFile(QDir(usbDevicePath).filePath(QStringLiteral("manufacturer"))),
             readTextFile(QDir(usbDevicePath).filePath(QStringLiteral("product"))),
             readTextFile(QDir(usbDevicePath).filePath(QStringLiteral("serial"))),
@@ -2212,13 +2512,13 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
         snapshot.state = DiscoveryState::Ambiguous;
     } else if (snapshot.rockchipGadgetDeviceCount > 0 &&
                (snapshot.workingUsbDeviceCount > 0 || !snapshot.devices.isEmpty())) {
-        snapshot.state = DiscoveryState::Enumerating391a1021;
+        snapshot.state = DiscoveryState::EnumeratingPrinterClass;
     } else if (snapshot.devices.size() == 1) {
         snapshot.state = snapshot.devices.first().accessible
             ? DiscoveryState::Ready
             : DiscoveryState::PermissionDenied;
     } else if (snapshot.workingUsbDeviceCount > 0) {
-        snapshot.state = DiscoveryState::Enumerating391a1021;
+        snapshot.state = DiscoveryState::EnumeratingPrinterClass;
     } else if (snapshot.rockchipGadgetDeviceCount > 0) {
         snapshot.state = DiscoveryState::RockchipGadget391a0006;
     }
@@ -2273,9 +2573,11 @@ public:
         return QStringLiteral("unknown");
     }
 
-    explicit Impl(int transactionTimeoutMs, int deviceInfoReadyTimeoutMs,
+    explicit Impl(quint16 expectedProductId, int transactionTimeoutMs,
+                  int deviceInfoReadyTimeoutMs,
                   int fileTransmitResponseTimeoutMs)
-        : transactionTimeoutMs_(qMax(1, transactionTimeoutMs)),
+        : expectedProductId_(expectedProductId),
+          transactionTimeoutMs_(qMax(1, transactionTimeoutMs)),
           deviceInfoReadyTimeoutMs_(
               qBound(1, deviceInfoReadyTimeoutMs,
                      kDeviceInformationReadinessDeadlineMs)),
@@ -3367,8 +3669,9 @@ public:
         // implementation returns IO, PIPE and TIMEOUT intermittently even
         // while its protocol service is usable. Descriptor validation,
         // physical identity and a successful interface claim establish the
-        // transport. The exact DeviceInfo bootstrap response is the bounded
-        // source of truth for application readiness.
+        // transport. Bootstrap-capable profiles then use their exact
+        // DeviceInfo response as application readiness; transfer-only
+        // profiles stop at the verified interface claim.
         return true;
     }
 
@@ -3498,13 +3801,15 @@ private:
                 }
                 return false;
             }
-            if (libusbTransport_.isOpenFor(devicePath)) {
+            if (libusbTransport_.isOpenFor(devicePath,
+                                           expectedProductId_)) {
                 devicePath_ = devicePath;
                 return true;
             }
             receiveBuffer_.clear();
             lastOutboundTimer_.invalidate();
-            if (!libusbTransport_.open(devicePath, errorMessage)) {
+            if (!libusbTransport_.open(devicePath, expectedProductId_,
+                                       errorMessage)) {
                 devicePath_.clear();
                 return false;
             }
@@ -3515,7 +3820,8 @@ private:
         if (fd_ >= 0 && devicePath_ == devicePath) {
             if (adoptedForTesting_ ||
                 validatePrinterEndpoint(devicePath, fd_, QStringLiteral("/sys"),
-                                        QStringLiteral("/dev"), errorMessage)) {
+                                        QStringLiteral("/dev"),
+                                        expectedProductId_, errorMessage)) {
                 return true;
             }
             closeDevice();
@@ -3531,7 +3837,8 @@ private:
         }
 
         if (!validatePrinterEndpoint(devicePath, -1, QStringLiteral("/sys"),
-                                     QStringLiteral("/dev"), errorMessage)) {
+                                     QStringLiteral("/dev"),
+                                     expectedProductId_, errorMessage)) {
             return false;
         }
 
@@ -3540,8 +3847,11 @@ private:
         if (fd_ < 0) {
             if (errorMessage) {
                 if (errno == EACCES || errno == EPERM) {
-                    *errorMessage = QObject::tr("Cannot open %1: permission denied. Grant read/write access to 391a:1021.")
-                                        .arg(devicePath);
+                    *errorMessage = QObject::tr(
+                        "Cannot open %1: permission denied. Grant read/write access to %2.")
+                                        .arg(devicePath,
+                                             printerProductIdString(
+                                                 expectedProductId_));
                 } else {
                     *errorMessage = QObject::tr("Cannot open %1: %2")
                                         .arg(devicePath, systemErrorText(errno));
@@ -3551,7 +3861,8 @@ private:
         }
         devicePath_ = devicePath;
         if (!validatePrinterEndpoint(devicePath, fd_, QStringLiteral("/sys"),
-                                     QStringLiteral("/dev"), errorMessage)) {
+                                     QStringLiteral("/dev"),
+                                     expectedProductId_, errorMessage)) {
             closeDevice();
             return false;
         }
@@ -4452,6 +4763,7 @@ private:
         return false;
     }
 
+    const quint16 expectedProductId_;
     LibusbAsyncTransport libusbTransport_;
     int fd_ = -1;
     int transactionTimeoutMs_ = 3000;
@@ -4767,20 +5079,43 @@ PrinterProtocol::Impl::pullUserMedia(
 }
 
 PrinterProtocol::PrinterProtocol()
-    : impl_(std::make_unique<Impl>(
-          3000, kDeviceInformationReadinessDeadlineMs,
-          kFileTransmitResponseTimeoutMs)) {}
+    : PrinterProtocol(
+          *printerProductProfileForId(kPaseProductId)) {}
 
 PrinterProtocol::PrinterProtocol(int transactionTimeoutMs)
-    : impl_(std::make_unique<Impl>(transactionTimeoutMs,
-                                  transactionTimeoutMs,
-                                  transactionTimeoutMs)) {}
+    : PrinterProtocol(
+          *printerProductProfileForId(kPaseProductId),
+          transactionTimeoutMs) {}
 
 PrinterProtocol::PrinterProtocol(int transactionTimeoutMs,
                                  int deviceInfoReadyTimeoutMs)
-    : impl_(std::make_unique<Impl>(transactionTimeoutMs,
-                                  deviceInfoReadyTimeoutMs,
-                                  transactionTimeoutMs)) {}
+    : PrinterProtocol(
+          *printerProductProfileForId(kPaseProductId),
+          transactionTimeoutMs, deviceInfoReadyTimeoutMs) {}
+
+PrinterProtocol::PrinterProtocol(
+    const PrinterProductProfile &productProfile)
+    : productProfile_(productProfile),
+      impl_(std::make_unique<Impl>(
+          productProfile_.productId, 3000,
+          kDeviceInformationReadinessDeadlineMs,
+          kFileTransmitResponseTimeoutMs)) {}
+
+PrinterProtocol::PrinterProtocol(
+    const PrinterProductProfile &productProfile,
+    int transactionTimeoutMs)
+    : productProfile_(productProfile),
+      impl_(std::make_unique<Impl>(
+          productProfile_.productId, transactionTimeoutMs,
+          transactionTimeoutMs, transactionTimeoutMs)) {}
+
+PrinterProtocol::PrinterProtocol(
+    const PrinterProductProfile &productProfile,
+    int transactionTimeoutMs, int deviceInfoReadyTimeoutMs)
+    : productProfile_(productProfile),
+      impl_(std::make_unique<Impl>(
+          productProfile_.productId, transactionTimeoutMs,
+          deviceInfoReadyTimeoutMs, transactionTimeoutMs)) {}
 
 PrinterProtocol::~PrinterProtocol() = default;
 
@@ -4792,15 +5127,25 @@ void PrinterProtocol::close() {
     impl_->closeDevice();
 }
 
+const PrinterProductProfile &PrinterProtocol::productProfile() const {
+    return productProfile_;
+}
+
 bool PrinterProtocol::persistentUsbInputFailure() const {
     return impl_->persistentUsbInputFailure();
 }
 
 namespace {
 
-PrinterProtocol::DeviceInfo makePrinterDeviceInfo(
-    const QString &devicePath,
-    const panorama::wire::v1::DeviceInformation &deviceInfo) {
+QString unsupportedCapabilityError(
+    const PrinterProductProfile &productProfile,
+    const QString &capability) {
+    return QObject::tr("TRYX %1 does not support %2")
+        .arg(printerProductIdString(productProfile.productId), capability);
+}
+
+PrinterProtocol::DeviceInfo makeLocalPrinterDeviceInfo(
+    const QString &devicePath) {
     PrinterProtocol::DeviceInfo info;
     info.devicePath = devicePath;
     const PrinterProtocol::DiscoverySnapshot snapshot = PrinterProtocol::discover();
@@ -4812,7 +5157,25 @@ PrinterProtocol::DeviceInfo makePrinterDeviceInfo(
             break;
         }
     }
+    info.productName = info.usbProduct;
+    info.serialNumber = info.usbSerial;
+    return info;
+}
 
+PrinterProtocol::DeviceInfo makeTransferOnlyDeviceInfo(
+    const QString &devicePath,
+    const PrinterProductProfile &productProfile) {
+    PrinterProtocol::DeviceInfo info;
+    info.devicePath = devicePath;
+    info.productName = printerProductIdString(productProfile.productId);
+    return info;
+}
+
+PrinterProtocol::DeviceInfo makePrinterDeviceInfo(
+    const QString &devicePath,
+    const panorama::wire::v1::DeviceInformation &deviceInfo) {
+    PrinterProtocol::DeviceInfo info =
+        makeLocalPrinterDeviceInfo(devicePath);
     info.osName = QString::fromStdString(deviceInfo.os_name());
     info.osVersion = QString::fromStdString(deviceInfo.os_version());
     info.firmwareVersion = QString::fromStdString(deviceInfo.firmware_version());
@@ -5135,16 +5498,34 @@ void addPaseLabelUpdate(panorama::wire::v1::MetricBatch *batch,
 
 PrinterProtocol::Result PrinterProtocol::startDisplaySession(
     const QString &devicePath, const OperationContext &context) {
-    panorama::wire::v1::Response bootstrapResponse;
     QString error;
     if (!impl_->openSessionTransport(devicePath, context, &error)) {
         return {false, error, {}};
     }
+    if (productProfile_.idleMode == PrinterIdleMode::TransferOnly) {
+        const DeviceInfo deviceInfo =
+            makeTransferOnlyDeviceInfo(devicePath, productProfile_);
+        if (operationIsCancelled(context)) {
+            impl_->closeDevice();
+            return {
+                false,
+                QObject::tr(
+                    "TRYX USB operation was cancelled because the device state changed"),
+                {}};
+        }
+        if (context.onDeviceInfoReady) {
+            context.onDeviceInfoReady();
+        }
+        return {true, {}, deviceInfo};
+    }
+
+    panorama::wire::v1::Response bootstrapResponse;
     if (!impl_->bootstrapSession(devicePath, context, &bootstrapResponse,
                                  &error)) {
         return {false, error, {}};
     }
-    if (!sendRunConfigTrigger(devicePath, &error, context, nullptr)) {
+    if (productProfile_.idleMode == PrinterIdleMode::OverlayLayout &&
+        !sendRunConfigTrigger(devicePath, &error, context, nullptr)) {
         impl_->closeDevice();
         return {false, error, {}};
     }
@@ -5156,6 +5537,19 @@ PrinterProtocol::Result PrinterProtocol::startDisplaySession(
 
 PrinterProtocol::Result PrinterProtocol::readDeviceInfo(
     const QString &devicePath, const OperationContext &context) {
+    if (productProfile_.idleMode == PrinterIdleMode::TransferOnly) {
+        if (operationIsCancelled(context)) {
+            return {
+                false,
+                QObject::tr(
+                    "TRYX USB operation was cancelled because the device state changed"),
+                {}};
+        }
+        return {
+            true, {},
+            makeTransferOnlyDeviceInfo(devicePath, productProfile_)};
+    }
+
     panorama::wire::v1::Request request;
     request.mutable_device_information_query();
     panorama::wire::v1::Response response;
@@ -5170,6 +5564,13 @@ PrinterProtocol::Result PrinterProtocol::readDeviceInfo(
 
 PrinterProtocol::MediaListResult PrinterProtocol::readMediaList(
     const QString &devicePath, const OperationContext &context) {
+    if (!productProfile_.mediaCatalogSupported) {
+        return {
+            false,
+            unsupportedCapabilityError(
+                productProfile_, QStringLiteral("media catalog operations")),
+            {}};
+    }
     panorama::wire::v1::Request request;
     request.mutable_media_catalog_query();
     panorama::wire::v1::Response response;
@@ -5198,6 +5599,14 @@ PrinterProtocol::MediaPullResult PrinterProtocol::pullUserMedia(
     qint64 expectedSize, const MediaPullChunkSink &sink,
     const MediaPullProgress &progress,
     const OperationContext &context) {
+    if (!productProfile_.mediaCatalogSupported) {
+        MediaPullResult result;
+        result.mediaName = mediaName;
+        result.fileSize = expectedSize;
+        result.error = unsupportedCapabilityError(
+            productProfile_, QStringLiteral("media pull operations"));
+        return result;
+    }
     return impl_->pullUserMedia(
         devicePath, mediaName, expectedSize,
         sink, progress, context);
@@ -5211,6 +5620,11 @@ PrinterProtocol::readUserMediaReferences(
     qint64 expectedReplacementSize,
     const OperationContext &context) {
     MediaReferenceResult result;
+    if (!productProfile_.mediaCatalogSupported) {
+        result.error = unsupportedCapabilityError(
+            productProfile_, QStringLiteral("media catalog operations"));
+        return result;
+    }
     if (!isSafeUploadFileName(mediaName) ||
         expectedSize <= 0 ||
         expectedSize >
@@ -5356,6 +5770,12 @@ PrinterProtocol::DeleteResult PrinterProtocol::removeUserMedia(
     const QString &expectedReplacementName,
     qint64 expectedReplacementSize) {
     DeleteResult result;
+    if (!productProfile_.mediaCatalogSupported) {
+        result.outcome = MutationOutcome::Rejected;
+        result.error = unsupportedCapabilityError(
+            productProfile_, QStringLiteral("media deletion"));
+        return result;
+    }
     if (fileNames.isEmpty()) {
         result.error = QObject::tr("No media files were selected for deletion");
         return result;
@@ -5739,17 +6159,34 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
         *mutationDetails = {};
         mutationDetails->stage = QStringLiteral("Validating");
     }
+    if (!productProfile_.mediaUploadSupported) {
+        if (mutationDetails) {
+            mutationDetails->outcome = MutationOutcome::Rejected;
+        }
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("media upload"));
+        }
+        return false;
+    }
+    if (!isSafeUploadFileNameForProfile(remoteFileName,
+                                        productProfile_)) {
+        if (mutationDetails) {
+            mutationDetails->outcome = MutationOutcome::Rejected;
+        }
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "Media file name is not supported for %1: %2")
+                                .arg(printerProductIdString(
+                                         productProfile_.productId),
+                                     remoteFileName);
+        }
+        return false;
+    }
     const QFileInfo fileInfo(localPath);
     if (!fileInfo.exists() || !fileInfo.isFile() || fileInfo.isSymLink()) {
         if (errorMessage) {
             *errorMessage = QObject::tr("Media file does not exist: %1").arg(localPath);
-        }
-        return false;
-    }
-    if (!isSafeUploadFileName(remoteFileName)) {
-        if (errorMessage) {
-            *errorMessage = QObject::tr("Media file name is not supported: %1")
-                                .arg(remoteFileName);
         }
         return false;
     }
@@ -5805,6 +6242,22 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
                currentStatus.st_ctim.tv_sec == initialFileStatus.st_ctim.tv_sec &&
                currentStatus.st_ctim.tv_nsec == initialFileStatus.st_ctim.tv_nsec;
     };
+    if (productProfile_.productId == kTurrisProductId) {
+        if (!validateTurrisMediaBlob(&file, declaredSize,
+                                     remoteFileName, errorMessage)) {
+            if (mutationDetails) {
+                mutationDetails->outcome = MutationOutcome::Rejected;
+            }
+            return false;
+        }
+        if (!sourceIsUnchanged() || !file.seek(0)) {
+            if (errorMessage) {
+                *errorMessage = QObject::tr(
+                    "Prepared Turris media changed during validation");
+            }
+            return false;
+        }
+    }
     const QString normalizedExpectedHash =
         expectedSha256.trimmed().toLower();
     if (!normalizedExpectedHash.isEmpty()) {
@@ -5866,6 +6319,11 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
         return false;
     };
 
+    OperationContext transferContext = context;
+    if (productProfile_.idleMode == PrinterIdleMode::TransferOnly) {
+        transferContext.maintainKeepalive = false;
+    }
+
     panorama::wire::v1::Request beginRequest;
     auto *begin = beginRequest.mutable_transfer_begin();
     begin->set_file_name(remoteFileName.toStdString());
@@ -5873,13 +6331,16 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
     panorama::wire::v1::Response response;
     Impl::TransactionOutcome transactionOutcome =
         Impl::TransactionOutcome::NotSent;
-    const quint64 transferTrackId = impl_->allocateTrackId();
+    const quint64 transferTrackId =
+        productProfile_.productId == kTurrisProductId
+            ? kTurrisTransferTrackId
+            : impl_->allocateTrackId();
     if (mutationDetails) {
         mutationDetails->stage = QStringLiteral("Beginning");
     }
     if (!impl_->execute(&beginRequest,
                         panorama::wire::v1::Response::kTransferBeginStatus,
-                        &response, devicePath, context, errorMessage,
+                        &response, devicePath, transferContext, errorMessage,
                         &transactionOutcome,
                         Impl::TransactionProfile::FileTransmit,
                         false, false, transferTrackId)) {
@@ -5937,7 +6398,7 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
         transactionOutcome = Impl::TransactionOutcome::NotSent;
         if (!impl_->execute(&dataRequest,
                             panorama::wire::v1::Response::kTransferChunkStatus,
-                            &response, devicePath, context, errorMessage,
+                            &response, devicePath, transferContext, errorMessage,
                             &transactionOutcome,
                             Impl::TransactionProfile::FileTransmit,
                             false, false, transferTrackId)) {
@@ -5986,7 +6447,7 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
     transactionOutcome = Impl::TransactionOutcome::NotSent;
     if (!impl_->execute(&endRequest,
                         panorama::wire::v1::Response::kTransferEndStatus,
-                        &response, devicePath, context, errorMessage,
+                        &response, devicePath, transferContext, errorMessage,
                         &transactionOutcome,
                         Impl::TransactionProfile::FileTransmit,
                         false, false, transferTrackId)) {
@@ -6066,6 +6527,11 @@ PrinterProtocol::PaseDisplayStateResult
 PrinterProtocol::readPaseDisplayState(
     const QString &devicePath, const OperationContext &context) {
     PaseDisplayStateResult result;
+    if (!productProfile_.displayConfigurationSupported) {
+        result.error = unsupportedCapabilityError(
+            productProfile_, QStringLiteral("display configuration"));
+        return result;
+    }
     panorama::wire::v1::Request request;
     request.mutable_user_configuration_query();
     panorama::wire::v1::Response response;
@@ -6151,6 +6617,23 @@ bool PrinterProtocol::applyPaseConfiguration(
                 MutationOutcome::Rejected;
         }
     };
+    if (!productProfile_.displayConfigurationSupported) {
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("display configuration"));
+        }
+        markRejected();
+        return false;
+    }
+    if (config.replaceOverlay &&
+        !productProfile_.overlayMetricsSupported) {
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("overlay metrics"));
+        }
+        markRejected();
+        return false;
+    }
     if (!config.mediaPresent &&
         !config.display.brightnessPresent &&
         !config.display.standbyPresent &&
@@ -6425,6 +6908,16 @@ bool PrinterProtocol::configurePaseOverlay(
         *mutationDetails = {};
         mutationDetails->stage = QStringLiteral("ActivatingMetricsLayout");
     }
+    if (!productProfile_.overlayMetricsSupported) {
+        if (mutationDetails) {
+            mutationDetails->outcome = MutationOutcome::Rejected;
+        }
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("overlay metrics"));
+        }
+        return false;
+    }
     const bool success = sendRunConfigTrigger(
         devicePath, errorMessage, context, &overlay,
         mutationDetails);
@@ -6437,6 +6930,13 @@ bool PrinterProtocol::sendPaseMetricBatch(
     const QStringList &labels, const QStringList &values,
     const QStringList &units, QString *errorMessage,
     const OperationContext &context) {
+    if (!productProfile_.overlayMetricsSupported) {
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("overlay metrics"));
+        }
+        return false;
+    }
     const QList<const PaseMetricDefinition *> leftSelected =
         paseSelectedMetrics(overlay.left);
     const QList<const PaseMetricDefinition *> rightSelected =
@@ -6511,6 +7011,13 @@ bool PrinterProtocol::sendPaseMetricBatch(
 bool PrinterProtocol::setBrightness(const QString &devicePath, int brightness,
                                     QString *errorMessage,
                                     const OperationContext &context) {
+    if (!productProfile_.displayConfigurationSupported) {
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("brightness control"));
+        }
+        return false;
+    }
     PaseApplyConfig config;
     config.display.brightnessPresent = true;
     config.display.brightness = brightness;
@@ -6690,6 +7197,19 @@ bool PrinterProtocol::sendRunConfigTrigger(const QString &devicePath,
 PrinterProtocol::KeepaliveOutcome PrinterProtocol::sendKeepalive(
     const QString &devicePath, QString *errorMessage,
     const OperationContext &context) {
+    if (productProfile_.idleMode == PrinterIdleMode::TransferOnly) {
+        if (operationIsCancelled(context)) {
+            if (errorMessage) {
+                *errorMessage = QObject::tr(
+                    "TRYX USB operation was cancelled because the device state changed");
+            }
+            return KeepaliveOutcome::FatalFailure;
+        }
+        if (errorMessage) {
+            errorMessage->clear();
+        }
+        return KeepaliveOutcome::Sent;
+    }
     return impl_->sendKeepalive(devicePath, context, errorMessage);
 }
 
@@ -6697,6 +7217,13 @@ PrinterProtocol::KeepaliveOutcome PrinterProtocol::sendDisplayKeepalive(
     const QString &devicePath, QString *errorMessage,
     const OperationContext &context,
     const PaseOverlayConfig *overlay) {
+    if (!productProfile_.overlayMetricsSupported) {
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("display keepalive"));
+        }
+        return KeepaliveOutcome::FatalFailure;
+    }
     panorama::wire::v1::Request request;
     // Match the observed peer: a periodic layout update is an untracked setter.
     // The peer waits only for USB OUT completion and handles an optional acknowledgement in
@@ -6780,6 +7307,15 @@ bool PrinterProtocol::validateEndpointForTesting(
     const QString &devicePath, int openFd, const QString &sysfsRoot,
     const QString &devRoot, QString *errorMessage) {
     return validatePrinterEndpoint(devicePath, openFd, sysfsRoot, devRoot,
+                                   kPaseProductId, errorMessage);
+}
+
+bool PrinterProtocol::validateEndpointForTesting(
+    const QString &devicePath, int openFd, const QString &sysfsRoot,
+    const QString &devRoot, quint16 expectedProductId,
+    QString *errorMessage) {
+    return validatePrinterEndpoint(devicePath, openFd, sysfsRoot, devRoot,
+                                   expectedProductId,
                                    errorMessage);
 }
 
@@ -6895,7 +7431,7 @@ bool PrinterDeviceMonitor::start() {
             this, &PrinterDeviceMonitor::drainEvents);
 
     // Monitoring is active before the initial enumeration, so a fast
-    // A 391a:0006 gadget event or subsequent 391a:1021 enumeration cannot be
+    // A 391a:0006 gadget event or subsequent printer enumeration cannot be
     // lost between monitor activation and the initial state scan.
     rescan(true);
     return true;

@@ -1,7 +1,7 @@
 Name:           tryx-panorama-manager
 Version:        2.1.1
 Release:        1%{?dist}
-Summary:        Linux manager for supported TRYX Panorama cooler displays
+Summary:        Linux manager for supported TRYX cooler displays
 
 License:        MIT AND BSD-2-Clause
 URL:            https://github.com/DXVSI/Tryx-Linux-GUI
@@ -46,7 +46,7 @@ Requires:       qt6-qtdeclarative%{?_isa}
 Requires:       ffmpeg
 
 # Native Wayland support and the legacy/firmware discovery helpers are useful
-# but are not required for the PASE printer-class control path.
+# but are not required for the printer-class control path.
 Recommends:     qt6-qtwayland%{?_isa}
 Suggests:       /usr/bin/adb
 Suggests:       /usr/bin/unzip
@@ -58,9 +58,9 @@ Suggests:       /usr/bin/lspci
 
 %description
 TRYX Panorama Manager is a Qt 6 application for controlling supported TRYX
-Panorama and Panorama SE cooler displays on Linux. It manages custom media,
-display settings, live system metrics, and devices using the PASE
-printer-class USB protocol.
+Panorama, Panorama SE, and Turris 620 cooler displays on Linux. It uses
+model-specific media profiles and enables only the printer-class USB
+capabilities supported by each device.
 
 The package contains open-source project components and host integration. It
 does not contain vendor media, firmware archives, or the proprietary Rockchip

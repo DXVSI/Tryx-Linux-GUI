@@ -11,6 +11,7 @@
 MediaEditorController::MediaEditorController(
     RuntimeClient *runtime, QObject *parent)
     : QObject(parent), runtime_(runtime), preview_(this) {
+    preview_.setTargetSize(targetWidth(), targetHeight());
     connect(&preview_, &MediaPreviewController::stateChanged,
             this, [this]() {
                 if (preview_.ready()) {
@@ -24,6 +25,12 @@ MediaEditorController::MediaEditorController(
     connect(this, &MediaEditorController::transformChanged,
             this, [this]() {
                 preview_.setTransform(transform());
+            });
+    connect(runtime_, &RuntimeClient::connectionChanged,
+            this, [this]() {
+                preview_.setTargetSize(
+                    targetWidth(), targetHeight());
+                emit targetChanged();
             });
     connect(runtime_, &RuntimeClient::operationRequestAccepted,
             this, [this](const QString &operationId,
@@ -140,6 +147,14 @@ int MediaEditorController::rotation() const {
 
 QString MediaEditorController::backgroundColor() const {
     return backgroundColor_;
+}
+
+int MediaEditorController::targetWidth() const {
+    return runtime_->mediaTargetWidth();
+}
+
+int MediaEditorController::targetHeight() const {
+    return runtime_->mediaTargetHeight();
 }
 
 QUrl MediaEditorController::homeFolder() const {

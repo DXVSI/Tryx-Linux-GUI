@@ -39,6 +39,7 @@ public:
     void loadRecoveredVideo(
         const TryxRuntimeDeviceMediaArtifact &artifact);
     void setTransform(const TryxRuntimeMediaTransform &transform);
+    void setTargetSize(int width, int height);
     Q_INVOKABLE void cancel();
 
     // The runtime atomically claims the inbox file before acknowledging an
@@ -50,6 +51,9 @@ public:
 
     static QString previewFilter(
         const TryxRuntimeMediaTransform &transform);
+    static QString previewFilter(
+        const TryxRuntimeMediaTransform &transform,
+        int targetWidth, int targetHeight);
     // Internal process boundary used by the GUI executable and its tests.
     static int runStageCopyHelper(const QStringList &arguments);
 
@@ -128,6 +132,8 @@ private:
     QUrl previewUrl_;
     QString error_;
     TryxRuntimeMediaTransform transform_;
+    int targetWidth_;
+    int targetHeight_;
     QProcess *stageProcess_ = nullptr;
     QString stageCopyProgram_;
     QByteArray stagingDiagnostic_;
