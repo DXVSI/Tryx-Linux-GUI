@@ -329,8 +329,11 @@ popd
 
 Fedora build dependencies:
 
+Enable RPM Fusion Free first, then install the full `ffmpeg` build so package
+tests exercise the same `libx264` encoder required at runtime:
+
 ```fish
-sudo dnf install -y gcc-c++ git make dbus-daemon ffmpeg-free pkgconf-pkg-config qt6-qtbase-devel qt6-qtdeclarative-devel qt6-linguist protobuf-compiler protobuf-devel systemd-devel libusb1-devel
+sudo dnf install -y --allowerasing gcc-c++ git make dbus-daemon ffmpeg pkgconf-pkg-config qt6-qtbase-devel qt6-qtdeclarative-devel qt6-linguist protobuf-compiler protobuf-devel systemd-devel libusb1-devel
 ```
 
 Ubuntu 24.04 and Linux Mint 22 build dependencies:

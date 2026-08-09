@@ -14,7 +14,7 @@ ExclusiveArch:  x86_64
 BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  dbus-daemon
-BuildRequires:  ffmpeg-free
+BuildRequires:  ffmpeg
 BuildRequires:  qt6-rpm-macros
 BuildRequires:  qt6-linguist
 BuildRequires:  qt6-qtdeclarative-devel
