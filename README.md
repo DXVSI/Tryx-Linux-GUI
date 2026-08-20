@@ -511,6 +511,7 @@ src/
   firmwarebridge.*   # Runtime-side firmware D-Bus boundary
   firmwareupdater.*  # Local firmware validation and external-tool execution
   mediatransform.*   # Canonical media transform validation and FFmpeg filter
+  printermediapreparer.* # Async media preparation, cancellation, and retry validation
   runtimecontract.*  # Shared Manager1/Manager2 D-Bus data contract
   runtimebridge.*    # Exported runtime D-Bus adaptors
   printerprotocol.*  # PASE framing, direct libusb transport and udev discovery

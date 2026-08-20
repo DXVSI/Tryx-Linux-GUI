@@ -3,6 +3,45 @@ set -eu
 
 project_root=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 
+require_source_pattern() {
+    relative_path=$1
+    pattern=$2
+    source_path="$project_root/$relative_path"
+
+    if [ ! -f "$source_path" ] ||
+        ! grep -Fq "$pattern" "$source_path"; then
+        printf 'Runtime refactor source invariant is missing: %s: %s\n' \
+            "$relative_path" "$pattern" >&2
+        return 1
+    fi
+}
+
+reject_source_pattern() {
+    relative_path=$1
+    pattern=$2
+    source_path="$project_root/$relative_path"
+
+    if [ -f "$source_path" ] &&
+        grep -Fq "$pattern" "$source_path"; then
+        printf 'Runtime refactor source invariant is stale: %s: %s\n' \
+            "$relative_path" "$pattern" >&2
+        return 1
+    fi
+}
+
+require_source_pattern \
+    src/printermediapreparer.h \
+    'class PrinterMediaPreparer : public QObject'
+require_source_pattern \
+    src/printermediapreparer.cpp \
+    'PrinterMediaPreparer::PrinterMediaPreparer'
+reject_source_pattern \
+    src/devicemanager.h \
+    'class PrinterMediaPreparer : public QObject'
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'PrinterMediaPreparer::PrinterMediaPreparer'
+
 require_tests() {
     suite_name=$1
     test_binary=$2
@@ -68,6 +107,11 @@ firmwareReleaseFenceWaitsForLateQuiesce
 persistentUsbInputFailureStopsSameGenerationWithoutRecovery
 partialUploadRequiresObservedDeviceRemovalBeforeRetry
 legacyUnknownOutcomeRequiresObservedRecovery
+turrisImagePreparationBuildsMxhdBlob
+pendingPreparationPreservesMediaTransform
+retryCacheHashValidationHonorsPreStartCancellation
+mediaPreparationBoundsAndThumbnailFallback
+shutdownPreservesPreparedMediaAsUnknownRetry
 EOF
 
 require_tests \

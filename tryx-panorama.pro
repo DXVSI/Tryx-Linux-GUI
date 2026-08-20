@@ -87,6 +87,8 @@ HEADERS += \
     src/systemmonitor.h \
     src/firmwareupdater.h \
     src/mediatransform.h \
+    src/printermediapreparer.h \
+    src/printermediapreparersupport_p.h \
     src/printerprotocol.h \
     src/replacejournal.h \
     src/runtimecontract.h \
@@ -100,6 +102,7 @@ SOURCES += \
     src/systemmonitor.cpp \
     src/firmwareupdater.cpp \
     src/mediatransform.cpp \
+    src/printermediapreparer.cpp \
     src/printerprotocol.cpp \
     src/replacejournal.cpp \
     src/runtimecontract.cpp \

@@ -62,6 +62,8 @@ HEADERS += \
     $$PWD/../src/firmwareupdater.h \
     $$PWD/../src/systemmonitor.h \
     $$PWD/../src/mediatransform.h \
+    $$PWD/../src/printermediapreparer.h \
+    $$PWD/../src/printermediapreparersupport_p.h \
     $$PWD/../src/replacejournal.h \
     $$PWD/../src/runtimecontract.h
 SOURCES += \
@@ -74,6 +76,7 @@ SOURCES += \
     $$PWD/../src/firmwareupdater.cpp \
     $$PWD/../src/systemmonitor.cpp \
     $$PWD/../src/mediatransform.cpp \
+    $$PWD/../src/printermediapreparer.cpp \
     $$PWD/../src/replacejournal.cpp \
     $$PWD/../src/runtimecontract.cpp \
     $$PWD/../src/core/protocol.cpp \

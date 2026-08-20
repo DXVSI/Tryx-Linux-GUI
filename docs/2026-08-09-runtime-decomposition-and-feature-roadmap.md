@@ -265,6 +265,14 @@ revision test перенести к `RuntimeClient`.
 
 ### A3. Вынести PrinterMediaPreparer
 
+**Статус:** выполнено 20 августа 2026 года. Объявление и реализация
+`PrinterMediaPreparer` перенесены в отдельные translation units без изменения
+тела класса, сигналов, slots, queue order и thread lifecycle. Временный private
+adapter `printermediapreparersupport_p.h` оставляет helper implementations в
+`devicemanager.cpp`; эта link-зависимость удаляется первой в A4. Полный
+software `package-check` прошёл, hardware smoke не выполнялся и не требовался
+для refactor без новых USB writes.
+
 **Зависимости:** A1.
 
 **Scope:** перенести уже самостоятельный QObject в
@@ -280,6 +288,8 @@ validation tests проходят без изменения observable behavior.
 
 Последовательно, отдельными изменениями:
 
+- удалить временный `printermediapreparersupport_p.h`, перенеся preparation
+  helpers из `devicemanager.cpp` в их owning modules;
 - `PrinterMediaValidator`;
 - `TurrisMediaWriter` и MXHD validation;
 - overlay/config serializers;

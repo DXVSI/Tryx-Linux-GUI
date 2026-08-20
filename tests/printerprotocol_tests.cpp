@@ -6,6 +6,7 @@
 #include "firmwarebridge.h"
 #include "firmwareupdater.h"
 #include "mediatransform.h"
+#include "printermediapreparer.h"
 #include "runtimebridge.h"
 #include "systemmonitor.h"
 

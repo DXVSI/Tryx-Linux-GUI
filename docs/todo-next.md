@@ -10,7 +10,7 @@
 
 - [x] A1. Зафиксировать characterization baseline.
 - [x] A2. Удалить неиспользуемый remote-mode из `DeviceManager`.
-- [ ] A3. Вынести `PrinterMediaPreparer`.
+- [x] A3. Вынести `PrinterMediaPreparer`.
 - [ ] A4. Вынести чистые media, path и serialization helpers.
 - [ ] A5. Выделить catalog, metrics, artifact и recovery stores.
 
