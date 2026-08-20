@@ -16,5 +16,10 @@ aggregate_check.target = package-check
 aggregate_check.depends = all
 aggregate_check.commands = \
     $(MAKE) -f Makefile.runtime check && \
-    $(MAKE) -f Makefile.quick quick-check
+    $(MAKE) -f Makefile.quick quick-check && \
+    sh $$shell_path($$PWD/tests/check_runtime_refactor_baseline.sh)
 QMAKE_EXTRA_TARGETS += aggregate_check
+
+DISTFILES += \
+    tests/check_runtime_refactor_baseline.sh \
+    tests/runtime-refactor-baseline.md
