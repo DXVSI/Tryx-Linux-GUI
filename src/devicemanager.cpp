@@ -7,12 +7,6 @@
 #include <QCryptographicHash>
 #include <QColor>
 #include <QDBusConnection>
-#include <QDBusConnectionInterface>
-#include <QDBusError>
-#include <QDBusInterface>
-#include <QDBusMessage>
-#include <QDBusPendingCallWatcher>
-#include <QDBusPendingReply>
 #include <QDBusServiceWatcher>
 #include <QDebug>
 #include <QDir>
@@ -4775,16 +4769,6 @@ void DeviceWorker::rebootDevice() {
 DeviceManager::DeviceManager(QObject *parent)
     : DeviceManager(new PrinterDeviceMonitor, true, parent) {}
 
-DeviceManager::DeviceManager(bool remoteMode, QObject *parent)
-    : QObject(parent), remoteMode_(remoteMode) {
-    Q_ASSERT(remoteMode_);
-    initializeRemote();
-}
-
-DeviceManager *DeviceManager::createRemote(QObject *parent) {
-    return new DeviceManager(true, parent);
-}
-
 void DeviceManager::setPrinterOverlayLeaseMode(
     PrinterOverlayLeaseMode mode) {
     printerOverlayLeaseMode_ = mode;
@@ -4815,7 +4799,7 @@ bool DeviceManager::acquireFirmwareExclusive(
         return fail(tr(
             "The firmware transport gate must be acquired on the runtime thread"));
     }
-    if (remoteMode_ || !worker_ || !workerThread_.isRunning()) {
+    if (!worker_ || !workerThread_.isRunning()) {
         return fail(tr(
             "The local device transport is unavailable for firmware flashing"));
     }
@@ -4937,10 +4921,6 @@ void DeviceManager::
             "Device connection remains blocked by firmware recovery"));
         return;
     }
-    if (remoteMode_) {
-        connectDevice();
-        return;
-    }
     if (firmwareExclusiveActive()) {
         // A firmware completion publishes its recovery state before the
         // worker-thread release fence necessarily returns. Preserve this
@@ -4950,802 +4930,6 @@ void DeviceManager::
         return;
     }
     connectDevice();
-}
-
-void DeviceManager::initializeRemote() {
-    registerTryxRuntimeMetaTypes();
-
-    QDBusConnection bus = QDBusConnection::sessionBus();
-    remoteInterface_ = new QDBusInterface(
-        tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
-        tryxRuntimeInterfaceName(), bus, this);
-    remoteOperationsInterface_ = new QDBusInterface(
-        tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
-        tryxRuntimeOperationsInterfaceName(), bus, this);
-    remoteInterface_->setTimeout(2000);
-    remoteOperationsInterface_->setTimeout(2000);
-    remoteServiceWatcher_ = new QDBusServiceWatcher(
-        tryxRuntimeServiceName(), bus,
-        QDBusServiceWatcher::WatchForRegistration |
-            QDBusServiceWatcher::WatchForUnregistration,
-        this);
-    connect(remoteServiceWatcher_, &QDBusServiceWatcher::serviceRegistered,
-            this, &DeviceManager::handleRemoteServiceRegistered);
-    connect(remoteServiceWatcher_, &QDBusServiceWatcher::serviceUnregistered,
-            this, &DeviceManager::handleRemoteServiceUnregistered);
-
-    const QString service = tryxRuntimeServiceName();
-    const QString path = tryxRuntimeObjectPath();
-    const QString interface = tryxRuntimeInterfaceName();
-    bus.connect(service, path, interface, QStringLiteral("DeviceConnected"),
-                this,
-                SLOT(handleRemoteDeviceConnected(QString,QString,QString,QString,bool,bool,quint64)));
-    bus.connect(service, path, interface, QStringLiteral("DeviceDisconnected"),
-                this, SLOT(handleRemoteDeviceDisconnected(quint64)));
-    bus.connect(service, path, interface, QStringLiteral("DeviceError"),
-                this, SLOT(handleRemoteDeviceError(QString,quint64)));
-    bus.connect(service, path, interface, QStringLiteral("BrightnessChanged"),
-                this, SLOT(handleRemoteBrightnessChanged(int,quint64)));
-    bus.connect(service, path, interface, QStringLiteral("ScreenConfigChanged"),
-                this, SLOT(handleRemoteScreenConfigChanged(quint64)));
-    bus.connect(service, path, interface, QStringLiteral("SysinfoSent"),
-                this, SLOT(handleRemoteSysinfoSent(quint64)));
-    bus.connect(service, path, interface,
-                QStringLiteral("PrinterTransportReady"),
-                this, SLOT(handleRemotePrinterTransportReady(quint64)));
-    bus.connect(service, path, interface, QStringLiteral("MediaUploaded"),
-                this, SLOT(handleRemoteMediaUploaded(QString,quint64)));
-    bus.connect(service, path, interface, QStringLiteral("MediaDeleted"),
-                this, SLOT(handleRemoteMediaDeleted(quint64)));
-    bus.connect(service, path, interface, QStringLiteral("MediaListUpdated"),
-                this,
-                SLOT(handleRemoteMediaListUpdated(QStringList,quint64)));
-    bus.connect(service, path, interface, QStringLiteral("UploadStatus"),
-                this, SLOT(handleRemoteUploadStatus(QString,quint64)));
-    bus.connect(service, path, interface,
-                QStringLiteral("PrinterOperationsCancelled"), this,
-                SLOT(handleRemotePrinterOperationsCancelled(quint64)));
-    bus.connect(service, path, interface,
-                QStringLiteral("PrinterDeviceInfoReady"), this,
-                SLOT(handleRemotePrinterDeviceInfoReady(TryxRuntimeDeviceInfo,quint64)));
-    bus.connect(service, path, interface,
-                QStringLiteral("PrinterDeviceInfoFailed"), this,
-                SLOT(handleRemotePrinterDeviceInfoFailed(QString,quint64)));
-    bus.connect(service, path, interface,
-                QStringLiteral("PrinterPresenceChanged"), this,
-                SLOT(handleRemotePrinterPresenceChanged(bool,bool,quint64)));
-    bus.connect(service, path, interface,
-                QStringLiteral("DisplaySessionChanged"), this,
-                SLOT(handleRemoteDisplaySessionChanged(bool,quint64)));
-    const QString operationsInterface = tryxRuntimeOperationsInterfaceName();
-    bus.connect(service, path, operationsInterface,
-                QStringLiteral("OperationChanged"), this,
-                SLOT(handleRemoteOperationChanged(TryxRuntimeOperationInfo,quint64)));
-    bus.connect(service, path, operationsInterface,
-                QStringLiteral("OperationRemoved"), this,
-                SLOT(handleRemoteOperationRemoved(QString,quint64)));
-    bus.connect(service, path, operationsInterface,
-                QStringLiteral("MediaCatalogUpdated"), this,
-                SLOT(handleRemoteMediaCatalogUpdated(TryxRuntimeMediaCatalogSnapshot)));
-    bus.connect(service, path, operationsInterface,
-                QStringLiteral("MetricsStateUpdated"), this,
-                SLOT(handleRemoteMetricsStateUpdated(TryxRuntimeMetricsState)));
-    bus.connect(service, path, operationsInterface,
-                QStringLiteral("DisplayStateUpdated"), this,
-                SLOT(handleRemoteDisplayStateUpdated(TryxRuntimeDisplayState)));
-
-    if (bus.interface() &&
-        bus.interface()->isServiceRegistered(service)) {
-        advanceRemoteServiceEpoch();
-        requestRemoteApiCompatibility();
-    }
-}
-
-void DeviceManager::requestRemoteApiCompatibility() {
-    if (!remoteMode_ || !remoteOperationsInterface_) {
-        return;
-    }
-    remoteApiCompatible_ = false;
-    const quint64 serviceEpoch = remoteServiceEpoch_;
-    auto *watcher = new QDBusPendingCallWatcher(
-        remoteOperationsInterface_->asyncCall(
-            QStringLiteral("GetRuntimeApiVersion")),
-        this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, serviceEpoch]() {
-                const QDBusPendingReply<quint32> reply = *watcher;
-                watcher->deleteLater();
-                if (serviceEpoch != remoteServiceEpoch_) {
-                    return;
-                }
-                if (reply.isError()) {
-                    emit deviceError(
-                        tr("The restarted TRYX runtime API could not be verified: %1")
-                            .arg(reply.error().message()));
-                    return;
-                }
-                if (reply.value() != tryxRuntimeApiVersion()) {
-                    emit deviceError(
-                        tr("The restarted TRYX runtime uses API %1, but this GUI requires API %2")
-                            .arg(reply.value())
-                            .arg(tryxRuntimeApiVersion()));
-                    return;
-                }
-                remoteApiCompatible_ = true;
-                requestRemoteSnapshot();
-                requestRemoteMediaCatalog();
-                requestRemoteOperationsSnapshot();
-                requestRemoteMetricsState();
-                requestRemoteDisplayState();
-            });
-}
-
-void DeviceManager::requestRemoteMediaCatalog() {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        !remoteOperationsInterface_) {
-        return;
-    }
-    const quint64 serviceEpoch = remoteServiceEpoch_;
-    auto *watcher = new QDBusPendingCallWatcher(
-        remoteOperationsInterface_->asyncCall(
-            QStringLiteral("GetMediaCatalog")), this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, serviceEpoch]() {
-                const QDBusPendingReply<TryxRuntimeMediaCatalogSnapshot> reply =
-                    *watcher;
-                watcher->deleteLater();
-                if (serviceEpoch != remoteServiceEpoch_) {
-                    return;
-                }
-                if (reply.isError()) {
-                    if (reply.error().type() != QDBusError::UnknownMethod) {
-                        emit deviceError(
-                            tr("Failed to read the media catalog: %1")
-                                .arg(reply.error().message()));
-                    }
-                    return;
-                }
-                handleRemoteMediaCatalogUpdated(reply.value());
-            });
-}
-
-void DeviceManager::advanceRemoteServiceEpoch() {
-    ++remoteServiceEpoch_;
-    if (remoteServiceEpoch_ == 0) {
-        ++remoteServiceEpoch_;
-    }
-}
-
-void DeviceManager::requestRemoteSnapshot() {
-    if (!remoteMode_ || !remoteApiCompatible_ || !remoteInterface_) {
-        return;
-    }
-    const quint64 serviceEpoch = remoteServiceEpoch_;
-    auto *watcher = new QDBusPendingCallWatcher(
-        remoteInterface_->asyncCall(QStringLiteral("GetSnapshot")), this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, serviceEpoch]() {
-                const QDBusPendingReply<TryxRuntimeSnapshot> reply = *watcher;
-                watcher->deleteLater();
-                if (serviceEpoch != remoteServiceEpoch_) {
-                    return;
-                }
-                if (reply.isError()) {
-                    emit deviceError(
-                        tr("Failed to read the TRYX background runtime state: %1")
-                            .arg(reply.error().message()));
-                    return;
-                }
-                applyRemoteSnapshot(reply.value());
-            });
-}
-
-void DeviceManager::requestRemoteOperationsSnapshot() {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        !remoteOperationsInterface_) {
-        return;
-    }
-    const quint64 serviceEpoch = remoteServiceEpoch_;
-    auto *watcher = new QDBusPendingCallWatcher(
-        remoteOperationsInterface_->asyncCall(QStringLiteral("GetOperations")),
-        this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, serviceEpoch]() {
-                const QDBusPendingReply<TryxRuntimeOperationsSnapshot> reply =
-                    *watcher;
-                watcher->deleteLater();
-                if (serviceEpoch != remoteServiceEpoch_) {
-                    return;
-                }
-                if (reply.isError()) {
-                    emit deviceError(
-                        tr("Failed to read background operation state: %1")
-                            .arg(reply.error().message()));
-                    return;
-                }
-                const TryxRuntimeOperationsSnapshot snapshot = reply.value();
-                if (snapshot.revision < remoteOperationRevision_) {
-                    return;
-                }
-                const QStringList previousIds = operationOrder_;
-                operations_.clear();
-                operationOrder_.clear();
-                for (const TryxRuntimeOperationInfo &info :
-                     snapshot.operations) {
-                    OperationRecord record;
-                    record.info = info;
-                    operations_.insert(info.id, record);
-                    operationOrder_.append(info.id);
-                }
-                activeOperationId_ = snapshot.activeOperationId;
-                remoteOperationRevision_ = snapshot.revision;
-                for (const QString &previousId : previousIds) {
-                    if (!operations_.contains(previousId)) {
-                        emit operationRemoved(previousId,
-                                              remoteOperationRevision_);
-                    }
-                }
-                for (const TryxRuntimeOperationInfo &info :
-                     snapshot.operations) {
-                    emit operationChanged(info, remoteOperationRevision_);
-                }
-                emit operationSnapshotUpdated(snapshot);
-            });
-}
-
-void DeviceManager::requestRemoteMetricsState() {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        !remoteOperationsInterface_) {
-        return;
-    }
-    const quint64 serviceEpoch = remoteServiceEpoch_;
-    auto *watcher = new QDBusPendingCallWatcher(
-        remoteOperationsInterface_->asyncCall(
-            QStringLiteral("GetMetricsState")),
-        this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, serviceEpoch]() {
-                const QDBusPendingReply<TryxRuntimeMetricsState> reply =
-                    *watcher;
-                watcher->deleteLater();
-                if (serviceEpoch != remoteServiceEpoch_) {
-                    return;
-                }
-                if (reply.isError()) {
-                    if (reply.error().type() != QDBusError::UnknownMethod) {
-                        emit deviceError(
-                            tr("Failed to read PASE metrics state: %1")
-                                .arg(reply.error().message()));
-                    }
-                    return;
-                }
-                handleRemoteMetricsStateUpdated(reply.value());
-            });
-}
-
-void DeviceManager::requestRemoteDisplayState() {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        !remoteOperationsInterface_) {
-        return;
-    }
-    const quint64 serviceEpoch = remoteServiceEpoch_;
-    auto *watcher = new QDBusPendingCallWatcher(
-        remoteOperationsInterface_->asyncCall(
-            QStringLiteral("GetDisplayState")),
-        this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, serviceEpoch]() {
-                const QDBusPendingReply<TryxRuntimeDisplayState> reply =
-                    *watcher;
-                watcher->deleteLater();
-                if (serviceEpoch != remoteServiceEpoch_) {
-                    return;
-                }
-                if (reply.isError()) {
-                    emit deviceError(
-                        tr("Failed to read PASE display state: %1")
-                            .arg(reply.error().message()));
-                    return;
-                }
-                handleRemoteDisplayStateUpdated(reply.value());
-            });
-}
-
-void DeviceManager::applyRemoteSnapshot(
-    const TryxRuntimeSnapshot &snapshot) {
-    if (snapshot.revision < remoteRevision_) {
-        return;
-    }
-
-    const bool wasConnected = connected_;
-    const bool oldPresence = remotePrinterClassDevicePresent_;
-    const bool oldSession = printerDisplaySessionActive_;
-    remoteRevision_ = snapshot.revision;
-    connected_ = snapshot.connected;
-    printerClassConnected_ = snapshot.printerClassConnected;
-    remotePrinterClassDevicePresent_ =
-        snapshot.printerClassDevicePresent;
-    printerDisplaySessionActive_ = snapshot.displaySessionActive;
-    if (!remotePrinterClassDevicePresent_) {
-        remoteTypedMediaCatalogAvailable_ = false;
-    } else if (!oldPresence) {
-        requestRemoteMediaCatalog();
-    }
-
-    if (connected_) {
-        emit deviceConnected(snapshot.productId, snapshot.serial,
-                             snapshot.firmware, snapshot.appVersion);
-    } else if (wasConnected) {
-        emit deviceDisconnected();
-    }
-    if (oldPresence != remotePrinterClassDevicePresent_) {
-        emit printerPresenceChanged(remotePrinterClassDevicePresent_);
-    }
-    if (oldSession != printerDisplaySessionActive_) {
-        emit printerDisplaySessionChanged(printerDisplaySessionActive_);
-    }
-    if (!hasTypedMediaCatalog()) {
-        emit mediaListUpdated(snapshot.mediaFiles);
-    }
-    if (!snapshot.diagnostic.isEmpty()) {
-        emit uploadStatus(snapshot.diagnostic);
-    }
-}
-
-bool DeviceManager::acceptRemoteRevision(quint64 revision) {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        revision <= remoteRevision_) {
-        return false;
-    }
-    remoteRevision_ = revision;
-    return true;
-}
-
-void DeviceManager::remoteCall(const QString &method,
-                               const QVariantList &arguments) {
-    if (!remoteMode_ || !remoteInterface_) {
-        return;
-    }
-    if (!remoteApiCompatible_) {
-        emit deviceError(
-            tr("Background runtime call %1 was blocked until its API is verified")
-                .arg(method));
-        return;
-    }
-    const quint64 serviceEpoch = remoteServiceEpoch_;
-    auto *watcher = new QDBusPendingCallWatcher(
-        remoteInterface_->asyncCallWithArgumentList(method, arguments), this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, method, watcher, serviceEpoch]() {
-                const QDBusPendingReply<> reply = *watcher;
-                watcher->deleteLater();
-                if (serviceEpoch != remoteServiceEpoch_) {
-                    return;
-                }
-                if (reply.isError()) {
-                    emit deviceError(
-                        tr("Background runtime call %1 failed: %2")
-                            .arg(method, reply.error().message()));
-                }
-            });
-}
-
-void DeviceManager::remoteOperationCall(const QString &method,
-                                        const QVariantList &arguments) {
-    if (!remoteMode_ || !remoteOperationsInterface_) {
-        return;
-    }
-    QString operationId;
-    if ((method == QStringLiteral("QueueUpload") ||
-         method == QStringLiteral("QueueUploadWithTransform") ||
-         method == QStringLiteral("QueueUploadWithApply") ||
-         method == QStringLiteral("QueueUploadWithApplyAndTransform") ||
-         method == QStringLiteral("QueueEnsureMediaAndApply") ||
-         method ==
-             QStringLiteral("QueueEnsureMediaAndApplyWithTransform") ||
-         method == QStringLiteral("QueueDeleteMedia") ||
-         method == QStringLiteral("QueueApply") ||
-         method == QStringLiteral("QueueApplyWithMetrics") ||
-         method == QStringLiteral("QueueMetricsConfig")) &&
-        !arguments.isEmpty()) {
-        operationId = arguments.first().toString();
-    } else if (method == QStringLiteral("RetryOperation") &&
-               arguments.size() > 1) {
-        operationId = arguments.at(1).toString();
-    }
-    if (!remoteApiCompatible_) {
-        const QString message =
-            tr("Background operation %1 was blocked until the runtime API is verified")
-                .arg(method);
-        if (!operationId.isEmpty()) {
-            failRemoteOperationRequest(operationId, message);
-        }
-        emit deviceError(message);
-        return;
-    }
-    const quint64 serviceEpoch = remoteServiceEpoch_;
-    auto *watcher = new QDBusPendingCallWatcher(
-        remoteOperationsInterface_->asyncCallWithArgumentList(method,
-                                                               arguments),
-        this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, method, operationId, watcher, serviceEpoch]() {
-                const QDBusMessage reply = watcher->reply();
-                watcher->deleteLater();
-                if (serviceEpoch != remoteServiceEpoch_) {
-                    return;
-                }
-                if (reply.type() == QDBusMessage::ErrorMessage) {
-                    const QString message =
-                        tr("Background operation call %1 failed: %2")
-                            .arg(method, reply.errorMessage());
-                    if (!operationId.isEmpty()) {
-                        failRemoteOperationRequest(operationId, message);
-                    }
-                    emit deviceError(message);
-                }
-            });
-}
-
-void DeviceManager::trackRemoteOperationRequest(
-    const TryxRuntimeOperationInfo &source) {
-    if (!remoteMode_ || source.id.isEmpty() ||
-        operations_.contains(source.id)) {
-        return;
-    }
-    OperationRecord record;
-    record.info = source;
-    record.info.state = QStringLiteral("Queued");
-    record.info.stage = QStringLiteral("Dispatching");
-    record.info.message = tr("Submitting operation to the background runtime...");
-    operations_.insert(record.info.id, record);
-    operationOrder_.append(record.info.id);
-    activeOperationId_ = record.info.id;
-    emit operationChanged(record.info, remoteOperationRevision_);
-}
-
-void DeviceManager::failRemoteOperationRequest(
-    const QString &operationId, const QString &message) {
-    if (!remoteMode_ || operationId.isEmpty()) {
-        return;
-    }
-    auto found = operations_.find(operationId);
-    if (found == operations_.end()) {
-        OperationRecord record;
-        record.info.id = operationId;
-        operations_.insert(operationId, record);
-        operationOrder_.append(operationId);
-        found = operations_.find(operationId);
-    }
-    if (operationIsTerminal(found->info.state)) {
-        return;
-    }
-    found->info.state = QStringLiteral("Failed");
-    found->info.stage = QStringLiteral("Failed");
-    found->info.errorCategory = QStringLiteral("RuntimeUnavailable");
-    found->info.retryMode.clear();
-    found->info.message = message;
-    if (activeOperationId_ == operationId) {
-        activeOperationId_.clear();
-    }
-    emit operationChanged(found->info, remoteOperationRevision_);
-    emit operationSnapshotUpdated(operationSnapshot());
-}
-
-void DeviceManager::handleRemoteDeviceConnected(
-    const QString &productId, const QString &serial,
-    const QString &firmware, const QString &appVersion,
-    bool printerClassConnected, bool printerClassDevicePresent,
-    quint64 revision) {
-    if (!acceptRemoteRevision(revision)) {
-        return;
-    }
-    connected_ = true;
-    printerClassConnected_ = printerClassConnected;
-    remotePrinterClassDevicePresent_ = printerClassDevicePresent;
-    if (!printerClassDevicePresent) {
-        remoteTypedMediaCatalogAvailable_ = false;
-    } else {
-        requestRemoteMediaCatalog();
-    }
-    emit deviceConnected(productId, serial, firmware, appVersion);
-}
-
-void DeviceManager::handleRemoteDeviceDisconnected(quint64 revision) {
-    if (!acceptRemoteRevision(revision)) {
-        return;
-    }
-    const bool notify = connected_;
-    connected_ = false;
-    printerClassConnected_ = false;
-    printerDisplaySessionActive_ = false;
-    remotePrinterClassDevicePresent_ = false;
-    remoteTypedMediaCatalogAvailable_ = false;
-    if (notify) {
-        emit deviceDisconnected();
-    }
-}
-
-void DeviceManager::handleRemoteDeviceError(const QString &message,
-                                            quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit deviceError(message);
-    }
-}
-
-void DeviceManager::handleRemoteBrightnessChanged(int value,
-                                                  quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit brightnessChanged(value);
-    }
-}
-
-void DeviceManager::handleRemoteScreenConfigChanged(quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit screenConfigChanged();
-    }
-}
-
-void DeviceManager::handleRemoteSysinfoSent(quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit sysinfoSent();
-    }
-}
-
-void DeviceManager::handleRemotePrinterTransportReady(
-    quint64 revision) {
-    if (acceptRemoteRevision(revision) &&
-        remotePrinterClassDevicePresent_ &&
-        printerDisplaySessionActive_ &&
-        activeOperationId_.isEmpty()) {
-        emit printerTransportReady();
-    }
-}
-
-void DeviceManager::handleRemoteMediaUploaded(const QString &filename,
-                                              quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit mediaUploaded(filename);
-    }
-}
-
-void DeviceManager::handleRemoteMediaDeleted(quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit mediaDeleted();
-    }
-}
-
-void DeviceManager::handleRemoteMediaListUpdated(const QStringList &files,
-                                                 quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        if (!hasTypedMediaCatalog()) {
-            emit mediaListUpdated(files);
-        }
-    }
-}
-
-void DeviceManager::handleRemoteMediaCatalogUpdated(
-    const TryxRuntimeMediaCatalogSnapshot &snapshot) {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        (remoteTypedMediaCatalogAvailable_ &&
-         snapshot.revision <= remoteCatalogRevision_)) {
-        return;
-    }
-    remoteTypedMediaCatalogAvailable_ =
-        remotePrinterClassDevicePresent_ || printerClassConnected_;
-    remoteCatalogRevision_ = snapshot.revision;
-    mediaCatalog_ = snapshot;
-    QStringList files;
-    QSet<QString> seen;
-    for (const TryxRuntimeMediaEntry &entry : snapshot.entries) {
-        if (!seen.contains(entry.name)) {
-            seen.insert(entry.name);
-            files.append(entry.name);
-        }
-    }
-    if (remoteTypedMediaCatalogAvailable_) {
-        emit mediaCatalogUpdated(mediaCatalog_);
-        emit mediaListUpdated(files);
-    }
-}
-
-void DeviceManager::handleRemoteUploadStatus(const QString &status,
-                                             quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit uploadStatus(status);
-    }
-}
-
-void DeviceManager::handleRemotePrinterOperationsCancelled(
-    quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit printerOperationsCancelled();
-    }
-}
-
-void DeviceManager::handleRemotePrinterDeviceInfoReady(
-    const TryxRuntimeDeviceInfo &source, quint64 revision) {
-    if (!acceptRemoteRevision(revision)) {
-        return;
-    }
-    PrinterProtocol::DeviceInfo info;
-    info.devicePath = source.devicePath;
-    info.manufacturer = source.manufacturer;
-    info.usbProduct = source.usbProduct;
-    info.usbSerial = source.usbSerial;
-    info.osName = source.osName;
-    info.osVersion = source.osVersion;
-    info.firmwareVersion = source.firmwareVersion;
-    info.productName = source.productName;
-    info.appVersion = source.appVersion;
-    info.serialNumber = source.serialNumber;
-    info.chipId = source.chipId;
-    info.serialNumberLocked = source.serialNumberLocked;
-    emit printerDeviceInfoReady(info);
-}
-
-void DeviceManager::handleRemotePrinterDeviceInfoFailed(
-    const QString &message, quint64 revision) {
-    if (acceptRemoteRevision(revision)) {
-        emit printerDeviceInfoFailed(message);
-    }
-}
-
-void DeviceManager::handleRemotePrinterPresenceChanged(
-    bool present, bool printerClassConnected, quint64 revision) {
-    if (!acceptRemoteRevision(revision)) {
-        return;
-    }
-    remotePrinterClassDevicePresent_ = present;
-    printerClassConnected_ = printerClassConnected;
-    if (!present) {
-        remoteTypedMediaCatalogAvailable_ = false;
-    } else {
-        requestRemoteMediaCatalog();
-    }
-    emit printerPresenceChanged(present);
-}
-
-void DeviceManager::handleRemoteDisplaySessionChanged(bool active,
-                                                      quint64 revision) {
-    if (!acceptRemoteRevision(revision)) {
-        return;
-    }
-    printerDisplaySessionActive_ = active;
-    emit printerDisplaySessionChanged(active);
-}
-
-void DeviceManager::handleRemoteOperationChanged(
-    const TryxRuntimeOperationInfo &info, quint64 revision) {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        revision <= remoteOperationRevision_ ||
-        info.id.isEmpty()) {
-        return;
-    }
-    remoteOperationRevision_ = revision;
-    if (!operations_.contains(info.id)) {
-        operationOrder_.append(info.id);
-    }
-    OperationRecord record;
-    record.info = info;
-    operations_.insert(info.id, record);
-    if (operationIsTerminal(info.state)) {
-        if (activeOperationId_ == info.id) {
-            activeOperationId_.clear();
-        }
-    } else {
-        activeOperationId_ = info.id;
-    }
-    emit operationChanged(info, revision);
-}
-
-void DeviceManager::handleRemoteOperationRemoved(
-    const QString &operationId, quint64 revision) {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        revision <= remoteOperationRevision_) {
-        return;
-    }
-    remoteOperationRevision_ = revision;
-    operations_.remove(operationId);
-    operationOrder_.removeAll(operationId);
-    if (activeOperationId_ == operationId) {
-        activeOperationId_.clear();
-    }
-    emit operationRemoved(operationId, revision);
-}
-
-void DeviceManager::handleRemoteMetricsStateUpdated(
-    const TryxRuntimeMetricsState &state) {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        state.revision < remoteMetricsRevision_) {
-        return;
-    }
-    remoteMetricsRevision_ = state.revision;
-    metricsState_ = state;
-    emit metricsStateUpdated(metricsState_);
-}
-
-void DeviceManager::handleRemoteDisplayStateUpdated(
-    const TryxRuntimeDisplayState &state) {
-    if (!remoteMode_ || !remoteApiCompatible_ ||
-        (remoteDisplayRevisionReceived_ &&
-         state.revision <= remoteDisplayRevision_)) {
-        return;
-    }
-    remoteDisplayRevision_ = state.revision;
-    remoteDisplayRevisionReceived_ = true;
-    const int previousBrightness = displayState_.brightness;
-    const bool hadValidState = displayState_.valid;
-    displayState_ = state;
-    emit displayStateUpdated(displayState_);
-    if (displayState_.valid &&
-        (!hadValidState ||
-         previousBrightness != displayState_.brightness)) {
-        emit brightnessChanged(displayState_.brightness);
-    }
-}
-
-void DeviceManager::handleRemoteServiceRegistered(const QString &service) {
-    Q_UNUSED(service);
-    advanceRemoteServiceEpoch();
-    remoteRevision_ = 0;
-    remoteOperationRevision_ = 0;
-    remoteCatalogRevision_ = 0;
-    remoteMetricsRevision_ = 0;
-    remoteDisplayRevision_ = 0;
-    remoteDisplayRevisionReceived_ = false;
-    remoteApiCompatible_ = false;
-    remoteTypedMediaCatalogAvailable_ = false;
-    requestRemoteApiCompatibility();
-}
-
-void DeviceManager::handleRemoteServiceUnregistered(const QString &service) {
-    Q_UNUSED(service);
-    const bool wasConnected = connected_;
-    const bool hadPresence = remotePrinterClassDevicePresent_;
-    const bool hadSession = printerDisplaySessionActive_;
-    advanceRemoteServiceEpoch();
-    remoteRevision_ = 0;
-    remoteOperationRevision_ = 0;
-    remoteCatalogRevision_ = 0;
-    remoteMetricsRevision_ = 0;
-    remoteDisplayRevision_ = 0;
-    remoteDisplayRevisionReceived_ = false;
-    remoteApiCompatible_ = false;
-    remoteTypedMediaCatalogAvailable_ = false;
-    connected_ = false;
-    printerClassConnected_ = false;
-    remotePrinterClassDevicePresent_ = false;
-    printerDisplaySessionActive_ = false;
-    mediaCatalog_ = TryxRuntimeMediaCatalogSnapshot{};
-    emit mediaCatalogUpdated(mediaCatalog_);
-    const QString runtimeStopped = tr("TRYX background runtime stopped");
-    metricsState_ = TryxRuntimeMetricsState{};
-    metricsState_.diagnostic = runtimeStopped;
-    emit metricsStateUpdated(metricsState_);
-    displayState_ = TryxRuntimeDisplayState{};
-    displayState_.diagnostic = runtimeStopped;
-    emit displayStateUpdated(displayState_);
-    const QStringList oldOperationIds = operationOrder_;
-    for (const QString &operationId : oldOperationIds) {
-        const auto found = operations_.constFind(operationId);
-        if (found != operations_.constEnd() &&
-            !operationIsTerminal(found->info.state)) {
-            failRemoteOperationRequest(operationId, runtimeStopped);
-        }
-    }
-    activeOperationId_.clear();
-    emit operationSnapshotUpdated(operationSnapshot());
-    if (wasConnected) {
-        emit deviceDisconnected();
-    }
-    if (hadPresence) {
-        emit printerPresenceChanged(false);
-    }
-    if (hadSession) {
-        emit printerDisplaySessionChanged(false);
-    }
-    emit deviceError(runtimeStopped);
 }
 
 DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
@@ -8612,9 +7796,6 @@ void DeviceManager::preserveActivePreparedMediaForShutdown() {
 }
 
 DeviceManager::~DeviceManager() {
-    if (remoteMode_) {
-        return;
-    }
     if (artifactSweepTimer_) {
         artifactSweepTimer_->stop();
     }
@@ -8898,10 +8079,6 @@ void DeviceManager::handlePrinterSnapshot(
 }
 
 void DeviceManager::connectDevice(const QString &port) {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("ConnectDevice"), {port});
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -9039,10 +8216,6 @@ void DeviceManager::connectDevice(const QString &port) {
 }
 
 void DeviceManager::disconnectDevice() {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("DisconnectDevice"));
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -9074,10 +8247,6 @@ void DeviceManager::disconnectDevice() {
 }
 
 void DeviceManager::requestDeviceInfo() {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("RequestDeviceInfo"));
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit printerDeviceInfoFailed(
             firmwareExclusiveStatusText());
@@ -9106,9 +8275,6 @@ void DeviceManager::requestDeviceInfo() {
 }
 
 bool DeviceManager::isPrinterClassDevicePresent() const {
-    if (remoteMode_) {
-        return remotePrinterClassDevicePresent_;
-    }
     return printerClassConnected_ || printerSnapshot_.blocksLegacyTransport();
 }
 
@@ -9261,7 +8427,7 @@ QString DeviceManager::firmwareExclusiveStatusText() const {
 }
 
 void DeviceManager::resumePrinterSessionAfterRetryCacheValidation() {
-    if (remoteMode_ || !worker_ ||
+    if (!worker_ ||
         firmwareExclusiveActive() ||
         firmwareRecoveryInterlockActive_ ||
         !pendingRetryValidationId_.isEmpty() ||
@@ -9305,7 +8471,7 @@ void DeviceManager::requirePrinterRecovery(const QString &message) {
     printerSessionResumePending_ = false;
     printerSessionResumeSerial_.clear();
     printerSessionResumeProductId_ = 0;
-    if (!remoteMode_ && worker_) {
+    if (worker_) {
         if (enteringRecovery) {
             ++printerGeneration_;
             emit requestCancelPrinterPreparation(printerGeneration_);
@@ -9923,8 +9089,7 @@ bool DeviceManager::operationIsTerminal(const QString &state) const {
 
 TryxRuntimeOperationsSnapshot DeviceManager::operationSnapshot() const {
     TryxRuntimeOperationsSnapshot snapshot;
-    snapshot.revision = remoteMode_ ? remoteOperationRevision_
-                                    : operationRevision_;
+    snapshot.revision = operationRevision_;
     snapshot.activeOperationId = activeOperationId_;
     for (const QString &operationId : operationOrder_) {
         const auto found = operations_.constFind(operationId);
@@ -9963,19 +9128,11 @@ QStringList DeviceManager::metricsCapabilities() const {
 }
 
 void DeviceManager::publishMetricsState() {
-    if (remoteMode_) {
-        emit metricsStateUpdated(metricsState_);
-        return;
-    }
     ++metricsState_.revision;
     emit metricsStateUpdated(metricsState_);
 }
 
 void DeviceManager::publishDisplayState() {
-    if (remoteMode_) {
-        emit displayStateUpdated(displayState_);
-        return;
-    }
     ++displayState_.revision;
     emit displayStateUpdated(displayState_);
 }
@@ -11118,8 +10275,7 @@ void DeviceManager::pruneOperationHistory() {
 QString DeviceManager::queueStageDeviceMediaOperation(
     const QString &requestedOperationId, const QString &mediaId,
     const QString &ownerUniqueName) {
-    if (remoteMode_ ||
-        !isValidDbusUniqueName(ownerUniqueName)) {
+    if (!isValidDbusUniqueName(ownerUniqueName)) {
         return {};
     }
     const QString operationId =
@@ -11454,8 +10610,7 @@ QString DeviceManager::queueRecoveredOperation(
     const TryxRuntimeMediaTransform &transform, bool replace,
     const QString &originalMediaId,
     const TryxRuntimeApplyRequest &applyRequest) {
-    if (remoteMode_ ||
-        !isValidDbusUniqueName(ownerUniqueName)) {
+    if (!isValidDbusUniqueName(ownerUniqueName)) {
         return {};
     }
     const QString operationId =
@@ -11738,7 +10893,7 @@ QString DeviceManager::queueUploadOperation(const QString &requestedOperationId,
     const QString canonicalSource =
         QFileInfo(localPath).canonicalFilePath();
     const bool quickStagedRequest =
-        !remoteMode_ && !managedRoot.isEmpty() &&
+        !managedRoot.isEmpty() &&
         (pathIsInside(localPath, managedRoot) ||
          (!canonicalSource.isEmpty() &&
           pathIsInside(canonicalSource, managedRoot)));
@@ -11759,31 +10914,6 @@ QString DeviceManager::queueUploadOperation(const QString &requestedOperationId,
                            mediaSpoolDirectory())
             ? operationId
             : rejectedResult();
-    }
-    if (remoteMode_) {
-        TryxRuntimeOperationInfo pending;
-        pending.id = operationId;
-        pending.kind = kind;
-        pending.subject = subject;
-        pending.applyAfterUpload = applyAfterUpload;
-        trackRemoteOperationRequest(pending);
-        if (ensureExisting) {
-            remoteOperationCall(
-                QStringLiteral("QueueEnsureMediaAndApplyWithTransform"),
-                {operationId, localPath,
-                 QVariant::fromValue(applyRequest),
-                 QVariant::fromValue(transform)});
-        } else if (applyAfterUpload) {
-            remoteOperationCall(
-                QStringLiteral("QueueUploadWithApplyAndTransform"),
-                {operationId, localPath, QVariant::fromValue(applyRequest),
-                 QVariant::fromValue(transform)});
-        } else {
-            remoteOperationCall(
-                QStringLiteral("QueueUploadWithTransform"),
-                {operationId, localPath, QVariant::fromValue(transform)});
-        }
-        return operationId;
     }
     if (operations_.contains(operationId)) {
         return quickStagedRequest &&
@@ -12028,16 +11158,6 @@ QString DeviceManager::queueDeleteMediaOperation(
     }
     const QString kind = QStringLiteral("DeleteMedia");
     const QString subject = fileNames.join(QStringLiteral(", "));
-    if (remoteMode_) {
-        TryxRuntimeOperationInfo pending;
-        pending.id = operationId;
-        pending.kind = kind;
-        pending.subject = subject;
-        trackRemoteOperationRequest(pending);
-        remoteOperationCall(QStringLiteral("QueueDeleteMedia"),
-                            {operationId, fileNames});
-        return operationId;
-    }
     if (operations_.contains(operationId)) {
         return operationId;
     }
@@ -12219,19 +11339,6 @@ QString DeviceManager::queueApplyOperation(const QString &requestedOperationId,
     const QString subject = hasMediaChange
         ? subjectMedia.join(QStringLiteral(" + "))
         : tr("Display settings");
-    if (remoteMode_) {
-        TryxRuntimeOperationInfo pending;
-        pending.id = operationId;
-        pending.kind = QStringLiteral("Apply");
-        pending.subject = subject;
-        trackRemoteOperationRequest(pending);
-        remoteOperationCall(normalizedRequest.replaceOverlay
-                                ? QStringLiteral("QueueApplyWithMetrics")
-                                : QStringLiteral("QueueApply"),
-                            {operationId,
-                             QVariant::fromValue(normalizedRequest)});
-        return operationId;
-    }
     if (operations_.contains(operationId)) {
         return operationId;
     }
@@ -12389,17 +11496,6 @@ QString DeviceManager::queueMetricsConfigOperation(
     const QString subject = request.enabled
         ? request.metrics.join(QStringLiteral(", "))
         : tr("Disabled");
-    if (remoteMode_) {
-        TryxRuntimeOperationInfo pending;
-        pending.id = operationId;
-        pending.kind = QStringLiteral("MetricsConfig");
-        pending.subject = subject;
-        trackRemoteOperationRequest(pending);
-        remoteOperationCall(
-            QStringLiteral("QueueMetricsConfig"),
-            {operationId, QVariant::fromValue(request)});
-        return operationId;
-    }
     if (operations_.contains(operationId)) {
         return operationId;
     }
@@ -12507,21 +11603,6 @@ QString DeviceManager::retryOperation(const QString &sourceOperationId,
         normalizedOperationId(requestedNewOperationId);
     if (newOperationId.isEmpty()) {
         return {};
-    }
-    if (remoteMode_) {
-        const TryxRuntimeOperationInfo sourceInfo =
-            operationInfo(sourceOperationId);
-        TryxRuntimeOperationInfo pending;
-        pending.id = newOperationId;
-        pending.parentId = sourceOperationId;
-        pending.kind = QStringLiteral("UploadRetry");
-        pending.subject = sourceInfo.subject;
-        pending.attempt = sourceInfo.attempt + 1;
-        pending.applyAfterUpload = sourceInfo.applyAfterUpload;
-        trackRemoteOperationRequest(pending);
-        remoteOperationCall(QStringLiteral("RetryOperation"),
-                            {sourceOperationId, newOperationId});
-        return newOperationId;
     }
     if (operations_.contains(newOperationId)) {
         return newOperationId;
@@ -12696,10 +11777,6 @@ QString DeviceManager::retryOperation(const QString &sourceOperationId,
 }
 
 void DeviceManager::cancelOperation(const QString &operationId) {
-    if (remoteMode_) {
-        remoteOperationCall(QStringLiteral("CancelOperation"), {operationId});
-        return;
-    }
     auto found = operations_.find(operationId);
     if (found == operations_.end()) {
         return;
@@ -14628,10 +13705,6 @@ void DeviceManager::handleRetryCacheValidation(
 
 void DeviceManager::setBrightness(int value) {
     const int boundedValue = qBound(0, value, 100);
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("SetBrightness"), {boundedValue});
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -14654,14 +13727,6 @@ void DeviceManager::setScreenConfig(
     const QStringList &settingsBadges, int filterOpacity,
     const QString &presetId, const QStringList &sysinfoLabels2,
     const QStringList &settingsBadges2, bool waterfallMode) {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("SetScreenConfig"),
-                   {media, ratio, screenMode, playMode, sysinfoLabels,
-                    settingsPosition, settingsColor, settingsAlign,
-                    settingsBadges, filterOpacity, presetId,
-                    sysinfoLabels2, settingsBadges2, waterfallMode});
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -14707,10 +13772,6 @@ void DeviceManager::setScreenConfig(
 void DeviceManager::sendSysinfo(const QStringList &labels,
                                 const QStringList &values,
                                 const QStringList &units) {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("SendSysinfo"), {labels, values, units});
-        return;
-    }
     if (firmwareExclusiveActive()) {
         return;
     }
@@ -14737,10 +13798,6 @@ void DeviceManager::sendSysinfo(const QStringList &labels,
 }
 
 void DeviceManager::setRotation(int degrees) {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("SetRotation"), {degrees});
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -14754,10 +13811,6 @@ void DeviceManager::setRotation(int degrees) {
 }
 
 void DeviceManager::rebootDevice() {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("RebootDevice"));
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -14771,10 +13824,6 @@ void DeviceManager::rebootDevice() {
 }
 
 void DeviceManager::deleteMedia(const QStringList &files) {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("DeleteMedia"), {files});
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -14788,10 +13837,6 @@ void DeviceManager::deleteMedia(const QStringList &files) {
 }
 
 void DeviceManager::uploadMedia(const QString &localPath) {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("UploadMedia"), {localPath});
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -14809,10 +13854,6 @@ void DeviceManager::uploadMedia(const QString &localPath) {
 }
 
 void DeviceManager::refreshMediaList() {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("RefreshMediaList"));
-        return;
-    }
     if (firmwareExclusiveActive()) {
         emit deviceError(firmwareExclusiveStatusText());
         return;
@@ -14855,10 +13896,6 @@ void DeviceManager::refreshMediaList() {
 }
 
 void DeviceManager::startKeepalive(int intervalSec) {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("StartKeepalive"), {intervalSec});
-        return;
-    }
     if (firmwareExclusiveActive()) {
         return;
     }
@@ -14870,9 +13907,5 @@ void DeviceManager::startKeepalive(int intervalSec) {
 }
 
 void DeviceManager::stopKeepalive() {
-    if (remoteMode_) {
-        remoteCall(QStringLiteral("StopKeepalive"));
-        return;
-    }
     keepaliveTimer_->stop();
 }

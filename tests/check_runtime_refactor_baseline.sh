@@ -75,6 +75,7 @@ require_tests \
     "$project_root/build/quick-tests/tryx-quick-tests" <<'EOF'
 legacyScreenConfigKeepsManager1Shape
 operationsRejectStaleEvents
+displayStateRequiresStrictlyIncreasingRevision
 operationAcknowledgementRequiresExactIdentity
 deviceMediaWorkflowInvalidationStopsReplaceMutations
 windowChromeHidesAndRestoresOnlyWithTray

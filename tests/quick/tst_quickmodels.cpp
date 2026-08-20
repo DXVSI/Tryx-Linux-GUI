@@ -64,6 +64,7 @@ private slots:
     void legacyUploadRetainsSourceUntilTerminalSignal();
     void operationsExposeStableRoles();
     void operationsRejectStaleEvents();
+    void displayStateRequiresStrictlyIncreasingRevision();
     void operationAcknowledgementRequiresExactIdentity();
     void succeededOperationClearsBusyState();
     void deviceMediaWorkflowRejectsMismatchedClaimIdentity();
@@ -1319,6 +1320,61 @@ void QuickClientTests::operationsRejectStaleEvents() {
     QVERIFY(!model.applySnapshot(staleSnapshot));
     QCOMPARE(model.rowCount(), 1);
     QCOMPARE(model.revision(), 10U);
+}
+
+void QuickClientTests::
+    displayStateRequiresStrictlyIncreasingRevision() {
+    RuntimeClient runtime(true);
+    runtime.compatible_ = true;
+    QSignalSpy displaySpy(
+        &runtime, &RuntimeClient::displayChanged);
+
+    TryxRuntimeDisplayState initial;
+    initial.revision = 0;
+    initial.valid = true;
+    initial.brightness = 41;
+    runtime.onDisplayStateUpdated(initial);
+    QCOMPARE(displaySpy.count(), 1);
+    QCOMPARE(runtime.brightness(), 41);
+
+    TryxRuntimeDisplayState duplicate = initial;
+    duplicate.brightness = 99;
+    runtime.onDisplayStateUpdated(duplicate);
+    QCOMPARE(displaySpy.count(), 1);
+    QCOMPARE(runtime.brightness(), 41);
+
+    TryxRuntimeDisplayState newer = initial;
+    newer.revision = 1;
+    newer.brightness = 73;
+    runtime.onDisplayStateUpdated(newer);
+    QCOMPARE(displaySpy.count(), 2);
+    QCOMPARE(runtime.brightness(), 73);
+
+    runtime.onDisplayStateUpdated(initial);
+    QCOMPARE(displaySpy.count(), 2);
+    QCOMPARE(runtime.brightness(), 73);
+
+    runtime.clearRuntimeState();
+    runtime.compatible_ = true;
+    displaySpy.clear();
+    TryxRuntimeDisplayState afterRestart = initial;
+    afterRestart.brightness = 64;
+    runtime.onDisplayStateUpdated(afterRestart);
+    QCOMPARE(displaySpy.count(), 1);
+    QCOMPARE(runtime.brightness(), 64);
+
+    RuntimeClient legacyRuntime(true);
+    legacyRuntime.compatible_ = true;
+    legacyRuntime.connection_.connected = true;
+    legacyRuntime.onLegacyBrightnessChanged(55, 5);
+    QCOMPARE(legacyRuntime.brightness(), 55);
+
+    TryxRuntimeDisplayState staleAfterLegacy;
+    staleAfterLegacy.revision = 4;
+    staleAfterLegacy.valid = true;
+    staleAfterLegacy.brightness = 99;
+    legacyRuntime.onDisplayStateUpdated(staleAfterLegacy);
+    QCOMPARE(legacyRuntime.brightness(), 55);
 }
 
 void QuickClientTests::

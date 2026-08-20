@@ -15,7 +15,6 @@
 #include <QSet>
 #include <QThread>
 #include <QTimer>
-#include <QVariant>
 
 #include <atomic>
 #include <memory>
@@ -27,7 +26,6 @@
 #include <panorama/media.hpp>
 
 class QProcess;
-class QDBusInterface;
 class QDBusServiceWatcher;
 class SystemMonitor;
 
@@ -463,26 +461,15 @@ public:
     explicit DeviceManager(QObject *parent = nullptr);
     ~DeviceManager() override;
 
-    static DeviceManager *createRemote(QObject *parent = nullptr);
-
     bool isConnected() const { return connected_; }
     bool isPrinterClassConnected() const { return printerClassConnected_; }
     bool isPrinterClassDevicePresent() const;
     bool isPrinterDisplaySessionActive() const {
         return printerDisplaySessionActive_;
     }
-    bool isRemote() const { return remoteMode_; }
     void setPrinterOverlayLeaseMode(PrinterOverlayLeaseMode mode);
     bool firmwareFlashAllowedForCurrentDevice(
         QString *errorMessage = nullptr) const;
-    bool hasTypedMediaCatalog() const {
-        return remoteMode_
-            ? isPrinterClassDevicePresent() &&
-                  remoteTypedMediaCatalogAvailable_
-            : isPrinterClassDevicePresent() &&
-                  currentPrinterSupportsMediaCatalog();
-    }
-
 #ifdef TRYX_PROTOCOL_TESTING
     static DeviceManager *createForTesting(const QString &sysfsRoot,
                                            const QString &devRoot,
@@ -761,26 +748,8 @@ private:
 #ifdef TRYX_PROTOCOL_TESTING
     friend class PrinterProtocolTests;
 #endif
-    explicit DeviceManager(bool remoteMode, QObject *parent);
     DeviceManager(PrinterDeviceMonitor *printerMonitor,
                   bool startPrinterMonitor, QObject *parent);
-    void initializeRemote();
-    void advanceRemoteServiceEpoch();
-    void requestRemoteApiCompatibility();
-    void requestRemoteSnapshot();
-    void requestRemoteMediaCatalog();
-    void requestRemoteOperationsSnapshot();
-    void requestRemoteMetricsState();
-    void requestRemoteDisplayState();
-    void applyRemoteSnapshot(const TryxRuntimeSnapshot &snapshot);
-    bool acceptRemoteRevision(quint64 revision);
-    void remoteCall(const QString &method,
-                    const QVariantList &arguments = {});
-    void remoteOperationCall(const QString &method,
-                             const QVariantList &arguments = {});
-    void trackRemoteOperationRequest(const TryxRuntimeOperationInfo &info);
-    void failRemoteOperationRequest(const QString &operationId,
-                                    const QString &message);
     void setPrinterDisplaySessionActive(bool active);
     void handlePrinterSnapshot(const PrinterProtocol::DiscoverySnapshot &snapshot);
     void attachPrinterClassDevice(const PrinterProtocol::UsbPrinterDevice &device);
@@ -915,48 +884,6 @@ private:
     void loadDeleteIntent();
     void resumePendingDeleteReconciliation();
 
-private slots:
-    void handleRemoteDeviceConnected(const QString &productId,
-                                     const QString &serial,
-                                     const QString &firmware,
-                                     const QString &appVersion,
-                                     bool printerClassConnected,
-                                     bool printerClassDevicePresent,
-                                     quint64 revision);
-    void handleRemoteDeviceDisconnected(quint64 revision);
-    void handleRemoteDeviceError(const QString &message, quint64 revision);
-    void handleRemoteBrightnessChanged(int value, quint64 revision);
-    void handleRemoteScreenConfigChanged(quint64 revision);
-    void handleRemoteSysinfoSent(quint64 revision);
-    void handleRemotePrinterTransportReady(quint64 revision);
-    void handleRemoteMediaUploaded(const QString &filename,
-                                   quint64 revision);
-    void handleRemoteMediaDeleted(quint64 revision);
-    void handleRemoteMediaListUpdated(const QStringList &files,
-                                      quint64 revision);
-    void handleRemoteMediaCatalogUpdated(
-        const TryxRuntimeMediaCatalogSnapshot &snapshot);
-    void handleRemoteUploadStatus(const QString &status, quint64 revision);
-    void handleRemotePrinterOperationsCancelled(quint64 revision);
-    void handleRemotePrinterDeviceInfoReady(const TryxRuntimeDeviceInfo &info,
-                                            quint64 revision);
-    void handleRemotePrinterDeviceInfoFailed(const QString &message,
-                                             quint64 revision);
-    void handleRemotePrinterPresenceChanged(bool present,
-                                            bool printerClassConnected,
-                                            quint64 revision);
-    void handleRemoteDisplaySessionChanged(bool active, quint64 revision);
-    void handleRemoteOperationChanged(const TryxRuntimeOperationInfo &info,
-                                      quint64 revision);
-    void handleRemoteOperationRemoved(const QString &operationId,
-                                      quint64 revision);
-    void handleRemoteMetricsStateUpdated(
-        const TryxRuntimeMetricsState &state);
-    void handleRemoteDisplayStateUpdated(
-        const TryxRuntimeDisplayState &state);
-    void handleRemoteServiceRegistered(const QString &service);
-    void handleRemoteServiceUnregistered(const QString &service);
-
 private:
     struct OperationRecord {
         TryxRuntimeOperationInfo info;
@@ -1025,9 +952,6 @@ private:
     PrinterMediaPreparer *printerMediaPreparer_ = nullptr;
     QTimer *keepaliveTimer_ = nullptr;
     PrinterDeviceMonitor *printerMonitor_ = nullptr;
-    QDBusInterface *remoteInterface_ = nullptr;
-    QDBusInterface *remoteOperationsInterface_ = nullptr;
-    QDBusServiceWatcher *remoteServiceWatcher_ = nullptr;
     QDBusServiceWatcher *artifactOwnerWatcher_ = nullptr;
     QTimer *artifactSweepTimer_ = nullptr;
     PrinterProtocol::DiscoverySnapshot printerSnapshot_;
@@ -1041,13 +965,6 @@ private:
     quint64 printerDisconnectCount_ = 0;
     PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
         PrinterOverlayLeaseMode::PingAndOverlayLease;
-    quint64 remoteServiceEpoch_ = 0;
-    quint64 remoteRevision_ = 0;
-    quint64 remoteOperationRevision_ = 0;
-    quint64 remoteCatalogRevision_ = 0;
-    quint64 remoteMetricsRevision_ = 0;
-    quint64 remoteDisplayRevision_ = 0;
-    bool remoteDisplayRevisionReceived_ = false;
     quint64 displayStateReadGeneration_ = 0;
     quint64 operationRevision_ = 0;
     TryxRuntimeMediaCatalogSnapshot mediaCatalog_;
@@ -1087,10 +1004,6 @@ private:
     bool firmwareRecoveryReconnectRequested_ = false;
     bool firmwareRecoveryInterlockActive_ = false;
     bool automaticPrinterSessionStart_ = true;
-    bool remoteMode_ = false;
-    bool remoteApiCompatible_ = false;
-    bool remoteTypedMediaCatalogAvailable_ = false;
-    bool remotePrinterClassDevicePresent_ = false;
 #ifdef TRYX_PROTOCOL_TESTING
     QString retryCacheDirectoryOverride_;
     QString mediaCatalogDirectoryOverride_;

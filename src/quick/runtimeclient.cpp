@@ -1108,6 +1108,7 @@ void RuntimeClient::onLegacyBrightnessChanged(
     }
     display_.revision =
         qMax(display_.revision + 1, revision);
+    displayRevisionReceived_ = true;
     display_.valid = true;
     display_.brightness = qBound(0, value, 100);
     emit displayChanged();
@@ -1124,6 +1125,7 @@ void RuntimeClient::onLegacyScreenConfigChanged(
     pendingLegacyScreenConfigValid_ = false;
     display_.revision =
         qMax(display_.revision + 1, revision);
+    displayRevisionReceived_ = true;
     display_.valid = true;
     display_.screenMode = request.screenMode;
     display_.playMode = request.playMode;
@@ -1337,6 +1339,7 @@ void RuntimeClient::clearRuntimeState() {
     connection_ = {};
     metrics_ = {};
     display_ = {};
+    displayRevisionReceived_ = false;
     activeOperationId_.clear();
     activeOperation_ = {};
     pendingLegacyScreenConfig_ = {};
@@ -2156,11 +2159,12 @@ void RuntimeClient::applyMetricsState(
 
 void RuntimeClient::applyDisplayState(
     const TryxRuntimeDisplayState &state) {
-    if (state.revision <= display_.revision &&
-        display_.revision != 0) {
+    if (displayRevisionReceived_ &&
+        state.revision <= display_.revision) {
         return;
     }
     display_ = state;
+    displayRevisionReceived_ = true;
     if (!state.diagnostic.isEmpty()) {
         setDiagnostic(state.diagnostic);
     }

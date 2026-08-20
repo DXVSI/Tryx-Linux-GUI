@@ -640,7 +640,6 @@ private slots:
     void quickStagedSourceValidationAndLegacyBoundary();
     void mediaRuntimeStartupCleanupIsBounded();
     void runtimeDisplayConfigDbusRoundTrip();
-    void remoteDisplayStateRequiresStrictlyIncreasingRevision();
     void paseRunConfigUsesWireLayout();
     void paseWaterfallFullScreenGeometry_data();
     void paseWaterfallFullScreenGeometry();
@@ -3375,49 +3374,6 @@ void PrinterProtocolTests::runtimeDisplayConfigDbusRoundTrip() {
     QCOMPARE(actualState.settingsAlign2,
              expectedState.settingsAlign2);
     QCOMPARE(actualState.diagnostic, expectedState.diagnostic);
-}
-
-void PrinterProtocolTests::
-remoteDisplayStateRequiresStrictlyIncreasingRevision() {
-    QTemporaryDir temporaryDirectory;
-    QVERIFY(temporaryDirectory.isValid());
-    const QString sysRoot =
-        QDir(temporaryDirectory.path()).filePath(
-            QStringLiteral("sys"));
-    const QString devRoot =
-        QDir(temporaryDirectory.path()).filePath(
-            QStringLiteral("dev"));
-    QDir().mkpath(sysRoot);
-    QDir().mkpath(devRoot);
-
-    std::unique_ptr<DeviceManager> manager(
-        DeviceManager::createForTesting(sysRoot, devRoot));
-    manager->remoteMode_ = true;
-    manager->remoteApiCompatible_ = true;
-    QSignalSpy displaySpy(
-        manager.get(), &DeviceManager::displayStateUpdated);
-
-    TryxRuntimeDisplayState initial;
-    initial.revision = 0;
-    initial.valid = true;
-    initial.brightness = 41;
-    manager->handleRemoteDisplayStateUpdated(initial);
-    QCOMPARE(displaySpy.count(), 1);
-    QCOMPARE(manager->displayState().brightness, 41);
-
-    TryxRuntimeDisplayState duplicate = initial;
-    duplicate.brightness = 99;
-    manager->handleRemoteDisplayStateUpdated(duplicate);
-    QCOMPARE(displaySpy.count(), 1);
-    QCOMPARE(manager->displayState().brightness, 41);
-
-    TryxRuntimeDisplayState newer = initial;
-    newer.revision = 1;
-    newer.brightness = 73;
-    manager->handleRemoteDisplayStateUpdated(newer);
-    QCOMPARE(displaySpy.count(), 2);
-    QCOMPARE(manager->displayState().brightness, 73);
-    manager->remoteMode_ = false;
 }
 
 void PrinterProtocolTests::paseRunConfigUsesWireLayout() {

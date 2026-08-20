@@ -341,6 +341,7 @@ private:
     TryxRuntimeSnapshot connection_;
     TryxRuntimeMetricsState metrics_;
     TryxRuntimeDisplayState display_;
+    bool displayRevisionReceived_ = false;
     MediaCatalogModel mediaModel_;
     OperationListModel operationModel_;
     QString activeOperationId_;
