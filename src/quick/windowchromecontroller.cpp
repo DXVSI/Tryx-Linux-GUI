@@ -18,6 +18,10 @@ bool WindowChromeController::trayAvailable() const {
     return trayAvailable_;
 }
 
+bool WindowChromeController::hideToTrayOnClose() const {
+    return hideToTrayOnClose_;
+}
+
 bool WindowChromeController::hiddenToTray() const {
     return hiddenToTray_;
 }
@@ -54,6 +58,18 @@ void WindowChromeController::setTrayAvailable(bool available) {
     // Never leave the GUI alive but unreachable after the desktop removes
     // its StatusNotifier host or the watcher process restarts.
     if (!trayAvailable_ && hiddenToTray_) {
+        showWindow();
+    }
+}
+
+void WindowChromeController::setHideToTrayOnClose(bool enabled) {
+    if (hideToTrayOnClose_ == enabled) {
+        return;
+    }
+    hideToTrayOnClose_ = enabled;
+    emit closeBehaviorChanged();
+
+    if (!hideToTrayOnClose_ && hiddenToTray_) {
         showWindow();
     }
 }
@@ -97,8 +113,16 @@ void WindowChromeController::closeWindow() {
     }
 }
 
+bool WindowChromeController::closeWouldHideToTray() const {
+    return window_ && hideToTrayOnClose_ && trayAvailable_;
+}
+
 bool WindowChromeController::handleCloseRequest() {
-    if (!window_ || !trayAvailable_) {
+    return hideWindowToTray();
+}
+
+bool WindowChromeController::hideWindowToTray() {
+    if (!closeWouldHideToTray()) {
         return false;
     }
 
@@ -127,6 +151,15 @@ void WindowChromeController::showWindow() {
     restoreMaximized_ = false;
     window_->raise();
     window_->requestActivate();
+}
+
+void WindowChromeController::requestExplicitQuit() {
+    showWindow();
+    emit explicitQuitRequested();
+}
+
+void WindowChromeController::approveExplicitQuit() {
+    emit explicitQuitApproved();
 }
 
 bool WindowChromeController::validResizeEdges(

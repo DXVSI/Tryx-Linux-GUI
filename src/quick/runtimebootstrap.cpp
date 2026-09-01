@@ -13,6 +13,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QLockFile>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
@@ -20,11 +21,20 @@
 #include <QThread>
 #include <QTimer>
 
+#include <atomic>
 #include <cerrno>
+#include <cstddef>
 #include <csignal>
+#include <cstring>
+#include <utility>
 
 #if defined(Q_OS_LINUX)
+#include <fcntl.h>
+#include <linux/fs.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/un.h>
 #include <unistd.h>
 #endif
 
@@ -32,6 +42,503 @@ namespace quickbootstrap {
 namespace {
 
 constexpr int kProcessStartTimeoutMs = 2000;
+constexpr int kInstanceLaunchReadTimeoutMs = 1000;
+constexpr int kInstanceOwnerStartupWaitMs = 1000;
+constexpr int kInstanceOwnerStartupRetryMs = 25;
+constexpr qsizetype kMaxInstanceLaunchPayloadBytes = 32;
+const QByteArray kInstanceLaunchAcknowledgement =
+    QByteArrayLiteral("accepted\n");
+thread_local bool gRuntimeDirectoryOverrideSet = false;
+thread_local QString gRuntimeDirectoryOverride;
+thread_local testing::AfterLeaseAcquiredBeforeSocketCleanupHook
+    gAfterLeaseAcquiredBeforeSocketCleanupHook = nullptr;
+thread_local testing::AfterPreviousLeaseProbeHook
+    gAfterPreviousLeaseProbeHook = nullptr;
+thread_local testing::BeforeStaleSocketExchangeHook
+    gBeforeStaleSocketExchangeHook = nullptr;
+thread_local testing::AfterStaleSocketExchangeHook
+    gAfterStaleSocketExchangeHook = nullptr;
+thread_local testing::AfterNativeSocketBoundHook
+    gAfterNativeSocketBoundHook = nullptr;
+thread_local testing::AfterRuntimeDirectoryPinnedHook
+    gAfterRuntimeDirectoryPinnedHook = nullptr;
+std::atomic<quint64> gReplacementSocketSequence{0};
+
+enum class InstanceNotificationResult {
+    NoOwner,
+    Delivered,
+    UnacknowledgedOwner,
+};
+
+class PendingInstanceLaunchReader final : public QObject {
+public:
+    PendingInstanceLaunchReader(
+        QLocalSocket *socket,
+        InstanceLaunchIntentHandler handler,
+        QObject *parent)
+        : QObject(parent), socket_(socket), handler_(std::move(handler)) {
+        socket_->setParent(this);
+        QObject::connect(
+            socket_, &QLocalSocket::readyRead, this,
+            [this]() { collectPayload(); });
+        QObject::connect(
+            socket_, &QLocalSocket::disconnected, this,
+            [this]() {
+                if (finished_) {
+                    deleteLater();
+                } else {
+                    reject();
+                }
+            });
+        QTimer::singleShot(
+            kInstanceLaunchReadTimeoutMs, this,
+            [this]() { reject(); });
+
+        collectPayload();
+        if (socket_->state() == QLocalSocket::UnconnectedState) {
+            reject();
+        }
+    }
+
+private:
+    void collectPayload() {
+        if (finished_) {
+            return;
+        }
+        const qint64 remainingCapacity =
+            kMaxInstanceLaunchPayloadBytes + 1 - payload_.size();
+        if (remainingCapacity <= 0) {
+            reject();
+            return;
+        }
+        payload_.append(socket_->read(remainingCapacity));
+        const qsizetype separator = payload_.indexOf('\n');
+        if (separator < 0) {
+            if (payload_.size() > kMaxInstanceLaunchPayloadBytes) {
+                reject();
+            }
+            return;
+        }
+        if (separator > kMaxInstanceLaunchPayloadBytes) {
+            reject();
+            return;
+        }
+        const QByteArray framedPayload = payload_.first(separator);
+        const std::optional<InstanceLaunchIntent> intent =
+            parseInstanceLaunchIntentPayload(framedPayload);
+        if (!intent.has_value() || !handler_) {
+            reject();
+            return;
+        }
+
+        finished_ = true;
+        handler_(*intent);
+        if (socket_->write(kInstanceLaunchAcknowledgement) !=
+            kInstanceLaunchAcknowledgement.size()) {
+            socket_->abort();
+            deleteLater();
+            return;
+        }
+        socket_->flush();
+        socket_->disconnectFromServer();
+        if (socket_->state() == QLocalSocket::UnconnectedState) {
+            deleteLater();
+        }
+    }
+
+    void reject() {
+        if (finished_) {
+            return;
+        }
+        finished_ = true;
+        socket_->abort();
+        deleteLater();
+    }
+
+    QLocalSocket *socket_ = nullptr;
+    InstanceLaunchIntentHandler handler_;
+    QByteArray payload_;
+    bool finished_ = false;
+};
+
+InstanceNotificationResult notifyRunningInstanceWithResult(
+    const QString &path,
+    InstanceLaunchIntent intent) {
+    const QByteArray payload = instanceLaunchIntentPayload(intent);
+    if (path.isEmpty() || payload.isEmpty()) {
+        return InstanceNotificationResult::NoOwner;
+    }
+
+    QLocalSocket probe;
+    probe.connectToServer(path);
+    if (!probe.waitForConnected(300)) {
+        return InstanceNotificationResult::NoOwner;
+    }
+
+    const QByteArray frame = payload + '\n';
+    if (probe.write(frame) != frame.size() || !probe.flush() ||
+        (probe.bytesToWrite() > 0 &&
+         !probe.waitForBytesWritten(300))) {
+        probe.abort();
+        return InstanceNotificationResult::UnacknowledgedOwner;
+    }
+    if (!probe.waitForReadyRead(300)) {
+        probe.abort();
+        return InstanceNotificationResult::UnacknowledgedOwner;
+    }
+    QByteArray acknowledgement = probe.readAll();
+    while (acknowledgement.size() <
+               kInstanceLaunchAcknowledgement.size() &&
+           probe.waitForReadyRead(50)) {
+        acknowledgement.append(probe.readAll());
+    }
+    probe.disconnectFromServer();
+    if (probe.state() != QLocalSocket::UnconnectedState) {
+        probe.waitForDisconnected(300);
+    }
+    return acknowledgement == kInstanceLaunchAcknowledgement
+        ? InstanceNotificationResult::Delivered
+        : InstanceNotificationResult::UnacknowledgedOwner;
+}
+
+struct SocketIdentity {
+    dev_t device = 0;
+    ino_t inode = 0;
+};
+
+bool inspectSocketIdentity(const QString &path,
+                           SocketIdentity *identity) {
+#if defined(Q_OS_LINUX)
+    const QByteArray encoded = QFile::encodeName(path);
+    struct stat status {};
+    if (::lstat(encoded.constData(), &status) != 0 ||
+        !S_ISSOCK(status.st_mode) ||
+        status.st_uid != ::getuid()) {
+        return false;
+    }
+    identity->device = status.st_dev;
+    identity->inode = status.st_ino;
+    return true;
+#else
+    Q_UNUSED(path);
+    Q_UNUSED(identity);
+    return false;
+#endif
+}
+
+bool inspectSocketIdentityAt(int directoryDescriptor,
+                             const QByteArray &leafName,
+                             SocketIdentity *identity,
+                             mode_t *permissions = nullptr) {
+#if defined(Q_OS_LINUX)
+    struct stat status {};
+    if (::fstatat(
+            directoryDescriptor, leafName.constData(), &status,
+            AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISSOCK(status.st_mode) ||
+        status.st_uid != ::getuid()) {
+        return false;
+    }
+    identity->device = status.st_dev;
+    identity->inode = status.st_ino;
+    if (permissions) {
+        *permissions = status.st_mode & 0777;
+    }
+    return true;
+#else
+    Q_UNUSED(directoryDescriptor);
+    Q_UNUSED(leafName);
+    Q_UNUSED(identity);
+    Q_UNUSED(permissions);
+    return false;
+#endif
+}
+
+bool sameSocketIdentity(const SocketIdentity &left,
+                        const SocketIdentity &right) {
+    return left.device == right.device &&
+           left.inode == right.inode;
+}
+
+enum class NativeSocketBindResult {
+    Bound,
+    AddressInUse,
+    Failed,
+};
+
+struct NativeBoundSocket {
+    int descriptor = -1;
+    SocketIdentity identity;
+};
+
+void closeNativeBoundSocket(NativeBoundSocket *socket) {
+#if defined(Q_OS_LINUX)
+    if (socket->descriptor >= 0) {
+        ::close(socket->descriptor);
+        socket->descriptor = -1;
+    }
+#else
+    Q_UNUSED(socket);
+#endif
+}
+
+NativeSocketBindResult bindNativeUnixSocket(
+    const QString &path,
+    NativeBoundSocket *bound,
+    QString *errorMessage) {
+#if defined(Q_OS_LINUX)
+    const QByteArray encodedPath = QFile::encodeName(path);
+    if (encodedPath.isEmpty() || encodedPath.contains('\0') ||
+        encodedPath.size() >=
+            static_cast<qsizetype>(sizeof(sockaddr_un::sun_path))) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "The single-instance socket path is invalid");
+        }
+        return NativeSocketBindResult::Failed;
+    }
+
+    const int descriptor = ::socket(
+        AF_UNIX,
+        SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+        0);
+    if (descriptor < 0) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "Could not create the single-instance socket");
+        }
+        return NativeSocketBindResult::Failed;
+    }
+
+    sockaddr_un address {};
+    address.sun_family = AF_UNIX;
+    std::memcpy(
+        address.sun_path, encodedPath.constData(),
+        static_cast<size_t>(encodedPath.size() + 1));
+    const socklen_t addressLength = static_cast<socklen_t>(
+        offsetof(sockaddr_un, sun_path) +
+        encodedPath.size() + 1);
+    if (::bind(
+            descriptor,
+            reinterpret_cast<const sockaddr *>(&address),
+            addressLength) != 0) {
+        const int bindError = errno;
+        ::close(descriptor);
+        if (bindError == EADDRINUSE) {
+            return NativeSocketBindResult::AddressInUse;
+        }
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "Could not bind the single-instance socket: %1")
+                    .arg(QString::fromLocal8Bit(
+                        std::strerror(bindError)));
+        }
+        return NativeSocketBindResult::Failed;
+    }
+
+    SocketIdentity identity;
+    if (!inspectSocketIdentity(path, &identity) ||
+        ::chmod(encodedPath.constData(), S_IRUSR | S_IWUSR) != 0 ||
+        ::listen(descriptor, SOMAXCONN) != 0) {
+        ::close(descriptor);
+        SocketIdentity cleanupIdentity;
+        if (inspectSocketIdentity(path, &cleanupIdentity) &&
+            sameSocketIdentity(identity, cleanupIdentity)) {
+            ::unlink(encodedPath.constData());
+        }
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "Could not prepare the single-instance socket");
+        }
+        return NativeSocketBindResult::Failed;
+    }
+    SocketIdentity restrictedIdentity;
+    struct stat restrictedStatus {};
+    if (::lstat(encodedPath.constData(), &restrictedStatus) != 0 ||
+        !S_ISSOCK(restrictedStatus.st_mode) ||
+        restrictedStatus.st_uid != ::getuid() ||
+        (restrictedStatus.st_mode & 0777) !=
+            (S_IRUSR | S_IWUSR) ||
+        !inspectSocketIdentity(path, &restrictedIdentity) ||
+        !sameSocketIdentity(identity, restrictedIdentity)) {
+        ::close(descriptor);
+        SocketIdentity cleanupIdentity;
+        if (inspectSocketIdentity(path, &cleanupIdentity) &&
+            sameSocketIdentity(identity, cleanupIdentity)) {
+            ::unlink(encodedPath.constData());
+        }
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "The single-instance socket changed while it was prepared");
+        }
+        return NativeSocketBindResult::Failed;
+    }
+
+    bound->descriptor = descriptor;
+    bound->identity = identity;
+    return NativeSocketBindResult::Bound;
+#else
+    Q_UNUSED(path);
+    Q_UNUSED(bound);
+    if (errorMessage) {
+        *errorMessage = QStringLiteral(
+            "Native single-instance sockets are unavailable");
+    }
+    return NativeSocketBindResult::Failed;
+#endif
+}
+
+bool adoptNativeSocket(QLocalServer *server,
+                       NativeBoundSocket *bound,
+                       QString *errorMessage) {
+    if (!server->listen(bound->descriptor)) {
+        if (errorMessage) {
+            *errorMessage = server->errorString();
+        }
+        closeNativeBoundSocket(bound);
+        return false;
+    }
+    bound->descriptor = -1;
+    return true;
+}
+
+bool unlinkSocketIfMatchesAt(
+    int directoryDescriptor,
+    const QByteArray &leafName,
+    const SocketIdentity &expected) {
+#if defined(Q_OS_LINUX)
+    SocketIdentity actual;
+    return inspectSocketIdentityAt(
+               directoryDescriptor, leafName, &actual) &&
+           sameSocketIdentity(expected, actual) &&
+           ::unlinkat(
+               directoryDescriptor, leafName.constData(), 0) == 0;
+#else
+    Q_UNUSED(directoryDescriptor);
+    Q_UNUSED(leafName);
+    Q_UNUSED(expected);
+    return false;
+#endif
+}
+
+bool exchangeInReplacementSocket(
+    int directoryDescriptor,
+    const QByteArray &socketLeafName,
+    const QByteArray &replacementLeafName,
+    const SocketIdentity &expectedStale,
+    const SocketIdentity &expectedReplacement,
+    const QString &reportedPath,
+    QString *errorMessage) {
+#if defined(Q_OS_LINUX) && defined(SYS_renameat2)
+    if (gBeforeStaleSocketExchangeHook) {
+        gBeforeStaleSocketExchangeHook(reportedPath);
+    }
+    if (::syscall(
+            SYS_renameat2,
+            directoryDescriptor, socketLeafName.constData(),
+            directoryDescriptor, replacementLeafName.constData(),
+            RENAME_EXCHANGE) != 0) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "Could not atomically publish the replacement single-instance socket");
+        }
+        return false;
+    }
+
+    if (gAfterStaleSocketExchangeHook) {
+        gAfterStaleSocketExchangeHook(reportedPath);
+    }
+
+    SocketIdentity publishedIdentity;
+    SocketIdentity isolatedIdentity;
+    const bool publishedInspected = inspectSocketIdentityAt(
+        directoryDescriptor, socketLeafName,
+        &publishedIdentity);
+    const bool isolatedInspected = inspectSocketIdentityAt(
+        directoryDescriptor, replacementLeafName,
+        &isolatedIdentity);
+    const bool publishedReplacement =
+        publishedInspected && sameSocketIdentity(
+            expectedReplacement, publishedIdentity);
+    const bool isolatedStale =
+        isolatedInspected && sameSocketIdentity(
+            expectedStale, isolatedIdentity);
+    if (!publishedReplacement || !isolatedStale) {
+        // A winner can replace the stale canonical endpoint after the final
+        // precondition check but immediately before RENAME_EXCHANGE. In that
+        // case our replacement is now canonical and the live winner is
+        // isolated under replacementLeafName. Exchange the two exact leaves
+        // back before closing our descriptor, then remove only our returned
+        // replacement. This is the bounded single-racer rollback; it is not a
+        // security boundary against a process with the same UID continually
+        // mutating the directory.
+        if (publishedReplacement && isolatedInspected &&
+            !isolatedStale) {
+            if (::syscall(
+                    SYS_renameat2,
+                    directoryDescriptor,
+                    socketLeafName.constData(),
+                    directoryDescriptor,
+                    replacementLeafName.constData(),
+                    RENAME_EXCHANGE) == 0) {
+                SocketIdentity restoredIdentity;
+                SocketIdentity returnedReplacementIdentity;
+                if (inspectSocketIdentityAt(
+                        directoryDescriptor, socketLeafName,
+                        &restoredIdentity) &&
+                    sameSocketIdentity(
+                        isolatedIdentity, restoredIdentity) &&
+                    inspectSocketIdentityAt(
+                        directoryDescriptor, replacementLeafName,
+                        &returnedReplacementIdentity) &&
+                    sameSocketIdentity(
+                        expectedReplacement,
+                        returnedReplacementIdentity)) {
+                    unlinkSocketIfMatchesAt(
+                        directoryDescriptor,
+                        replacementLeafName,
+                        expectedReplacement);
+                }
+            }
+        } else if (isolatedStale) {
+            // The post-exchange test hook can replace our canonical endpoint.
+            // Keep that foreign winner and remove only the isolated stale leaf.
+            unlinkSocketIfMatchesAt(
+                directoryDescriptor,
+                replacementLeafName,
+                expectedStale);
+        }
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "The single-instance socket changed during atomic replacement");
+        }
+        return false;
+    }
+
+    if (!unlinkSocketIfMatchesAt(
+            directoryDescriptor, replacementLeafName,
+            expectedStale)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "Could not remove the isolated stale single-instance socket");
+        }
+        return false;
+    }
+    return true;
+#else
+    Q_UNUSED(directoryDescriptor);
+    Q_UNUSED(socketLeafName);
+    Q_UNUSED(replacementLeafName);
+    Q_UNUSED(expectedStale);
+    Q_UNUSED(expectedReplacement);
+    Q_UNUSED(reportedPath);
+    if (errorMessage) {
+        *errorMessage = QStringLiteral(
+            "Atomic stale single-instance socket cleanup is unavailable");
+    }
+    return false;
+#endif
+}
 
 struct DevelopmentRuntimeSelection {
     bool requested = false;
@@ -547,43 +1054,668 @@ bool startFallbackRuntime(const RuntimeBootstrapOptions &options,
 
 }  // namespace
 
+namespace {
+
+bool runtimeDirectoryHierarchyIsSafe(const QString &runtimeDirectory) {
+#if defined(Q_OS_LINUX)
+    QString current = QDir::cleanPath(runtimeDirectory);
+    bool runtimeLeaf = true;
+    while (true) {
+        const QByteArray encoded = QFile::encodeName(current);
+        struct stat status {};
+        if (::lstat(encoded.constData(), &status) != 0 ||
+            !S_ISDIR(status.st_mode)) {
+            return false;
+        }
+        if (runtimeLeaf) {
+            if (status.st_uid != ::getuid() ||
+                (status.st_mode & 0777) != S_IRWXU) {
+                return false;
+            }
+            runtimeLeaf = false;
+        } else {
+            if (status.st_uid != 0 && status.st_uid != ::getuid()) {
+                return false;
+            }
+            const bool broadlyWritable =
+                (status.st_mode & (S_IWGRP | S_IWOTH)) != 0;
+            if (broadlyWritable &&
+                (status.st_mode & S_ISVTX) == 0) {
+                return false;
+            }
+        }
+        if (current == QStringLiteral("/")) {
+            return true;
+        }
+        const QString parent = QFileInfo(current).absolutePath();
+        if (parent == current) {
+            return false;
+        }
+        current = parent;
+    }
+#else
+    Q_UNUSED(runtimeDirectory);
+    return false;
+#endif
+}
+
+bool pinnedRuntimeDirectoryStillMatches(
+    const QString &path,
+    dev_t expectedDevice,
+    ino_t expectedInode) {
+#if defined(Q_OS_LINUX)
+    const QByteArray encoded = QFile::encodeName(path);
+    struct stat status {};
+    return ::lstat(encoded.constData(), &status) == 0 &&
+           S_ISDIR(status.st_mode) &&
+           status.st_uid == ::getuid() &&
+           (status.st_mode & 0777) == S_IRWXU &&
+           status.st_dev == expectedDevice &&
+           status.st_ino == expectedInode;
+#else
+    Q_UNUSED(path);
+    Q_UNUSED(expectedDevice);
+    Q_UNUSED(expectedInode);
+    return false;
+#endif
+}
+
+QString descriptorRelativePath(int directoryDescriptor,
+                               const QByteArray &leafName) {
+    return QStringLiteral("/proc/self/fd/%1/%2")
+        .arg(directoryDescriptor)
+        .arg(QString::fromLocal8Bit(leafName));
+}
+
+}  // namespace
+
+struct SingleInstanceGuard::Private {
+    ~Private() {
+        lock.reset();
+#if defined(Q_OS_LINUX)
+        if (directoryDescriptor >= 0) {
+            ::close(directoryDescriptor);
+        }
+#endif
+    }
+
+    int directoryDescriptor = -1;
+    QString directoryPath;
+    QByteArray socketLeafName;
+    QString operationalSocketPath;
+    dev_t directoryDevice = 0;
+    ino_t directoryInode = 0;
+    std::unique_ptr<QLockFile> lock;
+    bool published = false;
+    SocketIdentity publishedIdentity;
+};
+
 QString instanceSocketPath() {
-    const QString runtimeDir =
-        QStandardPaths::writableLocation(
-            QStandardPaths::RuntimeLocation);
-    const QString baseDir = runtimeDir.isEmpty()
-        ? QDir::tempPath()
-        : runtimeDir;
-    return QDir(baseDir).filePath(
+    const QString configuredRuntimeDirectory =
+        gRuntimeDirectoryOverrideSet
+            ? gRuntimeDirectoryOverride
+            : QStandardPaths::writableLocation(
+                  QStandardPaths::RuntimeLocation);
+    if (configuredRuntimeDirectory.isEmpty() ||
+        !QDir::isAbsolutePath(configuredRuntimeDirectory)) {
+        return {};
+    }
+    const QString runtimeDirectory =
+        QDir::cleanPath(configuredRuntimeDirectory);
+#if defined(Q_OS_LINUX)
+    if (!runtimeDirectoryHierarchyIsSafe(runtimeDirectory)) {
+        return {};
+    }
+    const QByteArray encodedDirectory = QFile::encodeName(runtimeDirectory);
+    const int descriptor = ::open(
+        encodedDirectory.constData(),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
+        return {};
+    }
+    struct stat status {};
+    const bool privateDirectory =
+        ::fstat(descriptor, &status) == 0 &&
+        S_ISDIR(status.st_mode) &&
+        status.st_uid == ::getuid() &&
+        (status.st_mode & 0777) == S_IRWXU;
+    ::close(descriptor);
+    if (!privateDirectory) {
+        return {};
+    }
+#else
+    return {};
+#endif
+    return QDir(runtimeDirectory).filePath(
         QStringLiteral("tryx-panorama-manager.instance"));
 }
 
-bool notifyRunningInstance(const QString &path) {
-    QLocalSocket probe;
-    probe.connectToServer(path);
-    if (!probe.waitForConnected(300)) {
+QByteArray instanceLaunchIntentPayload(InstanceLaunchIntent intent) {
+    switch (intent) {
+    case InstanceLaunchIntent::Manual:
+        return QByteArrayLiteral("show");
+    case InstanceLaunchIntent::Autostart:
+        return QByteArrayLiteral("autostart");
+    }
+    return {};
+}
+
+std::optional<InstanceLaunchIntent> parseInstanceLaunchIntentPayload(
+    const QByteArray &payload) {
+    if (payload == QByteArrayLiteral("show")) {
+        return InstanceLaunchIntent::Manual;
+    }
+    if (payload == QByteArrayLiteral("autostart")) {
+        return InstanceLaunchIntent::Autostart;
+    }
+    return std::nullopt;
+}
+
+bool instanceLaunchIntentRequestsWindow(
+    InstanceLaunchIntent intent) {
+    switch (intent) {
+    case InstanceLaunchIntent::Manual:
+        return true;
+    case InstanceLaunchIntent::Autostart:
         return false;
     }
-    probe.write("show");
-    probe.flush();
-    probe.waitForBytesWritten(300);
-    return true;
+    return false;
+}
+
+bool notifyRunningInstance(const QString &path,
+                           InstanceLaunchIntent intent) {
+    return notifyRunningInstanceWithResult(path, intent) ==
+           InstanceNotificationResult::Delivered;
+}
+
+SingleInstanceGuard::SingleInstanceGuard(QString socketPath)
+    : socketPath_(QDir::cleanPath(std::move(socketPath))),
+      private_(std::make_unique<Private>()) {
+#if defined(Q_OS_LINUX)
+    if (socketPath_.isEmpty() ||
+        !QDir::isAbsolutePath(socketPath_)) {
+        return;
+    }
+    const QFileInfo socketInfo(socketPath_);
+    private_->directoryPath = socketInfo.absolutePath();
+    private_->socketLeafName =
+        QFile::encodeName(socketInfo.fileName());
+    if (private_->socketLeafName.isEmpty() ||
+        private_->socketLeafName == QByteArrayLiteral(".") ||
+        private_->socketLeafName == QByteArrayLiteral("..") ||
+        !runtimeDirectoryHierarchyIsSafe(private_->directoryPath)) {
+        return;
+    }
+    const QByteArray encodedDirectory =
+        QFile::encodeName(private_->directoryPath);
+    private_->directoryDescriptor = ::open(
+        encodedDirectory.constData(),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat directoryStatus {};
+    if (private_->directoryDescriptor < 0 ||
+        ::fstat(
+            private_->directoryDescriptor,
+            &directoryStatus) != 0 ||
+        !S_ISDIR(directoryStatus.st_mode) ||
+        directoryStatus.st_uid != ::getuid() ||
+        (directoryStatus.st_mode & 0777) != S_IRWXU) {
+        return;
+    }
+    private_->directoryDevice = directoryStatus.st_dev;
+    private_->directoryInode = directoryStatus.st_ino;
+    private_->operationalSocketPath = descriptorRelativePath(
+        private_->directoryDescriptor,
+        private_->socketLeafName);
+    private_->lock = std::make_unique<QLockFile>(
+        private_->operationalSocketPath + QStringLiteral(".lock"));
+    // This lock protects the socket for the whole GUI lifetime. Time-based
+    // expiry could otherwise let a second process steal a healthy long-lived
+    // owner; QLockFile still detects a crashed local owner by PID.
+    private_->lock->setStaleLockTime(0);
+    if (gAfterRuntimeDirectoryPinnedHook) {
+        gAfterRuntimeDirectoryPinnedHook(private_->directoryPath);
+    }
+#endif
+}
+
+SingleInstanceGuard::~SingleInstanceGuard() {
+    if (private_ && private_->published &&
+        private_->directoryDescriptor >= 0) {
+        unlinkSocketIfMatchesAt(
+            private_->directoryDescriptor,
+            private_->socketLeafName,
+            private_->publishedIdentity);
+    }
+}
+
+SingleInstanceAcquireResult SingleInstanceGuard::acquire(
+    QLocalServer *server,
+    InstanceLaunchIntent intent,
+    QString *errorMessage) {
+    if (errorMessage) {
+        errorMessage->clear();
+    }
+    if (!server || !private_ || !private_->lock ||
+        private_->directoryDescriptor < 0 ||
+        socketPath_.isEmpty() || server->isListening() ||
+        private_->lock->isLocked() ||
+        !pinnedRuntimeDirectoryStillMatches(
+            private_->directoryPath,
+            private_->directoryDevice,
+            private_->directoryInode)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "Invalid single-instance acquisition state");
+        }
+        return SingleInstanceAcquireResult::Failed;
+    }
+
+    // Preserve compatibility with an already running pre-lease build and
+    // avoid touching any live socket before attempting stale recovery.
+    const auto notificationFailedClosed =
+        [errorMessage]() {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral(
+                    "The existing single-instance endpoint did not acknowledge the launch intent");
+            }
+            return SingleInstanceAcquireResult::Failed;
+        };
+    qint64 previousLeasePid = 0;
+    QString previousLeaseHost;
+    QString previousLeaseApplication;
+    bool observedPreviousLease = private_->lock->getLockInfo(
+        &previousLeasePid,
+        &previousLeaseHost,
+        &previousLeaseApplication);
+    if (gAfterPreviousLeaseProbeHook) {
+        gAfterPreviousLeaseProbeHook(socketPath_);
+    }
+    InstanceNotificationResult notification =
+        notifyRunningInstanceWithResult(
+            private_->operationalSocketPath, intent);
+    if (notification == InstanceNotificationResult::Delivered) {
+        return SingleInstanceAcquireResult::NotifiedExisting;
+    }
+    if (notification ==
+        InstanceNotificationResult::UnacknowledgedOwner) {
+        return notificationFailedClosed();
+    }
+
+    bool lockAcquired = private_->lock->tryLock(0);
+    if (!lockAcquired &&
+        private_->lock->error() == QLockFile::LockFailedError) {
+        observedPreviousLease =
+            private_->lock->getLockInfo(
+                &previousLeasePid,
+                &previousLeaseHost,
+                &previousLeaseApplication) ||
+            observedPreviousLease;
+        // The primary takes the lifetime lock before it removes a stale
+        // socket and starts listening. A simultaneous launcher can therefore
+        // observe a short interval where the lock exists but the socket does
+        // not. Give that owner a bounded opportunity to finish startup.
+        QElapsedTimer startupWait;
+        startupWait.start();
+        while (startupWait.elapsed() < kInstanceOwnerStartupWaitMs) {
+            notification = notifyRunningInstanceWithResult(
+                private_->operationalSocketPath, intent);
+            if (notification ==
+                InstanceNotificationResult::Delivered) {
+                return SingleInstanceAcquireResult::NotifiedExisting;
+            }
+            if (notification ==
+                InstanceNotificationResult::UnacknowledgedOwner) {
+                return notificationFailedClosed();
+            }
+            // If the owner failed or crashed before listen(), take over under
+            // the same lease instead of requiring a third launch to recover.
+            observedPreviousLease =
+                private_->lock->getLockInfo(
+                    &previousLeasePid,
+                    &previousLeaseHost,
+                    &previousLeaseApplication) ||
+                observedPreviousLease;
+            if (private_->lock->tryLock(0)) {
+                lockAcquired = true;
+                break;
+            }
+            if (private_->lock->error() !=
+                QLockFile::LockFailedError) {
+                break;
+            }
+            QThread::msleep(kInstanceOwnerStartupRetryMs);
+        }
+    }
+    if (!lockAcquired) {
+        if (errorMessage) {
+            switch (private_->lock->error()) {
+            case QLockFile::LockFailedError:
+                *errorMessage = QStringLiteral(
+                    "The single-instance owner did not make its socket ready");
+                break;
+            case QLockFile::PermissionError:
+                *errorMessage = QStringLiteral(
+                    "Permission denied while acquiring the single-instance lock");
+                break;
+            case QLockFile::UnknownError:
+            case QLockFile::NoError:
+                *errorMessage = QStringLiteral(
+                    "Could not acquire the single-instance lock");
+                break;
+            }
+        }
+        return SingleInstanceAcquireResult::Failed;
+    }
+
+    const auto unlockAndFail = [&]() {
+        private_->lock->unlock();
+        return SingleInstanceAcquireResult::Failed;
+    };
+    if (!pinnedRuntimeDirectoryStillMatches(
+            private_->directoryPath,
+            private_->directoryDevice,
+            private_->directoryInode)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "The runtime directory changed during single-instance acquisition");
+        }
+        return unlockAndFail();
+    }
+
+    SocketIdentity staleCandidate;
+    const bool observedSocketBeforeFinalProbe =
+        inspectSocketIdentityAt(
+            private_->directoryDescriptor,
+            private_->socketLeafName,
+            &staleCandidate);
+
+    // A pre-lease process may have appeared between the first probe and our
+    // lock acquisition. Never remove its socket when it can still answer.
+    notification = notifyRunningInstanceWithResult(
+        private_->operationalSocketPath, intent);
+    if (notification == InstanceNotificationResult::Delivered) {
+        private_->lock->unlock();
+        return SingleInstanceAcquireResult::NotifiedExisting;
+    }
+    if (notification ==
+        InstanceNotificationResult::UnacknowledgedOwner) {
+        private_->lock->unlock();
+        return notificationFailedClosed();
+    }
+
+    NativeBoundSocket nativeSocket;
+    const NativeSocketBindResult directBind = bindNativeUnixSocket(
+        private_->operationalSocketPath,
+        &nativeSocket, errorMessage);
+    if (directBind == NativeSocketBindResult::Bound) {
+        if (gAfterNativeSocketBoundHook) {
+            gAfterNativeSocketBoundHook(socketPath_);
+        }
+        SocketIdentity publishedIdentity;
+        mode_t publishedPermissions = 0;
+        if (!inspectSocketIdentityAt(
+                private_->directoryDescriptor,
+                private_->socketLeafName,
+                &publishedIdentity,
+                &publishedPermissions) ||
+            !sameSocketIdentity(
+                nativeSocket.identity, publishedIdentity) ||
+            publishedPermissions != (S_IRUSR | S_IWUSR) ||
+            !pinnedRuntimeDirectoryStillMatches(
+                private_->directoryPath,
+                private_->directoryDevice,
+                private_->directoryInode) ||
+            !adoptNativeSocket(
+                server, &nativeSocket, errorMessage)) {
+            if (errorMessage && errorMessage->isEmpty()) {
+                *errorMessage = QStringLiteral(
+                    "The single-instance socket changed before publication");
+            }
+            closeNativeBoundSocket(&nativeSocket);
+            unlinkSocketIfMatchesAt(
+                private_->directoryDescriptor,
+                private_->socketLeafName,
+                nativeSocket.identity);
+            return unlockAndFail();
+        }
+        private_->published = true;
+        private_->publishedIdentity = publishedIdentity;
+        return SingleInstanceAcquireResult::Primary;
+    }
+    if (directBind == NativeSocketBindResult::Failed) {
+        return unlockAndFail();
+    }
+
+    if (!observedPreviousLease ||
+        !observedSocketBeforeFinalProbe) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "Refusing to remove a single-instance socket without crashed-owner evidence");
+        }
+        return unlockAndFail();
+    }
+
+    if (gAfterLeaseAcquiredBeforeSocketCleanupHook) {
+        gAfterLeaseAcquiredBeforeSocketCleanupHook(socketPath_);
+    }
+    SocketIdentity currentStaleCandidate;
+    if (!inspectSocketIdentityAt(
+            private_->directoryDescriptor,
+            private_->socketLeafName,
+            &currentStaleCandidate) ||
+        !sameSocketIdentity(
+            staleCandidate, currentStaleCandidate)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral(
+                "The single-instance socket changed before stale recovery");
+        }
+        return unlockAndFail();
+    }
+
+    QByteArray replacementLeafName;
+    NativeSocketBindResult replacementBind =
+        NativeSocketBindResult::Failed;
+    for (int attempt = 0; attempt < 128; ++attempt) {
+        const quint64 sequence =
+            gReplacementSocketSequence.fetch_add(
+                1, std::memory_order_relaxed);
+        replacementLeafName =
+            QByteArrayLiteral(
+                ".tryx-panorama-instance-replacement.") +
+            QByteArray::number(
+                static_cast<qulonglong>(::getpid())) +
+            '.' + QByteArray::number(
+                      static_cast<qulonglong>(sequence));
+        replacementBind = bindNativeUnixSocket(
+            descriptorRelativePath(
+                private_->directoryDescriptor,
+                replacementLeafName),
+            &nativeSocket, errorMessage);
+        if (replacementBind !=
+            NativeSocketBindResult::AddressInUse) {
+            break;
+        }
+    }
+    if (replacementBind != NativeSocketBindResult::Bound) {
+        return unlockAndFail();
+    }
+    if (!exchangeInReplacementSocket(
+            private_->directoryDescriptor,
+            private_->socketLeafName,
+            replacementLeafName,
+            staleCandidate,
+            nativeSocket.identity,
+            socketPath_, errorMessage)) {
+        closeNativeBoundSocket(&nativeSocket);
+        unlinkSocketIfMatchesAt(
+            private_->directoryDescriptor,
+            private_->socketLeafName,
+            nativeSocket.identity);
+        unlinkSocketIfMatchesAt(
+            private_->directoryDescriptor,
+            replacementLeafName,
+            nativeSocket.identity);
+        return unlockAndFail();
+    }
+    if (gAfterNativeSocketBoundHook) {
+        gAfterNativeSocketBoundHook(socketPath_);
+    }
+    SocketIdentity publishedIdentity;
+    mode_t publishedPermissions = 0;
+    if (!inspectSocketIdentityAt(
+            private_->directoryDescriptor,
+            private_->socketLeafName,
+            &publishedIdentity,
+            &publishedPermissions) ||
+        !sameSocketIdentity(
+            nativeSocket.identity, publishedIdentity) ||
+        publishedPermissions != (S_IRUSR | S_IWUSR) ||
+        !pinnedRuntimeDirectoryStillMatches(
+            private_->directoryPath,
+            private_->directoryDevice,
+            private_->directoryInode) ||
+        !adoptNativeSocket(
+            server, &nativeSocket, errorMessage)) {
+        if (errorMessage && errorMessage->isEmpty()) {
+            *errorMessage = QStringLiteral(
+                "The replacement single-instance socket changed before publication");
+        }
+        closeNativeBoundSocket(&nativeSocket);
+        unlinkSocketIfMatchesAt(
+            private_->directoryDescriptor,
+            private_->socketLeafName,
+            nativeSocket.identity);
+        return unlockAndFail();
+    }
+    private_->published = true;
+    private_->publishedIdentity = publishedIdentity;
+    return SingleInstanceAcquireResult::Primary;
 }
 
 bool listenForSingleInstance(QLocalServer *server,
                              const QString &path,
                              QString *errorMessage) {
-    if (!server) {
+    if (!server || server->isListening()) {
         return false;
     }
-    QLocalServer::removeServer(path);
-    if (server->listen(path)) {
-        return true;
+    NativeBoundSocket nativeSocket;
+    const NativeSocketBindResult bindResult = bindNativeUnixSocket(
+        path, &nativeSocket, errorMessage);
+    if (bindResult != NativeSocketBindResult::Bound) {
+        if (errorMessage) {
+            if (bindResult == NativeSocketBindResult::AddressInUse) {
+                *errorMessage = QStringLiteral(
+                    "The single-instance socket is already in use");
+            } else if (errorMessage->isEmpty()) {
+                *errorMessage = QStringLiteral(
+                    "Could not prepare the single-instance socket");
+            }
+        }
+        return false;
     }
-    if (errorMessage) {
-        *errorMessage = server->errorString();
+    const SocketIdentity publishedIdentity = nativeSocket.identity;
+    if (!adoptNativeSocket(server, &nativeSocket, errorMessage)) {
+        SocketIdentity currentIdentity;
+        if (inspectSocketIdentity(path, &currentIdentity) &&
+            sameSocketIdentity(
+                publishedIdentity, currentIdentity)) {
+            QFile::remove(path);
+        }
+        return false;
     }
-    return false;
+    QObject::connect(
+        server, &QObject::destroyed,
+        [path, publishedIdentity]() {
+            SocketIdentity currentIdentity;
+            if (inspectSocketIdentity(path, &currentIdentity) &&
+                sameSocketIdentity(
+                    publishedIdentity, currentIdentity)) {
+                QFile::remove(path);
+            }
+        });
+    return true;
+}
+
+namespace testing {
+
+void setRuntimeDirectoryOverride(const QString &directory) {
+    gRuntimeDirectoryOverride = directory;
+    gRuntimeDirectoryOverrideSet = true;
+}
+
+void clearRuntimeDirectoryOverride() {
+    gRuntimeDirectoryOverride.clear();
+    gRuntimeDirectoryOverrideSet = false;
+}
+
+void setAfterLeaseAcquiredBeforeSocketCleanupHook(
+    AfterLeaseAcquiredBeforeSocketCleanupHook hook) {
+    gAfterLeaseAcquiredBeforeSocketCleanupHook = hook;
+}
+
+void clearAfterLeaseAcquiredBeforeSocketCleanupHook() {
+    gAfterLeaseAcquiredBeforeSocketCleanupHook = nullptr;
+}
+
+void setAfterPreviousLeaseProbeHook(
+    AfterPreviousLeaseProbeHook hook) {
+    gAfterPreviousLeaseProbeHook = hook;
+}
+
+void clearAfterPreviousLeaseProbeHook() {
+    gAfterPreviousLeaseProbeHook = nullptr;
+}
+
+void setBeforeStaleSocketExchangeHook(
+    BeforeStaleSocketExchangeHook hook) {
+    gBeforeStaleSocketExchangeHook = hook;
+}
+
+void clearBeforeStaleSocketExchangeHook() {
+    gBeforeStaleSocketExchangeHook = nullptr;
+}
+
+void setAfterStaleSocketExchangeHook(
+    AfterStaleSocketExchangeHook hook) {
+    gAfterStaleSocketExchangeHook = hook;
+}
+
+void clearAfterStaleSocketExchangeHook() {
+    gAfterStaleSocketExchangeHook = nullptr;
+}
+
+void setAfterNativeSocketBoundHook(
+    AfterNativeSocketBoundHook hook) {
+    gAfterNativeSocketBoundHook = hook;
+}
+
+void clearAfterNativeSocketBoundHook() {
+    gAfterNativeSocketBoundHook = nullptr;
+}
+
+void setAfterRuntimeDirectoryPinnedHook(
+    AfterRuntimeDirectoryPinnedHook hook) {
+    gAfterRuntimeDirectoryPinnedHook = hook;
+}
+
+void clearAfterRuntimeDirectoryPinnedHook() {
+    gAfterRuntimeDirectoryPinnedHook = nullptr;
+}
+
+}  // namespace testing
+
+void drainPendingInstanceLaunchConnections(
+    QLocalServer *server,
+    QObject *context,
+    InstanceLaunchIntentHandler handler) {
+    if (!server || !context) {
+        return;
+    }
+    while (QLocalSocket *connection =
+               server->nextPendingConnection()) {
+        new PendingInstanceLaunchReader(
+            connection, handler, context);
+    }
 }
 
 bool ensureRuntimeService(QString *errorMessage) {

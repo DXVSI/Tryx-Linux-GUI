@@ -1,15 +1,14 @@
 #pragma once
 
 #include <QObject>
-#include <QProcess>
 #include <QString>
 #include <QStringList>
-
-class QTimer;
 
 class AppSettingsController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString language READ language NOTIFY languageChanged)
+    Q_PROPERTY(bool hideToTrayOnClose READ hideToTrayOnClose
+                   NOTIFY closeBehaviorChanged)
     Q_PROPERTY(QString devicePort READ devicePort
                    NOTIFY deviceSettingsChanged)
     Q_PROPERTY(int keepaliveInterval READ keepaliveInterval
@@ -29,6 +28,7 @@ public:
                                    QObject *parent = nullptr);
 
     QString language() const;
+    bool hideToTrayOnClose() const;
     QString devicePort() const;
     int keepaliveInterval() const;
     QStringList serialPorts() const;
@@ -38,6 +38,7 @@ public:
     QString errorMessage() const;
 
     Q_INVOKABLE void setLanguage(const QString &code);
+    Q_INVOKABLE void setHideToTrayOnClose(bool enabled);
     Q_INVOKABLE void setDevicePort(const QString &port);
     Q_INVOKABLE void setKeepaliveInterval(int seconds);
     Q_INVOKABLE void refreshSerialPorts();
@@ -46,6 +47,7 @@ public:
 
 signals:
     void languageChanged();
+    void closeBehaviorChanged();
     void deviceSettingsChanged();
     void serialPortsChanged();
     void autostartEnabledChanged();
@@ -54,33 +56,18 @@ signals:
     void errorMessageChanged();
 
 private:
-    enum class AutostartOperation {
-        None,
-        Query,
-        Enable,
-        Disable
-    };
-
     static bool isSupportedLanguage(const QString &code);
     bool saveDeviceSettings(const QString &port,
                             int keepaliveInterval);
-    static bool isEnabledState(const QString &state);
-    static bool isDisabledState(const QString &state);
-
-    void startAutostartCommand(AutostartOperation operation);
-    void finishAutostartCommand(int exitCode,
-                                QProcess::ExitStatus exitStatus);
-    void handleAutostartProcessError();
-    void handleAutostartTimeout();
     void setAutostartEnabledState(bool enabled);
     void setAutostartAvailableState(bool available);
-    void setBusy(bool busy);
     void setConfigError(const QString &message);
     void setAutostartError(const QString &message);
     void updateErrorMessage();
 
     bool offline_ = false;
     QString language_ = QStringLiteral("en");
+    bool hideToTrayOnClose_ = true;
     QString devicePort_;
     int keepaliveInterval_ = 10;
     QStringList serialPorts_;
@@ -90,9 +77,4 @@ private:
     QString configError_;
     QString autostartError_;
     QString errorMessage_;
-    QProcess *autostartProcess_ = nullptr;
-    QTimer *autostartDeadline_ = nullptr;
-    AutostartOperation autostartOperation_ =
-        AutostartOperation::None;
-    bool autostartTimedOut_ = false;
 };

@@ -22,6 +22,7 @@ public:
         TotalRole,
         ProgressRole,
         RetryModeRole,
+        TerminalOutcomeRole,
         CanRetryRole,
         TerminalRole
     };

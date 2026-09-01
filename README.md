@@ -98,22 +98,119 @@ with Qt Quick. It talks to `tryx-panorama-runtime` through the Manager1 and
 Manager2 D-Bus interfaces. Closing or restarting the GUI does not transfer
 hardware ownership away from the runtime.
 
+Manager2 remains API generation 8 and negotiates additive runtime and
+device-profile capabilities after the version probe. A current GUI keeps the
+API 8 baseline when an older runtime does not implement capability methods;
+unknown, malformed, stale-owner, or stale-device replies never enable optional
+features.
+
+When the runtime advertises presentation preferences, Settings can switch
+between Celsius/Fahrenheit and 24-hour/12-hour time. The runtime persists the
+confirmed pair and applies it consistently to the Dashboard and supported PASE
+overlays even after the GUI closes. Older API 8 runtimes keep the compatible
+Celsius and 24-hour defaults without exposing a writable setting.
+
+Settings can also save a local redacted support report as a JSON file selected
+through a folder-only picker. The report contains an allowlisted host summary
+and, when supported by the active runtime, a bounded cached runtime snapshot;
+it does not query the device, read the journal or environment, or upload data.
+The application generates a new private filename and never overwrites an
+existing destination. Older compatible runtimes still produce an explicitly
+marked host-only report.
+
 Development builds are written to:
 
 - `build/quick/tryx-panorama-manager` - desktop GUI
 - `build/runtime/tryx-panorama-runtime` - headless runtime
+- `build/cli/tryx` - one-shot terminal client
 
 A system installation uses:
 
 - `/usr/bin/tryx-panorama-manager` - public desktop launcher
+- `/usr/bin/tryx` - public one-shot terminal client
 - `/usr/lib/tryx-panorama-manager/tryx-panorama-runtime` - private runtime
   started by the user service or the GUI bootstrap
 
+The `tryx` command is supported from a local terminal for the same Unix user as
+the D-Bus session. Remote terminal qualification, including SSH and VS Code
+Remote SSH, is deferred to the backlog. The command does not start the runtime,
+forward the GUI, open a network listener, or connect to a remote D-Bus
+endpoint. The inspection commands are read-only with respect to the runtime and
+device; `support-report` only writes the explicitly requested local diagnostic
+file. The two explicitly named downgrade commands below are the only commands
+that change the runtime's local downgrade state:
+
+```fish
+tryx status
+tryx capabilities
+tryx operations
+tryx support-report --output-dir /absolute/path
+tryx --json status
+tryx prepare-downgrade-v10
+tryx abort-downgrade-v10
+```
+
+If the background runtime is intentionally stopped, start it separately with
+`systemctl --user start tryx-panorama.service`. The runtime is shipped in the
+same native package as the GUI and CLI. The `support-report` command can still
+create a redacted host-only report with status `unavailable` when the user bus
+or runtime is unavailable. An incompatible runtime, a legacy API 8 runtime, or
+a runtime without the B3 support-snapshot capability instead produces a
+host-only report with status `unsupported`; both host-only outcomes exit with
+status 0. See `man tryx` for the JSON and exit-code contracts.
+
+### Controlled runtime downgrade to v10
+
+Do not replace a current runtime with the released v10 runtime unless
+`tryx prepare-downgrade-v10` has completed successfully for the same Unix user
+that owns the runtime. Preparation atomically blocks new runtime mutations and
+accepts only an empty retry store or one exact terminal Full-frame retry. Split
+media, an in-flight dispatch, pending cleanup or recovery, and an unverified
+store all block the downgrade. Success is reported only after the exact D-Bus
+owner has stopped.
+
+```fish
+tryx prepare-downgrade-v10
+```
+
+After that command succeeds, replace the native package using the supported
+package manager for the distribution, then start the user service or launch the
+GUI:
+
+```fish
+systemctl --user start tryx-panorama.service
+```
+
+Preparation writes an owner-only marker under `XDG_STATE_HOME`, bound to the
+full path, inode, size, and SHA-256 of the current runtime executable. The same
+v11 executable cannot restart past that marker; the replaced v10 executable has
+a different identity and ignores it. The marker does not install, remove, or
+downgrade a package.
+
+If package replacement is cancelled while the prepared v11 executable is still
+installed, abort the preparation while the runtime remains offline, then start
+it again:
+
+```fish
+tryx abort-downgrade-v10
+systemctl --user start tryx-panorama.service
+```
+
+The abort command refuses an active runtime, a missing or unsafe marker, and a
+different installed executable. Runtime sessions owned by different Unix users
+have separate state and must be handled independently. An arbitrary package
+downgrade without a successful preparation result is unsupported.
+
 The Linux tray integration exports a StatusNotifierItem and DBusMenu over
 D-Bus and sends notifications through `org.freedesktop.Notifications`. When a
-StatusNotifier watcher and host are available, closing the window hides the
-GUI to the native desktop tray. Without a watcher, closing the window exits
-only the GUI; the separate runtime remains available to the user service.
+StatusNotifier watcher and host are available, Settings lets the user choose
+whether closing the window hides the GUI to the native desktop tray or quits
+the GUI. The hide option is unavailable without a host, so closing the window
+then quits only the GUI. In either mode, the separate runtime remains available
+to the user service. A separate Settings switch can create an owner-managed
+XDG Autostart entry for the GUI. Login start hides the initial window only when
+Hide to tray is selected and a tray host is actually available; otherwise the
+window is shown. This switch never changes the background runtime service.
 
 ## What's new in 2.2.0
 
@@ -166,9 +263,11 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
   closes the GUI reliably while leaving the separate runtime active.
 - Legacy serial/ADB devices retain display, media, metrics, keepalive, and
   device-control support through the same Quick interface.
-- PASE user media can be edited with Fit, Fill, Crop, Stretch, zoom, pan, and
-  rotation, exported as its exact raw H264 device copy, saved as a new item,
-  replaced through a crash-safe verified workflow, or deleted when eligible.
+- PASE user media can be prepared explicitly for the full 2240 x 1080 display
+  or one honest 1120 x 1080 split area, edited with Fit, Fill, Crop, Stretch,
+  zoom, pan, and rotation, exported as its exact raw H264 device copy, saved as
+  a new item, replaced through a crash-safe verified workflow, or deleted when
+  eligible.
 - Quick Settings provides local firmware package selection and validation.
   The runtime obtains an exclusive device-transport gate before handing work
   to the existing updater backend and writes an owner-only recovery interlock
@@ -189,19 +288,27 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
 - Upload images, videos, GIFs (auto-converts non-MP4 formats)
 - Modern desktop interface with a preview-first, model-aware media editor
 - Explicit Fit, Fill, Crop, Stretch, Zoom, pan, rotation, and Fit background controls before upload
-- Exact transformed preview rendered through the same canonical FFmpeg filter used for the final model-specific media: 2240 × 1080 for Panorama/PASE or 1280 × 720 for Turris
+- Exact transformed preview rendered through the same canonical FFmpeg filter used for the final model-specific media: full 2240 × 1080 or split-area 1120 × 1080 for Panorama/PASE, and full 1280 × 720 for Turris
 - Immutable private upload snapshot with atomic client-to-runtime ownership transfer before D-Bus acceptance
 - Origin-aware PASE media catalog that labels device presets separately from user uploads
 - Export of writable PASE user media as an honest raw H264 device copy
 - Edit of an existing PASE user-media copy with Save as new or crash-safe Replace
 - Real-time system metrics on display (temperature, usage, frequency, power and date/time)
+- Optional bounded `/usr/bin/nvidia-smi` telemetry for NVIDIA temperature,
+  usage, graphics clock, power, and VRAM. A missing tool, driver, GPU, or field
+  is shown as unavailable rather than zero; VRAM remains local to the host
+  Dashboard, the four existing device GPU tokens and Manager2 API 8 are
+  unchanged, and real NVIDIA hardware qualification is still pending.
 - Hardware name badges (auto-detected from system)
 - Brightness control (0-100) on capable Panorama/PASE profiles
 - Display settings on capable Panorama/PASE profiles: position, alignment, color, filter
 - Runtime-owned keepalive for capable Panorama/PASE display sessions
 - Auto-detects legacy devices through `/dev/ttyACM*` and supported printer-class devices through direct libusb discovery
 - Native Linux StatusNotifierItem tray integration with DBusMenu and desktop notifications when a watcher is available
+- Optional, independent XDG Autostart for the desktop GUI with safe tray fallback
 - Settings persistence between sessions
+- Runtime-owned Celsius/Fahrenheit and 24-hour/12-hour presentation preferences
+- About shortcuts to the project home and its published MIT license
 - Async device communication (non-blocking GUI)
 - Quick Settings firmware panel for locally selected packages, with validation and hardware work owned by the headless runtime
 - Device information and media list over the new KANALI USB printer-class protocol
@@ -227,13 +334,21 @@ name. `Edit` downloads the same private copy into the background runtime,
 opens it in the Fit, Fill, Crop and Stretch editor, and offers two explicit
 results:
 
+Before sizing controls, `Prepare for` selects `Full screen` or `Split area`.
+The Split option appears only after the runtime and connected device advertise
+the additive capability, uses a real 1120 × 1080 canvas, and prepares one copy
+that can later be selected for either side. Changing the target resets the
+editing transform to neutral Fit and never applies a display change by itself.
+
 - `Save as new` uploads a verified new media file and always keeps the
   original.
 - `Replace original` uploads and verifies the new file first, updates only
-  supported active display references, verifies them again, and only then
-  removes the original once. Immediately before FileRemove, the runtime
-  rechecks both the original and the verified replacement in the same fresh
-  FileList by exact name, size, user source, and writable flag.
+  a fresh active Full or Split layout matching the selected target, and only
+  then removes the original once. The read-only preflight compares the complete
+  `screenMode`, `playMode`, ordered media list, and the original's exact
+  Full/Left/Right slot. Immediately before FileRemove, the runtime rechecks both
+  the original and the verified replacement in the same fresh FileList by exact
+  name, size, user source, and writable flag.
 
 Factory presets, read-only entries, and unsupported device media do not expose
 Export, Edit, or Delete. An interrupted Replace is reconciled from its
@@ -278,10 +393,12 @@ required shared libraries do not need to be installed manually. Use the
 commands above instead of `rpm -i` or `dpkg -i`, because those tools do not
 download missing dependencies.
 
-Optional helpers such as ADB, `unzip`, `debugfs`, `glxinfo`, and `lspci` may
-not be installed automatically. They are not required for basic printer-class
+Optional helpers such as ADB, `unzip`, `debugfs`, `glxinfo`, `lspci`, and
+`/usr/bin/nvidia-smi` may not be installed automatically. They are not required
+for basic printer-class
 operation and are only used by the corresponding legacy firmware, archive
-inspection, or hardware detection features.
+inspection, hardware detection, or NVIDIA telemetry features. The application
+does not install or recommend a proprietary NVIDIA driver package.
 
 For Fedora, follow the
 [RPM Fusion configuration instructions](https://rpmfusion.org/Configuration)
@@ -291,12 +408,15 @@ Use `--allowerasing` when installing the RPM so DNF can replace an existing
 `ffmpeg-free` package with RPM Fusion's full `ffmpeg` build.
 
 Native packages install the Qt Quick GUI at
-`/usr/bin/tryx-panorama-manager`, the private background runtime at
-`/usr/lib/tryx-panorama-manager/tryx-panorama-runtime`, the desktop entry,
-icon, systemd user unit, and two TRYX printer-class udev rules. Packages do not
-enable autostart or restart an existing runtime during an upgrade. Reconnect
-the supported TRYX display USB cable after installation, launch the application
-once, and enable autostart in Settings only if wanted.
+`/usr/bin/tryx-panorama-manager`, the one-shot terminal client at
+`/usr/bin/tryx`, its `tryx(1)` manual, the private background runtime at
+`/usr/lib/tryx-panorama-manager/tryx-panorama-runtime`, the desktop entry, icon,
+systemd user unit, and two TRYX printer-class udev rules. The native package
+name remains `tryx-panorama-manager`. Packages do not enable the runtime
+service or GUI autostart, and do not restart an existing runtime during an
+upgrade. Reconnect the supported TRYX display USB cable after installation,
+launch the application once, and enable GUI autostart in Settings only if
+wanted.
 
 The committed Arch PKGBUILD intentionally accepts only a local release source
 archive with an explicit checksum. From a clean release checkout, build it
@@ -360,6 +480,8 @@ still rejected.
 - `debugfs` (e2fsprogs) - Rockchip rootfs inspection
 - `upgrade_tool` - optional external Rockchip flashing backend for new KANALI firmware bundles
 - `glxinfo` (mesa-utils) - GPU name detection (optional)
+- `/usr/bin/nvidia-smi` - NVIDIA telemetry (optional, supplied by the NVIDIA
+  driver; intentionally not a package dependency or recommendation)
 
 Fedora runtime dependencies:
 
@@ -422,7 +544,7 @@ PASE full-screen mode supports up to three exact protocol metrics selected from 
 
 PASE media deletion is limited to one exact user-owned, writable, unreferenced catalog entry per operation. The runtime persists a delete-intent journal before sending a single USB media-removal request and reports success only after a fresh media catalog no longer contains the exact name. A lost or ambiguous response enters read-only reconciliation; media removal is never replayed automatically.
 
-PASE display configuration uses one read-modify-write user-configuration update, one complete overlay-layout update, and a bounded configuration readback. The UI supports brightness, display backlight power, Mirror, Waterfall, Full Screen, and Screen Splitting with two existing media files. Firmware-controlled standby enablement and standby media remain read-only and are never rewritten by the display power control. Rapid brightness input keeps at most one active operation and one latest pending value; the pending value is dispatched only after the prior operation, exact readback, and a subsequent background keepalive all succeed. Each screen area can contain up to three metrics plus CPU and GPU badges with exact `#RRGGBB` text colors. Mirror uses `media_rotation=180`, Waterfall uses `ui_rotation=90`, and split mode uses the dual-media wire mode with independent left and right media. A display operation succeeds only when the requested fields match the fresh device readback. A matching explicit protocol error from the optional overlay response is treated as a logical rejection and is never discarded as stale. Direct printer-protocol firmware writes and loader reboot remain intentionally disabled.
+PASE display configuration uses one read-modify-write user-configuration update, one complete overlay-layout update, and a bounded configuration readback. The UI supports brightness, display backlight power, Mirror, Waterfall, Full Screen, and Screen Splitting with two existing media files. Firmware-controlled standby enablement and standby media remain read-only and are never rewritten by the display power control. Rapid brightness input keeps at most one active operation and one latest pending value; the pending value is dispatched only after the prior operation, exact readback, and a subsequent background keepalive all succeed. Each screen area can contain up to three metrics plus CPU and GPU badges with exact `#RRGGBB` text colors. The grouped metric selector keeps Full, Left, and Right counters independent, requires an explicit position when replacing a fourth choice, and keeps a selected unavailable sensor removable without silently rewriting the draft. Mirror uses `media_rotation=180`, Waterfall uses `ui_rotation=90`, and split mode uses the dual-media wire mode with independent left and right media. A display operation succeeds only when the requested fields match the fresh device readback. A matching explicit protocol error from the optional overlay response is treated as a logical rejection and is never discarded as stale. Direct printer-protocol firmware writes and loader reboot remain intentionally disabled.
 
 Automatic firmware download is not enabled yet. KANALI uses SM2-encrypted request/response bodies for its firmware version and download URL requests, so plain REST requests cannot retrieve official packages.
 
@@ -462,9 +584,9 @@ it before returning to the installed GUI:
 systemctl --user unmask tryx-panorama.service; and systemctl --user daemon-reload
 ```
 
-System installation includes the public GUI, private runtime, user service,
-TRYX printer-class usbfs rules, desktop entry, icon, and translations. It does
-not install a video library:
+System installation includes the public GUI and CLI, private runtime, user
+service, TRYX printer-class usbfs rules, desktop entry, icon, manuals, and
+translations. It does not install a video library:
 
 ```fish
 sudo make install; and sudo udevadm control --reload-rules; and sudo udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=391a; and sudo udevadm settle --timeout=10
@@ -482,15 +604,21 @@ sudo make install; and systemctl --user daemon-reload; and systemctl --user rest
 Native package upgrades deliberately do not force this restart because a
 package transaction cannot prove that another user's media operation is idle.
 
-The install target supplies a user preset that keeps autostart disabled by
-default. Enable it later from Settings or explicitly with
-`systemctl --user enable tryx-panorama.service`.
+The install target supplies a user preset that keeps the background runtime
+service disabled by default. Enable that service explicitly with
+`systemctl --user enable tryx-panorama.service` only when it must start at
+session login without the GUI. An on-demand runtime started by the GUI can stay
+active even while the unit remains disabled. The separate Settings switch
+controls only GUI login startup through
+`$XDG_CONFIG_HOME/autostart/tryx-panorama-manager.desktop` and never changes
+the runtime unit.
 
-The GUI and runtime version commands are safe to use without a graphical or
-D-Bus session:
+The GUI, CLI, and runtime version commands are safe to use without a graphical
+or D-Bus session:
 
 ```fish
 ./build/quick/tryx-panorama-manager --version
+./build/cli/tryx --version
 ./build/runtime/tryx-panorama-runtime --version
 ```
 
@@ -504,6 +632,7 @@ cd tests; and qmake6 printerprotocol_tests.pro; and make -j(nproc); and ../build
 
 ```
 src/
+  cli/               # One-shot local user-session client
   core/              # Legacy serial/ADB protocol and shared configuration
   quick/             # The Qt Quick GUI, D-Bus client, tray, and controllers
   runtime/           # Headless runtime entry point
@@ -532,7 +661,8 @@ packaging/
   metainfo/          # AppStream metadata
   scripts/           # Release and package-content gates
   *.rules            # PASE permissions and printer suppression
-tryx-panorama-all.pro   # Aggregate runtime + GUI build and package-check
+tryx-panorama-all.pro   # Aggregate runtime + CLI + GUI build and package-check
+tryx-cli.pro            # Headless terminal client qmake project
 tryx-panorama.pro       # Headless runtime qmake project
 ```
 

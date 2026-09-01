@@ -1,13 +1,18 @@
 #pragma once
 
+#include "deleteintentstore.h"
+#include "devicemediaartifactstore.h"
+#include "gpuinventory.h"
+#include "mediacatalogstore.h"
+#include "printermediavalidator.h"
 #include "printerprotocol.h"
 #include "replacejournal.h"
+#include "retrycachestore.h"
 #include "runtimebridge.h"
 
 #include <QObject>
 #include <QHash>
 #include <QElapsedTimer>
-#include <QJsonObject>
 #include <QMutex>
 #include <QString>
 #include <QStringList>
@@ -16,6 +21,9 @@
 #include <QTimer>
 
 #include <atomic>
+#ifdef TRYX_PROTOCOL_TESTING
+#include <functional>
+#endif
 #include <memory>
 #include <optional>
 
@@ -27,6 +35,15 @@
 class QDBusServiceWatcher;
 class PrinterMediaPreparer;
 class SystemMonitor;
+struct SystemMetrics;
+namespace tryx {
+class DeviceMediaArtifactStore;
+class MediaCatalogStore;
+class PaseMetricsConfigStore;
+class RuntimeDowngradeStore;
+class RuntimePresentationPreferencesStore;
+class SavedLayoutStore;
+}
 
 enum class PrinterOverlayLeaseMode {
     PingAndOverlayLease,
@@ -50,6 +67,11 @@ public:
     void cancelPrinterOperation(const QString &operationId);
     void clearPrinterOperationCancellation(const QString &operationId);
     void setPrinterOverlayLeaseMode(PrinterOverlayLeaseMode mode);
+    // Thread-safe publication fence used before the Manager exposes a
+    // persisted preference snapshot over D-Bus.
+    void publishPresentationPreferences(
+        const TryxRuntimePresentationPreferencesV1 &preferences);
+    void applyPublishedPresentationPreferences();
 
 #ifdef TRYX_PROTOCOL_TESTING
     void adoptPrinterFileDescriptorForTesting(int fd,
@@ -133,6 +155,8 @@ public slots:
     void applyPrinterMedia(const QString &devicePath, const QString &mediaFile,
                            const TryxRuntimeApplyRequest &request,
                            bool updateMetrics,
+                           const QString &proofDeviceIdentity,
+                           const QList<TryxRuntimeSavedMediaRefV1> &proof,
                            const QString &operationId,
                            quint64 generation);
     void configurePrinterMetrics(
@@ -146,6 +170,7 @@ public slots:
                             quint64 generation);
     void startPrinterDisplaySession(const QString &devicePath,
                                     quint64 generation);
+    void quiesceForRuntimeDowngrade(quint64 generation);
     void quiesceForFirmware(const QString &leaseId,
                             quint64 generation);
     void releaseFirmwareQuiesceFence(const QString &leaseId,
@@ -182,6 +207,9 @@ signals:
                               PrinterProtocol::MutationOutcome outcome,
                               const QString &errorMessage,
                               quint64 generation);
+    void printerSavedLayoutProofFailed(
+        const QString &operationId, const QString &errorCategory,
+        const QString &errorMessage, quint64 generation);
     void printerMetricsConfigured(
         const QString &operationId, bool success,
         PrinterProtocol::MutationOutcome outcome,
@@ -201,6 +229,8 @@ signals:
         const QString &outputPath, bool success, bool cancelled,
         qint64 fileSize, qint64 chunkCount,
         const QString &rawSha256, const QString &decodedSha256,
+        const tryx::printer_media_validator::RecoveredH264ProbeMetadata
+            &probeMetadata,
         const QString &errorMessage, quint64 generation);
     void printerReplacePreflightFinished(
         const QString &operationId, const QString &mediaName,
@@ -208,6 +238,9 @@ signals:
         qint64 expectedReplacementSize,
         const QStringList &references,
         const QStringList &referencingSlots,
+        const QString &activeScreenMode,
+        const QString &activePlayMode,
+        const QStringList &activeMedia,
         bool originalIdentityVerified,
         bool replacementIdentityVerified,
         bool success,
@@ -225,8 +258,15 @@ signals:
     void printerSysinfoSent(quint64 generation);
     void printerSysinfoFailed(const QString &message, quint64 generation);
     void printerTransportReady(quint64 generation);
+    void printerDeviceVersionsReady(const QString &firmware,
+                                    const QString &appVersion,
+                                    quint64 generation);
     void printerDeviceInfoReady(const PrinterProtocol::DeviceInfo &info,
                                 quint64 generation);
+    void printerDeviceSpecificationsReady(
+        const PrinterProtocol::DeviceSpecifications &specifications,
+        const QString &devicePath, const QString &deviceSerial,
+        quint16 productId, quint64 generation);
     void printerDeviceInfoFailed(const QString &message, quint64 generation);
     void printerDisplayStateReady(
         const PrinterProtocol::PaseDisplayState &state,
@@ -274,16 +314,21 @@ private:
                                        const QString &eventName);
     void restartPrinterKeepaliveAfterActivity();
     void activateRestoredPrinterOverlay(quint64 generation);
+    void publishPendingPrinterDeviceSpecifications(quint64 generation);
     void markPrinterSessionLost(const QString &reason,
                                 quint64 generation);
     void collectCurrentPrinterMetrics(QStringList *labels,
                                       QStringList *values,
                                       QStringList *units);
+    void publishPrinterMetricsAvailability(
+        const SystemMetrics &metrics);
+    void synchronizePublishedPresentationPreferences();
     void updatePrinterOverlayInitialMetrics(
         const QStringList &labels, const QStringList &values,
         const QStringList &units);
     void startPrinterMetrics();
     void stopPrinterSession();
+    void quiesceDeviceTransports(quint64 generation);
     void schedulePrinterSessionRecovery(const QString &reason,
                                         quint64 generation);
     void attemptPrinterSessionStart(const QString &devicePath,
@@ -315,7 +360,15 @@ private:
         PrinterOverlayLeaseMode::PingAndOverlayLease;
     QElapsedTimer printerSessionElapsedTimer_;
     QString foregroundPrinterOperationId_;
+    PrinterProtocol::DeviceSpecifications pendingPrinterDeviceSpecifications_;
+    bool printerDeviceSpecificationsPending_ = false;
     PrinterProtocol::PaseOverlayConfig printerOverlayConfig_;
+    tryx::GpuSelectionPin printerGpuPin_;
+    TryxRuntimePresentationPreferencesV1 presentationPreferences_;
+    std::atomic_uint publishedPresentationPreferences_{0};
+#ifdef TRYX_PROTOCOL_TESTING
+    std::function<void()> savedLayoutProofConfirmedHookForTesting_;
+#endif
 };
 
 class DeviceManager : public QObject {
@@ -388,6 +441,9 @@ public slots:
                                  bool ensureExisting = false,
                                  const TryxRuntimeMediaTransform &transform =
                                      TryxRuntimeMediaTransform{});
+    QString queueUploadWithPreparationProfileOperation(
+        const QString &operationId, const QString &localPath,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     QString queueEnsureMediaAndApplyOperation(
         const QString &operationId,
         const QString &localPath,
@@ -398,10 +454,21 @@ public slots:
                                       const QStringList &fileNames);
     QString queueApplyOperation(const QString &operationId,
                                 const TryxRuntimeApplyRequest &request,
-                                bool updateMetrics = false);
+                                bool updateMetrics = false,
+                                const QString &proofDeviceIdentity = {},
+                                const QList<TryxRuntimeSavedMediaRefV1> &proof = {},
+                                bool savedLayoutApply = false);
+    QString queueSavedLayoutApplyOperation(
+        const QString &operationId, const QString &layoutId,
+        quint64 expectedLayoutRevision,
+        const TryxRuntimeApplyRequest &currentDraft);
     QString queueMetricsConfigOperation(
         const QString &operationId,
         const TryxRuntimeMetricsConfigRequest &request);
+    QString queueCacheCleanupOperation(
+        const QString &operationId,
+        QString *errorName = nullptr,
+        QString *errorMessage = nullptr);
     QString queueStageDeviceMediaOperation(
         const QString &operationId, const QString &mediaId,
         const QString &ownerUniqueName);
@@ -409,6 +476,10 @@ public slots:
         const QString &operationId, const QString &artifactId,
         const QString &ownerUniqueName,
         QString *errorMessage = nullptr);
+    TryxRuntimeDeviceMediaMetadataV1 deviceMediaMetadataV1(
+        const QString &artifactId, const QString &leaseId,
+        const QString &ownerUniqueName,
+        QString *errorMessage = nullptr) const;
     bool renewDeviceMediaArtifactLease(
         const QString &artifactId, const QString &leaseId,
         const QString &ownerUniqueName,
@@ -421,11 +492,21 @@ public slots:
         const QString &operationId, const QString &artifactId,
         const QString &leaseId, const QString &ownerUniqueName,
         const TryxRuntimeMediaTransform &transform);
+    QString queueRecoveredMediaUploadWithPreparationProfileOperation(
+        const QString &operationId, const QString &artifactId,
+        const QString &leaseId, const QString &ownerUniqueName,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     QString queueReplaceDeviceMediaOperation(
         const QString &operationId, const QString &artifactId,
         const QString &leaseId, const QString &originalMediaId,
         const TryxRuntimeApplyRequest &request,
         const TryxRuntimeMediaTransform &transform,
+        const QString &ownerUniqueName);
+    QString queueReplaceDeviceMediaWithPreparationProfileOperation(
+        const QString &operationId, const QString &artifactId,
+        const QString &leaseId, const QString &originalMediaId,
+        const TryxRuntimeApplyRequest &request,
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
         const QString &ownerUniqueName);
     QString retryOperation(const QString &sourceOperationId,
                            const QString &newOperationId);
@@ -433,12 +514,39 @@ public slots:
 
 public:
     TryxRuntimeOperationsSnapshot operationSnapshot() const;
+    QString supportSnapshotV1(
+        const TryxRuntimeSnapshot &connection) const;
     TryxRuntimeOperationInfo operationInfo(const QString &operationId) const;
     TryxRuntimeOperationInfo activeOperationInfo() const;
     QStringList metricsCapabilities() const;
     TryxRuntimeMetricsState metricsState() const { return metricsState_; }
     TryxRuntimeDisplayState displayState() const { return displayState_; }
     TryxRuntimeMediaCatalogSnapshot mediaCatalogSnapshot() const;
+    TryxRuntimeDeviceCapabilitiesV1 deviceCapabilitiesV1(
+        quint64 connectionRevision) const;
+    TryxRuntimeDeviceSpecificationsV1 deviceSpecificationsV1(
+        const TryxRuntimeSnapshot &connection) const;
+    TryxRuntimePresentationPreferencesV1 presentationPreferences() const {
+        return presentationPreferences_;
+    }
+    TryxRuntimeSavedLayoutsSnapshotV1 savedLayoutsSnapshot() const;
+    bool putSavedLayout(
+        quint64 expectedSnapshotRevision,
+        const TryxRuntimeSavedLayoutV1 &layout,
+        TryxRuntimeSavedLayoutsSnapshotV1 *confirmed = nullptr,
+        QString *errorName = nullptr,
+        QString *errorMessage = nullptr);
+    bool deleteSavedLayout(
+        quint64 expectedSnapshotRevision, const QString &layoutId,
+        TryxRuntimeSavedLayoutsSnapshotV1 *confirmed = nullptr,
+        QString *errorName = nullptr,
+        QString *errorMessage = nullptr);
+    bool setPresentationPreferences(
+        quint64 expectedRevision, const QString &temperatureUnit,
+        const QString &timeFormat,
+        TryxRuntimePresentationPreferencesV1 *confirmed = nullptr,
+        QString *errorName = nullptr,
+        QString *errorMessage = nullptr);
     QString mediaThumbnailPath(const QString &thumbnailKey) const;
     bool acquireFirmwareExclusive(const QString &leaseId,
                                   QString *errorMessage = nullptr);
@@ -451,6 +559,13 @@ public:
     }
     bool firmwareRecoveryInterlockActive() const {
         return firmwareRecoveryInterlockActive_;
+    }
+    bool prepareRuntimeDowngradeV10(
+        QString *mode = nullptr,
+        QString *errorName = nullptr,
+        QString *errorMessage = nullptr);
+    bool runtimeDowngradeV10Prepared() const {
+        return runtimeDowngradeV10Prepared_;
     }
 
 signals:
@@ -469,6 +584,8 @@ signals:
         const TryxRuntimeMediaCatalogSnapshot &snapshot);
     void uploadStatus(const QString &status);
     void printerOperationsCancelled();
+    void printerDeviceVersionsReady(const QString &firmware,
+                                    const QString &appVersion);
     void printerDeviceInfoReady(const PrinterProtocol::DeviceInfo &info);
     void printerDeviceInfoFailed(const QString &message);
     void printerPresenceChanged(bool present);
@@ -480,9 +597,12 @@ signals:
         const TryxRuntimeOperationsSnapshot &snapshot);
     void metricsStateUpdated(const TryxRuntimeMetricsState &state);
     void displayStateUpdated(const TryxRuntimeDisplayState &state);
+    void presentationPreferencesChanged(
+        const TryxRuntimePresentationPreferencesV1 &preferences);
     void firmwareTransportQuiesced(const QString &leaseId,
                                    bool success,
                                    const QString &message);
+    void runtimeDowngradeV10PreparedForExit();
 #ifdef TRYX_PROTOCOL_TESTING
     void printerWorkerDeviceInfoFailedForTesting(const QString &message,
                                                  quint64 generation);
@@ -548,12 +668,33 @@ signals:
         const TryxRuntimeMediaTransform &transform =
             TryxRuntimeMediaTransform{},
         quint16 productId = 0x1021);
+    void requestAnalyzePrinterSourceWithPreparationProfile(
+        const QString &operationId, const QString &localPath,
+        quint64 generation,
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
+        quint16 productId = 0x1021);
+    void requestPreparePrinterMediaWithPreparationProfile(
+        const QString &operationId, const QString &devicePath,
+        const QString &localPath,
+        const QString &expectedSourceSha256,
+        quint64 generation,
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
+        quint16 productId = 0x1021);
+    void requestPrepareRecoveredPrinterMediaWithPreparationProfile(
+        const QString &operationId, const QString &devicePath,
+        const QString &localPath,
+        const QString &expectedSourceSha256,
+        quint64 generation,
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
+        quint16 productId = 0x1021);
     void requestCancelPrinterPreparation(quint64 currentGeneration);
     void requestCancelPrinterPreparationOperation(const QString &operationId);
     void requestReleasePrinterPreparation(const QString &uploadPath);
-    void requestValidatePrinterRetryCache(const QString &validationId,
-                                          const QString &preparedPath,
-                                          const QString &expectedSha256);
+    void requestValidatePrinterRetryCacheArtifact(
+        const QString &validationToken,
+        const QString &artifactPath, qint64 expectedSize,
+        const QString &expectedSha256,
+        quint64 expectedDevice, quint64 expectedInode);
     void requestPrinterUploadPrepared(const QString &devicePath,
                                       const QString &uploadPath,
                                       const QString &remoteName,
@@ -588,6 +729,8 @@ signals:
     void requestPrinterApplyMedia(const QString &devicePath, const QString &mediaFile,
                                   const TryxRuntimeApplyRequest &request,
                                   bool updateMetrics,
+                                  const QString &proofDeviceIdentity,
+                                  const QList<TryxRuntimeSavedMediaRefV1> &proof,
                                   const QString &operationId,
                                   quint64 generation);
     void requestPrinterConfigureMetrics(
@@ -615,6 +758,7 @@ private:
     DeviceManager(PrinterDeviceMonitor *printerMonitor,
                   bool startPrinterMonitor, QObject *parent);
     void setPrinterDisplaySessionActive(bool active);
+    void clearDeviceSpecificationsCache();
     void handlePrinterSnapshot(const PrinterProtocol::DiscoverySnapshot &snapshot);
     void attachPrinterClassDevice(const PrinterProtocol::UsbPrinterDevice &device);
     void detachPrinterClassDevice(bool notify);
@@ -643,28 +787,34 @@ private:
         const QString &operationId, const QString &sourcePath,
         QString *claimedPath, bool *owned,
         QString *errorMessage = nullptr) const;
-    QString deviceMediaOutboxDirectory() const;
-    bool ensureDeviceMediaOutbox(
-        QString *errorMessage = nullptr) const;
     void cleanupDeviceMediaOutbox();
     void sweepDeviceMediaArtifacts();
-    void removeDeviceMediaArtifact(const QString &artifactId);
+    void continueCacheCleanup(const QString &operationId);
+    void finishCacheCleanupOperation(
+        const QString &operationId, const QString &state,
+        const QString &errorCategory, const QString &terminalOutcome,
+        const QString &message);
+    void releaseCacheCleanupLatch();
+    void rejectCacheCleanupOperation(
+        const QString &operationId, const QString &category,
+        const QString &message);
     void releaseArtifactOperationHold(const QString &operationId);
-    bool validateArtifactRecord(
-        const QString &artifactId, const QString &ownerUniqueName,
-        const QString &leaseId, bool verifyHash,
-        QString *errorMessage = nullptr) const;
     const TryxRuntimeMediaEntry *findMediaById(
         const QString &mediaId) const;
-    static bool isValidDbusUniqueName(const QString &ownerUniqueName);
-    void watchArtifactOwner(const QString &ownerUniqueName);
+    bool watchArtifactOwner(const QString &ownerUniqueName);
     void handleArtifactOwnerUnregistered(const QString &ownerUniqueName);
     QString queueRecoveredOperation(
         const QString &operationId, const QString &artifactId,
         const QString &leaseId, const QString &ownerUniqueName,
-        const TryxRuntimeMediaTransform &transform, bool replace,
+        const TryxRuntimeMediaPreparationProfileV1 &profile, bool replace,
         const QString &originalMediaId,
         const TryxRuntimeApplyRequest &applyRequest);
+    QString queueUploadOperationWithPreparationProfile(
+        const QString &operationId, const QString &localPath,
+        bool applyAfterUpload,
+        const TryxRuntimeApplyRequest &applyRequest,
+        bool updateMetrics, bool ensureExisting,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     void releaseOwnedSource(OperationRecord &record);
     void cleanupMediaRuntimeStaging();
     void publishOperation(const QString &operationId);
@@ -676,28 +826,43 @@ private:
     void finishOperation(const QString &operationId, const QString &state,
                          const QString &errorCategory,
                          const QString &retryMode,
-                         const QString &message);
+                         const QString &message,
+                         bool preserveReplaceJournal = false);
+    void pauseOperationForRetryCacheReconciliation(
+        const QString &operationId,
+        const QString &errorCategory,
+        const QString &message);
     void rejectOperation(const QString &operationId, const QString &kind,
                          const QString &subject, const QString &category,
                          const QString &message);
+    void rejectSavedLayoutApplyOperation(
+        const QString &operationId, const QString &subject,
+        const QString &category, const QString &message);
     void pruneOperationHistory();
     void cancelForegroundForGenerationChange(const QString &message);
     void handlePreparedUploadFailure(const QString &operationId,
                                      const QString &message,
                                      PrinterProtocol::MutationOutcome outcome);
     QString mediaCatalogDirectory() const;
-    QString mediaThumbnailDirectory() const;
-    QString mediaCatalogIndexPath() const;
-    QString mediaThumbnailKey(const QString &deviceIdentity,
-                              const TryxRuntimeMediaEntry &entry) const;
-    void loadMediaCatalogIndex();
-    bool writeMediaCatalogIndex(QString *errorMessage = nullptr);
+    void loadMediaCatalogStore();
+    void loadSavedLayoutsStore();
+    bool currentSavedLayoutsContext(
+        QString *deviceIdentity, QString *productId) const;
+    bool buildSavedLayoutMediaProof(
+        const TryxRuntimeApplyRequest &request,
+        QList<TryxRuntimeSavedMediaRefV1> *proof,
+        QString *errorMessage = nullptr) const;
     void updateMediaCatalog(
         const QList<PrinterProtocol::MediaFile> &mediaFiles);
     void clearMediaCatalogView();
     QString promoteThumbnailForOperation(
         const QString &operationId,
         const TryxRuntimeMediaEntry &verifiedEntry);
+    bool commitVerifiedMediaMetadata(
+        const QString &operationId,
+        const TryxRuntimeMediaEntry &verifiedEntry,
+        QString *errorCategory = nullptr,
+        QString *errorMessage = nullptr);
     bool persistMediaOriginForOperation(
         const QString &operationId,
         const TryxRuntimeMediaEntry &verifiedEntry,
@@ -706,29 +871,69 @@ private:
         const QString &sourceContentSha256,
         const QString &conversionProfile,
         const QList<PrinterProtocol::MediaFile> &mediaFiles) const;
-    void pruneMediaCatalogIndex(
-        const TryxRuntimeMediaCatalogSnapshot &snapshot);
-    void sweepMediaThumbnailOrphans();
-    QString paseMetricsConfigDirectory() const;
-    QString paseMetricsConfigPath() const;
     void loadPaseMetricsConfig();
+    void loadRuntimePresentationPreferences();
     bool persistPaseMetricsConfiguration(
         const PrinterProtocol::PaseOverlayConfig &overlay, bool enabled,
         QString *errorMessage = nullptr);
     PrinterProtocol::PaseOverlayConfig persistedPaseOverlayForDevice(
         const QString &deviceSerial) const;
     QString retryCacheDirectory() const;
-    QString retryCacheManifestPath() const;
+    tryx::RetryCacheStore &retryCacheStore();
     void loadRetryCache();
-    void handleRetryCacheValidation(const QString &validationId, bool valid,
-                                    bool cancelled, const QString &message);
-    bool writeRetryCache(const QString &operationId,
-                         const QString &terminalOutcome,
-                         QString *errorMessage);
-    bool clearRetryCache(bool removePreparedFile);
-    bool consumeAcknowledgedRetryCache();
+    void handleRetryCacheArtifactValidation(
+        const QString &validationToken, bool valid,
+        bool cancelled, qint64 actualSize,
+        const QString &actualSha256, quint64 actualDevice,
+        quint64 actualInode, const QString &message);
+    void queueRetryCacheValidationRequests(
+        const QVector<tryx::RetryCacheStore::ValidationRequest> &requests);
+    bool adoptLoadedRetryCacheSnapshot(
+        const tryx::RetryCacheStore::Snapshot &snapshot,
+        QString *errorMessage = nullptr);
+    OperationRecord retryCacheOperationRecord(
+        const tryx::RetryCacheStore::StoredRetryCandidate &candidate) const;
+    OperationRecord retryCacheOperationRecord(
+        const tryx::RetryCacheStore::StoredDispatch &dispatch) const;
+    tryx::RetryCacheStore::ExpectedDispatch retryCacheExpectedDispatch(
+        const tryx::RetryCacheStore::StoredRetryCandidate &candidate) const;
+    tryx::RetryCacheStore::ExpectedDispatch retryCacheExpectedDispatch(
+        const tryx::RetryCacheStore::StoredDispatch &dispatch) const;
+    QString retryCacheArtifactPath(
+        const tryx::RetryCacheStore::StoredArtifact &artifact) const;
+    QString retryCacheVisibleOperationId() const;
+    bool retryCacheStoreBlocksMutations() const;
+    bool retryCacheStartupSessionGateActive() const;
+    bool retryCacheRestrictedRecoveryActive() const;
+    void synchronizeRetryCacheSurface();
+    bool recordRetryCacheOutcome(
+        const QString &operationId,
+        tryx::RetryCacheStore::TerminalOutcome outcome,
+        qint64 confirmedBytes, const QString &errorCategory,
+        const QString &errorMessage, QString *storeError = nullptr);
+    bool beginRetryCacheLocalCommit(
+        const QString &operationId,
+        const TryxRuntimeMediaEntry &verifiedEntry,
+        QString *storeError = nullptr);
+    bool deferRetryCacheLocalCommit(
+        const QString &operationId,
+        const QString &errorCategory,
+        const QString &errorMessage,
+        QString *storeError = nullptr);
+    bool retireRetryCacheDispatch(
+        const QString &operationId,
+        tryx::RetryCacheStore::DispatchRetirement retirement,
+        QString *storeError = nullptr);
+    bool clearRetryCacheCandidate(const QString &expectedOperationId);
+    bool consumeRetryCacheCandidate(const QString &expectedOperationId);
+    bool dispatchPreparedUploadWithRetryBarrier(
+        const QString &devicePath, const QString &operationId,
+        quint64 generation);
+    bool retryCacheMutationGateActive() const;
+    void startRetryCacheReadOnlyReconciliationIfReady();
+    void promoteRestrictedSessionAfterProof();
+    bool releasePrinterPreparationPath(const QString &path);
     void removePreparedFileForOperation(const QString &operationId);
-    void preserveActivePreparedMediaForShutdown();
     QString deleteIntentPath() const;
     QString replaceIntentPath() const;
     bool writeReplaceJournal(const QString &operationId,
@@ -744,7 +949,8 @@ private:
                            const QString &currentName,
                            const QStringList &deletedNames,
                            QString *errorMessage = nullptr);
-    bool clearDeleteIntent(QString *errorMessage = nullptr);
+    bool clearDeleteIntent(const QString &expectedOperationId,
+                           QString *errorMessage = nullptr);
     void loadDeleteIntent();
     void resumePendingDeleteReconciliation();
 
@@ -760,6 +966,7 @@ private:
         QString sourceContentSha256;
         qint64 sourceSize = 0;
         QString conversionProfile;
+        QString mediaConversion;
         quint16 printerProductId = 0;
         QString remoteName;
         QString originalRemoteName;
@@ -768,6 +975,7 @@ private:
         QStringList deletedNames;
         TryxRuntimeApplyRequest applyRequest;
         TryxRuntimeMediaTransform mediaTransform;
+        TryxRuntimeMediaPreparationProfileV1 mediaPreparationProfile;
         TryxRuntimeMetricsConfigRequest metricsRequest;
         bool updateMetrics = false;
         bool ensureExisting = false;
@@ -776,14 +984,16 @@ private:
         bool cancelRequested = false;
         bool deviceChangePending = false;
         QString deviceChangeMessage;
-        bool retryValidationPending = false;
         bool retryPreflight = false;
         bool requiresDeviceRecovery = false;
         bool retryMustUseNewRemoteName = false;
         bool ownsSourcePath = false;
         QString uploadDeviceIdentity;
         quint64 uploadDeviceGeneration = 0;
+        bool uploadDispatched = false;
         bool uploadFinalizationReconciliationPending = false;
+        QString retryLineageId;
+        QString retryDispatchId;
         QString artifactId;
         QString originalMediaId;
         QString originalRemoteNameForReplace;
@@ -796,18 +1006,10 @@ private:
         bool replaceOperation = false;
         bool replaceJournalActive = false;
         TryxReplaceJournalRecord replaceJournal;
-    };
-
-    struct DeviceMediaArtifactRecord {
-        TryxRuntimeDeviceMediaArtifact metadata;
-        QString ownerUniqueName;
-        QString canonicalPath;
-        QString leaseId;
-        QString inUseOperationId;
-        qint64 expiresUtcMs = 0;
-        quint64 deviceNumber = 0;
-        quint64 inodeNumber = 0;
-        bool claimed = false;
+        tryx::MediaCatalogStore::CleanupPlan cacheCatalogPlan;
+        tryx::DeviceMediaArtifactStore::CleanupPlan cacheArtifactPlan;
+        qsizetype cacheCatalogIndex = 0;
+        qsizetype cacheArtifactIndex = 0;
     };
 
     QThread workerThread_;
@@ -825,6 +1027,11 @@ private:
     QString printerSessionResumeSerial_;
     quint16 printerSessionResumeProductId_ = 0;
     quint64 printerGeneration_ = 0;
+    PrinterProtocol::DeviceSpecifications deviceSpecificationsCache_;
+    QString deviceSpecificationsDevicePath_;
+    QString deviceSpecificationsDeviceIdentity_;
+    quint16 deviceSpecificationsProductId_ = 0;
+    quint64 deviceSpecificationsGeneration_ = 0;
     QElapsedTimer printerGenerationElapsedTimer_;
     quint64 printerDisconnectCount_ = 0;
     PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
@@ -832,23 +1039,33 @@ private:
     quint64 displayStateReadGeneration_ = 0;
     quint64 operationRevision_ = 0;
     TryxRuntimeMediaCatalogSnapshot mediaCatalog_;
-    QJsonObject mediaCatalogIndex_;
-    bool mediaCatalogWriteEnabled_ = true;
-    QString persistedPaseMetricsSerial_;
-    PrinterProtocol::PaseOverlayConfig persistedPaseOverlay_;
+    std::unique_ptr<tryx::MediaCatalogStore> mediaCatalogStore_;
+    std::unique_ptr<tryx::PaseMetricsConfigStore>
+        paseMetricsConfigStore_;
+    std::unique_ptr<tryx::RuntimePresentationPreferencesStore>
+        runtimePresentationPreferencesStore_;
+    std::unique_ptr<tryx::SavedLayoutStore> savedLayoutStore_;
+    std::unique_ptr<tryx::RuntimeDowngradeStore>
+        runtimeDowngradeStore_;
+    std::unique_ptr<tryx::DeviceMediaArtifactStore>
+        deviceMediaArtifactStore_;
+    std::unique_ptr<tryx::RetryCacheStore> retryCacheStore_;
+    tryx::RetryCacheStore::Snapshot retryCacheSnapshot_;
     TryxRuntimeMetricsState metricsState_;
     TryxRuntimeDisplayState displayState_;
+    TryxRuntimePresentationPreferencesV1 presentationPreferences_;
+    bool savedLayoutsStoreLoaded_ = false;
+    QString savedLayoutsFailureDetail_;
     QHash<QString, OperationRecord> operations_;
-    QHash<QString, DeviceMediaArtifactRecord> deviceMediaArtifacts_;
     QStringList operationOrder_;
     QString activeOperationId_;
-    QString retryCacheOperationId_;
-    QString retryCachePreparedPath_;
-    QString retryCacheThumbnailPath_;
-    QString pendingRetryValidationId_;
-    QJsonObject pendingRetryManifest_;
+    QHash<QString, tryx::RetryCacheStore::ValidationRequest>
+        pendingRetryCacheValidations_;
+    bool retryCacheLoadComplete_ = false;
+    bool retryCacheStartupFailure_ = false;
+    QString retryCacheFailureDetail_;
     QString pendingDeleteOperationId_;
-    QJsonObject pendingDeleteIntent_;
+    std::optional<tryx::DeleteIntentRecord> pendingDeleteIntent_;
     QString pendingReplaceJournalOperationId_;
     QString legacyProductId_;
     QString firmwareExclusiveLeaseId_;
@@ -867,11 +1084,17 @@ private:
     bool firmwareReleaseResumeTransport_ = false;
     bool firmwareRecoveryReconnectRequested_ = false;
     bool firmwareRecoveryInterlockActive_ = false;
+    bool runtimeDowngradeV10Prepared_ = false;
+    QString runtimeDowngradeV10Mode_;
+    bool cacheCleanupExclusiveActive_ = false;
+    QString cacheCleanupOperationId_;
+    QList<PrinterProtocol::MediaFile> deferredMediaCatalogFiles_;
+    quint64 deferredMediaCatalogGeneration_ = 0;
+    QString deferredMediaCatalogDeviceIdentity_;
+    bool deferredMediaCatalogUpdatePending_ = false;
     bool automaticPrinterSessionStart_ = true;
 #ifdef TRYX_PROTOCOL_TESTING
     QString retryCacheDirectoryOverride_;
-    QString mediaCatalogDirectoryOverride_;
-    QString paseMetricsConfigDirectoryOverride_;
     QString mediaRuntimeRootOverride_;
 #endif
 };

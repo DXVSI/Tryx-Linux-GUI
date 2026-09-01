@@ -29,7 +29,25 @@ require_file() {
     fi
 }
 
+require_exact_manpage() {
+    required_manpage=$1
+    required_manpage_count=0
+    for required_manpage_path in \
+        "$staged_root/usr/share/man/man1/$required_manpage.1" \
+        "$staged_root/usr/share/man/man1/$required_manpage.1.gz"
+    do
+        if [ -f "$required_manpage_path" ]; then
+            required_manpage_count=$((required_manpage_count + 1))
+        fi
+    done
+    if [ "$required_manpage_count" -ne 1 ]; then
+        echo "package must contain exactly one compressed or uncompressed $required_manpage(1)" >&2
+        exit 1
+    fi
+}
+
 require_file /usr/bin/tryx-panorama-manager
+require_file /usr/bin/tryx
 require_file /usr/lib/tryx-panorama-manager/tryx-panorama-runtime
 require_file /usr/lib/systemd/user/tryx-panorama.service
 require_file /usr/lib/systemd/user-preset/90-tryx-panorama.preset
@@ -40,6 +58,27 @@ require_file /usr/share/icons/hicolor/256x256/apps/tryx-panorama.png
 require_file /usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
 require_file /usr/share/licenses/tryx-panorama-manager/LICENSE
 require_file /usr/share/licenses/tryx-panorama-manager/picojson-BSD-2-Clause.txt
+
+desktop_entry=$staged_root/usr/share/applications/tryx-panorama-manager.desktop
+if ! grep -Fxq 'Exec=tryx-panorama-manager' "$desktop_entry"; then
+    echo "desktop launcher must use the packaged GUI command" >&2
+    exit 1
+fi
+if ! grep -Fxq 'Icon=tryx-panorama' "$desktop_entry"; then
+    echo "desktop launcher must use the packaged application icon" >&2
+    exit 1
+fi
+
+for forbidden_autostart in \
+    "$staged_root/etc/xdg/autostart/tryx-panorama-manager.desktop" \
+    "$staged_root/usr/etc/xdg/autostart/tryx-panorama-manager.desktop"
+do
+    if [ -e "$forbidden_autostart" ] ||
+       [ -L "$forbidden_autostart" ]; then
+        echo "package must not enable system-wide GUI autostart: ${forbidden_autostart#"$staged_root"}" >&2
+        exit 1
+    fi
+done
 
 expected_usb_product_ids=$(printf '%s\n' 1011 1021 2011)
 
@@ -84,22 +123,18 @@ if [ -e "$staged_root/usr/bin/tryx-panorama-quick" ]; then
     exit 1
 fi
 
-manpage_count=0
-for manpage in \
-    "$staged_root/usr/share/man/man1/tryx-panorama-manager.1" \
-    "$staged_root/usr/share/man/man1/tryx-panorama-manager.1.gz"
-do
-    if [ -f "$manpage" ]; then
-        manpage_count=$((manpage_count + 1))
-    fi
-done
-if [ "$manpage_count" -ne 1 ]; then
-    echo "package must contain exactly one compressed or uncompressed man page" >&2
+if [ -e "$staged_root/usr/bin/tryx-panorama-cli" ] ||
+   [ -L "$staged_root/usr/bin/tryx-panorama-cli" ]; then
+    echo "package must not contain the unpublished tryx-panorama-cli alias" >&2
     exit 1
 fi
 
+require_exact_manpage tryx-panorama-manager
+require_exact_manpage tryx
+
 for binary in \
     "$staged_root/usr/bin/tryx-panorama-manager" \
+    "$staged_root/usr/bin/tryx" \
     "$staged_root/usr/lib/tryx-panorama-manager/tryx-panorama-runtime"
 do
     if [ ! -x "$binary" ]; then
@@ -150,8 +185,29 @@ if [ "$runtime_version" != "tryx-panorama-runtime $expected_version" ]; then
     exit 1
 fi
 
+cli_version=$(
+    env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-package-verifier-no-bus \
+        "$staged_root/usr/bin/tryx" --version
+)
+if [ "$cli_version" != "tryx $expected_version" ]; then
+    echo "unexpected CLI version output: $cli_version" >&2
+    exit 1
+fi
+
+cli_help=$(
+    env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-package-verifier-no-bus \
+        "$staged_root/usr/bin/tryx" --help
+)
+if ! printf '%s\n' "$cli_help" | grep -Fq 'Usage: tryx'; then
+    echo "packaged CLI help is missing its canonical usage" >&2
+    exit 1
+fi
+
 for binary in \
     "$staged_root/usr/bin/tryx-panorama-manager" \
+    "$staged_root/usr/bin/tryx" \
     "$staged_root/usr/lib/tryx-panorama-manager/tryx-panorama-runtime"
 do
     if ldd "$binary" | grep -q 'not found'; then
@@ -164,6 +220,13 @@ do
         exit 1
     fi
 done
+
+cli_dependencies=$(ldd "$staged_root/usr/bin/tryx")
+if printf '%s\n' "$cli_dependencies" |
+   grep -Eq 'libQt6(Widgets|Qml|Quick)[^[:space:]]*\.so'; then
+    echo "package CLI links forbidden Qt Widgets, QML, or Quick libraries" >&2
+    exit 1
+fi
 
 service_exec=$(
     sed -n 's/^ExecStart=//p' \

@@ -50,7 +50,7 @@ const QSet<QString> &allowedDispositions() {
     return values;
 }
 
-const QSet<QString> &exactJsonKeys() {
+const QSet<QString> &legacyJsonKeys() {
     static const QSet<QString> values{
         QStringLiteral("version"),
         QStringLiteral("operationId"),
@@ -77,11 +77,111 @@ const QSet<QString> &exactJsonKeys() {
     return values;
 }
 
+const QSet<QString> &version2JsonKeys() {
+    static const QSet<QString> values = [] {
+        QSet<QString> keys = legacyJsonKeys();
+        keys.insert(QStringLiteral("productId"));
+        return keys;
+    }();
+    return values;
+}
+
 bool setError(QString *errorMessage, const QString &message) {
     if (errorMessage) {
         *errorMessage = message;
     }
     return false;
+}
+
+bool topLevelObjectKeysAreUnique(const QByteArray &payload,
+                                 QString *errorMessage) {
+    qsizetype position = 0;
+    const auto skipWhitespace = [&]() {
+        while (position < payload.size()) {
+            const char value = payload.at(position);
+            if (value != ' ' && value != '\t' &&
+                value != '\n' && value != '\r') {
+                break;
+            }
+            ++position;
+        }
+    };
+
+    skipWhitespace();
+    if (position >= payload.size() || payload.at(position) != '{') {
+        return true;
+    }
+    ++position;
+
+    int depth = 1;
+    bool expectingKey = true;
+    QSet<QString> keys;
+    while (position < payload.size()) {
+        const char value = payload.at(position);
+        if (value == '"') {
+            const qsizetype start = position++;
+            bool escaped = false;
+            bool terminated = false;
+            while (position < payload.size()) {
+                const char stringValue = payload.at(position++);
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (stringValue == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (stringValue == '"') {
+                    terminated = true;
+                    break;
+                }
+            }
+            if (!terminated) {
+                return true;
+            }
+            if (depth != 1 || !expectingKey) {
+                continue;
+            }
+
+            const QByteArray encodedKey =
+                payload.mid(start, position - start);
+            QJsonParseError keyParseError;
+            const QJsonDocument keyDocument =
+                QJsonDocument::fromJson(
+                    QByteArray("[") + encodedKey + QByteArray("]"),
+                &keyParseError);
+            if (keyParseError.error != QJsonParseError::NoError ||
+                !keyDocument.isArray() ||
+                keyDocument.array().size() != 1 ||
+                !keyDocument.array().at(0).isString()) {
+                return true;
+            }
+            const QString key =
+                keyDocument.array().at(0).toString();
+            if (keys.contains(key)) {
+                return setError(
+                    errorMessage,
+                    QStringLiteral(
+                        "Replace journal contains a duplicate top-level JSON key"));
+            }
+            keys.insert(key);
+            expectingKey = false;
+            continue;
+        }
+        if (value == '{' || value == '[') {
+            ++depth;
+        } else if (value == '}' || value == ']') {
+            if (depth == 1 && value == '}') {
+                return true;
+            }
+            --depth;
+        } else if (value == ',' && depth == 1) {
+            expectingKey = true;
+        }
+        ++position;
+    }
+    return true;
 }
 
 bool isCanonicalUuid(const QString &value) {
@@ -122,6 +222,41 @@ bool isSafeText(const QString &value, qsizetype maximumLength) {
     return true;
 }
 
+QString productIdString(quint16 productId) {
+    return QStringLiteral("%1")
+        .arg(productId, 4, 16, QLatin1Char('0'))
+        .toLower();
+}
+
+bool parseProductId(const QJsonValue &value, quint16 *result) {
+    if (!result || !value.isString()) {
+        return false;
+    }
+    const QString encoded = value.toString();
+    if (encoded.size() != 4 || encoded != encoded.toLower()) {
+        return false;
+    }
+    for (const QChar character : encoded) {
+        const bool decimal =
+            character >= QLatin1Char('0') &&
+            character <= QLatin1Char('9');
+        const bool hexadecimal =
+            character >= QLatin1Char('a') &&
+            character <= QLatin1Char('f');
+        if (!decimal && !hexadecimal) {
+            return false;
+        }
+    }
+    bool ok = false;
+    const uint parsed = encoded.toUInt(&ok, 16);
+    if (!ok || parsed == 0 || parsed > 0xffffU ||
+        productIdString(static_cast<quint16>(parsed)) != encoded) {
+        return false;
+    }
+    *result = static_cast<quint16>(parsed);
+    return true;
+}
+
 bool isSafeRemoteName(const QString &value) {
     if (value.isEmpty() || value.size() > 128 ||
         value.startsWith(QLatin1Char('.'))) {
@@ -154,7 +289,13 @@ bool isSafeRemoteName(const QString &value) {
            lower.endsWith(
                QStringLiteral(".png.h264_2240x1080")) ||
            lower.endsWith(
-               QStringLiteral(".gif.h264_2240x1080"));
+               QStringLiteral(".gif.h264_2240x1080")) ||
+           lower.endsWith(
+               QStringLiteral(".mp4.h264_1120x1080")) ||
+           lower.endsWith(
+               QStringLiteral(".png.h264_1120x1080")) ||
+           lower.endsWith(
+               QStringLiteral(".gif.h264_1120x1080"));
 }
 
 bool parseSize(const QJsonValue &value, quint64 *result) {
@@ -252,6 +393,8 @@ QJsonObject recordToJson(const TryxReplaceJournalRecord &record) {
     QJsonObject object;
     object.insert(QStringLiteral("version"),
                   TryxReplaceJournal::FormatVersion);
+    object.insert(QStringLiteral("productId"),
+                  productIdString(record.productId));
     object.insert(QStringLiteral("operationId"), record.operationId);
     object.insert(QStringLiteral("deviceIdentity"),
                   record.deviceIdentity);
@@ -294,13 +437,33 @@ QJsonObject recordToJson(const TryxReplaceJournalRecord &record) {
 bool jsonToRecord(const QJsonObject &object,
                   TryxReplaceJournalRecord *record,
                   QString *errorMessage) {
+    const QJsonValue versionValue =
+        object.value(QStringLiteral("version"));
+    if (!record || !versionValue.isDouble()) {
+        return setError(
+            errorMessage,
+            QStringLiteral(
+                "Replace journal has an unsupported JSON shape"));
+    }
+    const double versionNumber = versionValue.toDouble(-1.0);
+    if (versionNumber !=
+            static_cast<double>(
+                TryxReplaceJournal::LegacyFormatVersion) &&
+        versionNumber !=
+            static_cast<double>(TryxReplaceJournal::FormatVersion)) {
+        return setError(
+            errorMessage,
+            QStringLiteral(
+                "Replace journal has an unsupported JSON shape"));
+    }
+    const int version = static_cast<int>(versionNumber);
     const QStringList keys = object.keys();
     const QSet<QString> actualKeys(keys.cbegin(), keys.cend());
-    if (!record || actualKeys != exactJsonKeys() ||
-        !object.value(QStringLiteral("version")).isDouble() ||
-        object.value(QStringLiteral("version")).toDouble(-1.0) !=
-            static_cast<double>(
-                TryxReplaceJournal::FormatVersion)) {
+    const QSet<QString> &expectedKeys =
+        version == TryxReplaceJournal::LegacyFormatVersion
+        ? legacyJsonKeys()
+        : version2JsonKeys();
+    if (actualKeys != expectedKeys) {
         return setError(
             errorMessage,
             QStringLiteral(
@@ -351,8 +514,26 @@ bool jsonToRecord(const QJsonObject &object,
             QStringLiteral(
                 "Replace journal referenceNames has an invalid type"));
     }
+    if (version == TryxReplaceJournal::FormatVersion &&
+        !object.value(QStringLiteral("productId")).isString()) {
+        return setError(
+            errorMessage,
+            QStringLiteral(
+                "Replace journal productId has an invalid type"));
+    }
 
     TryxReplaceJournalRecord parsed;
+    parsed.formatVersion = version;
+    if (version == TryxReplaceJournal::LegacyFormatVersion) {
+        parsed.productId = 0x1021;
+    } else if (!parseProductId(
+                   object.value(QStringLiteral("productId")),
+                   &parsed.productId)) {
+        return setError(
+            errorMessage,
+            QStringLiteral(
+                "Replace journal productId is invalid"));
+    }
     parsed.operationId =
         object.value(QStringLiteral("operationId")).toString();
     parsed.deviceIdentity =
@@ -418,6 +599,7 @@ bool immutableIdentityMatches(
     const TryxReplaceJournalRecord &current,
     const TryxReplaceJournalRecord &next) {
     return current.operationId == next.operationId &&
+           current.productId == next.productId &&
            current.deviceIdentity == next.deviceIdentity &&
            current.deviceGeneration == next.deviceGeneration &&
            current.originalMediaId == next.originalMediaId &&
@@ -551,6 +733,11 @@ TryxReplaceJournalLoadResult TryxReplaceJournal::load() const {
         return result;
     }
 
+    if (!topLevelObjectKeysAreUnique(payload, &result.error)) {
+        result.status = TryxReplaceJournalLoadStatus::Invalid;
+        return result;
+    }
+
     QJsonParseError parseError;
     const QJsonDocument document =
         QJsonDocument::fromJson(payload, &parseError);
@@ -572,6 +759,12 @@ TryxReplaceJournalLoadResult TryxReplaceJournal::load() const {
 bool TryxReplaceJournal::write(
     const TryxReplaceJournalRecord &record,
     QString *errorMessage) const {
+    if (record.formatVersion != FormatVersion) {
+        return setError(
+            errorMessage,
+            QStringLiteral(
+                "Only version 2 replace journals can be persisted"));
+    }
     if (!validateRecord(record, errorMessage)) {
         return false;
     }
@@ -584,9 +777,17 @@ bool TryxReplaceJournal::write(
                 "Refusing to overwrite an invalid replace journal: %1")
                 .arg(existing.error));
     }
-    if (existing.status == TryxReplaceJournalLoadStatus::Loaded &&
-        !validateTransition(existing.record, record, errorMessage)) {
-        return false;
+    if (existing.status == TryxReplaceJournalLoadStatus::Loaded) {
+        if (existing.record.formatVersion == LegacyFormatVersion &&
+            recordToJson(existing.record) == recordToJson(record)) {
+            return setError(
+                errorMessage,
+                QStringLiteral(
+                    "A legacy replace journal can only upgrade with monotonic progress"));
+        }
+        if (!validateTransition(existing.record, record, errorMessage)) {
+            return false;
+        }
     }
 
     const QFileInfo destination(path_);
@@ -677,7 +878,14 @@ bool TryxReplaceJournal::clear(QString *errorMessage) const {
 bool TryxReplaceJournal::validateRecord(
     const TryxReplaceJournalRecord &record,
     QString *errorMessage) {
-    if (!isCanonicalUuid(record.operationId) ||
+    const bool supportedProduct =
+        record.productId == 0x1011 || record.productId == 0x1021;
+    if ((record.formatVersion != LegacyFormatVersion &&
+         record.formatVersion != FormatVersion) ||
+        !supportedProduct ||
+        (record.formatVersion == LegacyFormatVersion &&
+         record.productId != 0x1021) ||
+        !isCanonicalUuid(record.operationId) ||
         !isCanonicalUuid(record.artifactId) ||
         !isSafeText(record.deviceIdentity,
                     kMaximumDeviceIdentityLength) ||

@@ -1,39 +1,18 @@
 #include "appsettingscontroller.h"
+#include "guiautostart.h"
 
 #include <panorama/config.hpp>
 
 #include <QDir>
-#include <QProcess>
+#include <QFileInfo>
 #include <QStringList>
-#include <QTimer>
 
 #include <exception>
-
-namespace {
-
-constexpr int kAutostartCommandTimeoutMs = 8000;
-const QString kAutostartUnit =
-    QStringLiteral("tryx-panorama.service");
-
-QString commandFailureMessage(const QByteArray &output,
-                              int exitCode) {
-    const QString detail =
-        QString::fromLocal8Bit(output).trimmed();
-    return detail.isEmpty()
-        ? AppSettingsController::tr(
-              "systemctl failed with exit code %1")
-              .arg(exitCode)
-        : detail;
-}
-
-}  // namespace
 
 AppSettingsController::AppSettingsController(
     bool offline, QObject *parent)
     : QObject(parent),
-      offline_(offline),
-      autostartProcess_(new QProcess(this)),
-      autostartDeadline_(new QTimer(this)) {
+      offline_(offline) {
     try {
         const auto config =
             panorama::ConfigManager::load_config();
@@ -52,6 +31,8 @@ AppSettingsController::AppSettingsController(
                     tr("Unsupported application language setting: %1")
                         .arg(configured));
             }
+            hideToTrayOnClose_ =
+                config->close_behavior == "hide-to-tray";
             devicePort_ =
                 QString::fromStdString(config->port).trimmed();
             keepaliveInterval_ =
@@ -63,29 +44,6 @@ AppSettingsController::AppSettingsController(
                 .arg(QString::fromLocal8Bit(error.what())));
     }
 
-    autostartProcess_->setProcessChannelMode(
-        QProcess::MergedChannels);
-    connect(
-        autostartProcess_,
-        qOverload<int, QProcess::ExitStatus>(
-            &QProcess::finished),
-        this,
-        &AppSettingsController::finishAutostartCommand);
-    connect(
-        autostartProcess_, &QProcess::errorOccurred,
-        this, [this](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) {
-                handleAutostartProcessError();
-            }
-        });
-
-    autostartDeadline_->setSingleShot(true);
-    autostartDeadline_->setInterval(
-        kAutostartCommandTimeoutMs);
-    connect(
-        autostartDeadline_, &QTimer::timeout,
-        this, &AppSettingsController::handleAutostartTimeout);
-
     if (!offline_) {
         refreshSerialPorts();
         refreshAutostart();
@@ -94,6 +52,10 @@ AppSettingsController::AppSettingsController(
 
 QString AppSettingsController::language() const {
     return language_;
+}
+
+bool AppSettingsController::hideToTrayOnClose() const {
+    return hideToTrayOnClose_;
 }
 
 QString AppSettingsController::devicePort() const {
@@ -166,6 +128,41 @@ void AppSettingsController::setLanguage(
     emit languageChanged();
 }
 
+void AppSettingsController::setHideToTrayOnClose(
+    bool enabled) {
+    if (hideToTrayOnClose_ == enabled) {
+        return;
+    }
+
+    try {
+        const auto loaded =
+            panorama::ConfigManager::load_config();
+        if (!loaded) {
+            setConfigError(
+                tr("The application settings file is unreadable or invalid"));
+            return;
+        }
+
+        panorama::Config config = *loaded;
+        config.close_behavior =
+            enabled ? "hide-to-tray" : "quit-gui";
+        if (!panorama::ConfigManager::save_config(config)) {
+            setConfigError(
+                tr("Failed to save the close behavior"));
+            return;
+        }
+    } catch (const std::exception &error) {
+        setConfigError(
+            tr("Failed to save application settings: %1")
+                .arg(QString::fromLocal8Bit(error.what())));
+        return;
+    }
+
+    setConfigError({});
+    hideToTrayOnClose_ = enabled;
+    emit closeBehaviorChanged();
+}
+
 void AppSettingsController::setDevicePort(
     const QString &port) {
     const QString normalized = port.trimmed();
@@ -229,36 +226,40 @@ void AppSettingsController::setAutostartEnabled(
             tr("Autostart management is unavailable in offline mode"));
         return;
     }
-    if (busy_ ||
-        autostartProcess_->state() != QProcess::NotRunning) {
-        setAutostartError(
-            tr("Another autostart operation is still in progress"));
-        return;
-    }
     if (autostartAvailable_ &&
         autostartEnabled_ == enabled) {
         setAutostartError({});
         return;
     }
 
-    startAutostartCommand(
-        enabled
-            ? AutostartOperation::Enable
-            : AutostartOperation::Disable);
+    QString error;
+    if (!gui_autostart::setEnabled(enabled, &error)) {
+        const gui_autostart::State current =
+            gui_autostart::query();
+        setAutostartAvailableState(current.available);
+        setAutostartEnabledState(current.enabled);
+        setAutostartError(error);
+        return;
+    }
+
+    const gui_autostart::State current =
+        gui_autostart::query();
+    setAutostartAvailableState(current.available);
+    setAutostartEnabledState(current.enabled);
+    setAutostartError(current.error);
 }
 
 void AppSettingsController::refreshAutostart() {
     if (offline_) {
         setAutostartAvailableState(false);
+        setAutostartEnabledState(false);
         return;
     }
-    if (busy_ ||
-        autostartProcess_->state() != QProcess::NotRunning) {
-        setAutostartError(
-            tr("Another autostart operation is still in progress"));
-        return;
-    }
-    startAutostartCommand(AutostartOperation::Query);
+    const gui_autostart::State current =
+        gui_autostart::query();
+    setAutostartAvailableState(current.available);
+    setAutostartEnabledState(current.enabled);
+    setAutostartError(current.error);
 }
 
 bool AppSettingsController::isSupportedLanguage(
@@ -296,144 +297,6 @@ bool AppSettingsController::saveDeviceSettings(
     return true;
 }
 
-bool AppSettingsController::isEnabledState(
-    const QString &state) {
-    return state == QStringLiteral("enabled") ||
-           state == QStringLiteral("enabled-runtime") ||
-           state == QStringLiteral("linked") ||
-           state == QStringLiteral("linked-runtime");
-}
-
-bool AppSettingsController::isDisabledState(
-    const QString &state) {
-    return state == QStringLiteral("disabled") ||
-           state == QStringLiteral("disabled-runtime");
-}
-
-void AppSettingsController::startAutostartCommand(
-    AutostartOperation operation) {
-    autostartOperation_ = operation;
-    autostartTimedOut_ = false;
-    setAutostartError({});
-    setBusy(true);
-
-    QString action;
-    switch (operation) {
-    case AutostartOperation::Query:
-        action = QStringLiteral("is-enabled");
-        break;
-    case AutostartOperation::Enable:
-        action = QStringLiteral("enable");
-        break;
-    case AutostartOperation::Disable:
-        action = QStringLiteral("disable");
-        break;
-    case AutostartOperation::None:
-        setBusy(false);
-        return;
-    }
-
-    autostartDeadline_->start();
-    autostartProcess_->start(
-        QStringLiteral("systemctl"),
-        {QStringLiteral("--user"), action,
-         kAutostartUnit});
-}
-
-void AppSettingsController::finishAutostartCommand(
-    int exitCode, QProcess::ExitStatus exitStatus) {
-    if (autostartOperation_ ==
-        AutostartOperation::None) {
-        return;
-    }
-
-    autostartDeadline_->stop();
-    const AutostartOperation completed =
-        autostartOperation_;
-    autostartOperation_ = AutostartOperation::None;
-    const QByteArray output =
-        autostartProcess_->readAll();
-    const bool succeeded =
-        !autostartTimedOut_ &&
-        exitStatus == QProcess::NormalExit &&
-        exitCode == 0;
-    const bool timedOut = autostartTimedOut_;
-    autostartTimedOut_ = false;
-    setBusy(false);
-
-    if (completed == AutostartOperation::Query) {
-        if (succeeded) {
-            const QString state =
-                QString::fromLocal8Bit(output)
-                    .trimmed()
-                    .toLower();
-            if (isEnabledState(state)) {
-                setAutostartAvailableState(true);
-                setAutostartEnabledState(true);
-                setAutostartError({});
-                return;
-            }
-        } else {
-            const QString state =
-                QString::fromLocal8Bit(output)
-                    .trimmed()
-                    .toLower();
-            if (isDisabledState(state)) {
-                setAutostartAvailableState(true);
-                setAutostartEnabledState(false);
-                setAutostartError({});
-                return;
-            }
-        }
-
-        setAutostartAvailableState(false);
-        setAutostartEnabledState(false);
-        setAutostartError(
-            timedOut
-                ? tr("Timed out while checking autostart")
-                : commandFailureMessage(output, exitCode));
-        return;
-    }
-
-    if (succeeded) {
-        setAutostartAvailableState(true);
-        setAutostartEnabledState(
-            completed == AutostartOperation::Enable);
-        setAutostartError({});
-        return;
-    }
-
-    setAutostartError(
-        timedOut
-            ? tr("Timed out while changing autostart")
-            : commandFailureMessage(output, exitCode));
-}
-
-void AppSettingsController::handleAutostartProcessError() {
-    if (autostartOperation_ ==
-        AutostartOperation::None) {
-        return;
-    }
-
-    autostartDeadline_->stop();
-    autostartOperation_ = AutostartOperation::None;
-    autostartTimedOut_ = false;
-    setBusy(false);
-    setAutostartAvailableState(false);
-    setAutostartError(
-        tr("Failed to start systemctl: %1")
-            .arg(autostartProcess_->errorString()));
-}
-
-void AppSettingsController::handleAutostartTimeout() {
-    if (autostartOperation_ ==
-        AutostartOperation::None) {
-        return;
-    }
-    autostartTimedOut_ = true;
-    autostartProcess_->kill();
-}
-
 void AppSettingsController::setAutostartEnabledState(
     bool enabled) {
     if (autostartEnabled_ == enabled) {
@@ -450,14 +313,6 @@ void AppSettingsController::setAutostartAvailableState(
     }
     autostartAvailable_ = available;
     emit autostartAvailableChanged();
-}
-
-void AppSettingsController::setBusy(bool busy) {
-    if (busy_ == busy) {
-        return;
-    }
-    busy_ = busy;
-    emit busyChanged();
 }
 
 void AppSettingsController::setConfigError(

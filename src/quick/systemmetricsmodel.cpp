@@ -15,16 +15,13 @@ SystemMetricsModel::SystemMetricsModel(bool autoStart, QObject *parent)
     : QObject(parent),
       monitor_(new SystemMonitor(this)),
       updateTimer_(new QTimer(this)),
-      cpuName_(SystemMonitor::cpuModelName().trimmed()) {
+      cpuName_(SystemMonitor::cpuModelName().trimmed()),
+      autoStart_(autoStart) {
     updateTimer_->setInterval(kMetricsUpdateIntervalMs);
     connect(updateTimer_, &QTimer::timeout,
             monitor_, &SystemMonitor::update);
     connect(monitor_, &SystemMonitor::metricsUpdated,
             this, &SystemMetricsModel::applyMetrics);
-    if (autoStart) {
-        updateTimer_->start();
-        QTimer::singleShot(0, monitor_, &SystemMonitor::update);
-    }
 }
 
 bool SystemMetricsModel::sampled() const {
@@ -98,6 +95,16 @@ bool SystemMetricsModel::gpuFrequencyAvailable() const {
     return gpu && gpu->frequencyAvailable;
 }
 
+double SystemMetricsModel::gpuPowerWatts() const {
+    const GpuMetrics *gpu = primaryGpu();
+    return gpu ? gpu->powerWatts : 0.0;
+}
+
+bool SystemMetricsModel::gpuPowerAvailable() const {
+    const GpuMetrics *gpu = primaryGpu();
+    return gpu && gpu->powerAvailable;
+}
+
 qint64 SystemMetricsModel::gpuVramUsedMB() const {
     const GpuMetrics *gpu = primaryGpu();
     return gpu ? gpu->vramUsedMB : 0;
@@ -110,8 +117,7 @@ qint64 SystemMetricsModel::gpuVramTotalMB() const {
 
 bool SystemMetricsModel::gpuVramAvailable() const {
     const GpuMetrics *gpu = primaryGpu();
-    return gpu && gpu->vramTotalMB > 0 &&
-           gpu->vramUsedMB >= 0;
+    return gpu && gpu->vramAvailable;
 }
 
 double SystemMetricsModel::ramUsage() const {
@@ -158,8 +164,36 @@ double SystemMetricsModel::txSpeedKBs() const {
     return metrics_.net.txSpeedKBs;
 }
 
+bool SystemMetricsModel::dashboardActive() const {
+    return dashboardActive_;
+}
+
 void SystemMetricsModel::refresh() {
     monitor_->update();
+}
+
+void SystemMetricsModel::setDashboardActive(bool active) {
+    if (dashboardActive_ == active) {
+        return;
+    }
+
+    dashboardActive_ = active;
+    monitor_->setNvidiaSampleDemand(
+        active
+            ? tryx::nvidia::NvidiaSampleDemand::Active
+            : tryx::nvidia::NvidiaSampleDemand::Off);
+
+    if (active && autoStart_) {
+        updateTimer_->start();
+        QTimer::singleShot(0, this, [this]() {
+            if (dashboardActive_) {
+                monitor_->update();
+            }
+        });
+    } else {
+        updateTimer_->stop();
+    }
+    emit dashboardActiveChanged();
 }
 
 void SystemMetricsModel::applyMetrics(

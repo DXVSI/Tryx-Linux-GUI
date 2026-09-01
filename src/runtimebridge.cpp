@@ -119,6 +119,12 @@ TryxRuntimeManagerAdaptor::TryxRuntimeManagerAdaptor(
             });
     connect(manager_, &DeviceManager::printerOperationsCancelled, this,
             [this]() { emit PrinterOperationsCancelled(nextRevision()); });
+    connect(manager_, &DeviceManager::printerDeviceVersionsReady, this,
+            [this](const QString &firmware, const QString &appVersion) {
+                snapshot_.firmware = firmware;
+                snapshot_.appVersion = appVersion;
+                nextRevision();
+            });
     connect(manager_, &DeviceManager::printerDeviceInfoReady, this,
             [this](const PrinterProtocol::DeviceInfo &source) {
                 TryxRuntimeDeviceInfo info;
@@ -267,6 +273,10 @@ TryxRuntimeOperationsAdaptor::TryxRuntimeOperationsAdaptor(
             &TryxRuntimeOperationsAdaptor::MetricsStateUpdated);
     connect(manager_, &DeviceManager::displayStateUpdated, this,
             &TryxRuntimeOperationsAdaptor::DisplayStateUpdated);
+    connect(
+        manager_, &DeviceManager::presentationPreferencesChanged,
+        this,
+        &TryxRuntimeOperationsAdaptor::PresentationPreferencesChangedV1);
 }
 
 TryxRuntimeSnapshot
@@ -277,6 +287,103 @@ TryxRuntimeOperationsAdaptor::GetConnectionSnapshot() const {
 
 quint32 TryxRuntimeOperationsAdaptor::GetRuntimeApiVersion() const {
     return tryxRuntimeApiVersion();
+}
+
+QStringList TryxRuntimeOperationsAdaptor::GetRuntimeCapabilities() const {
+    return tryxRuntimeCapabilities();
+}
+
+QString TryxRuntimeOperationsAdaptor::PrepareRuntimeDowngradeV10() {
+    QString mode;
+    QString errorName;
+    QString errorMessage;
+    if (!manager_->prepareRuntimeDowngradeV10(
+            &mode, &errorName, &errorMessage)) {
+        exportedObject_->sendCurrentCallError(
+            errorName, errorMessage);
+        return {};
+    }
+    return mode;
+}
+
+QString TryxRuntimeOperationsAdaptor::GetSupportSnapshotV1() const {
+    const TryxRuntimeSnapshot connection =
+        connectionAdaptor_ ? connectionAdaptor_->GetSnapshot()
+                           : TryxRuntimeSnapshot{};
+    return manager_->supportSnapshotV1(connection);
+}
+
+TryxRuntimeDeviceCapabilitiesV1
+TryxRuntimeOperationsAdaptor::GetDeviceCapabilitiesV1() const {
+    const TryxRuntimeSnapshot connection =
+        connectionAdaptor_ ? connectionAdaptor_->GetSnapshot()
+                           : TryxRuntimeSnapshot{};
+    return manager_->deviceCapabilitiesV1(connection.revision);
+}
+
+TryxRuntimeDeviceSpecificationsV1
+TryxRuntimeOperationsAdaptor::GetDeviceSpecificationsV1() const {
+    const TryxRuntimeSnapshot connection =
+        connectionAdaptor_ ? connectionAdaptor_->GetSnapshot()
+                           : TryxRuntimeSnapshot{};
+    return manager_->deviceSpecificationsV1(connection);
+}
+
+TryxRuntimePresentationPreferencesV1
+TryxRuntimeOperationsAdaptor::GetPresentationPreferencesV1() const {
+    return manager_->presentationPreferences();
+}
+
+TryxRuntimePresentationPreferencesV1
+TryxRuntimeOperationsAdaptor::SetPresentationPreferencesV1(
+    quint64 expectedRevision, const QString &temperatureUnit,
+    const QString &timeFormat) {
+    TryxRuntimePresentationPreferencesV1 confirmed =
+        manager_->presentationPreferences();
+    QString errorName;
+    QString errorMessage;
+    if (!manager_->setPresentationPreferences(
+            expectedRevision, temperatureUnit, timeFormat,
+            &confirmed, &errorName, &errorMessage)) {
+        exportedObject_->sendCurrentCallError(errorName, errorMessage);
+    }
+    return confirmed;
+}
+
+TryxRuntimeSavedLayoutsSnapshotV1
+TryxRuntimeOperationsAdaptor::GetSavedLayoutsV1() const {
+    return manager_->savedLayoutsSnapshot();
+}
+
+TryxRuntimeSavedLayoutsSnapshotV1
+TryxRuntimeOperationsAdaptor::PutSavedLayoutV1(
+    quint64 expectedSnapshotRevision,
+    const TryxRuntimeSavedLayoutV1 &layout) {
+    TryxRuntimeSavedLayoutsSnapshotV1 confirmed =
+        manager_->savedLayoutsSnapshot();
+    QString errorName;
+    QString errorMessage;
+    if (!manager_->putSavedLayout(
+            expectedSnapshotRevision, layout, &confirmed,
+            &errorName, &errorMessage)) {
+        exportedObject_->sendCurrentCallError(errorName, errorMessage);
+    }
+    return confirmed;
+}
+
+TryxRuntimeSavedLayoutsSnapshotV1
+TryxRuntimeOperationsAdaptor::DeleteSavedLayoutV1(
+    quint64 expectedSnapshotRevision, const QString &layoutId) {
+    TryxRuntimeSavedLayoutsSnapshotV1 confirmed =
+        manager_->savedLayoutsSnapshot();
+    QString errorName;
+    QString errorMessage;
+    if (!manager_->deleteSavedLayout(
+            expectedSnapshotRevision, layoutId, &confirmed,
+            &errorName, &errorMessage)) {
+        exportedObject_->sendCurrentCallError(errorName, errorMessage);
+    }
+    return confirmed;
 }
 
 TryxRuntimeOperationsSnapshot
@@ -329,6 +436,14 @@ QString TryxRuntimeOperationsAdaptor::QueueUploadWithTransform(
         false, transform);
 }
 
+QString
+TryxRuntimeOperationsAdaptor::QueueUploadWithPreparationProfileV1(
+    const QString &operationId, const QString &localPath,
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    return manager_->queueUploadWithPreparationProfileOperation(
+        operationId, localPath, profile);
+}
+
 QString TryxRuntimeOperationsAdaptor::QueueUploadWithApply(
     const QString &operationId, const QString &localPath,
     const TryxRuntimeApplyRequest &request) {
@@ -375,6 +490,38 @@ QString TryxRuntimeOperationsAdaptor::QueueApplyWithMetrics(
     return manager_->queueApplyOperation(operationId, request, true);
 }
 
+QString TryxRuntimeOperationsAdaptor::QueueCacheCleanupV1(
+    const QString &operationId) {
+    QString errorName;
+    QString errorMessage;
+    const QString queued = manager_->queueCacheCleanupOperation(
+        operationId, &errorName, &errorMessage);
+    if (queued.isEmpty()) {
+        exportedObject_->sendCurrentCallError(
+            errorName.isEmpty()
+                ? QStringLiteral("org.tryx.Panorama.Error.InvalidOperation")
+                : errorName,
+            errorMessage.isEmpty()
+                ? tr("The cache cleanup operation ID is invalid")
+                : errorMessage);
+    }
+    return queued;
+}
+
+QString TryxRuntimeOperationsAdaptor::QueueSavedLayoutApplyV1(
+    const QString &operationId, const QString &layoutId,
+    quint64 expectedLayoutRevision,
+    const TryxRuntimeApplyRequest &currentDraft) {
+    const QString queued = manager_->queueSavedLayoutApplyOperation(
+        operationId, layoutId, expectedLayoutRevision, currentDraft);
+    if (queued.isEmpty()) {
+        exportedObject_->sendCurrentCallError(
+            QStringLiteral("org.tryx.Panorama.Error.InvalidOperation"),
+            tr("The saved layout operation ID is invalid"));
+    }
+    return queued;
+}
+
 QString TryxRuntimeOperationsAdaptor::QueueMetricsConfig(
     const QString &operationId,
     const TryxRuntimeMetricsConfigRequest &request) {
@@ -414,6 +561,26 @@ TryxRuntimeOperationsAdaptor::ClaimDeviceMediaArtifact(
                 : errorMessage);
     }
     return artifact;
+}
+
+TryxRuntimeDeviceMediaMetadataV1
+TryxRuntimeOperationsAdaptor::GetDeviceMediaMetadataV1(
+    const QString &artifactId, const QString &leaseId) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return {};
+    }
+    QString errorMessage;
+    const TryxRuntimeDeviceMediaMetadataV1 metadata =
+        manager_->deviceMediaMetadataV1(
+            artifactId, leaseId, owner, &errorMessage);
+    if (metadata.artifactId.isEmpty()) {
+        sendInvalidArtifactError(
+            errorMessage.isEmpty()
+                ? tr("The device media artifact metadata is unavailable")
+                : errorMessage);
+    }
+    return metadata;
 }
 
 bool TryxRuntimeOperationsAdaptor::RenewDeviceMediaArtifactLease(
@@ -471,6 +638,25 @@ TryxRuntimeOperationsAdaptor::QueueRecoveredMediaUploadWithTransform(
     return queued;
 }
 
+QString TryxRuntimeOperationsAdaptor::
+QueueRecoveredMediaUploadWithPreparationProfileV1(
+    const QString &operationId, const QString &artifactId,
+    const QString &leaseId,
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return {};
+    }
+    const QString queued = manager_->
+        queueRecoveredMediaUploadWithPreparationProfileOperation(
+            operationId, artifactId, leaseId, owner, profile);
+    if (queued.isEmpty()) {
+        sendInvalidArtifactError(
+            tr("The recovered media artifact is unavailable for upload"));
+    }
+    return queued;
+}
+
 QString TryxRuntimeOperationsAdaptor::QueueReplaceDeviceMedia(
     const QString &operationId, const QString &artifactId,
     const QString &leaseId, const QString &originalMediaId,
@@ -483,6 +669,27 @@ QString TryxRuntimeOperationsAdaptor::QueueReplaceDeviceMedia(
     const QString queued = manager_->queueReplaceDeviceMediaOperation(
         operationId, artifactId, leaseId, originalMediaId,
         request, transform, owner);
+    if (queued.isEmpty()) {
+        sendInvalidArtifactError(
+            tr("The recovered media artifact is unavailable for replacement"));
+    }
+    return queued;
+}
+
+QString TryxRuntimeOperationsAdaptor::
+QueueReplaceDeviceMediaWithPreparationProfileV1(
+    const QString &operationId, const QString &artifactId,
+    const QString &leaseId, const QString &originalMediaId,
+    const TryxRuntimeApplyRequest &request,
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    const QString owner = callerUniqueName();
+    if (owner.isEmpty()) {
+        return {};
+    }
+    const QString queued = manager_->
+        queueReplaceDeviceMediaWithPreparationProfileOperation(
+            operationId, artifactId, leaseId, originalMediaId,
+            request, profile, owner);
     if (queued.isEmpty()) {
         sendInvalidArtifactError(
             tr("The recovered media artifact is unavailable for replacement"));

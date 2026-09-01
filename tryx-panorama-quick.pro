@@ -26,10 +26,19 @@ DEFINES += TRYX_BUILD_QUICK_DIRECTORY=\\\"$$clean_path($$DESTDIR)\\\"
 
 HEADERS += \
     src/applicationpaths.h \
+    src/gpuinventory.h \
+    src/nvidiaprocesssupervisor.h \
+    src/nvidiasmiparser.h \
+    src/nvidiasmiprovider.h \
     src/systemmonitor.h \
     src/runtimecontract.h \
+    src/supportsnapshot.h \
+    src/quick/supportbundle.h \
+    src/quick/supportbundlecontroller.h \
     src/mediatransform.h \
     src/quick/appsettingscontroller.h \
+    src/quick/cachemanagementcontroller.h \
+    src/quick/guiautostart.h \
     src/quick/devicemediaworkflowcontroller.h \
     src/quick/firmwarecontroller.h \
     src/quick/linuxtraycontroller.h \
@@ -39,15 +48,26 @@ HEADERS += \
     src/quick/operationlistmodel.h \
     src/quick/runtimebootstrap.h \
     src/quick/runtimeclient.h \
+    src/quick/savedlayoutlistmodel.h \
+    src/quick/startupvisibilitycontroller.h \
     src/quick/systemmetricsmodel.h \
     src/quick/windowchromecontroller.h
 
 SOURCES += \
+    src/gpuinventory.cpp \
+    src/nvidiaprocesssupervisor.cpp \
+    src/nvidiasmiparser.cpp \
+    src/nvidiasmiprovider.cpp \
     src/systemmonitor.cpp \
     src/runtimecontract.cpp \
+    src/supportsnapshot.cpp \
+    src/quick/supportbundle.cpp \
+    src/quick/supportbundlecontroller.cpp \
     src/mediatransform.cpp \
     src/core/config.cpp \
     src/quick/appsettingscontroller.cpp \
+    src/quick/cachemanagementcontroller.cpp \
+    src/quick/guiautostart.cpp \
     src/quick/devicemediaworkflowcontroller.cpp \
     src/quick/firmwarecontroller.cpp \
     src/quick/linuxtraycontroller.cpp \
@@ -58,6 +78,8 @@ SOURCES += \
     src/quick/operationlistmodel.cpp \
     src/quick/runtimebootstrap.cpp \
     src/quick/runtimeclient.cpp \
+    src/quick/savedlayoutlistmodel.cpp \
+    src/quick/startupvisibilitycontroller.cpp \
     src/quick/systemmetricsmodel.cpp \
     src/quick/windowchromecontroller.cpp
 
@@ -65,28 +87,38 @@ RESOURCES += resources/quick.qrc
 
 QML_FILES = \
     qml/Main.qml \
+    qml/components/DirtyDraftGuard.qml \
     qml/components/MediaEditor.qml \
     qml/components/MediaExportPicker.qml \
     qml/components/MediaFilePicker.qml \
     qml/components/FirmwareFilePicker.qml \
     qml/components/FirmwarePanel.qml \
     qml/components/MetricCard.qml \
+    qml/components/MetricSelector.qml \
     qml/components/NavButton.qml \
     qml/components/OperationBanner.qml \
+    qml/components/OverlayStyleEditor.qml \
     qml/components/PrimaryButton.qml \
+    qml/components/SavedLayoutsPanel.qml \
+    qml/components/SupportBundleExportPicker.qml \
     qml/components/WindowResizeHandle.qml \
     qml/pages/HomePage.qml \
     qml/pages/PanoramaPage.qml \
     qml/pages/SettingsPage.qml
 
 QML_TEST_FILES = \
+    tests/quick/qml/tst_dirtydraftguard.qml \
     tests/quick/qml/tst_firmwarefilepickerlayout.qml \
     tests/quick/qml/tst_homepagelayout.qml \
+    tests/quick/qml/tst_mainlifecycleguard.qml \
     tests/quick/qml/tst_mediaeditorlayout.qml \
     tests/quick/qml/tst_mediaexportpickerlayout.qml \
     tests/quick/qml/tst_mediafilepickerlayout.qml \
+    tests/quick/qml/tst_metricselector.qml \
     tests/quick/qml/tst_panoramalayout.qml \
-    tests/quick/qml/tst_settingslayout.qml
+    tests/quick/qml/tst_savedlayoutspanel.qml \
+    tests/quick/qml/tst_settingslayout.qml \
+    tests/quick/qml/tst_supportbundleexportpickerlayout.qml
 
 QML_ALL_FILES = $$QML_FILES $$QML_TEST_FILES
 QML_LINT_FILES =
@@ -100,6 +132,8 @@ DISTFILES += \
     tests/quick/quick_tests.pro \
     tests/quick/runtimebootstrap_tests.pro \
     tests/quick/runtimebootstrap_tests.cpp \
+    tests/quick/runtimeclient_handshake_tests.pro \
+    tests/quick/runtimeclient_handshake_tests.cpp \
     tests/quick/linuxtraycontroller_tests.pro \
     tests/quick/linuxtraycontroller_tests.cpp \
     tests/quick/tst_quickmodels.cpp \
@@ -126,7 +160,8 @@ quick_tests.depends = \
     $$relative_path($$DESTDIR/$$TARGET, $$OUT_PWD)
 quick_tests.commands = \
     $$QMLLINT $$QMLLINT_FLAGS $$QML_LINT_FILES && \
-    QT_QPA_PLATFORM=offscreen $$QMLTESTRUNNER \
+    QT_QPA_PLATFORM=offscreen \
+        QT_QUICK_CONTROLS_STYLE=Material $$QMLTESTRUNNER \
         -input $$shell_path($$PWD/tests/quick/qml) \
         -import $$shell_path($$PWD/qml) -o -,txt && \
     cd $$shell_path($$PWD/tests/quick) && \
@@ -138,6 +173,10 @@ quick_tests.commands = \
         $$QMAKE_QMAKE runtimebootstrap_tests.pro && $(MAKE) && \
         TRYX_RUNTIMEBOOTSTRAP_TEST_ISOLATED=1 dbus-run-session -- \
             $$shell_path($$PWD/build/runtimebootstrap-tests/quick/tryx-runtimebootstrap-tests) \
+                -txt && \
+        $$QMAKE_QMAKE runtimeclient_handshake_tests.pro && $(MAKE) && \
+        dbus-run-session -- \
+            $$shell_path($$PWD/build/runtimeclient-handshake-tests/runtimeclient-handshake-tests) \
                 -txt && \
         $$QMAKE_QMAKE linuxtraycontroller_tests.pro && $(MAKE) && \
         dbus-run-session -- \

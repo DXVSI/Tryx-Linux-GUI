@@ -1,4 +1,4 @@
-.TH TRYX-PANORAMA-MANAGER 1 "2026-08-09" "TRYX Panorama Manager 2.2.0" "User Commands"
+.TH TRYX-PANORAMA-MANAGER 1 "2026-08-26" "TRYX Panorama Manager 2.2.0" "User Commands"
 .SH NAME
 tryx-panorama-manager \- control compatible TRYX cooler displays
 .SH SYNOPSIS
@@ -6,6 +6,9 @@ tryx-panorama-manager \- control compatible TRYX cooler displays
 .br
 .B tryx-panorama-manager
 .B \-\-version
+.br
+.B tryx-panorama-manager
+.B \-\-autostart
 .br
 .SH DESCRIPTION
 .B TRYX Panorama Manager
@@ -22,11 +25,21 @@ Starting the graphical application starts the packaged systemd user service on
 demand.
 The service is installed disabled and is not enabled automatically by the
 package.
+GUI login startup is separately opt-in through Settings and uses a managed XDG
+Autostart entry in the current user's configuration. It never changes the
+background runtime service. An autostart launch remains hidden only when Hide
+to tray is selected and a StatusNotifier host is available; otherwise the
+window is shown.
 .SH OPTIONS
 .TP
 .B \-\-version
 Print the application version and exit without starting the graphical
 application or accessing USB.
+.TP
+.B \-\-autostart
+Start in login mode. Hide the initial window only when the saved close policy
+is Hide to tray and a StatusNotifier host is available. This option does not
+enable or disable either GUI autostart or the background runtime service.
 .SH FILES
 .TP
 .I /usr/bin/tryx-panorama-manager
@@ -40,6 +53,12 @@ Systemd user unit for the background runtime.
 .TP
 .I /usr/lib/systemd/user-preset/90-tryx-panorama.preset
 Preset that keeps the user unit disabled after package installation.
+.TP
+.I $XDG_CONFIG_HOME/autostart/tryx-panorama-manager.desktop
+Optional owner-managed GUI autostart entry created by Settings. If
+.B XDG_CONFIG_HOME
+is unset, the path is
+.IR ~/.config/autostart/tryx-panorama-manager.desktop .
 .TP
 .I /usr/lib/udev/rules.d/70-tryx-pase-access.rules
 Early supported-device access rule.

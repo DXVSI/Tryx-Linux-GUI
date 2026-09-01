@@ -2,11 +2,14 @@
 
 #include "runtimecontract.h"
 
+#include <QByteArray>
 #include <QDateTime>
 #include <QObject>
 #include <QProcess>
 #include <QTimer>
 #include <QUrl>
+
+#include <functional>
 
 class QuickClientTests;
 
@@ -26,6 +29,30 @@ public:
     };
     Q_ENUM(SourceKind)
 
+    enum class PreviewCleanupError {
+        None,
+        InterlockUnavailable,
+        Busy,
+        DirectoryUnavailable,
+        PlanLimitExceeded,
+        UnsafeCandidate,
+        IdentityChanged,
+        RemoveFailed,
+        SyncFailed
+    };
+    Q_ENUM(PreviewCleanupError)
+
+    struct PreviewCleanupReport {
+        PreviewCleanupError error = PreviewCleanupError::None;
+        QString detail;
+        qsizetype plannedFiles = 0;
+        qsizetype removedFiles = 0;
+        qint64 removedLogicalBytes = 0;
+        bool complete = false;
+
+        bool ok() const { return error == PreviewCleanupError::None; }
+    };
+
     explicit MediaPreviewController(QObject *parent = nullptr);
     ~MediaPreviewController() override;
 
@@ -34,6 +61,11 @@ public:
     QUrl previewUrl() const;
     QString sourcePath() const;
     QString error() const;
+    bool cleanupInterlockActive() const;
+
+    bool acquireCleanupInterlock(QString *errorMessage = nullptr);
+    void releaseCleanupInterlock();
+    PreviewCleanupReport cleanupInactivePreviews();
 
     void load(const QUrl &source);
     void loadRecoveredVideo(
@@ -145,6 +177,11 @@ private:
     bool recoveredValidation_ = false;
     bool ready_ = false;
     bool sourceProtected_ = false;
+    bool cleanupInterlockActive_ = false;
+    qsizetype cleanupPlanEntryLimitForTesting_ = 4096;
     quint64 recoveredValidationGeneration_ = 0;
     SourceKind sourceKind_ = SourceKind::None;
+    std::function<int(int, const QByteArray &)>
+        cleanupUnlinkFunctionForTesting_;
+    std::function<int(int)> cleanupFsyncFunctionForTesting_;
 };

@@ -107,6 +107,22 @@ public:
 public slots:
     TryxRuntimeSnapshot GetConnectionSnapshot() const;
     quint32 GetRuntimeApiVersion() const;
+    QStringList GetRuntimeCapabilities() const;
+    QString PrepareRuntimeDowngradeV10();
+    QString GetSupportSnapshotV1() const;
+    TryxRuntimeDeviceCapabilitiesV1 GetDeviceCapabilitiesV1() const;
+    TryxRuntimeDeviceSpecificationsV1 GetDeviceSpecificationsV1() const;
+    TryxRuntimePresentationPreferencesV1
+    GetPresentationPreferencesV1() const;
+    TryxRuntimePresentationPreferencesV1 SetPresentationPreferencesV1(
+        quint64 expectedRevision, const QString &temperatureUnit,
+        const QString &timeFormat);
+    TryxRuntimeSavedLayoutsSnapshotV1 GetSavedLayoutsV1() const;
+    TryxRuntimeSavedLayoutsSnapshotV1 PutSavedLayoutV1(
+        quint64 expectedSnapshotRevision,
+        const TryxRuntimeSavedLayoutV1 &layout);
+    TryxRuntimeSavedLayoutsSnapshotV1 DeleteSavedLayoutV1(
+        quint64 expectedSnapshotRevision, const QString &layoutId);
     TryxRuntimeOperationsSnapshot GetOperations() const;
     TryxRuntimeOperationInfo GetOperation(const QString &operationId) const;
     TryxRuntimeOperationInfo GetActiveOperation() const;
@@ -119,6 +135,9 @@ public slots:
     QString QueueUploadWithTransform(
         const QString &operationId, const QString &localPath,
         const TryxRuntimeMediaTransform &transform);
+    QString QueueUploadWithPreparationProfileV1(
+        const QString &operationId, const QString &localPath,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     QString QueueUploadWithApply(
         const QString &operationId, const QString &localPath,
         const TryxRuntimeApplyRequest &request);
@@ -140,6 +159,11 @@ public slots:
     QString QueueApplyWithMetrics(
         const QString &operationId,
         const TryxRuntimeApplyRequest &request);
+    QString QueueCacheCleanupV1(const QString &operationId);
+    QString QueueSavedLayoutApplyV1(
+        const QString &operationId, const QString &layoutId,
+        quint64 expectedLayoutRevision,
+        const TryxRuntimeApplyRequest &currentDraft);
     QString QueueMetricsConfig(
         const QString &operationId,
         const TryxRuntimeMetricsConfigRequest &request);
@@ -147,6 +171,8 @@ public slots:
                                   const QString &mediaId);
     TryxRuntimeDeviceMediaArtifact ClaimDeviceMediaArtifact(
         const QString &operationId, const QString &artifactId);
+    TryxRuntimeDeviceMediaMetadataV1 GetDeviceMediaMetadataV1(
+        const QString &artifactId, const QString &leaseId);
     bool RenewDeviceMediaArtifactLease(const QString &artifactId,
                                        const QString &leaseId);
     bool ReleaseDeviceMediaArtifact(const QString &artifactId,
@@ -155,11 +181,20 @@ public slots:
         const QString &operationId, const QString &artifactId,
         const QString &leaseId,
         const TryxRuntimeMediaTransform &transform);
+    QString QueueRecoveredMediaUploadWithPreparationProfileV1(
+        const QString &operationId, const QString &artifactId,
+        const QString &leaseId,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     QString QueueReplaceDeviceMedia(
         const QString &operationId, const QString &artifactId,
         const QString &leaseId, const QString &originalMediaId,
         const TryxRuntimeApplyRequest &request,
         const TryxRuntimeMediaTransform &transform);
+    QString QueueReplaceDeviceMediaWithPreparationProfileV1(
+        const QString &operationId, const QString &artifactId,
+        const QString &leaseId, const QString &originalMediaId,
+        const TryxRuntimeApplyRequest &request,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     QString RetryOperation(const QString &sourceOperationId,
                            const QString &newOperationId);
     void CancelOperation(const QString &operationId);
@@ -172,6 +207,8 @@ signals:
         const TryxRuntimeMediaCatalogSnapshot &snapshot);
     void MetricsStateUpdated(const TryxRuntimeMetricsState &state);
     void DisplayStateUpdated(const TryxRuntimeDisplayState &state);
+    void PresentationPreferencesChangedV1(
+        const TryxRuntimePresentationPreferencesV1 &preferences);
 
 private:
     QString callerUniqueName();

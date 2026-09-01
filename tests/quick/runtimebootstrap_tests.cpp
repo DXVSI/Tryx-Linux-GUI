@@ -12,17 +12,32 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QLockFile>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
 
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
 constexpr char kFakeRuntimeArgument[] = "--fake-runtime";
+constexpr char kBootstrapAndExitArgument[] =
+    "--bootstrap-and-exit";
+constexpr char kAcquireInstanceAndCrashArgument[] =
+    "--acquire-instance-and-crash";
+constexpr char kAcquireLateLeaseAndCrashArgument[] =
+    "--acquire-late-lease-and-crash";
+constexpr char kNotifyInstanceArgument[] =
+    "--notify-instance";
 constexpr char kIsolationEnvironment[] = "TRYX_RUNTIMEBOOTSTRAP_TEST_ISOLATED";
 constexpr char kSystemctlLogEnvironment[] = "TRYX_BOOTSTRAP_TEST_SYSTEMCTL_LOG";
 constexpr char kSystemctlFailureEnvironment[] =
@@ -36,6 +51,58 @@ constexpr char kSystemctlUnitScenarioEnvironment[] =
 constexpr char kSiblingApiEnvironment[] = "TRYX_BOOTSTRAP_TEST_SIBLING_API";
 constexpr char kSiblingObjectDelayEnvironment[] =
     "TRYX_BOOTSTRAP_TEST_SIBLING_OBJECT_DELAY_MS";
+QLocalServer *gSocketCleanupRaceServer = nullptr;
+QProcess *gLateLeaseOwnerProcess = nullptr;
+QString gLateLeaseReadyPath;
+bool gLateLeaseOwnerReady = false;
+QString gMovedRuntimeDirectory;
+bool gRuntimeDirectoryReplaced = false;
+
+void bindLegacyServerBeforeSocketCleanup(const QString &path) {
+    if (!gSocketCleanupRaceServer) {
+        return;
+    }
+    QLocalServer::removeServer(path);
+    gSocketCleanupRaceServer->listen(path);
+}
+
+void startLateLeaseOwnerAfterInitialProbe(const QString &path) {
+    if (!gLateLeaseOwnerProcess || gLateLeaseReadyPath.isEmpty()) {
+        return;
+    }
+    gLateLeaseOwnerProcess->start(
+        QCoreApplication::applicationFilePath(),
+        {QString::fromLatin1(kAcquireLateLeaseAndCrashArgument),
+         path, gLateLeaseReadyPath});
+    if (!gLateLeaseOwnerProcess->waitForStarted(1000)) {
+        return;
+    }
+    QElapsedTimer wait;
+    wait.start();
+    while (wait.elapsed() < 1000 &&
+           !QFileInfo::exists(gLateLeaseReadyPath)) {
+        QThread::msleep(5);
+    }
+    gLateLeaseOwnerReady =
+        QFileInfo::exists(gLateLeaseReadyPath);
+}
+
+void replacePinnedRuntimeDirectory(const QString &path) {
+    const QFileInfo directoryInfo(path);
+    gMovedRuntimeDirectory =
+        QDir(directoryInfo.absolutePath()).filePath(
+            directoryInfo.fileName() + QStringLiteral("-moved"));
+    gRuntimeDirectoryReplaced =
+        QDir(directoryInfo.absolutePath()).rename(
+            directoryInfo.fileName(),
+            QFileInfo(gMovedRuntimeDirectory).fileName()) &&
+        QDir().mkpath(path) &&
+        QFile::setPermissions(
+            path,
+            QFileDevice::ReadOwner |
+                QFileDevice::WriteOwner |
+                QFileDevice::ExeOwner);
+}
 
 class FakeRuntimeObject final : public QObject {
     Q_OBJECT
@@ -280,6 +347,83 @@ int runFakeSystemctl(const QStringList &arguments) {
     return launchFakeRuntime(apiVersion) ? 0 : 69;
 }
 
+int runBootstrapAndExitProbe() {
+    quickbootstrap::RuntimeBootstrapOptions options;
+    options.systemctlProgram =
+        QCoreApplication::applicationFilePath();
+    options.dbusCallTimeoutMs = 500;
+    options.startupTimeoutMs = 3000;
+
+    QString error;
+    if (!quickbootstrap::ensureRuntimeService(&error, options)) {
+        std::fprintf(stderr, "%s\n", qPrintable(error));
+        return 76;
+    }
+    return runningRuntimeApi() == tryxRuntimeApiVersion()
+        ? 0 : 78;
+}
+
+int runAcquireInstanceAndCrashProbe(const QString &socketPath) {
+    quickbootstrap::SingleInstanceGuard guard(socketPath);
+    QLocalServer server;
+    QString error;
+    const quickbootstrap::SingleInstanceAcquireResult result =
+        guard.acquire(
+            &server,
+            quickbootstrap::InstanceLaunchIntent::Autostart,
+            &error);
+    if (result !=
+            quickbootstrap::SingleInstanceAcquireResult::Primary ||
+        !server.isListening()) {
+        std::fprintf(stderr, "%s\n", qPrintable(error));
+        return 79;
+    }
+
+    // Model an unclean process death: neither QLockFile nor QLocalServer gets
+    // a destructor, so the next process has to recover both stale artifacts.
+    std::_Exit(0);
+}
+
+int runAcquireLateLeaseAndCrashProbe(
+    const QString &socketPath,
+    const QString &readyPath) {
+    QLockFile lock(socketPath + QStringLiteral(".lock"));
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        return 81;
+    }
+    QFile ready(readyPath);
+    if (!ready.open(QIODevice::WriteOnly) ||
+        ready.write("ready\n") != 6) {
+        return 82;
+    }
+    ready.close();
+
+    QThread::msleep(75);
+    QLocalServer server;
+    if (!server.listen(socketPath)) {
+        return 83;
+    }
+    std::_Exit(0);
+}
+
+int runNotifyInstanceProbe(const QString &socketPath) {
+    quickbootstrap::SingleInstanceGuard guard(socketPath);
+    QLocalServer server;
+    QString error;
+    const quickbootstrap::SingleInstanceAcquireResult result =
+        guard.acquire(
+            &server,
+            quickbootstrap::InstanceLaunchIntent::Manual,
+            &error);
+    if (result ==
+        quickbootstrap::SingleInstanceAcquireResult::NotifiedExisting) {
+        return 0;
+    }
+    std::fprintf(stderr, "%s\n", qPrintable(error));
+    return 80;
+}
+
 class RuntimeBootstrapTests final : public QObject {
     Q_OBJECT
 
@@ -288,7 +432,22 @@ private slots:
     void init();
     void cleanup();
     void cleanupTestCase();
+    void instanceSocketPathRequiresPrivateRuntimeDirectory();
+    void instanceLaunchIntentPayloadIsStrict();
+    void activeSingleInstanceSocketCannotBeStolen();
+    void singleInstanceGuardNotifiesLiveOwner();
+    void singleInstanceGuardRejectsUnacknowledgedOwner();
+    void singleInstanceGuardFailsClosedWhileOwnerStarts();
+    void singleInstanceGuardRecoversCrashedOwner();
+    void singleInstanceGuardRecoversLeaseAcquiredDuringWait();
+    void singleInstanceGuardPreservesSocketWonAfterFinalProbe();
+    void singleInstanceGuardPreservesSocketWonBeforeExchange();
+    void singleInstanceGuardPreservesSocketWonAfterExchange();
+    void singleInstanceGuardRejectsSocketReboundAfterNativeBind();
+    void singleInstanceGuardRejectsRuntimeDirectoryReplacement();
+    void instanceLaunchConnectionsDrainPendingAndLatePayloads();
     void buildTreeRuntimeWinsBeforeStaleSystemdUnit();
+    void guiBootstrapExitLeavesBuildTreeRuntimeRunning();
     void maskedInstalledUnitAllowsBuildTreeRuntime();
     void activatingInstalledUnitBlocksBuildTreeRuntime();
     void queuedInstalledUnitJobBlocksBuildTreeRuntime();
@@ -386,6 +545,19 @@ void RuntimeBootstrapTests::cleanup() {
     qunsetenv(kSystemctlUnitScenarioEnvironment);
     qunsetenv(kSiblingApiEnvironment);
     qunsetenv(kSiblingObjectDelayEnvironment);
+    quickbootstrap::testing::
+        clearAfterLeaseAcquiredBeforeSocketCleanupHook();
+    quickbootstrap::testing::clearAfterPreviousLeaseProbeHook();
+    quickbootstrap::testing::clearBeforeStaleSocketExchangeHook();
+    quickbootstrap::testing::clearAfterStaleSocketExchangeHook();
+    quickbootstrap::testing::clearAfterNativeSocketBoundHook();
+    quickbootstrap::testing::clearAfterRuntimeDirectoryPinnedHook();
+    gSocketCleanupRaceServer = nullptr;
+    gLateLeaseOwnerProcess = nullptr;
+    gLateLeaseReadyPath.clear();
+    gLateLeaseOwnerReady = false;
+    gMovedRuntimeDirectory.clear();
+    gRuntimeDirectoryReplaced = false;
     stateDirectory_.reset();
     systemctlLogPath_.clear();
     QVERIFY(runtimeStopped);
@@ -395,6 +567,648 @@ void RuntimeBootstrapTests::cleanupTestCase() {
     QFile::remove(siblingRuntimePath_);
 }
 
+void RuntimeBootstrapTests::instanceLaunchIntentPayloadIsStrict() {
+    using quickbootstrap::InstanceLaunchIntent;
+
+    const QByteArray manualPayload =
+        quickbootstrap::instanceLaunchIntentPayload(
+            InstanceLaunchIntent::Manual);
+    const QByteArray autostartPayload =
+        quickbootstrap::instanceLaunchIntentPayload(
+            InstanceLaunchIntent::Autostart);
+
+    QCOMPARE(manualPayload, QByteArrayLiteral("show"));
+    QCOMPARE(autostartPayload, QByteArrayLiteral("autostart"));
+    QVERIFY(quickbootstrap::instanceLaunchIntentRequestsWindow(
+        InstanceLaunchIntent::Manual));
+    QVERIFY(!quickbootstrap::instanceLaunchIntentRequestsWindow(
+        InstanceLaunchIntent::Autostart));
+    QVERIFY(!quickbootstrap::instanceLaunchIntentRequestsWindow(
+        static_cast<InstanceLaunchIntent>(-1)));
+
+    const auto parsedManual =
+        quickbootstrap::parseInstanceLaunchIntentPayload(manualPayload);
+    QVERIFY(parsedManual.has_value());
+    QVERIFY(*parsedManual == InstanceLaunchIntent::Manual);
+
+    const auto parsedAutostart =
+        quickbootstrap::parseInstanceLaunchIntentPayload(autostartPayload);
+    QVERIFY(parsedAutostart.has_value());
+    QVERIFY(*parsedAutostart == InstanceLaunchIntent::Autostart);
+
+    for (const QByteArray &invalidPayload :
+         {QByteArray{}, QByteArrayLiteral("unknown"),
+          QByteArrayLiteral(" show"), QByteArrayLiteral("show\n"),
+          QByteArrayLiteral("auto")}) {
+        QVERIFY2(
+            !quickbootstrap::parseInstanceLaunchIntentPayload(invalidPayload)
+                 .has_value(),
+            invalidPayload.constData());
+    }
+    QVERIFY(quickbootstrap::instanceLaunchIntentPayload(
+                static_cast<InstanceLaunchIntent>(-1))
+                .isEmpty());
+}
+
+void RuntimeBootstrapTests::
+    instanceSocketPathRequiresPrivateRuntimeDirectory() {
+    const QString unsafeRuntimeDirectory =
+        QDir(stateDirectory_->path())
+            .filePath(QStringLiteral("unsafe-runtime"));
+    QVERIFY(QDir().mkpath(unsafeRuntimeDirectory));
+    QVERIFY(QFile::setPermissions(
+        unsafeRuntimeDirectory,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner |
+            QFileDevice::ReadGroup |
+            QFileDevice::WriteGroup |
+            QFileDevice::ExeGroup |
+            QFileDevice::ReadOther |
+            QFileDevice::WriteOther |
+            QFileDevice::ExeOther));
+
+    quickbootstrap::testing::setRuntimeDirectoryOverride(QString{});
+    QVERIFY(quickbootstrap::instanceSocketPath().isEmpty());
+    quickbootstrap::testing::setRuntimeDirectoryOverride(
+        unsafeRuntimeDirectory);
+    QVERIFY(quickbootstrap::instanceSocketPath().isEmpty());
+
+    QVERIFY(QFile::setPermissions(
+        unsafeRuntimeDirectory,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner));
+    QCOMPARE(
+        quickbootstrap::instanceSocketPath(),
+        QDir(unsafeRuntimeDirectory).filePath(
+            QStringLiteral("tryx-panorama-manager.instance")));
+
+    const QString replaceableParent =
+        QDir(stateDirectory_->path()).filePath(
+            QStringLiteral("replaceable-parent"));
+    const QString nestedRuntime =
+        QDir(replaceableParent).filePath(QStringLiteral("runtime"));
+    QVERIFY(QDir().mkpath(nestedRuntime));
+    QCOMPARE(::chmod(
+                 QFile::encodeName(replaceableParent).constData(),
+                 0777),
+             0);
+    QCOMPARE(::chmod(
+                 QFile::encodeName(nestedRuntime).constData(),
+                 0700),
+             0);
+    quickbootstrap::testing::setRuntimeDirectoryOverride(nestedRuntime);
+    QVERIFY(quickbootstrap::instanceSocketPath().isEmpty());
+    QCOMPARE(::chmod(
+                 QFile::encodeName(replaceableParent).constData(),
+                 01777),
+             0);
+    QCOMPARE(
+        quickbootstrap::instanceSocketPath(),
+        QDir(nestedRuntime).filePath(
+            QStringLiteral("tryx-panorama-manager.instance")));
+    quickbootstrap::testing::clearRuntimeDirectoryOverride();
+}
+
+void RuntimeBootstrapTests::activeSingleInstanceSocketCannotBeStolen() {
+    const QString socketPath =
+        QDir(stateDirectory_->path())
+            .filePath(QStringLiteral("active-instance.socket"));
+    QLocalServer primary;
+    QString error;
+    QVERIFY2(quickbootstrap::listenForSingleInstance(
+                 &primary, socketPath, &error),
+             qPrintable(error));
+    const QFileDevice::Permissions socketPermissions =
+        QFileInfo(socketPath).permissions();
+    QVERIFY((socketPermissions &
+             (QFileDevice::ReadGroup |
+              QFileDevice::WriteGroup |
+              QFileDevice::ExeGroup |
+              QFileDevice::ReadOther |
+              QFileDevice::WriteOther |
+              QFileDevice::ExeOther)) == 0);
+
+    QLocalServer contender;
+    QVERIFY(!quickbootstrap::listenForSingleInstance(
+        &contender, socketPath, &error));
+    QVERIFY(primary.isListening());
+    QVERIFY(!contender.isListening());
+
+    QList<quickbootstrap::InstanceLaunchIntent> receivedIntents;
+    const auto drainPending = [&primary, &receivedIntents, this]() {
+        quickbootstrap::drainPendingInstanceLaunchConnections(
+            &primary, this,
+            [&receivedIntents](
+                quickbootstrap::InstanceLaunchIntent intent) {
+                receivedIntents.append(intent);
+            });
+    };
+    QObject::connect(
+        &primary, &QLocalServer::newConnection,
+        this, drainPending);
+
+    QProcess guardedContender;
+    guardedContender.start(
+        QCoreApplication::applicationFilePath(),
+        {QString::fromLatin1(kNotifyInstanceArgument), socketPath});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        guardedContender.state() == QProcess::NotRunning, 3000);
+    const QByteArray contenderOutput = guardedContender.readAll();
+    QCOMPARE(guardedContender.exitStatus(), QProcess::NormalExit);
+    QVERIFY2(guardedContender.exitCode() == 0,
+             contenderOutput.constData());
+    QCOMPARE(receivedIntents,
+             QList{quickbootstrap::InstanceLaunchIntent::Manual});
+    QVERIFY(primary.isListening());
+}
+
+void RuntimeBootstrapTests::singleInstanceGuardNotifiesLiveOwner() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path())
+            .filePath(QStringLiteral("guard-live-owner.socket"));
+    quickbootstrap::SingleInstanceGuard primaryGuard(socketPath);
+    QLocalServer primary;
+    QString error;
+    QVERIFY(primaryGuard.acquire(
+                &primary, InstanceLaunchIntent::Autostart, &error) ==
+            SingleInstanceAcquireResult::Primary);
+
+    QList<InstanceLaunchIntent> receivedIntents;
+    const auto drainPending = [&primary, &receivedIntents, this]() {
+        quickbootstrap::drainPendingInstanceLaunchConnections(
+            &primary, this,
+            [&receivedIntents](InstanceLaunchIntent intent) {
+                receivedIntents.append(intent);
+            });
+    };
+    QObject::connect(
+        &primary, &QLocalServer::newConnection,
+        this, drainPending);
+
+    QProcess contender;
+    contender.start(
+        QCoreApplication::applicationFilePath(),
+        {QString::fromLatin1(kNotifyInstanceArgument), socketPath});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        contender.state() == QProcess::NotRunning, 3000);
+    const QByteArray contenderOutput = contender.readAll();
+    QCOMPARE(contender.exitStatus(), QProcess::NormalExit);
+    QVERIFY2(contender.exitCode() == 0,
+             contenderOutput.constData());
+    QCOMPARE(receivedIntents,
+             QList{InstanceLaunchIntent::Manual});
+    QVERIFY(primary.isListening());
+}
+
+void RuntimeBootstrapTests::
+    singleInstanceGuardRejectsUnacknowledgedOwner() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path())
+            .filePath(QStringLiteral("guard-unacknowledged-owner.socket"));
+    QLocalServer unacknowledgedOwner;
+    QString error;
+    QVERIFY2(quickbootstrap::listenForSingleInstance(
+                 &unacknowledgedOwner, socketPath, &error),
+             qPrintable(error));
+
+    quickbootstrap::SingleInstanceGuard contenderGuard(socketPath);
+    QLocalServer contender;
+    QCOMPARE(contenderGuard.acquire(
+                 &contender, InstanceLaunchIntent::Manual, &error),
+             SingleInstanceAcquireResult::Failed);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(unacknowledgedOwner.isListening());
+    QVERIFY(!contender.isListening());
+}
+
+void RuntimeBootstrapTests::
+    singleInstanceGuardFailsClosedWhileOwnerStarts() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path())
+            .filePath(QStringLiteral("guard-starting-owner.socket"));
+    QLockFile ownerLock(socketPath + QStringLiteral(".lock"));
+    ownerLock.setStaleLockTime(0);
+    QVERIFY(ownerLock.tryLock(0));
+
+    quickbootstrap::SingleInstanceGuard contenderGuard(socketPath);
+    QLocalServer contender;
+    QString error;
+    QVERIFY(contenderGuard.acquire(
+                &contender, InstanceLaunchIntent::Manual, &error) ==
+            SingleInstanceAcquireResult::Failed);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!contender.isListening());
+    QVERIFY(ownerLock.isLocked());
+}
+
+void RuntimeBootstrapTests::singleInstanceGuardRecoversCrashedOwner() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path())
+            .filePath(QStringLiteral("guard-crashed-owner.socket"));
+    QProcess crashedOwner;
+    crashedOwner.start(
+        QCoreApplication::applicationFilePath(),
+        {QString::fromLatin1(kAcquireInstanceAndCrashArgument),
+         socketPath});
+    QVERIFY(crashedOwner.waitForFinished(3000));
+    QCOMPARE(crashedOwner.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(crashedOwner.exitCode(), 0);
+    QVERIFY(QFileInfo::exists(socketPath));
+    QVERIFY(QFileInfo::exists(socketPath + QStringLiteral(".lock")));
+
+    quickbootstrap::SingleInstanceGuard recoveredGuard(socketPath);
+    QLocalServer recoveredServer;
+    QString error;
+    QVERIFY(recoveredGuard.acquire(
+                &recoveredServer,
+                InstanceLaunchIntent::Manual,
+                &error) ==
+            SingleInstanceAcquireResult::Primary);
+    QVERIFY(recoveredServer.isListening());
+
+    QLocalSocket probe;
+    probe.connectToServer(socketPath);
+    QVERIFY(probe.waitForConnected(1000));
+    QCOMPARE(
+        QDir(stateDirectory_->path()).entryList(
+            {QStringLiteral(
+                ".tryx-panorama-instance-replacement.*")},
+            QDir::AllEntries | QDir::Hidden |
+                QDir::NoDotAndDotDot),
+        QStringList{});
+}
+
+void RuntimeBootstrapTests::
+    singleInstanceGuardRecoversLeaseAcquiredDuringWait() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path()).filePath(
+            QStringLiteral("guard-late-lease.socket"));
+    const QString readyPath =
+        QDir(stateDirectory_->path()).filePath(
+            QStringLiteral("guard-late-lease.ready"));
+    QProcess lateOwner;
+    gLateLeaseOwnerProcess = &lateOwner;
+    gLateLeaseReadyPath = readyPath;
+    quickbootstrap::testing::setAfterPreviousLeaseProbeHook(
+        &startLateLeaseOwnerAfterInitialProbe);
+
+    quickbootstrap::SingleInstanceGuard recoveredGuard(socketPath);
+    QLocalServer recoveredServer;
+    QString error;
+    const SingleInstanceAcquireResult result = recoveredGuard.acquire(
+        &recoveredServer, InstanceLaunchIntent::Manual, &error);
+    quickbootstrap::testing::clearAfterPreviousLeaseProbeHook();
+    gLateLeaseOwnerProcess = nullptr;
+
+    QVERIFY(gLateLeaseOwnerReady);
+    QVERIFY2(
+        lateOwner.waitForFinished(3000),
+        qPrintable(lateOwner.errorString()));
+    QCOMPARE(lateOwner.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(lateOwner.exitCode(), 0);
+    QVERIFY2(
+        result == SingleInstanceAcquireResult::Primary,
+        qPrintable(error));
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(recoveredServer.isListening());
+    QLocalSocket probe;
+    probe.connectToServer(socketPath);
+    QVERIFY(probe.waitForConnected(1000));
+    QCOMPARE(
+        QDir(stateDirectory_->path()).entryList(
+            {QStringLiteral(
+                ".tryx-panorama-instance-replacement.*")},
+            QDir::AllEntries | QDir::Hidden |
+                QDir::NoDotAndDotDot),
+        QStringList{});
+}
+
+void RuntimeBootstrapTests::
+    singleInstanceGuardPreservesSocketWonAfterFinalProbe() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path())
+            .filePath(QStringLiteral("guard-final-probe-race.socket"));
+    QProcess crashedOwner;
+    crashedOwner.start(
+        QCoreApplication::applicationFilePath(),
+        {QString::fromLatin1(kAcquireInstanceAndCrashArgument),
+         socketPath});
+    QVERIFY(crashedOwner.waitForFinished(3000));
+    QCOMPARE(crashedOwner.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(crashedOwner.exitCode(), 0);
+    QVERIFY(QFileInfo::exists(socketPath));
+    QVERIFY(QFileInfo::exists(socketPath + QStringLiteral(".lock")));
+
+    QLocalServer legacyWinner;
+    gSocketCleanupRaceServer = &legacyWinner;
+    quickbootstrap::testing::
+        setAfterLeaseAcquiredBeforeSocketCleanupHook(
+            &bindLegacyServerBeforeSocketCleanup);
+    quickbootstrap::SingleInstanceGuard recoveredGuard(socketPath);
+    QLocalServer recoveredServer;
+    QString error;
+    const SingleInstanceAcquireResult result = recoveredGuard.acquire(
+        &recoveredServer, InstanceLaunchIntent::Manual, &error);
+    quickbootstrap::testing::
+        clearAfterLeaseAcquiredBeforeSocketCleanupHook();
+    gSocketCleanupRaceServer = nullptr;
+
+    QCOMPARE(result, SingleInstanceAcquireResult::Failed);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(legacyWinner.isListening());
+    QVERIFY(!recoveredServer.isListening());
+    QVERIFY(QFileInfo::exists(socketPath));
+    QLocalSocket probe;
+    probe.connectToServer(socketPath);
+    QVERIFY(probe.waitForConnected(1000));
+}
+
+void RuntimeBootstrapTests::
+    singleInstanceGuardPreservesSocketWonBeforeExchange() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path()).filePath(
+            QStringLiteral("guard-pre-exchange-race.socket"));
+    QProcess crashedOwner;
+    crashedOwner.start(
+        QCoreApplication::applicationFilePath(),
+        {QString::fromLatin1(kAcquireInstanceAndCrashArgument),
+         socketPath});
+    QVERIFY(crashedOwner.waitForFinished(3000));
+    QCOMPARE(crashedOwner.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(crashedOwner.exitCode(), 0);
+
+    QLocalServer legacyWinner;
+    gSocketCleanupRaceServer = &legacyWinner;
+    quickbootstrap::testing::setBeforeStaleSocketExchangeHook(
+        &bindLegacyServerBeforeSocketCleanup);
+    quickbootstrap::SingleInstanceGuard recoveredGuard(socketPath);
+    QLocalServer recoveredServer;
+    QString error;
+    const SingleInstanceAcquireResult result = recoveredGuard.acquire(
+        &recoveredServer, InstanceLaunchIntent::Manual, &error);
+    quickbootstrap::testing::clearBeforeStaleSocketExchangeHook();
+    gSocketCleanupRaceServer = nullptr;
+
+    QCOMPARE(result, SingleInstanceAcquireResult::Failed);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(legacyWinner.isListening());
+    QVERIFY(!recoveredServer.isListening());
+    QVERIFY(QFileInfo::exists(socketPath));
+    QLocalSocket probe;
+    probe.connectToServer(socketPath);
+    QVERIFY(probe.waitForConnected(1000));
+    QCOMPARE(
+        QDir(stateDirectory_->path()).entryList(
+            {QStringLiteral(
+                ".tryx-panorama-instance-replacement.*")},
+            QDir::AllEntries | QDir::Hidden |
+                QDir::NoDotAndDotDot),
+        QStringList{});
+}
+
+void RuntimeBootstrapTests::
+    singleInstanceGuardPreservesSocketWonAfterExchange() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path()).filePath(
+            QStringLiteral("guard-post-exchange-race.socket"));
+    QProcess crashedOwner;
+    crashedOwner.start(
+        QCoreApplication::applicationFilePath(),
+        {QString::fromLatin1(kAcquireInstanceAndCrashArgument),
+         socketPath});
+    QVERIFY(crashedOwner.waitForFinished(3000));
+    QCOMPARE(crashedOwner.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(crashedOwner.exitCode(), 0);
+
+    QLocalServer legacyWinner;
+    gSocketCleanupRaceServer = &legacyWinner;
+    quickbootstrap::testing::setAfterStaleSocketExchangeHook(
+        &bindLegacyServerBeforeSocketCleanup);
+    quickbootstrap::SingleInstanceGuard recoveredGuard(socketPath);
+    QLocalServer recoveredServer;
+    QString error;
+    const SingleInstanceAcquireResult result = recoveredGuard.acquire(
+        &recoveredServer, InstanceLaunchIntent::Manual, &error);
+    quickbootstrap::testing::clearAfterStaleSocketExchangeHook();
+    gSocketCleanupRaceServer = nullptr;
+
+    QCOMPARE(result, SingleInstanceAcquireResult::Failed);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(legacyWinner.isListening());
+    QVERIFY(!recoveredServer.isListening());
+    QLocalSocket probe;
+    probe.connectToServer(socketPath);
+    QVERIFY(probe.waitForConnected(1000));
+    QCOMPARE(
+        QDir(stateDirectory_->path()).entryList(
+            {QStringLiteral(
+                ".tryx-panorama-instance-replacement.*")},
+            QDir::AllEntries | QDir::Hidden |
+                QDir::NoDotAndDotDot),
+        QStringList{});
+}
+
+void RuntimeBootstrapTests::
+    singleInstanceGuardRejectsSocketReboundAfterNativeBind() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path()).filePath(
+            QStringLiteral("guard-native-bind-race.socket"));
+    QLocalServer legacyWinner;
+    gSocketCleanupRaceServer = &legacyWinner;
+    quickbootstrap::testing::setAfterNativeSocketBoundHook(
+        &bindLegacyServerBeforeSocketCleanup);
+    quickbootstrap::SingleInstanceGuard contenderGuard(socketPath);
+    QLocalServer contenderServer;
+    QString error;
+    const SingleInstanceAcquireResult result = contenderGuard.acquire(
+        &contenderServer, InstanceLaunchIntent::Manual, &error);
+    quickbootstrap::testing::clearAfterNativeSocketBoundHook();
+    gSocketCleanupRaceServer = nullptr;
+
+    QCOMPARE(result, SingleInstanceAcquireResult::Failed);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(legacyWinner.isListening());
+    QVERIFY(!contenderServer.isListening());
+    QLocalSocket probe;
+    probe.connectToServer(socketPath);
+    QVERIFY(probe.waitForConnected(1000));
+}
+
+void RuntimeBootstrapTests::
+    singleInstanceGuardRejectsRuntimeDirectoryReplacement() {
+    using quickbootstrap::InstanceLaunchIntent;
+    using quickbootstrap::SingleInstanceAcquireResult;
+
+    const QString runtimeDirectory =
+        QDir(stateDirectory_->path()).filePath(
+            QStringLiteral("runtime-directory-race"));
+    QVERIFY(QDir().mkpath(runtimeDirectory));
+    QVERIFY(QFile::setPermissions(
+        runtimeDirectory,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner));
+    const QString socketPath = QDir(runtimeDirectory).filePath(
+        QStringLiteral("guard-directory-race.socket"));
+    quickbootstrap::testing::setAfterRuntimeDirectoryPinnedHook(
+        &replacePinnedRuntimeDirectory);
+    quickbootstrap::SingleInstanceGuard guard(socketPath);
+    quickbootstrap::testing::clearAfterRuntimeDirectoryPinnedHook();
+
+    QLocalServer server;
+    QString error;
+    QCOMPARE(
+        guard.acquire(
+            &server, InstanceLaunchIntent::Manual, &error),
+        SingleInstanceAcquireResult::Failed);
+    QVERIFY(gRuntimeDirectoryReplaced);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!server.isListening());
+    QCOMPARE(
+        QDir(runtimeDirectory).entryList(
+            QDir::AllEntries | QDir::NoDotAndDotDot),
+        QStringList{});
+    QVERIFY(QFileInfo(gMovedRuntimeDirectory).isDir());
+}
+
+void RuntimeBootstrapTests::
+    instanceLaunchConnectionsDrainPendingAndLatePayloads() {
+    using quickbootstrap::InstanceLaunchIntent;
+
+    const QString socketPath =
+        QDir(stateDirectory_->path())
+            .filePath(QStringLiteral("instance-intent.socket"));
+    QLocalServer server;
+    QString error;
+    QVERIFY2(quickbootstrap::listenForSingleInstance(
+                 &server, socketPath, &error),
+             qPrintable(error));
+
+    QList<InstanceLaunchIntent> receivedIntents;
+    const auto drainPending = [&server, &receivedIntents, this]() {
+        quickbootstrap::drainPendingInstanceLaunchConnections(
+            &server, this,
+            [&receivedIntents](InstanceLaunchIntent intent) {
+                receivedIntents.append(intent);
+            });
+    };
+    const auto sendFrame = [](QLocalSocket *socket,
+                              const QByteArray &payload) {
+        const QByteArray frame = payload + '\n';
+        QCOMPARE(socket->write(frame),
+                 static_cast<qint64>(frame.size()));
+        QVERIFY(socket->flush());
+        if (socket->bytesToWrite() > 0) {
+            QVERIFY(socket->waitForBytesWritten(1000));
+        }
+    };
+    const auto expectAcknowledgement = [](QLocalSocket *socket) {
+        QTRY_VERIFY_WITH_TIMEOUT(socket->bytesAvailable() > 0, 1000);
+        QCOMPARE(socket->readAll(), QByteArrayLiteral("accepted\n"));
+    };
+
+    // The handler can be installed after newConnection was emitted. The
+    // already pending connection must still be consumed.
+    QLocalSocket alreadyPendingClient;
+    alreadyPendingClient.connectToServer(socketPath);
+    QVERIFY(alreadyPendingClient.waitForConnected(1000));
+    sendFrame(
+        &alreadyPendingClient,
+        quickbootstrap::instanceLaunchIntentPayload(
+            InstanceLaunchIntent::Manual));
+    QTRY_VERIFY_WITH_TIMEOUT(server.hasPendingConnections(), 1000);
+    drainPending();
+    QTRY_COMPARE_WITH_TIMEOUT(receivedIntents.size(), 1, 1000);
+    QVERIFY(receivedIntents.constFirst() == InstanceLaunchIntent::Manual);
+    expectAcknowledgement(&alreadyPendingClient);
+    QVERIFY(!server.hasPendingConnections());
+
+    // A connection can become pending before its bytes arrive. Draining it
+    // must arm an asynchronous read instead of treating the temporary empty
+    // buffer as a launch request.
+    QLocalSocket latePayloadClient;
+    latePayloadClient.connectToServer(socketPath);
+    QVERIFY(latePayloadClient.waitForConnected(1000));
+    QTRY_VERIFY_WITH_TIMEOUT(server.hasPendingConnections(), 1000);
+    drainPending();
+    QCOMPARE(receivedIntents.size(), 1);
+    sendFrame(
+        &latePayloadClient,
+        quickbootstrap::instanceLaunchIntentPayload(
+            InstanceLaunchIntent::Autostart));
+    QTRY_COMPARE_WITH_TIMEOUT(receivedIntents.size(), 2, 1000);
+    QVERIFY(receivedIntents.constLast() == InstanceLaunchIntent::Autostart);
+    expectAcknowledgement(&latePayloadClient);
+
+    // Only the first bounded newline-delimited frame is actionable. Bytes
+    // after its delimiter are never interpreted as a second launch intent.
+    QLocalSocket trailingClient;
+    trailingClient.connectToServer(socketPath);
+    QVERIFY(trailingClient.waitForConnected(1000));
+    QTRY_VERIFY_WITH_TIMEOUT(server.hasPendingConnections(), 1000);
+    drainPending();
+    const QByteArray manualFrame =
+        quickbootstrap::instanceLaunchIntentPayload(
+            InstanceLaunchIntent::Manual) + '\n';
+    const QByteArray frameWithTrailingBytes =
+        manualFrame + QByteArrayLiteral("junk");
+    QCOMPARE(
+        trailingClient.write(frameWithTrailingBytes),
+        static_cast<qint64>(frameWithTrailingBytes.size()));
+    QVERIFY(trailingClient.flush());
+    if (trailingClient.bytesToWrite() > 0) {
+        QVERIFY(trailingClient.waitForBytesWritten(1000));
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(receivedIntents.size(), 3, 1000);
+    QVERIFY(receivedIntents.constLast() == InstanceLaunchIntent::Manual);
+    expectAcknowledgement(&trailingClient);
+
+    // Empty and unknown payloads are consumed but never promoted to an
+    // actionable intent.
+    for (const QByteArray &invalidPayload :
+         {QByteArray{}, QByteArrayLiteral("unknown")}) {
+        QLocalSocket invalidClient;
+        invalidClient.connectToServer(socketPath);
+        QVERIFY(invalidClient.waitForConnected(1000));
+        QTRY_VERIFY_WITH_TIMEOUT(server.hasPendingConnections(), 1000);
+        drainPending();
+        sendFrame(&invalidClient, invalidPayload);
+        QTest::qWait(25);
+        QCOMPARE(receivedIntents.size(), 3);
+        QVERIFY(invalidClient.bytesAvailable() == 0);
+    }
+    QVERIFY(!server.hasPendingConnections());
+}
+
 void RuntimeBootstrapTests::buildTreeRuntimeWinsBeforeStaleSystemdUnit() {
     qputenv(kSystemctlStartApiEnvironment, "6");
     QString error;
@@ -402,6 +1216,23 @@ void RuntimeBootstrapTests::buildTreeRuntimeWinsBeforeStaleSystemdUnit() {
              qPrintable(error));
     QCOMPARE(runningRuntimeApi(), 8U);
     QCOMPARE(systemctlActions(), QStringList{QStringLiteral("show")});
+}
+
+void RuntimeBootstrapTests::
+    guiBootstrapExitLeavesBuildTreeRuntimeRunning() {
+    QProcess probe;
+    probe.start(
+        QCoreApplication::applicationFilePath(),
+        {QString::fromLatin1(kBootstrapAndExitArgument)});
+    QVERIFY2(
+        probe.waitForFinished(5000),
+        qPrintable(probe.errorString()));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+    QVERIFY(waitForRuntimeService(true));
+    QCOMPARE(runningRuntimeApi(), tryxRuntimeApiVersion());
+    QCOMPARE(systemctlActions(),
+             QStringList{QStringLiteral("show")});
 }
 
 void RuntimeBootstrapTests::maskedInstalledUnitAllowsBuildTreeRuntime() {
@@ -635,6 +1466,28 @@ int main(int argc, char **argv) {
     }
 
     QCoreApplication application(argc, argv);
+    if (application.arguments().size() == 3 &&
+        application.arguments().at(1) ==
+            QString::fromLatin1(kAcquireInstanceAndCrashArgument)) {
+        return runAcquireInstanceAndCrashProbe(
+            application.arguments().at(2));
+    }
+    if (application.arguments().size() == 4 &&
+        application.arguments().at(1) ==
+            QString::fromLatin1(kAcquireLateLeaseAndCrashArgument)) {
+        return runAcquireLateLeaseAndCrashProbe(
+            application.arguments().at(2),
+            application.arguments().at(3));
+    }
+    if (application.arguments().size() == 3 &&
+        application.arguments().at(1) ==
+            QString::fromLatin1(kNotifyInstanceArgument)) {
+        return runNotifyInstanceProbe(application.arguments().at(2));
+    }
+    if (application.arguments().contains(
+            QString::fromLatin1(kBootstrapAndExitArgument))) {
+        return runBootstrapAndExitProbe();
+    }
     if (application.arguments().size() > 1 &&
         application.arguments().at(1) == QStringLiteral("--user")) {
         return runFakeSystemctl(application.arguments());

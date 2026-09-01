@@ -36,6 +36,7 @@ struct PrinterProductProfile {
     bool mediaUploadSupported = false;
     bool mediaCatalogSupported = false;
     bool displayConfigurationSupported = false;
+    bool splitAreaMediaSupported = false;
     bool overlayMetricsSupported = false;
     bool firmwareFlashSupported = false;
 };
@@ -110,10 +111,20 @@ public:
         bool serialNumberLocked = false;
     };
 
+    struct DeviceSpecifications {
+        bool valid = false;
+        QString reportedProductName;
+        quint32 videoOutputWidth = 0;
+        quint32 videoOutputHeight = 0;
+        QString screenType;
+        bool usbAutoKeepalive = false;
+    };
+
     struct Result {
         bool success = false;
         QString error;
         DeviceInfo deviceInfo;
+        DeviceSpecifications deviceSpecifications;
     };
 
     enum class MediaSource {
@@ -156,6 +167,9 @@ public:
         // Kaleidoscope, FilterSingle, FilterDualLeft, FilterDualRight.
         QStringList references;
         QStringList referencingSlots;
+        QString activeScreenMode;
+        QString activePlayMode;
+        QStringList activeMedia;
     };
 
     struct ReadinessRetryInfo {
@@ -227,6 +241,8 @@ public:
         bool waterfallMode = false;
         QString cpuBadgeText;
         QString gpuBadgeText;
+        QString temperatureUnit = QStringLiteral("Celsius");
+        QString timeFormat = QStringLiteral("24H");
     };
 
     struct PaseDisplayMutation {
@@ -471,6 +487,7 @@ private:
 Q_DECLARE_METATYPE(PrinterProtocol::UsbPrinterDevice)
 Q_DECLARE_METATYPE(PrinterProtocol::DiscoverySnapshot)
 Q_DECLARE_METATYPE(PrinterProtocol::DeviceInfo)
+Q_DECLARE_METATYPE(PrinterProtocol::DeviceSpecifications)
 Q_DECLARE_METATYPE(PrinterProtocol::MediaFile)
 Q_DECLARE_METATYPE(PrinterProtocol::MutationOutcome)
 Q_DECLARE_METATYPE(PrinterProtocol::PaseOverlayAreaConfig)

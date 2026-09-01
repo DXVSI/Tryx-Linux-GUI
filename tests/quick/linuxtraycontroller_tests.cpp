@@ -1,4 +1,5 @@
 #include "linuxtraycontroller.h"
+#include "startupvisibilitycontroller.h"
 #include "windowchromecontroller.h"
 
 #include <QCoreApplication>
@@ -30,6 +31,12 @@ const QString kNotificationsPath =
     QStringLiteral("/org/freedesktop/Notifications");
 const QString kQuitProbeArgument =
     QStringLiteral("--internal-tray-quit-probe");
+const QString kQuitPolicyCloseProbeArgument =
+    QStringLiteral("--internal-quit-policy-close-probe");
+const QString kNoHostCloseProbeArgument =
+    QStringLiteral("--internal-no-host-close-probe");
+const QString kGuardedCloseProbeArgument =
+    QStringLiteral("--internal-guarded-close-probe");
 
 class TrayCloseFilter final : public QObject {
 public:
@@ -41,8 +48,9 @@ public:
 protected:
     bool eventFilter(
         QObject *watched, QEvent *event) override {
-        // Mirror Main.qml: reject a normal close and hide while tray support
-        // is available. Explicit tray Quit must still end the event loop.
+        // Mirror Main.qml: reject a normal close only when the Hide policy is
+        // active and tray support is available. Explicit tray Quit must still
+        // end the event loop.
         if (event->type() == QEvent::Close &&
             windowChrome_->handleCloseRequest()) {
             event->ignore();
@@ -53,6 +61,96 @@ protected:
 
 private:
     WindowChromeController *windowChrome_ = nullptr;
+};
+
+class GuardedLifecycleProbe final : public QObject {
+    Q_OBJECT
+
+public:
+    enum class LeaveIntent {
+        None,
+        HideToTray,
+        WindowQuit,
+        ExplicitQuit,
+    };
+    Q_ENUM(LeaveIntent)
+
+    GuardedLifecycleProbe(
+        QGuiApplication *application,
+        WindowChromeController *windowChrome,
+        QObject *parent = nullptr)
+        : QObject(parent),
+          application_(application),
+          windowChrome_(windowChrome) {}
+
+    LeaveIntent pendingIntent() const {
+        return pendingIntent_;
+    }
+
+    int closeEventCount() const {
+        return closeEventCount_;
+    }
+
+    void requestExplicitQuit() {
+        publishIntent(LeaveIntent::ExplicitQuit);
+    }
+
+    void approvePendingWithoutApply() {
+        const LeaveIntent approved = pendingIntent_;
+        pendingIntent_ = LeaveIntent::None;
+        switch (approved) {
+        case LeaveIntent::HideToTray:
+            windowChrome_->hideWindowToTray();
+            break;
+        case LeaveIntent::WindowQuit:
+            approvedCloseBypass_ = true;
+            windowChrome_->closeWindow();
+            break;
+        case LeaveIntent::ExplicitQuit:
+            application_->exit(0);
+            break;
+        case LeaveIntent::None:
+            break;
+        }
+    }
+
+signals:
+    void guardedIntentPublished();
+    void displayApplyRequested();
+
+protected:
+    bool eventFilter(
+        QObject *watched, QEvent *event) override {
+        if (event->type() != QEvent::Close) {
+            return QObject::eventFilter(watched, event);
+        }
+        ++closeEventCount_;
+        if (approvedCloseBypass_) {
+            approvedCloseBypass_ = false;
+            return false;
+        }
+        event->ignore();
+        publishIntent(
+            windowChrome_->closeWouldHideToTray()
+                ? LeaveIntent::HideToTray
+                : LeaveIntent::WindowQuit);
+        return true;
+    }
+
+private:
+    void publishIntent(LeaveIntent intent) {
+        if (pendingIntent_ != LeaveIntent::None) {
+            return;
+        }
+        pendingIntent_ = intent;
+        emit guardedIntentPublished();
+    }
+
+    QGuiApplication *application_ = nullptr;
+    WindowChromeController *windowChrome_ = nullptr;
+    LeaveIntent pendingIntent_ = LeaveIntent::None;
+    bool approvedCloseBypass_ = false;
+    int closeEventCount_ = 0;
 };
 
 class MockStatusNotifierWatcher final : public QObject {
@@ -171,16 +269,23 @@ int runTrayQuitProbe(QGuiApplication &application) {
     WindowChromeController windowChrome;
     windowChrome.setWindow(&window);
     windowChrome.setTrayAvailable(true);
-    TrayCloseFilter closeFilter(&windowChrome);
-    window.installEventFilter(&closeFilter);
+    GuardedLifecycleProbe lifecycle(
+        &application, &windowChrome);
+    window.installEventFilter(&lifecycle);
     window.show();
 
     LinuxTrayController tray;
     QObject::connect(
         &tray, &LinuxTrayController::quitRequested,
-        &application,
-        []() { QCoreApplication::exit(0); },
+        &lifecycle,
+        &GuardedLifecycleProbe::requestExplicitQuit,
         Qt::QueuedConnection);
+    QSignalSpy guardedIntentSpy(
+        &lifecycle,
+        &GuardedLifecycleProbe::guardedIntentPublished);
+    QSignalSpy displayApplySpy(
+        &lifecycle,
+        &GuardedLifecycleProbe::displayApplyRequested);
 
     QTimer watchdog;
     watchdog.setSingleShot(true);
@@ -206,6 +311,149 @@ int runTrayQuitProbe(QGuiApplication &application) {
         });
         bus.asyncCall(quit);
     });
+    QTimer::singleShot(
+        75, &application,
+        [&application, &lifecycle, &guardedIntentSpy,
+         &displayApplySpy, &window]() {
+            if (guardedIntentSpy.count() != 1 ||
+                lifecycle.pendingIntent() !=
+                    GuardedLifecycleProbe::LeaveIntent::ExplicitQuit ||
+                displayApplySpy.count() != 0 || !window.isVisible()) {
+                application.exit(76);
+                return;
+            }
+            lifecycle.approvePendingWithoutApply();
+        });
+
+    return application.exec();
+}
+
+int runWindowCloseProbe(
+    QGuiApplication &application,
+    bool hideToTrayOnClose, bool trayAvailable) {
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    windowChrome.setHideToTrayOnClose(hideToTrayOnClose);
+    windowChrome.setTrayAvailable(trayAvailable);
+    TrayCloseFilter closeFilter(&windowChrome);
+    window.installEventFilter(&closeFilter);
+    window.show();
+
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(
+        &watchdog, &QTimer::timeout,
+        &application, [&application]() {
+            application.exit(75);
+        });
+    watchdog.start(2000);
+
+    QTimer::singleShot(0, &window, [&window]() {
+        window.close();
+    });
+    return application.exec();
+}
+
+int runGuardedCloseProbe(QGuiApplication &application) {
+    application.setQuitOnLastWindowClosed(false);
+
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    windowChrome.setHideToTrayOnClose(true);
+    windowChrome.setTrayAvailable(true);
+    GuardedLifecycleProbe lifecycle(
+        &application, &windowChrome);
+    window.installEventFilter(&lifecycle);
+    QSignalSpy guardedIntentSpy(
+        &lifecycle,
+        &GuardedLifecycleProbe::guardedIntentPublished);
+    QSignalSpy displayApplySpy(
+        &lifecycle,
+        &GuardedLifecycleProbe::displayApplyRequested);
+    window.show();
+
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(
+        &watchdog, &QTimer::timeout,
+        &application, [&application]() {
+            application.exit(75);
+        });
+    watchdog.start(2000);
+
+    QTimer::singleShot(0, &window, [&window]() {
+        window.close();
+    });
+    QTimer::singleShot(
+        25, &application,
+        [&application, &lifecycle, &guardedIntentSpy,
+         &displayApplySpy, &window, &windowChrome]() {
+            if (guardedIntentSpy.count() != 1 ||
+                lifecycle.pendingIntent() !=
+                    GuardedLifecycleProbe::LeaveIntent::HideToTray ||
+                lifecycle.closeEventCount() != 1 ||
+                displayApplySpy.count() != 0 || !window.isVisible()) {
+                application.exit(76);
+                return;
+            }
+
+            lifecycle.approvePendingWithoutApply();
+            if (window.isVisible() ||
+                !windowChrome.hiddenToTray() ||
+                displayApplySpy.count() != 0) {
+                application.exit(77);
+                return;
+            }
+
+            windowChrome.showWindow();
+            windowChrome.setHideToTrayOnClose(false);
+            window.close();
+            QTimer::singleShot(
+                25, &application,
+                [&application, &lifecycle, &guardedIntentSpy,
+                 &displayApplySpy, &window]() {
+                    if (guardedIntentSpy.count() != 2 ||
+                        lifecycle.pendingIntent() !=
+                            GuardedLifecycleProbe::LeaveIntent::WindowQuit ||
+                        lifecycle.closeEventCount() != 2 ||
+                        displayApplySpy.count() != 0 ||
+                        !window.isVisible()) {
+                        application.exit(78);
+                        return;
+                    }
+
+                    lifecycle.approvePendingWithoutApply();
+                    if (lifecycle.pendingIntent() !=
+                            GuardedLifecycleProbe::LeaveIntent::None ||
+                        lifecycle.closeEventCount() != 3 ||
+                        displayApplySpy.count() != 0 ||
+                        window.isVisible()) {
+                        application.exit(79);
+                        return;
+                    }
+
+                    window.show();
+                    window.close();
+                    QTimer::singleShot(
+                        25, &application,
+                        [&application, &lifecycle,
+                         &guardedIntentSpy, &displayApplySpy,
+                         &window]() {
+                            if (guardedIntentSpy.count() != 3 ||
+                                lifecycle.pendingIntent() !=
+                                    GuardedLifecycleProbe::LeaveIntent::WindowQuit ||
+                                lifecycle.closeEventCount() != 4 ||
+                                displayApplySpy.count() != 0 ||
+                                !window.isVisible()) {
+                                application.exit(80);
+                                return;
+                            }
+                            application.exit(0);
+                        });
+                });
+        });
 
     return application.exec();
 }
@@ -223,7 +471,16 @@ private slots:
     void menuLabelsAdvanceRevision();
     void dbusTypesMatchStatusNotifierSpecifications();
     void watcherLifecycleAndActions();
-    void trayQuitTerminatesGuiEventLoop();
+    void trayQuitWaitsForGuardApproval();
+    void guardedCloseSeparatesHideAndWindowQuit();
+    void windowChromeBridgesExplicitQuitApproval();
+    void windowCloseWithQuitPolicyTerminatesGuiEventLoop();
+    void windowCloseWithoutHostTerminatesGuiEventLoop();
+    void autostartHidesWhenHostIsAlreadyAvailable();
+    void autostartHidesWhenHostAppearsBeforeDeadline();
+    void autostartShowsWhenHostDeadlineExpires();
+    void autostartShowsImmediatelyWithQuitPolicy();
+    void manualActivationAndHostLossRestoreWindow();
     void notificationsUseFreedesktopService();
     void noWatcherFallsBackToUnavailable();
 };
@@ -462,7 +719,7 @@ watcherLifecycleAndActions() {
 }
 
 void LinuxTrayControllerTests::
-trayQuitTerminatesGuiEventLoop() {
+trayQuitWaitsForGuardApproval() {
     const QString dbusRunSession =
         QStandardPaths::findExecutable(
             QStringLiteral("dbus-run-session"));
@@ -483,6 +740,168 @@ trayQuitTerminatesGuiEventLoop() {
     QCOMPARE(
         probe.exitCode(),
         0);
+}
+
+void LinuxTrayControllerTests::
+guardedCloseSeparatesHideAndWindowQuit() {
+    QProcess probe;
+    probe.start(
+        QCoreApplication::applicationFilePath(),
+        {kGuardedCloseProbeArgument});
+    QVERIFY2(
+        probe.waitForFinished(5000),
+        qPrintable(probe.errorString()));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+}
+
+void LinuxTrayControllerTests::
+windowChromeBridgesExplicitQuitApproval() {
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    window.show();
+
+    QSignalSpy requestSpy(
+        &windowChrome,
+        &WindowChromeController::explicitQuitRequested);
+    QSignalSpy approvalSpy(
+        &windowChrome,
+        &WindowChromeController::explicitQuitApproved);
+
+    windowChrome.requestExplicitQuit();
+    QCOMPARE(requestSpy.count(), 1);
+    QVERIFY(window.isVisible());
+    QCOMPARE(approvalSpy.count(), 0);
+
+    windowChrome.approveExplicitQuit();
+    QCOMPARE(requestSpy.count(), 1);
+    QCOMPARE(approvalSpy.count(), 1);
+    QVERIFY(window.isVisible());
+}
+
+void LinuxTrayControllerTests::
+windowCloseWithQuitPolicyTerminatesGuiEventLoop() {
+    QProcess probe;
+    probe.start(
+        QCoreApplication::applicationFilePath(),
+        {kQuitPolicyCloseProbeArgument});
+    QVERIFY2(
+        probe.waitForFinished(5000),
+        qPrintable(probe.errorString()));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+}
+
+void LinuxTrayControllerTests::
+windowCloseWithoutHostTerminatesGuiEventLoop() {
+    QProcess probe;
+    probe.start(
+        QCoreApplication::applicationFilePath(),
+        {kNoHostCloseProbeArgument});
+    QVERIFY2(
+        probe.waitForFinished(5000),
+        qPrintable(probe.errorString()));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+}
+
+void LinuxTrayControllerTests::
+autostartHidesWhenHostIsAlreadyAvailable() {
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    windowChrome.setHideToTrayOnClose(true);
+    StartupVisibilityController visibility(
+        &windowChrome, 100);
+
+    visibility.setTrayAvailable(true);
+    visibility.beginAutostart();
+
+    QVERIFY(!visibility.autostartPending());
+    QVERIFY(!window.isVisible());
+    QVERIFY(windowChrome.hiddenToTray());
+}
+
+void LinuxTrayControllerTests::
+autostartHidesWhenHostAppearsBeforeDeadline() {
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    windowChrome.setHideToTrayOnClose(true);
+    StartupVisibilityController visibility(
+        &windowChrome, 250);
+
+    visibility.setTrayAvailable(false);
+    visibility.beginAutostart();
+    QVERIFY(visibility.autostartPending());
+
+    QTimer::singleShot(
+        10, &visibility, [&visibility]() {
+            visibility.setTrayAvailable(true);
+        });
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !visibility.autostartPending(), 200);
+    QVERIFY(!window.isVisible());
+    QVERIFY(windowChrome.hiddenToTray());
+}
+
+void LinuxTrayControllerTests::
+autostartShowsWhenHostDeadlineExpires() {
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    windowChrome.setHideToTrayOnClose(true);
+    StartupVisibilityController visibility(
+        &windowChrome, 20);
+
+    visibility.setTrayAvailable(false);
+    visibility.beginAutostart();
+
+    QTRY_VERIFY_WITH_TIMEOUT(window.isVisible(), 200);
+    QVERIFY(!visibility.autostartPending());
+    QVERIFY(!windowChrome.hiddenToTray());
+}
+
+void LinuxTrayControllerTests::
+autostartShowsImmediatelyWithQuitPolicy() {
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    windowChrome.setHideToTrayOnClose(false);
+    StartupVisibilityController visibility(
+        &windowChrome, 100);
+
+    visibility.setTrayAvailable(true);
+    visibility.beginAutostart();
+
+    QVERIFY(window.isVisible());
+    QVERIFY(!visibility.autostartPending());
+    QVERIFY(!windowChrome.hiddenToTray());
+}
+
+void LinuxTrayControllerTests::
+manualActivationAndHostLossRestoreWindow() {
+    QWindow window;
+    WindowChromeController windowChrome;
+    windowChrome.setWindow(&window);
+    windowChrome.setHideToTrayOnClose(true);
+    StartupVisibilityController visibility(
+        &windowChrome, 100);
+
+    visibility.setTrayAvailable(true);
+    visibility.beginAutostart();
+    QVERIFY(windowChrome.hiddenToTray());
+
+    visibility.showWindow();
+    QVERIFY(window.isVisible());
+    QVERIFY(!windowChrome.hiddenToTray());
+
+    visibility.beginAutostart();
+    QVERIFY(windowChrome.hiddenToTray());
+    visibility.setTrayAvailable(false);
+    QVERIFY(window.isVisible());
+    QVERIFY(!windowChrome.hiddenToTray());
 }
 
 void LinuxTrayControllerTests::
@@ -534,7 +953,20 @@ int main(int argc, char **argv) {
             kQuitProbeArgument)) {
         return runTrayQuitProbe(application);
     }
-
+    if (application.arguments().contains(
+            kQuitPolicyCloseProbeArgument)) {
+        return runWindowCloseProbe(
+            application, false, true);
+    }
+    if (application.arguments().contains(
+            kNoHostCloseProbeArgument)) {
+        return runWindowCloseProbe(
+            application, true, false);
+    }
+    if (application.arguments().contains(
+            kGuardedCloseProbeArgument)) {
+        return runGuardedCloseProbe(application);
+    }
     LinuxTrayControllerTests tests;
     return QTest::qExec(&tests, argc, argv);
 }

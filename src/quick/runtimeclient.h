@@ -3,14 +3,17 @@
 #include "mediacatalogmodel.h"
 #include "operationlistmodel.h"
 #include "runtimecontract.h"
+#include "savedlayoutlistmodel.h"
 
+#include <QDBusContext>
 #include <QDBusInterface>
 #include <QDBusServiceWatcher>
 #include <QObject>
 #include <QStringList>
 #include <QTimer>
+#include <QVariantMap>
 
-class RuntimeClient final : public QObject {
+class RuntimeClient final : public QObject, protected QDBusContext {
     Q_OBJECT
     Q_PROPERTY(bool serviceAvailable READ serviceAvailable
                    NOTIFY connectionChanged)
@@ -24,6 +27,11 @@ class RuntimeClient final : public QObject {
     Q_PROPERTY(bool displaySessionActive READ displaySessionActive
                    NOTIFY connectionChanged)
     Q_PROPERTY(QString productId READ productId NOTIFY connectionChanged)
+    Q_PROPERTY(QString deviceModel READ deviceModel NOTIFY connectionChanged)
+    Q_PROPERTY(QString firmwareVersion READ firmwareVersion
+                   NOTIFY connectionChanged)
+    Q_PROPERTY(QString deviceAppVersion READ deviceAppVersion
+                   NOTIFY connectionChanged)
     Q_PROPERTY(int mediaTargetWidth READ mediaTargetWidth
                    NOTIFY connectionChanged)
     Q_PROPERTY(int mediaTargetHeight READ mediaTargetHeight
@@ -33,6 +41,66 @@ class RuntimeClient final : public QObject {
     Q_PROPERTY(QString diagnostic READ diagnostic NOTIFY diagnosticChanged)
     Q_PROPERTY(quint32 apiVersion READ apiVersion NOTIFY connectionChanged)
     Q_PROPERTY(quint32 expectedApiVersion READ expectedApiVersion CONSTANT)
+    Q_PROPERTY(bool capabilitiesReady READ capabilitiesReady
+                   NOTIFY capabilitiesChanged)
+    Q_PROPERTY(QStringList runtimeCapabilities READ runtimeCapabilities
+                   NOTIFY capabilitiesChanged)
+    Q_PROPERTY(bool supportSnapshotAvailable READ supportSnapshotAvailable
+                   NOTIFY capabilitiesChanged)
+    Q_PROPERTY(bool supportSnapshotBusy READ supportSnapshotBusy
+                   NOTIFY supportSnapshotStateChanged)
+    Q_PROPERTY(bool deviceCapabilitiesReady READ deviceCapabilitiesReady
+                   NOTIFY capabilitiesChanged)
+    Q_PROPERTY(QStringList deviceCapabilities READ deviceCapabilities
+                   NOTIFY capabilitiesChanged)
+    Q_PROPERTY(bool deviceSpecificationsSupported
+                   READ deviceSpecificationsSupported
+                   NOTIFY deviceSpecificationsChanged)
+    Q_PROPERTY(QString deviceSpecificationsStatus
+                   READ deviceSpecificationsStatus
+                   NOTIFY deviceSpecificationsChanged)
+    Q_PROPERTY(bool deviceSpecificationsReady
+                   READ deviceSpecificationsReady
+                   NOTIFY deviceSpecificationsChanged)
+    Q_PROPERTY(QString deviceReportedProductName
+                   READ deviceReportedProductName
+                   NOTIFY deviceSpecificationsChanged)
+    Q_PROPERTY(int deviceVideoOutputWidth
+                   READ deviceVideoOutputWidth
+                   NOTIFY deviceSpecificationsChanged)
+    Q_PROPERTY(int deviceVideoOutputHeight
+                   READ deviceVideoOutputHeight
+                   NOTIFY deviceSpecificationsChanged)
+    Q_PROPERTY(QString deviceScreenType READ deviceScreenType
+                   NOTIFY deviceSpecificationsChanged)
+    Q_PROPERTY(bool deviceUsbAutoKeepalive
+                   READ deviceUsbAutoKeepalive
+                   NOTIFY deviceSpecificationsChanged)
+    Q_PROPERTY(bool presentationPreferencesReady
+                   READ presentationPreferencesReady
+                   NOTIFY presentationPreferencesChanged)
+    Q_PROPERTY(bool presentationPreferencesBusy
+                   READ presentationPreferencesBusy
+                   NOTIFY presentationPreferencesChanged)
+    Q_PROPERTY(QString temperatureUnit READ temperatureUnit
+                   NOTIFY presentationPreferencesChanged)
+    Q_PROPERTY(QString timeFormat READ timeFormat
+                   NOTIFY presentationPreferencesChanged)
+    Q_PROPERTY(SavedLayoutListModel *savedLayoutModel
+                   READ savedLayoutModel CONSTANT)
+    Q_PROPERTY(bool savedLayoutsSupported READ savedLayoutsSupported
+                   NOTIFY savedLayoutsChanged)
+    Q_PROPERTY(bool savedLayoutsReady READ savedLayoutsReady
+                   NOTIFY savedLayoutsChanged)
+    Q_PROPERTY(bool savedLayoutsBusy READ savedLayoutsBusy
+                   NOTIFY savedLayoutsChanged)
+    Q_PROPERTY(QString savedLayoutsStatus READ savedLayoutsStatus
+                   NOTIFY savedLayoutsChanged)
+    Q_PROPERTY(QString savedLayoutsDiagnostic READ savedLayoutsDiagnostic
+                   NOTIFY savedLayoutsChanged)
+    Q_PROPERTY(QString savedLayoutsDeviceIdentity
+                   READ savedLayoutsDeviceIdentity
+                   NOTIFY savedLayoutsChanged)
     Q_PROPERTY(MediaCatalogModel *mediaModel READ mediaModel CONSTANT)
     Q_PROPERTY(OperationListModel *operationModel READ operationModel CONSTANT)
     Q_PROPERTY(bool operationBusy READ operationBusy
@@ -45,6 +113,10 @@ class RuntimeClient final : public QObject {
                    NOTIFY operationChanged)
     Q_PROPERTY(QStringList availableMetrics READ availableMetrics
                    NOTIFY metricsChanged)
+    Q_PROPERTY(bool metricsCatalogReady READ metricsCatalogReady
+                   NOTIFY metricsCatalogChanged)
+    Q_PROPERTY(QStringList metricsCatalog READ metricsCatalog
+                   NOTIFY metricsCatalogChanged)
     Q_PROPERTY(bool metricsEnabled READ metricsEnabled
                    NOTIFY metricsChanged)
     Q_PROPERTY(bool samplingActive READ samplingActive
@@ -57,6 +129,17 @@ class RuntimeClient final : public QObject {
                    NOTIFY metricsChanged)
     Q_PROPERTY(bool displayStateValid READ displayStateValid
                    NOTIFY displayChanged)
+    Q_PROPERTY(bool legacyDisplayLayoutConfirmed
+                   READ legacyDisplayLayoutConfirmed
+                   NOTIFY displayChanged)
+    Q_PROPERTY(bool legacyDisplayBrightnessConfirmed
+                   READ legacyDisplayBrightnessConfirmed
+                   NOTIFY displayChanged)
+    Q_PROPERTY(quint64 displayRevision READ displayRevision
+                   NOTIFY displayChanged)
+    Q_PROPERTY(QString displayDeviceIdentity
+                   READ displayDeviceIdentity
+                   NOTIFY displayDeviceIdentityChanged)
     Q_PROPERTY(int brightness READ brightness NOTIFY displayChanged)
     Q_PROPERTY(bool backlightEnabled READ backlightEnabled
                    NOTIFY displayChanged)
@@ -76,6 +159,18 @@ class RuntimeClient final : public QObject {
                    NOTIFY displayChanged)
     Q_PROPERTY(QStringList displayRightBadges READ displayRightBadges
                    NOTIFY displayChanged)
+    Q_PROPERTY(QString displayLeftPosition READ displayLeftPosition
+                   NOTIFY displayChanged)
+    Q_PROPERTY(QString displayLeftColor READ displayLeftColor
+                   NOTIFY displayChanged)
+    Q_PROPERTY(QString displayLeftAlignment READ displayLeftAlignment
+                   NOTIFY displayChanged)
+    Q_PROPERTY(QString displayRightPosition READ displayRightPosition
+                   NOTIFY displayChanged)
+    Q_PROPERTY(QString displayRightColor READ displayRightColor
+                   NOTIFY displayChanged)
+    Q_PROPERTY(QString displayRightAlignment READ displayRightAlignment
+                   NOTIFY displayChanged)
 
 public:
     explicit RuntimeClient(bool offline = false,
@@ -89,12 +184,66 @@ public:
     bool printerClassDevicePresent() const;
     bool displaySessionActive() const;
     QString productId() const;
+    QString deviceModel() const;
+    QString firmwareVersion() const;
+    QString deviceAppVersion() const;
     int mediaTargetWidth() const;
     int mediaTargetHeight() const;
     QString connectionStatus() const;
     QString diagnostic() const;
     quint32 apiVersion() const;
     quint32 expectedApiVersion() const;
+    bool capabilitiesReady() const;
+    QStringList runtimeCapabilities() const;
+    bool supportSnapshotAvailable() const;
+    bool supportSnapshotBusy() const;
+    bool deviceCapabilitiesReady() const;
+    QStringList deviceCapabilities() const;
+    bool deviceSpecificationsSupported() const;
+    QString deviceSpecificationsStatus() const;
+    bool deviceSpecificationsReady() const;
+    QString deviceReportedProductName() const;
+    int deviceVideoOutputWidth() const;
+    int deviceVideoOutputHeight() const;
+    QString deviceScreenType() const;
+    bool deviceUsbAutoKeepalive() const;
+    bool presentationPreferencesReady() const;
+    bool presentationPreferencesBusy() const;
+    QString temperatureUnit() const;
+    QString timeFormat() const;
+    SavedLayoutListModel *savedLayoutModel();
+    bool savedLayoutsSupported() const;
+    bool savedLayoutsReady() const;
+    bool savedLayoutsBusy() const;
+    QString savedLayoutsStatus() const;
+    QString savedLayoutsDiagnostic() const;
+    QString savedLayoutsDeviceIdentity() const;
+    Q_INVOKABLE bool hasRuntimeCapability(
+        const QString &capability) const;
+    Q_INVOKABLE bool hasDeviceCapability(
+        const QString &capability) const;
+    Q_INVOKABLE bool requestSupportSnapshot();
+    Q_INVOKABLE bool requestDeviceMediaMetadata(
+        const TryxRuntimeDeviceMediaArtifact &artifact);
+    Q_INVOKABLE QString formatTemperature(
+        bool available, double celsius) const;
+    Q_INVOKABLE void setPresentationPreferences(
+        const QString &temperatureUnit,
+        const QString &timeFormat);
+    Q_INVOKABLE void refreshSavedLayouts();
+    Q_INVOKABLE QVariantMap savedLayoutDraft(
+        const QString &layoutId) const;
+    Q_INVOKABLE QString savedLayoutIdForName(
+        const QString &name) const;
+    Q_INVOKABLE void putSavedLayout(
+        const QString &name, const QString &overwriteLayoutId,
+        const QVariantMap &fullDraft);
+    Q_INVOKABLE void deleteSavedLayout(
+        const QString &layoutId);
+    Q_INVOKABLE QString submitSavedLayoutDraft(
+        const QString &layoutId,
+        const QString &revisionDecimal,
+        const QVariantMap &fullDraft);
     MediaCatalogModel *mediaModel();
     OperationListModel *operationModel();
 
@@ -104,6 +253,8 @@ public:
     double operationProgress() const;
 
     QStringList availableMetrics() const;
+    bool metricsCatalogReady() const;
+    QStringList metricsCatalog() const;
     bool metricsEnabled() const;
     bool samplingActive() const;
     QStringList activeMetrics() const;
@@ -111,6 +262,10 @@ public:
     QString metricsColor() const;
 
     bool displayStateValid() const;
+    bool legacyDisplayLayoutConfirmed() const;
+    bool legacyDisplayBrightnessConfirmed() const;
+    quint64 displayRevision() const;
+    QString displayDeviceIdentity() const;
     int brightness() const;
     bool backlightEnabled() const;
     bool mirrorMode() const;
@@ -122,10 +277,19 @@ public:
     QStringList displayRightMetrics() const;
     QStringList displayLeftBadges() const;
     QStringList displayRightBadges() const;
+    QString displayLeftPosition() const;
+    QString displayLeftColor() const;
+    QString displayLeftAlignment() const;
+    QString displayRightPosition() const;
+    QString displayRightColor() const;
+    QString displayRightAlignment() const;
 
     QString queueUploadWithTransform(
         const QString &localPath,
         const TryxRuntimeMediaTransform &transform);
+    QString queueUploadWithPreparationProfile(
+        const QString &localPath,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     QString queueStageDeviceMedia(const QString &mediaId);
     void claimDeviceMediaArtifact(
         const QString &operationId, const QString &artifactId);
@@ -136,12 +300,24 @@ public:
     QString queueRecoveredMediaUploadWithTransform(
         const QString &artifactId, const QString &leaseId,
         const TryxRuntimeMediaTransform &transform);
+    QString queueRecoveredMediaUploadWithPreparationProfile(
+        const QString &artifactId, const QString &leaseId,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     QString queueReplaceDeviceMedia(
         const QString &artifactId, const QString &leaseId,
         const QString &originalMediaId,
         const TryxRuntimeApplyRequest &request,
         const TryxRuntimeMediaTransform &transform);
+    QString queueReplaceDeviceMediaWithPreparationProfile(
+        const QString &artifactId, const QString &leaseId,
+        const QString &originalMediaId,
+        const TryxRuntimeApplyRequest &request,
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     TryxRuntimeApplyRequest currentDisplayApplyRequest() const;
+    QString queueCacheCleanup();
+    bool cancelCacheCleanup(const QString &operationId);
+    bool refreshCacheCleanup(const QString &operationId);
+    void clearCacheCleanupTracking(const QString &operationId);
 
     Q_INVOKABLE void refreshAll();
     Q_INVOKABLE void refreshMedia();
@@ -154,13 +330,45 @@ public:
     Q_INVOKABLE void stopKeepalive();
     Q_INVOKABLE void applyFullScreen(
         const QStringList &media, const QString &playMode,
-        const QStringList &metrics, const QStringList &badges);
+        const QStringList &metrics, const QStringList &badges,
+        const QString &position, const QString &color,
+        const QString &alignment);
     Q_INVOKABLE void applySplitScreen(
         const QString &leftMedia, const QString &rightMedia,
         const QString &playMode, const QStringList &leftMetrics,
         const QStringList &rightMetrics,
         const QStringList &leftBadges,
-        const QStringList &rightBadges);
+        const QStringList &rightBadges,
+        const QString &leftPosition,
+        const QString &leftColor,
+        const QString &leftAlignment,
+        const QString &rightPosition,
+        const QString &rightColor,
+        const QString &rightAlignment);
+    Q_INVOKABLE QString submitFullDisplayDraft(
+        const QStringList &media, const QString &playMode,
+        const QStringList &metrics, const QStringList &badges,
+        const QString &position, const QString &color,
+        const QString &alignment, bool layoutPresent,
+        bool brightnessPresent, int brightness,
+        bool orientationPresent, bool mirror, bool waterfall);
+    Q_INVOKABLE QString submitSplitDisplayDraft(
+        const QString &leftMedia, const QString &rightMedia,
+        const QString &playMode, const QStringList &leftMetrics,
+        const QStringList &rightMetrics,
+        const QStringList &leftBadges,
+        const QStringList &rightBadges,
+        const QString &leftPosition,
+        const QString &leftColor,
+        const QString &leftAlignment,
+        const QString &rightPosition,
+        const QString &rightColor,
+        const QString &rightAlignment,
+        bool layoutPresent, bool brightnessPresent,
+        int brightness, bool orientationPresent,
+        bool mirror, bool waterfall);
+    Q_INVOKABLE void abandonDisplaySubmission(
+        const QString &submissionId);
     Q_INVOKABLE void deleteMedia(const QStringList &media);
     Q_INVOKABLE void cancelActiveOperation();
     Q_INVOKABLE void retryOperation(const QString &sourceOperationId);
@@ -174,23 +382,56 @@ public:
 
 signals:
     void connectionChanged();
+    void capabilitiesChanged();
+    void deviceSpecificationsChanged();
+    void supportSnapshotStateChanged();
+    void supportSnapshotReady(const QString &json);
+    void supportSnapshotFailed(const QString &message);
+    void presentationPreferencesChanged();
+    void savedLayoutsChanged();
+    void savedLayoutPutFinished(
+        const QString &requestedLayoutId,
+        const QString &layoutId,
+        const QString &revisionDecimal,
+        bool success, const QString &message);
+    void savedLayoutDeleteFinished(
+        const QString &layoutId,
+        bool success, const QString &message);
     void diagnosticChanged();
     void operationChanged();
     void metricsChanged();
+    void metricsCatalogChanged();
     void displayChanged();
+    void displayDeviceIdentityChanged();
     void userMessage(const QString &message, bool error);
     void operationRequestAccepted(const QString &operationId,
                                   const QString &kind);
     void operationRequestRejected(const QString &operationId,
                                   const QString &kind,
                                   const QString &message);
+    void operationRequestFailed(const QString &operationId,
+                                const QString &kind,
+                                const QString &message,
+                                bool outcomeUnknown);
     void operationUpdated(const TryxRuntimeOperationInfo &info);
+    void cacheCleanupRefreshResolved(
+        const TryxRuntimeOperationInfo &info);
+    void cacheCleanupRefreshFailed(
+        const QString &operationId, const QString &message);
+    void displayApplyStarted(const QString &submissionId);
+    void displayApplyFinished(const QString &submissionId,
+                              const QString &outcome,
+                              const QString &message);
     void artifactClaimed(
         const QString &operationId,
         const TryxRuntimeDeviceMediaArtifact &artifact);
     void artifactClaimFailed(const QString &operationId,
                              const QString &artifactId,
                              const QString &message);
+    void deviceMediaMetadataReady(
+        const TryxRuntimeDeviceMediaMetadataV1 &metadata);
+    void deviceMediaMetadataFailed(
+        const QString &artifactId, const QString &message);
     void artifactLeaseRenewed(const QString &artifactId,
                               const QString &leaseId);
     void artifactLeaseRenewFailed(const QString &artifactId,
@@ -228,11 +469,32 @@ private slots:
     void onPrinterPresenceChanged(bool present,
                                   bool printerClassConnected,
                                   quint64 revision);
+    void onPrinterOperationsCancelled(quint64 revision);
     void onDisplaySessionChanged(bool active, quint64 revision);
+    void onPresentationPreferencesChangedV1(
+        TryxRuntimePresentationPreferencesV1 preferences);
     void onLegacyUploadTimeout();
+    void onDisplayApplyTimeout();
 
 private:
     friend class QuickClientTests;
+    friend class RuntimeClientHandshakeTests;
+
+    enum class MetricArea {
+        LiveConfiguration,
+        Full,
+        Left,
+        Right,
+    };
+
+    enum class DeviceSpecificationsState {
+        NotSupported,
+        RuntimeUnavailable,
+        Disconnected,
+        Unsupported,
+        Unavailable,
+        Ready,
+    };
 
     struct OfflineRequest {
         QString method;
@@ -255,8 +517,88 @@ private:
         }
     };
 
+    struct DisplaySubmissionState {
+        QString id;
+        TryxRuntimeApplyRequest request;
+        QString deviceIdentity;
+        quint64 startingDisplayRevision = 0;
+        bool layoutPresent = false;
+        bool brightnessPresent = false;
+        bool orientationPresent = false;
+        bool legacyScreenConfig = false;
+        bool legacyBrightness = false;
+        bool legacyRequestAcknowledged = false;
+        bool legacyCandidateObserved = false;
+        TryxRuntimeDisplayState legacyCandidateState;
+        bool terminalSucceeded = false;
+        bool matchingStateObserved = false;
+        bool unresolved = false;
+        bool resultEmitted = false;
+
+        bool active() const {
+            return !id.isEmpty();
+        }
+    };
+
     void subscribeSignals();
     void startHandshake();
+    void startRuntimeCapabilitiesHandshake(
+        quint64 epoch, quint64 handshakeAttempt,
+        const QString &owner);
+    void requestMetricsCatalog(
+        quint64 epoch, quint64 handshakeAttempt,
+        const QString &owner);
+    void requestDeviceCapabilities(
+        quint64 epoch, quint64 handshakeAttempt,
+        const QString &owner);
+    void requestDeviceSpecifications(
+        quint64 epoch, quint64 handshakeAttempt,
+        const QString &owner);
+    void requestPresentationPreferences(
+        quint64 epoch, quint64 handshakeAttempt,
+        const QString &owner, bool reconciliation = false);
+    void requestSavedLayouts(
+        quint64 epoch, quint64 handshakeAttempt,
+        const QString &owner);
+    bool subscribePresentationPreferencesSignal(
+        const QString &owner);
+    void disconnectPresentationPreferencesSignal();
+    bool applyPresentationPreferencesSnapshot(
+        const TryxRuntimePresentationPreferencesV1 &preferences);
+    void clearPresentationPreferencesState();
+    void clearSavedLayoutsState();
+    void setSavedLayoutsUnavailable(const QString &diagnostic);
+    QString savedLayoutConnectionIdentity() const;
+    bool applySavedLayoutsSnapshot(
+        const TryxRuntimeSavedLayoutsSnapshotV1 &snapshot,
+        QString *errorMessage = nullptr);
+    bool fullSavedLayoutDraftToRequest(
+        const QVariantMap &fullDraft,
+        TryxRuntimeApplyRequest *request,
+        QString *errorMessage) const;
+    bool savedLayoutFromDraft(
+        const QString &name, const QString &overwriteLayoutId,
+        const QVariantMap &fullDraft,
+        TryxRuntimeSavedLayoutV1 *layout,
+        QString *errorMessage) const;
+    static bool parseSavedLayoutRevision(
+        const QString &revisionDecimal,
+        quint64 *revision);
+    void invalidateSupportSnapshotRequest(bool notifyFailure);
+    void invalidateDeviceMediaMetadataRequest(bool notifyFailure);
+    bool handshakeContextIsCurrent(
+        quint64 epoch, quint64 handshakeAttempt,
+        const QString &owner) const;
+    bool dbusSignalContextIsCurrent() const;
+    QString currentRuntimeOwner() const;
+    void clearCapabilityState();
+    void clearMetricsCatalogState();
+    void refreshLegacyMetricsCatalog();
+    void clearDeviceCapabilityState();
+    void clearDeviceSpecificationsState();
+    void setDeviceSpecificationsState(
+        DeviceSpecificationsState state,
+        const TryxRuntimeDeviceSpecificationsV1 &specifications = {});
     void clearRuntimeState();
     void refreshConnection();
     void refreshOperations();
@@ -267,6 +609,7 @@ private:
     bool manager1Ready(const QString &action,
                        bool requireConnected = true);
     QString legacyDeviceIdentity() const;
+    QString legacyDisplayIdentity() const;
     QString nextOperationId() const;
     void sendOperation(const QString &method,
                        const QVariantList &arguments,
@@ -274,7 +617,12 @@ private:
                        const QString &kind);
     void reconcileOperationAcknowledgement(
         const QString &operationId, const QString &kind,
-        const QString &initialError, quint64 epoch);
+        const QString &initialError, quint64 epoch,
+        quint64 handshakeAttempt, const QString &owner,
+        bool unexpectedNonEmptyIdentity);
+    void reportOperationRequestFailure(
+        const QString &operationId, const QString &kind,
+        const QString &message, bool outcomeUnknown);
     static bool operationAcknowledgementMatches(
         const QString &expectedOperationId,
         const QString &returnedOperationId,
@@ -284,6 +632,14 @@ private:
                       const QVariantList &arguments = {});
     void sendLegacyScreenConfig(
         const TryxRuntimeApplyRequest &request);
+    void sendLegacyDisplaySubmission(
+        const QString &method, const QVariantList &arguments,
+        const QString &submissionId);
+    void acknowledgeLegacyDisplaySubmission(
+        const QString &submissionId);
+    void finishLegacyDisplayPreflightFailure(
+        const QString &submissionId, const QString &message,
+        bool runtimeInvalidated);
     static QVariantList legacyScreenConfigArguments(
         const TryxRuntimeApplyRequest &request);
     bool claimLegacyUploadSource(
@@ -303,16 +659,30 @@ private:
     TryxRuntimeApplyRequest fullScreenApplyRequest(
         const QStringList &media, const QString &playMode,
         const QStringList &metrics,
-        const QStringList &badges) const;
+        const QStringList &badges,
+        const QString &position, const QString &color,
+        const QString &alignment) const;
     TryxRuntimeApplyRequest splitScreenApplyRequest(
         const QString &leftMedia, const QString &rightMedia,
         const QStringList &leftMetrics,
         const QStringList &rightMetrics,
         const QStringList &leftBadges,
-        const QStringList &rightBadges) const;
+        const QStringList &rightBadges,
+        const QString &leftPosition,
+        const QString &leftColor,
+        const QString &leftAlignment,
+        const QString &rightPosition,
+        const QString &rightColor,
+        const QString &rightAlignment) const;
+    bool overlayStyleValid(
+        const QString &position, const QString &color,
+        const QString &alignment,
+        QString *errorMessage) const;
     bool metricsSelectionValid(
         const QStringList &metrics, bool allowEmpty,
+        MetricArea area,
         QString *errorMessage) const;
+    QStringList confirmedMetricsForArea(MetricArea area) const;
     bool badgesSelectionValid(
         const QStringList &badges,
         QString *errorMessage) const;
@@ -323,6 +693,22 @@ private:
         QString *errorMessage) const;
     void applyDisplayMutation(
         const TryxRuntimeDisplayMutation &mutation);
+    QString beginDisplaySubmission(
+        const TryxRuntimeApplyRequest &request,
+        bool layoutPresent, bool brightnessPresent,
+        bool orientationPresent, bool legacyScreenConfig,
+        bool legacyBrightness, const QString &method,
+        const QString &savedLayoutId = QString(),
+        quint64 savedLayoutRevision = 0);
+    bool displaySubmissionMatches(
+        const TryxRuntimeDisplayState &state) const;
+    void observeDisplaySubmissionState(
+        const TryxRuntimeDisplayState &state);
+    void observeDisplaySubmissionOperation(
+        const TryxRuntimeOperationInfo &info);
+    void finishDisplaySubmission(
+        const QString &outcome, const QString &message,
+        bool unresolved = false);
     void applyOperationsSnapshot(
         const TryxRuntimeOperationsSnapshot &snapshot);
     void applyConnectionSnapshot(
@@ -338,16 +724,61 @@ private:
     bool serviceAvailable_ = false;
     bool compatible_ = false;
     quint32 apiVersion_ = 0;
+    QString runtimeOwner_;
+    quint64 handshakeAttempt_ = 0;
+    bool handshakePending_ = false;
+    bool runtimeCapabilitiesPending_ = false;
+    bool runtimeCapabilitiesFailed_ = false;
+    bool capabilitiesReady_ = false;
+    QStringList runtimeCapabilities_;
+    bool metricsCatalogPending_ = false;
+    bool metricsCatalogReady_ = false;
+    bool metricsCatalogLegacyFallback_ = false;
+    QStringList metricsCatalog_;
+    bool supportSnapshotBusy_ = false;
+    quint64 supportSnapshotAttempt_ = 0;
+    bool deviceMediaMetadataPending_ = false;
+    quint64 deviceMediaMetadataAttempt_ = 0;
+    QString pendingDeviceMediaMetadataArtifactId_;
+    quint64 deviceCapabilitiesAttempt_ = 0;
+    bool deviceCapabilitiesReady_ = false;
+    TryxRuntimeDeviceCapabilitiesV1 deviceCapabilitiesSnapshot_;
+    QStringList deviceCapabilities_;
+    quint64 deviceSpecificationsAttempt_ = 0;
+    bool deviceSpecificationsPending_ = false;
+    DeviceSpecificationsState deviceSpecificationsState_ =
+        DeviceSpecificationsState::NotSupported;
+    TryxRuntimeDeviceSpecificationsV1 deviceSpecificationsSnapshot_;
+    TryxRuntimePresentationPreferencesV1 presentationPreferences_;
+    bool presentationPreferencesReady_ = false;
+    bool presentationPreferencesPending_ = false;
+    bool presentationPreferencesBusy_ = false;
+    quint64 presentationPreferencesReadAttempt_ = 0;
+    quint64 presentationPreferencesMutationAttempt_ = 0;
+    QString presentationPreferencesSignalOwner_;
+    SavedLayoutListModel savedLayoutModel_;
+    TryxRuntimeSavedLayoutsSnapshotV1 savedLayouts_;
+    TryxRuntimeSavedLayoutsSnapshotV1 lastConfirmedSavedLayouts_;
+    bool lastConfirmedSavedLayoutsReady_ = false;
+    bool savedLayoutsBusy_ = false;
+    quint64 savedLayoutsAttempt_ = 0;
     TryxRuntimeSnapshot connection_;
     TryxRuntimeMetricsState metrics_;
     TryxRuntimeDisplayState display_;
     bool displayRevisionReceived_ = false;
+    QString legacyDisplayStateIdentity_;
+    bool legacyLayoutConfirmed_ = false;
+    bool legacyBrightnessConfirmed_ = false;
     MediaCatalogModel mediaModel_;
     OperationListModel operationModel_;
     QString activeOperationId_;
     TryxRuntimeOperationInfo activeOperation_;
     LegacyUploadState legacyUpload_;
     QTimer legacyUploadDeadline_;
+    DisplaySubmissionState displaySubmission_;
+    QTimer displayApplyDeadline_;
+    QString cacheCleanupOperationId_;
+    QString cacheCleanupOwner_;
     TryxRuntimeApplyRequest pendingLegacyScreenConfig_;
     bool pendingLegacyScreenConfigValid_ = false;
     QString diagnostic_;

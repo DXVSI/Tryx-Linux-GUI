@@ -9,10 +9,11 @@ Frame {
     required property string valueText
     property string subtitle: ""
     property string details: ""
+    property string secondaryDetails: ""
     property real percentage: -1
     property color accentColor: "#def750"
 
-    implicitHeight: 166
+    implicitHeight: 186
     padding: 18
 
     background: Rectangle {
@@ -72,6 +73,15 @@ Frame {
         Label {
             Layout.fillWidth: true
             text: root.details
+            color: "#9ca4ac"
+            font.pixelSize: 12
+            elide: Text.ElideRight
+        }
+
+        Label {
+            Layout.fillWidth: true
+            visible: root.secondaryDetails.length > 0
+            text: root.secondaryDetails
             color: "#9ca4ac"
             font.pixelSize: 12
             elide: Text.ElideRight

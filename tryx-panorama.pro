@@ -62,7 +62,21 @@ protobuf_source.dependency_type = TYPE_C
 QMAKE_EXTRA_COMPILERS += protobuf_header protobuf_source
 
 protocol_tests.target = check
-protocol_tests.commands = sh $$shell_path($$PWD/tests/check_no_bundled_video.sh) && cd $$shell_path($$PWD/tests) && $$QMAKE_QMAKE printerprotocol_tests.pro && $(MAKE) && $$shell_path($$PWD/build/tests/printerprotocol-tests) && $$QMAKE_QMAKE replacejournal_tests.pro && $(MAKE) && $$shell_path($$PWD/build/replacejournal-tests/replacejournal-tests)
+protocol_tests.commands = \
+    sh $$shell_path($$PWD/tests/check_no_bundled_video.sh) && \
+    cd $$shell_path($$PWD/tests) && \
+        $$QMAKE_QMAKE nvidiasmiprovider_tests.pro && $(MAKE) && \
+        $$shell_path($$PWD/build/nvidiasmiprovider-tests/nvidiasmiprovider-tests) && \
+        $$QMAKE_QMAKE runtime_downgradestore_tests.pro && $(MAKE) && \
+        $$shell_path($$PWD/build/runtime-downgradestore-tests/runtime-downgradestore-tests) && \
+        $$QMAKE_QMAKE savedlayoutstore_tests.pro && $(MAKE) && \
+        $$shell_path($$PWD/build/savedlayoutstore-tests/savedlayoutstore-tests) && \
+        $$QMAKE_QMAKE cachecleanupstore_tests.pro && $(MAKE) && \
+        $$shell_path($$PWD/build/cachecleanupstore-tests/cachecleanupstore-tests) && \
+        $$QMAKE_QMAKE printerprotocol_tests.pro && $(MAKE) && \
+        $$shell_path($$PWD/build/tests/printerprotocol-tests) && \
+        $$QMAKE_QMAKE replacejournal_tests.pro && $(MAKE) && \
+        $$shell_path($$PWD/build/replacejournal-tests/replacejournal-tests)
 QMAKE_EXTRA_TARGETS += protocol_tests
 
 # Build output
@@ -81,32 +95,74 @@ SOURCES += \
 
 HEADERS += \
     src/applicationpaths.h \
+    src/deleteintentstore.h \
+    src/devicemediaartifactstore.h \
+    src/devicemanagermessages.h \
     src/devicemanager.h \
     src/firmwarebridge.h \
     src/firmwarerecoveryjournal.h \
+    src/gpuinventory.h \
+    src/nvidiaprocesssupervisor.h \
+    src/nvidiasmiparser.h \
+    src/nvidiasmiprovider.h \
     src/systemmonitor.h \
     src/firmwareupdater.h \
+    src/mediacatalogstore.h \
     src/mediatransform.h \
+    src/paseoverlayconfig.h \
+    src/pasemetricsconfigstore.h \
+    src/privateruntimepaths.h \
+    src/printermediafileintegrity.h \
+    src/printermediaidentity.h \
     src/printermediapreparer.h \
-    src/printermediapreparersupport_p.h \
+    src/printermediavalidator.h \
     src/printerprotocol.h \
     src/replacejournal.h \
+    src/retrycachestore.h \
+    src/retrycachetransitionstore.h \
+    src/runtimeapplyrequestcodec.h \
+    src/runtimedowngradestore.h \
+    src/runtimepresentationpreferencesstore.h \
+    src/savedlayoutstore.h \
+    src/supportsnapshot.h \
     src/runtimecontract.h \
-    src/runtimebridge.h
+    src/runtimebridge.h \
+    src/turrismediaformat.h
 
 SOURCES += \
     src/runtime/main.cpp \
+    src/deleteintentstore.cpp \
+    src/devicemediaartifactstore.cpp \
     src/devicemanager.cpp \
     src/firmwarebridge.cpp \
     src/firmwarerecoveryjournal.cpp \
+    src/gpuinventory.cpp \
+    src/nvidiaprocesssupervisor.cpp \
+    src/nvidiasmiparser.cpp \
+    src/nvidiasmiprovider.cpp \
     src/systemmonitor.cpp \
     src/firmwareupdater.cpp \
+    src/mediacatalogstore.cpp \
     src/mediatransform.cpp \
+    src/paseoverlayconfig.cpp \
+    src/pasemetricsconfigstore.cpp \
+    src/privateruntimepaths.cpp \
+    src/printermediafileintegrity.cpp \
+    src/printermediaidentity.cpp \
     src/printermediapreparer.cpp \
+    src/printermediavalidator.cpp \
     src/printerprotocol.cpp \
     src/replacejournal.cpp \
+    src/retrycachestore.cpp \
+    src/retrycachetransitionstore.cpp \
+    src/runtimeapplyrequestcodec.cpp \
+    src/runtimedowngradestore.cpp \
+    src/runtimepresentationpreferencesstore.cpp \
+    src/savedlayoutstore.cpp \
+    src/supportsnapshot.cpp \
     src/runtimecontract.cpp \
-    src/runtimebridge.cpp
+    src/runtimebridge.cpp \
+    src/turrismediaformat.cpp
 
 DISTFILES += \
     VERSION \
@@ -122,6 +178,14 @@ DISTFILES += \
     packaging/tryx-panorama-manager.desktop \
     systemd/90-tryx-panorama.preset \
     systemd/tryx-panorama.service \
+    tests/nvidiasmiprovider_tests.cpp \
+    tests/nvidiasmiprovider_tests.pro \
+    tests/runtime_downgradestore_tests.cpp \
+    tests/runtime_downgradestore_tests.pro \
+    tests/savedlayoutstore_tests.cpp \
+    tests/savedlayoutstore_tests.pro \
+    tests/cachecleanupstore_tests.cpp \
+    tests/cachecleanupstore_tests.pro \
     tests/check_no_bundled_video.sh
 
 unix {

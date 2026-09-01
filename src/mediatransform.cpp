@@ -68,6 +68,72 @@ TryxRuntimeMediaTransform tryxLegacyFitMediaTransform() {
     return {};
 }
 
+TryxRuntimeMediaPreparationProfileV1
+tryxFullFrameMediaPreparationProfile(
+    const TryxRuntimeMediaTransform &transform) {
+    TryxRuntimeMediaPreparationProfileV1 profile;
+    profile.transform = transform;
+    return profile;
+}
+
+bool tryxMediaPreparationProfileV1IsValid(
+    const TryxRuntimeMediaPreparationProfileV1 &profile,
+    QString *errorMessage) {
+    if (profile.schemaVersion != 1) {
+        return failValidation(
+            errorMessage,
+            QStringLiteral(
+                "Unsupported media preparation profile schema version"));
+    }
+    if (profile.target != QStringLiteral("FullFrame") &&
+        profile.target != QStringLiteral("SplitArea")) {
+        return failValidation(
+            errorMessage,
+            QStringLiteral("Unsupported media preparation target"));
+    }
+    return tryxMediaTransformIsValid(profile.transform, errorMessage);
+}
+
+int tryxMediaPreparationTargetWidth(
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    if (!tryxMediaPreparationProfileV1IsValid(profile)) {
+        return 0;
+    }
+    return profile.target == QStringLiteral("SplitArea")
+        ? kTryxMediaSplitTargetWidth
+        : kTryxMediaTargetWidth;
+}
+
+int tryxMediaPreparationTargetHeight(
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    return tryxMediaPreparationProfileV1IsValid(profile)
+        ? kTryxMediaTargetHeight : 0;
+}
+
+QString tryxMediaPreparationProfileCanonicalValue(
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    if (!tryxMediaPreparationProfileV1IsValid(profile)) {
+        return {};
+    }
+    return QStringLiteral("v=%1;target=%2;%3")
+        .arg(profile.schemaVersion)
+        .arg(profile.target,
+             tryxMediaTransformCanonicalValue(profile.transform));
+}
+
+QString tryxMediaPreparationProfileFingerprint(
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    const QString canonical =
+        tryxMediaPreparationProfileCanonicalValue(profile);
+    if (canonical.isEmpty()) {
+        return {};
+    }
+    return QString::fromLatin1(
+        QCryptographicHash::hash(canonical.toUtf8(),
+                                 QCryptographicHash::Sha256)
+            .toHex());
+}
+
 bool tryxMediaTransformIsValid(
     const TryxRuntimeMediaTransform &transform,
     QString *errorMessage) {

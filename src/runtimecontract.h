@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QList>
+#include <QLocale>
 #include <QString>
 #include <QStringList>
+#include <QTime>
 #include <QDBusArgument>
 
 struct TryxRuntimeDeviceInfo {
@@ -67,6 +69,59 @@ struct TryxRuntimeDeviceMediaArtifact {
     qint64 leaseExpiresUtcMs = 0;
 };
 
+inline constexpr quint32 kTryxDeviceMediaMetadataDimensions = 0x1U;
+inline constexpr quint32 kTryxDeviceMediaMetadataDuration = 0x2U;
+inline constexpr quint32 kTryxDeviceMediaMetadataFrameRate = 0x4U;
+inline constexpr quint32 kTryxDeviceMediaMetadataAllFields =
+    kTryxDeviceMediaMetadataDimensions |
+    kTryxDeviceMediaMetadataDuration |
+    kTryxDeviceMediaMetadataFrameRate;
+
+struct TryxRuntimeDeviceMediaMetadataV1 {
+    quint32 schemaVersion = 1;
+    QString operationId;
+    QString artifactId;
+    QString mediaId;
+    QString deviceIdentity;
+    QString decodedSha256;
+    quint64 deviceGeneration = 0;
+    QString status = QStringLiteral("Unavailable");
+    quint32 availableFields = 0;
+    quint32 width = 0;
+    quint32 height = 0;
+    quint64 durationMilliseconds = 0;
+    quint32 frameRateNumerator = 0;
+    quint32 frameRateDenominator = 0;
+};
+
+struct TryxRuntimeDeviceCapabilitiesV1 {
+    quint32 schemaVersion = 1;
+    QString deviceIdentity;
+    quint64 connectionRevision = 0;
+    quint64 physicalGeneration = 0;
+    QStringList capabilities;
+};
+
+struct TryxRuntimeDeviceSpecificationsV1 {
+    quint32 schemaVersion = 1;
+    QString deviceIdentity;
+    quint64 connectionRevision = 0;
+    quint64 physicalGeneration = 0;
+    QString status = QStringLiteral("Disconnected");
+    QString reportedProductName;
+    quint32 videoOutputWidth = 0;
+    quint32 videoOutputHeight = 0;
+    QString screenType;
+    bool usbAutoKeepalive = false;
+};
+
+struct TryxRuntimePresentationPreferencesV1 {
+    quint32 schemaVersion = 1;
+    quint64 revision = 1;
+    QString temperatureUnit = QStringLiteral("Celsius");
+    QString timeFormat = QStringLiteral("24H");
+};
+
 // Manager1 keeps the API v2 positional D-Bus shape. Manager2 exposes the
 // extended catalog above after an explicit API version handshake.
 struct TryxRuntimeLegacyMediaEntry {
@@ -117,6 +172,102 @@ struct TryxRuntimeApplyRequest {
     TryxRuntimeDisplayMutation display;
 };
 
+struct TryxRuntimeSavedMediaRefV1 {
+    quint32 schemaVersion = 1;
+    QString mediaId;
+    QString name;
+    quint64 size = 0;
+    quint32 source = 0;
+    bool readOnly = false;
+};
+
+struct TryxRuntimeSavedLayoutV1 {
+    quint32 schemaVersion = 1;
+    QString layoutId;
+    quint64 revision = 0;
+    QString deviceIdentity;
+    QString productId;
+    QString name;
+    QList<TryxRuntimeSavedMediaRefV1> media;
+    TryxRuntimeApplyRequest request;
+};
+
+struct TryxRuntimeSavedLayoutsSnapshotV1 {
+    quint32 schemaVersion = 1;
+    quint64 revision = 0;
+    QString status = QStringLiteral("Unavailable");
+    QString diagnostic;
+    QString deviceIdentity;
+    QString productId;
+    QList<TryxRuntimeSavedLayoutV1> layouts;
+};
+
+inline bool operator==(const TryxRuntimeDisplayMutation &left,
+                       const TryxRuntimeDisplayMutation &right) {
+    return left.brightnessPresent == right.brightnessPresent &&
+           left.brightness == right.brightness &&
+           left.standbyPresent == right.standbyPresent &&
+           left.standbyEnabled == right.standbyEnabled &&
+           left.orientationPresent == right.orientationPresent &&
+           left.mirrorMode == right.mirrorMode &&
+           left.waterfallMode == right.waterfallMode &&
+           left.backlightPresent == right.backlightPresent &&
+           left.backlightEnabled == right.backlightEnabled;
+}
+
+inline bool operator==(const TryxRuntimeApplyRequest &left,
+                       const TryxRuntimeApplyRequest &right) {
+    return left.media == right.media && left.ratio == right.ratio &&
+           left.screenMode == right.screenMode &&
+           left.playMode == right.playMode &&
+           left.sysinfoLabels == right.sysinfoLabels &&
+           left.settingsPosition == right.settingsPosition &&
+           left.settingsColor == right.settingsColor &&
+           left.settingsAlign == right.settingsAlign &&
+           left.settingsBadges == right.settingsBadges &&
+           left.filterOpacity == right.filterOpacity &&
+           left.presetId == right.presetId &&
+           left.sysinfoLabels2 == right.sysinfoLabels2 &&
+           left.settingsBadges2 == right.settingsBadges2 &&
+           left.settingsPosition2 == right.settingsPosition2 &&
+           left.settingsColor2 == right.settingsColor2 &&
+           left.settingsAlign2 == right.settingsAlign2 &&
+           left.waterfallMode == right.waterfallMode &&
+           left.replaceOverlay == right.replaceOverlay &&
+           left.display == right.display;
+}
+
+inline bool operator==(const TryxRuntimeSavedMediaRefV1 &left,
+                       const TryxRuntimeSavedMediaRefV1 &right) {
+    return left.schemaVersion == right.schemaVersion &&
+           left.mediaId == right.mediaId && left.name == right.name &&
+           left.size == right.size && left.source == right.source &&
+           left.readOnly == right.readOnly;
+}
+
+inline bool operator==(const TryxRuntimeSavedLayoutV1 &left,
+                       const TryxRuntimeSavedLayoutV1 &right) {
+    return left.schemaVersion == right.schemaVersion &&
+           left.layoutId == right.layoutId &&
+           left.revision == right.revision &&
+           left.deviceIdentity == right.deviceIdentity &&
+           left.productId == right.productId &&
+           left.name == right.name && left.media == right.media &&
+           left.request == right.request;
+}
+
+inline bool operator==(
+    const TryxRuntimeSavedLayoutsSnapshotV1 &left,
+    const TryxRuntimeSavedLayoutsSnapshotV1 &right) {
+    return left.schemaVersion == right.schemaVersion &&
+           left.revision == right.revision &&
+           left.status == right.status &&
+           left.diagnostic == right.diagnostic &&
+           left.deviceIdentity == right.deviceIdentity &&
+           left.productId == right.productId &&
+           left.layouts == right.layouts;
+}
+
 struct TryxRuntimeMediaTransform {
     quint32 schemaVersion = 1;
     QString mode = QStringLiteral("Fit");
@@ -125,6 +276,12 @@ struct TryxRuntimeMediaTransform {
     quint32 focusX = 5000;
     quint32 focusY = 5000;
     quint32 backgroundRgb = 0;
+};
+
+struct TryxRuntimeMediaPreparationProfileV1 {
+    quint32 schemaVersion = 1;
+    QString target = QStringLiteral("FullFrame");
+    TryxRuntimeMediaTransform transform;
 };
 
 struct TryxRuntimeDisplayState {
@@ -207,12 +364,22 @@ Q_DECLARE_METATYPE(TryxRuntimeMediaEntry)
 Q_DECLARE_METATYPE(QList<TryxRuntimeMediaEntry>)
 Q_DECLARE_METATYPE(TryxRuntimeMediaCatalogSnapshot)
 Q_DECLARE_METATYPE(TryxRuntimeDeviceMediaArtifact)
+Q_DECLARE_METATYPE(TryxRuntimeDeviceMediaMetadataV1)
+Q_DECLARE_METATYPE(TryxRuntimeDeviceCapabilitiesV1)
+Q_DECLARE_METATYPE(TryxRuntimeDeviceSpecificationsV1)
+Q_DECLARE_METATYPE(TryxRuntimePresentationPreferencesV1)
 Q_DECLARE_METATYPE(TryxRuntimeLegacyMediaEntry)
 Q_DECLARE_METATYPE(QList<TryxRuntimeLegacyMediaEntry>)
 Q_DECLARE_METATYPE(TryxRuntimeLegacyMediaCatalogSnapshot)
 Q_DECLARE_METATYPE(TryxRuntimeDisplayMutation)
 Q_DECLARE_METATYPE(TryxRuntimeApplyRequest)
+Q_DECLARE_METATYPE(TryxRuntimeSavedMediaRefV1)
+Q_DECLARE_METATYPE(QList<TryxRuntimeSavedMediaRefV1>)
+Q_DECLARE_METATYPE(TryxRuntimeSavedLayoutV1)
+Q_DECLARE_METATYPE(QList<TryxRuntimeSavedLayoutV1>)
+Q_DECLARE_METATYPE(TryxRuntimeSavedLayoutsSnapshotV1)
 Q_DECLARE_METATYPE(TryxRuntimeMediaTransform)
+Q_DECLARE_METATYPE(TryxRuntimeMediaPreparationProfileV1)
 Q_DECLARE_METATYPE(TryxRuntimeDisplayState)
 Q_DECLARE_METATYPE(TryxRuntimeMetricsConfigRequest)
 Q_DECLARE_METATYPE(TryxRuntimeMetricsState)
@@ -242,6 +409,30 @@ QDBusArgument &operator<<(
 const QDBusArgument &operator>>(
     const QDBusArgument &argument,
     TryxRuntimeDeviceMediaArtifact &artifact);
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const TryxRuntimeDeviceMediaMetadataV1 &metadata);
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    TryxRuntimeDeviceMediaMetadataV1 &metadata);
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const TryxRuntimeDeviceCapabilitiesV1 &capabilities);
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    TryxRuntimeDeviceCapabilitiesV1 &capabilities);
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const TryxRuntimeDeviceSpecificationsV1 &specifications);
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    TryxRuntimeDeviceSpecificationsV1 &specifications);
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const TryxRuntimePresentationPreferencesV1 &preferences);
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    TryxRuntimePresentationPreferencesV1 &preferences);
 QDBusArgument &operator<<(QDBusArgument &argument,
                           const TryxRuntimeLegacyMediaEntry &entry);
 const QDBusArgument &operator>>(const QDBusArgument &argument,
@@ -260,10 +451,34 @@ QDBusArgument &operator<<(QDBusArgument &argument,
                           const TryxRuntimeApplyRequest &request);
 const QDBusArgument &operator>>(const QDBusArgument &argument,
                                 TryxRuntimeApplyRequest &request);
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const TryxRuntimeSavedMediaRefV1 &media);
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    TryxRuntimeSavedMediaRefV1 &media);
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const TryxRuntimeSavedLayoutV1 &layout);
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    TryxRuntimeSavedLayoutV1 &layout);
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const TryxRuntimeSavedLayoutsSnapshotV1 &snapshot);
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    TryxRuntimeSavedLayoutsSnapshotV1 &snapshot);
 QDBusArgument &operator<<(QDBusArgument &argument,
                           const TryxRuntimeMediaTransform &transform);
 const QDBusArgument &operator>>(const QDBusArgument &argument,
                                 TryxRuntimeMediaTransform &transform);
+QDBusArgument &operator<<(
+    QDBusArgument &argument,
+    const TryxRuntimeMediaPreparationProfileV1 &profile);
+const QDBusArgument &operator>>(
+    const QDBusArgument &argument,
+    TryxRuntimeMediaPreparationProfileV1 &profile);
 QDBusArgument &operator<<(QDBusArgument &argument,
                           const TryxRuntimeDisplayState &state);
 const QDBusArgument &operator>>(const QDBusArgument &argument,
@@ -293,5 +508,45 @@ QString tryxRuntimeOperationsInterfaceName();
 QString tryxRuntimeMediaInboxPath();
 QString tryxRuntimeMediaSpoolPath();
 QString tryxRuntimeDeviceMediaOutboxPath();
+QString tryxRuntimeDeviceCapabilitiesV1Token();
+QString tryxRuntimeDeviceSpecificationsV1Token();
+QString tryxRuntimeDeviceMediaMetadataV1Token();
+QString tryxRuntimeMediaPreparationProfileV1Token();
+QString tryxRuntimePresentationPreferencesV1Token();
+QString tryxRuntimeSavedLayoutsV1Token();
+QString tryxRuntimeCacheCleanupV1Token();
+bool tryxSavedLayoutDeviceIdentityIsCanonical(
+    const QString &deviceIdentity);
+bool tryxSavedLayoutProductIdIsSupported(const QString &productId);
+QString tryxRuntimeSupportSnapshotV1Token();
+QString tryxRuntimeDowngradeV10PreparationV1Token();
+QString tryxDeviceMediaUploadV1Token();
+QString tryxDeviceMediaCatalogV1Token();
+QString tryxDeviceDisplayConfigurationV1Token();
+QString tryxDeviceMediaSplitAreaV1Token();
+QString tryxDeviceOverlayMetricsV1Token();
+QString tryxDeviceFirmwareFlashV1Token();
+QStringList tryxMetricsCatalog();
+QStringList tryxRuntimeCapabilities();
+QStringList tryxFilterRuntimeCapabilities(const QStringList &capabilities);
+QStringList tryxFilterDeviceCapabilities(const QStringList &capabilities);
+QString tryxDefaultTemperatureUnit();
+QString tryxDefaultTimeFormat();
+bool tryxTemperatureUnitIsValid(const QString &temperatureUnit);
+bool tryxTimeFormatIsValid(const QString &timeFormat);
+bool tryxPresentationPreferencesAreValid(
+    const TryxRuntimePresentationPreferencesV1 &preferences);
+bool tryxRuntimeDeviceMediaMetadataV1IsValid(
+    const TryxRuntimeDeviceMediaMetadataV1 &metadata);
+double tryxTemperatureFromCelsius(
+    double celsius, const QString &temperatureUnit);
+QString tryxFormatTemperatureValue(
+    double celsius, const QString &temperatureUnit);
+QString tryxTemperatureUnitSymbol(const QString &temperatureUnit);
+QString tryxFormatTemperature(
+    double celsius, const QString &temperatureUnit);
+QString tryxFormatLocalTime(
+    const QTime &time, const QString &timeFormat,
+    const QLocale &locale = QLocale());
 quint32 tryxRuntimeApiVersion();
 void registerTryxRuntimeMetaTypes();

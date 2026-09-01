@@ -23,6 +23,12 @@ TestCase {
         property bool displayStateValid: true
         property int brightness: 75
         property string diagnostic: ""
+
+        function formatTemperature(available, rawCelsius) {
+            return available
+                   ? Math.round(rawCelsius * 9 / 5 + 32) + " °F"
+                   : "—"
+        }
     }
 
     QtObject {
@@ -43,6 +49,11 @@ TestCase {
         property bool gpuTemperatureAvailable: true
         property real gpuFrequencyMHz: 2300
         property bool gpuFrequencyAvailable: true
+        property real gpuPowerWatts: 0
+        property bool gpuPowerAvailable: true
+        property int gpuVramUsedMB: 0
+        property int gpuVramTotalMB: 8192
+        property bool gpuVramAvailable: true
         property real ramUsage: 45
         property bool ramUsageAvailable: true
         property int ramUsedMB: 16384
@@ -89,10 +100,15 @@ TestCase {
 
         const cpuCard =
             findChild(compact, "cpuMetricCard")
+        const gpuCard =
+            findChild(compact, "gpuMetricCard")
         const memoryCard =
             findChild(compact, "memoryMetricCard")
         verify(cpuCard !== null)
+        verify(gpuCard !== null)
         verify(memoryCard !== null)
+        compare(cpuCard.y, gpuCard.y)
+        compare(cpuCard.height, gpuCard.height)
         metricsMock.cpuUsageAvailable = false
         metricsMock.ramUsageAvailable = false
         wait(0)
@@ -100,5 +116,49 @@ TestCase {
         compare(memoryCard.valueText, "—")
         compare(memoryCard.details,
                 "Memory data unavailable")
+    }
+
+    function test_temperatureFormattingComesFromRuntime() {
+        metricsMock.cpuTemperature = 50
+        metricsMock.cpuTemperatureAvailable = true
+
+        const page = createTemporaryObject(
+            homeComponent, testCase,
+            {"width": 900, "height": 800})
+        verify(page !== null)
+        wait(0)
+
+        const cpuCard = findChild(page, "cpuMetricCard")
+        verify(cpuCard !== null)
+        verify(cpuCard.details.startsWith("122 °F · "))
+
+        metricsMock.cpuTemperatureAvailable = false
+        wait(0)
+        verify(cpuCard.details.startsWith("— · "))
+    }
+
+    function test_gpuTelemetryShowsPowerAndVramAvailability() {
+        metricsMock.gpuPowerWatts = 0
+        metricsMock.gpuPowerAvailable = true
+        metricsMock.gpuVramUsedMB = 0
+        metricsMock.gpuVramTotalMB = 8192
+        metricsMock.gpuVramAvailable = true
+
+        const page = createTemporaryObject(
+            homeComponent, testCase,
+            {"width": 900, "height": 800})
+        verify(page !== null)
+        wait(0)
+
+        const gpuCard = findChild(page, "gpuMetricCard")
+        verify(gpuCard !== null)
+        compare(gpuCard.secondaryDetails,
+                "0.0 W · 0.0 / 8.0 GiB VRAM")
+
+        metricsMock.gpuPowerAvailable = false
+        metricsMock.gpuVramAvailable = false
+        wait(0)
+        compare(gpuCard.secondaryDetails,
+                "Power unavailable · VRAM unavailable")
     }
 }

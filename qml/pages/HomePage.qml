@@ -21,7 +21,7 @@ ScrollView {
     }
 
     function temperature(available, value) {
-        return available ? Math.round(value) + " °C" : "—"
+        return root.runtime.formatTemperature(available, value)
     }
 
     function frequency(available, value) {
@@ -30,6 +30,20 @@ ScrollView {
         if (value >= 1000)
             return qsTr("%1 GHz").arg((value / 1000).toFixed(2))
         return qsTr("%1 MHz").arg(Math.round(value))
+    }
+
+    function power(available, value) {
+        if (!available)
+            return qsTr("Power unavailable")
+        return qsTr("%1 W").arg(value.toFixed(1))
+    }
+
+    function vram(available, usedMB, totalMB) {
+        if (!available || totalMB <= 0)
+            return qsTr("VRAM unavailable")
+        return qsTr("%1 / %2 GiB VRAM")
+            .arg((usedMB / 1024).toFixed(1))
+            .arg((totalMB / 1024).toFixed(1))
     }
 
     function memory(available, usedMB, totalMB) {
@@ -244,6 +258,13 @@ ScrollView {
                     " · " + root.frequency(
                         root.systemMetrics.gpuFrequencyAvailable,
                         root.systemMetrics.gpuFrequencyMHz)
+                secondaryDetails: root.power(
+                    root.systemMetrics.gpuPowerAvailable,
+                    root.systemMetrics.gpuPowerWatts) +
+                    " · " + root.vram(
+                        root.systemMetrics.gpuVramAvailable,
+                        root.systemMetrics.gpuVramUsedMB,
+                        root.systemMetrics.gpuVramTotalMB)
             }
 
             MetricCard {

@@ -1,11 +1,13 @@
 #include "systemmonitor.h"
 #include <QFile>
 #include <QDir>
+#include <QFileInfo>
 #include <QTextStream>
 #include <QDateTime>
 #include <QRegularExpression>
 #include <QStorageInfo>
 #include <algorithm>
+#include <limits>
 
 namespace {
 
@@ -21,9 +23,14 @@ QString normalizedPciHex(QString value) {
 }  // namespace
 
 SystemMonitor::SystemMonitor(QObject *parent)
-    : QObject(parent) {
+    : QObject(parent),
+      nvidiaProvider_(new tryx::nvidia::NvidiaSmiProvider(this)) {
     cpuEnergyClock_.start();
     readCpuCoreCount();
+    connect(nvidiaProvider_,
+            &tryx::nvidia::NvidiaSmiProvider::snapshotChanged,
+            this, &SystemMonitor::handleNvidiaSnapshotChanged,
+            Qt::QueuedConnection);
 }
 
 void SystemMonitor::update() {
@@ -85,80 +92,70 @@ QString SystemMonitor::cpuModelNameFromContents(
 }
 
 QString SystemMonitor::primaryGpuModelName() {
+    if (!metrics_.gpus.isEmpty()) {
+        return metrics_.gpus.constFirst().name;
+    }
     return primaryGpuModelNameFromDrmRoot(
         QStringLiteral("/sys/class/drm"));
 }
 
 QString SystemMonitor::primaryGpuModelNameFromDrmRoot(
     const QString &drmRoot) {
-    struct Candidate {
-        QString name;
-        quint64 vramBytes = 0;
-        bool bootVga = false;
-        int vendorPriority = 0;
-        QString cardPath;
-    };
-    QVector<Candidate> candidates;
-    QDir drmDirectory(drmRoot);
-    for (const QString &entry : drmDirectory.entryList(
-             QStringList{QStringLiteral("card[0-9]*")},
-             QDir::Dirs)) {
-        if (entry.contains(QLatin1Char('-'))) {
+    const auto inventory = tryx::buildGpuInventory(
+        scanGpuBaseRows(drmRoot), {}, 1);
+    return inventory.ok && !inventory.gpus.isEmpty()
+        ? inventory.gpus.constFirst().name
+        : QString();
+}
+
+void SystemMonitor::setNvidiaSampleDemand(
+    tryx::nvidia::NvidiaSampleDemand demand) {
+    nvidiaDemand_ = demand;
+    if (gpuTopologyInitialized_ && nvidiaProviderRequestsEnabled()) {
+        nvidiaProvider_->requestSample(demand,
+                                       gpuTopologyGeneration_);
+    }
+    if (demand == tryx::nvidia::NvidiaSampleDemand::Off &&
+        invalidateCachedNvidiaTelemetry()) {
+        emit metricsUpdated(metrics_);
+    }
+}
+
+bool SystemMonitor::nvidiaProviderRequestsEnabled() const {
+#ifdef TRYX_PROTOCOL_TESTING
+    return nvidiaProviderRequestsEnabledForTesting_;
+#else
+    return true;
+#endif
+}
+
+bool SystemMonitor::invalidateCachedNvidiaTelemetry() {
+    bool changed = false;
+    for (GpuMetrics &gpu : metrics_.gpus) {
+        if (gpu.vendor != GpuVendor::Nvidia) {
             continue;
         }
-        const QString cardPath =
-            drmDirectory.filePath(entry) +
-            QStringLiteral("/device");
-        const QString name =
-            resolveGpuModelName(cardPath).trimmed();
-        if (name.isEmpty()) {
-            continue;
-        }
-        bool vramOk = false;
-        const quint64 vramBytes = readSysFile(
-            cardPath +
-            QStringLiteral("/mem_info_vram_total"))
-                                       .toULongLong(&vramOk);
-        const QString vendor = normalizedPciHex(
-            readSysFile(cardPath + QStringLiteral("/vendor")));
-        int vendorPriority = 0;
-        if (vendor == QStringLiteral("10DE")) {
-            vendorPriority = 3;
-        } else if (vendor == QStringLiteral("1002")) {
-            vendorPriority = 2;
-        } else if (vendor == QStringLiteral("8086")) {
-            vendorPriority = 1;
-        }
-        Candidate candidate;
-        candidate.name = name;
-        candidate.vramBytes = vramOk ? vramBytes : 0;
-        candidate.bootVga =
-            readSysFile(cardPath +
-                        QStringLiteral("/boot_vga")) ==
-            QStringLiteral("1");
-        candidate.vendorPriority = vendorPriority;
-        candidate.cardPath = cardPath;
-        candidates.append(candidate);
+        changed = changed || gpu.temperature != 0.0 ||
+            gpu.usagePercent != 0.0 || gpu.frequencyMHz != 0.0 ||
+            gpu.voltageMV != 0.0 || gpu.powerWatts != 0.0 ||
+            gpu.vramUsedMB != 0 || gpu.vramTotalMB != 0 ||
+            gpu.temperatureAvailable || gpu.usageAvailable ||
+            gpu.frequencyAvailable || gpu.powerAvailable ||
+            gpu.vramAvailable;
+        gpu.temperature = 0.0;
+        gpu.usagePercent = 0.0;
+        gpu.frequencyMHz = 0.0;
+        gpu.voltageMV = 0.0;
+        gpu.powerWatts = 0.0;
+        gpu.vramUsedMB = 0;
+        gpu.vramTotalMB = 0;
+        gpu.temperatureAvailable = false;
+        gpu.usageAvailable = false;
+        gpu.frequencyAvailable = false;
+        gpu.powerAvailable = false;
+        gpu.vramAvailable = false;
     }
-    std::stable_sort(
-        candidates.begin(), candidates.end(),
-        [](const Candidate &left, const Candidate &right) {
-            if (left.vramBytes != right.vramBytes) {
-                return left.vramBytes > right.vramBytes;
-            }
-            if (left.vendorPriority != right.vendorPriority) {
-                return left.vendorPriority >
-                       right.vendorPriority;
-            }
-            if (left.bootVga != right.bootVga) {
-                return left.bootVga;
-            }
-            return left.cardPath < right.cardPath;
-        });
-    if (!candidates.isEmpty()) {
-        return candidates.constFirst().name;
-    }
-    return {};
+    return changed;
 }
 
 QString SystemMonitor::readSysFile(const QString &path) {
@@ -361,104 +358,217 @@ int SystemMonitor::readCpuCoreCount() {
 }
 
 QVector<GpuMetrics> SystemMonitor::readGpuMetrics() {
-    QVector<GpuMetrics> gpus;
+    return readGpuMetricsFromDrmRoot(
+        gpuDrmRoot_, nvidiaProviderRequestsEnabled());
+}
 
-    QDir drmDir("/sys/class/drm");
-    for (const auto &entry : drmDir.entryList(QStringList{"card[0-9]*"}, QDir::Dirs)) {
-        // Skip render nodes (card0-* etc)
-        if (entry.contains('-')) {
+QVector<GpuMetrics> SystemMonitor::readGpuMetricsFromDrmRoot(
+    const QString &drmRoot, bool requestProvider) {
+    const QVector<GpuMetrics> baseRows = scanGpuBaseRows(drmRoot);
+    bool fingerprintOk = false;
+    const QString fingerprint = tryx::gpuTopologyFingerprint(
+        baseRows, &fingerprintOk);
+    if (!fingerprintOk) {
+        return {};
+    }
+    if (!gpuTopologyInitialized_ ||
+        gpuTopologyFingerprint_ != fingerprint) {
+        gpuTopologyInitialized_ = true;
+        gpuTopologyFingerprint_ = fingerprint;
+        ++gpuTopologyGeneration_;
+        gpuProviderIdentityTracker_.reset();
+    }
+
+    const bool hasNvidia = std::any_of(
+        baseRows.cbegin(), baseRows.cend(),
+        [](const GpuMetrics &gpu) {
+            return gpu.vendor == GpuVendor::Nvidia;
+        });
+    QVector<tryx::nvidia::GpuSample> providerRows;
+    if (requestProvider) {
+        nvidiaProvider_->requestSample(
+            hasNvidia ? nvidiaDemand_
+                      : tryx::nvidia::NvidiaSampleDemand::Off,
+            gpuTopologyGeneration_);
+        if (hasNvidia) {
+            providerRows = nvidiaProvider_->snapshot();
+        }
+    }
+
+    tryx::GpuInventoryResult inventory = tryx::buildGpuInventory(
+        baseRows, providerRows, gpuTopologyGeneration_);
+    if (inventory.ok && !providerRows.isEmpty() &&
+        !gpuProviderIdentityTracker_.accept(providerRows)) {
+        ++gpuTopologyGeneration_;
+        gpuProviderIdentityTracker_.reset();
+        nvidiaProvider_->requestSample(
+            hasNvidia ? nvidiaDemand_
+                      : tryx::nvidia::NvidiaSampleDemand::Off,
+            gpuTopologyGeneration_);
+        providerRows.clear();
+        inventory = tryx::buildGpuInventory(
+            baseRows, {}, gpuTopologyGeneration_);
+    }
+    if (!inventory.ok && !providerRows.isEmpty()) {
+        inventory = tryx::buildGpuInventory(
+            baseRows, {}, gpuTopologyGeneration_);
+    }
+    return inventory.ok ? inventory.gpus : QVector<GpuMetrics>{};
+}
+
+QVector<GpuMetrics> SystemMonitor::scanGpuBaseRows(
+    const QString &drmRoot) {
+    QVector<GpuMetrics> gpus;
+    QDir drmDirectory(drmRoot);
+    for (const QString &entry : drmDirectory.entryList(
+             QStringList{QStringLiteral("card[0-9]*")}, QDir::Dirs)) {
+        if (entry.contains(QLatin1Char('-'))) {
             continue;
         }
-
-        QString cardPath = drmDir.filePath(entry) + "/device";
-
-        // Check if it's an AMD GPU
-        QString busyPath = cardPath + "/gpu_busy_percent";
-        if (!QFile::exists(busyPath)) {
+        const QString cardPath = drmDirectory.filePath(entry) +
+                                 QStringLiteral("/device");
+        const QString bdf = gpuPciBdf(cardPath);
+        if (bdf.isEmpty()) {
             continue;
         }
 
         GpuMetrics gpu;
-
+        gpu.pciBdf = bdf;
+        gpu.pciDeviceId = normalizedPciHex(
+            readSysFile(cardPath + QStringLiteral("/device")));
+        gpu.pciRevisionId = normalizedPciHex(
+            readSysFile(cardPath + QStringLiteral("/revision")));
         gpu.name = resolveGpuModelName(cardPath);
+        gpu.bootVga = readSysFile(
+            cardPath + QStringLiteral("/boot_vga")) ==
+            QStringLiteral("1");
+        const QString vendor = normalizedPciHex(
+            readSysFile(cardPath + QStringLiteral("/vendor")));
+        if (vendor == QStringLiteral("10DE")) {
+            gpu.vendor = GpuVendor::Nvidia;
+        } else if (vendor == QStringLiteral("1002")) {
+            gpu.vendor = GpuVendor::Amd;
+        } else if (vendor == QStringLiteral("8086")) {
+            gpu.vendor = GpuVendor::Intel;
+        }
 
-        // GPU usage
-        const QString usageValue = readSysFile(busyPath);
         bool usageOk = false;
-        gpu.usagePercent = usageValue.toDouble(&usageOk);
-        gpu.usageAvailable = usageOk;
-
-        // Temperature and board power via hwmon
-        QDir hwmonDir(cardPath + "/hwmon");
-        for (const auto &hwEntry : hwmonDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-            const QString hwmonPath = hwmonDir.filePath(hwEntry);
-            const QString val = readSysFile(hwmonPath + "/temp1_input");
-            if (!gpu.temperatureAvailable && !val.isEmpty()) {
-                bool temperatureOk = false;
-                gpu.temperature = val.toDouble(&temperatureOk) / 1000.0;
-                gpu.temperatureAvailable = temperatureOk;
-            }
-            const QString powerValue =
-                readSysFile(hwmonPath + "/power1_average");
-            if (!gpu.powerAvailable && !powerValue.isEmpty()) {
-                bool powerOk = false;
-                const double microwatts = powerValue.toDouble(&powerOk);
-                if (powerOk && microwatts >= 0.0) {
-                    gpu.powerWatts = microwatts / 1000000.0;
-                    gpu.powerAvailable = true;
-                }
-            }
+        const double usage = readSysFile(
+            cardPath + QStringLiteral("/gpu_busy_percent"))
+                                 .toDouble(&usageOk);
+        if (usageOk && usage >= 0.0 && usage <= 100.0) {
+            gpu.usagePercent = usage;
+            gpu.usageAvailable = true;
         }
 
-        // GPU frequency from pp_dpm_sclk (active line marked with *)
-        QString sclkPath = cardPath + "/pp_dpm_sclk";
-        QString sclkData = readSysFile(sclkPath);
-        if (!sclkData.isEmpty()) {
-            for (const auto &line : sclkData.split('\n')) {
-                if (line.contains('*')) {
-                    QRegularExpression re("(\\d+)Mhz");
-                    auto match = re.match(line);
-                    if (match.hasMatch()) {
-                        bool frequencyOk = false;
-                        gpu.frequencyMHz =
-                            match.captured(1).toDouble(&frequencyOk);
-                        gpu.frequencyAvailable = frequencyOk;
-                    }
-                    break;
-                }
+        QDir hwmonDirectory(cardPath + QStringLiteral("/hwmon"));
+        for (const QString &hwmonEntry : hwmonDirectory.entryList(
+                 QDir::Dirs | QDir::NoDotAndDotDot)) {
+            const QString hwmonPath =
+                hwmonDirectory.filePath(hwmonEntry);
+            bool temperatureOk = false;
+            const double temperature = readSysFile(
+                hwmonPath + QStringLiteral("/temp1_input"))
+                                           .toDouble(&temperatureOk) /
+                                       1000.0;
+            if (!gpu.temperatureAvailable && temperatureOk &&
+                temperature >= 0.0 && temperature <= 255.0) {
+                gpu.temperature = temperature;
+                gpu.temperatureAvailable = true;
+            }
+            bool powerOk = false;
+            const double power = readSysFile(
+                hwmonPath + QStringLiteral("/power1_average"))
+                                     .toDouble(&powerOk) /
+                                 1000000.0;
+            if (!gpu.powerAvailable && powerOk && power >= 0.0 &&
+                power <= 10000.0) {
+                gpu.powerWatts = power;
+                gpu.powerAvailable = true;
+            }
+            bool voltageOk = false;
+            const double voltage = readSysFile(
+                hwmonPath + QStringLiteral("/in0_input"))
+                                       .toDouble(&voltageOk);
+            if (voltageOk && voltage >= 0.0) {
+                gpu.voltageMV = voltage;
             }
         }
 
-        // GPU voltage from hwmon in0_input (millivolts)
-        QDir hwmonDirVolt(cardPath + "/hwmon");
-        for (const auto &hwEntry : hwmonDirVolt.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-            QString voltPath = hwmonDirVolt.filePath(hwEntry) + "/in0_input";
-            QString voltVal = readSysFile(voltPath);
-            if (!voltVal.isEmpty()) {
-                gpu.voltageMV = voltVal.toDouble();
-                break;
+        const QString clockData = readSysFile(
+            cardPath + QStringLiteral("/pp_dpm_sclk"));
+        for (const QString &line : clockData.split(QLatin1Char('\n'))) {
+            if (!line.contains(QLatin1Char('*'))) {
+                continue;
+            }
+            static const QRegularExpression clockExpression(
+                QStringLiteral("(\\d+)Mhz"));
+            const auto match = clockExpression.match(line);
+            bool frequencyOk = false;
+            const double frequency = match.hasMatch()
+                ? match.captured(1).toDouble(&frequencyOk)
+                : 0.0;
+            if (frequencyOk && frequency >= 0.0 &&
+                frequency <= 100000.0) {
+                gpu.frequencyMHz = frequency;
+                gpu.frequencyAvailable = true;
+            }
+            break;
+        }
+
+        bool usedOk = false;
+        bool totalOk = false;
+        const quint64 usedBytes = readSysFile(
+            cardPath + QStringLiteral("/mem_info_vram_used"))
+                                      .toULongLong(&usedOk);
+        const quint64 totalBytes = readSysFile(
+            cardPath + QStringLiteral("/mem_info_vram_total"))
+                                       .toULongLong(&totalOk);
+        constexpr quint64 bytesPerMiB = 1024U * 1024U;
+        if (usedOk && totalOk && totalBytes > 0 &&
+            usedBytes <= totalBytes) {
+            const quint64 usedMiB = usedBytes / bytesPerMiB;
+            const quint64 totalMiB = totalBytes / bytesPerMiB;
+            if (totalMiB > 0 &&
+                totalMiB <= static_cast<quint64>(
+                    std::numeric_limits<int64_t>::max())) {
+                gpu.vramUsedMB = static_cast<int64_t>(usedMiB);
+                gpu.vramTotalMB = static_cast<int64_t>(totalMiB);
+                gpu.vramAvailable = true;
             }
         }
-
-        // VRAM
-        QString vramUsed = readSysFile(cardPath + "/mem_info_vram_used");
-        QString vramTotal = readSysFile(cardPath + "/mem_info_vram_total");
-        if (!vramUsed.isEmpty()) {
-            gpu.vramUsedMB = vramUsed.toLongLong() / (1024 * 1024);
-        }
-        if (!vramTotal.isEmpty()) {
-            gpu.vramTotalMB = vramTotal.toLongLong() / (1024 * 1024);
-        }
-
         gpus.append(gpu);
     }
-
-    std::stable_sort(gpus.begin(), gpus.end(),
-                     [](const GpuMetrics &left, const GpuMetrics &right) {
-                         return left.vramTotalMB > right.vramTotalMB;
-                     });
-
     return gpus;
+}
+
+QString SystemMonitor::gpuPciBdf(const QString &cardPath) {
+    const QString canonical = QFileInfo(cardPath).canonicalFilePath();
+    const QString fromCanonical = tryx::normalizeGpuPciBdf(
+        QFileInfo(canonical).fileName());
+    if (!fromCanonical.isEmpty()) {
+        return fromCanonical;
+    }
+    const QString uevent = readSysFile(
+        cardPath + QStringLiteral("/uevent"));
+    for (const QString &line : uevent.split(QLatin1Char('\n'))) {
+        constexpr auto prefix = "PCI_SLOT_NAME=";
+        if (line.startsWith(QString::fromLatin1(prefix))) {
+            return tryx::normalizeGpuPciBdf(
+                line.mid(sizeof("PCI_SLOT_NAME=") - 1));
+        }
+    }
+    return {};
+}
+
+void SystemMonitor::handleNvidiaSnapshotChanged() {
+    if (refreshingGpuMetrics_) {
+        return;
+    }
+    refreshingGpuMetrics_ = true;
+    metrics_.gpus = readGpuMetrics();
+    refreshingGpuMetrics_ = false;
+    emit metricsUpdated(metrics_);
 }
 
 QString SystemMonitor::resolveGpuModelName(
@@ -469,8 +579,9 @@ QString SystemMonitor::resolveGpuModelName(
         normalizedPciHex(readSysFile(cardPath + "/device"));
     const QString revision =
         normalizedPciHex(readSysFile(cardPath + "/revision"));
+    const QString bdf = gpuPciBdf(cardPath);
     const QString cacheKey =
-        cardPath + QLatin1Char('|') + vendor +
+        (bdf.isEmpty() ? cardPath : bdf) + QLatin1Char('|') + vendor +
         QLatin1Char('|') + device + QLatin1Char('|') + revision;
     if (gpuModelCache_.contains(cacheKey)) {
         return gpuModelCache_.value(cacheKey);

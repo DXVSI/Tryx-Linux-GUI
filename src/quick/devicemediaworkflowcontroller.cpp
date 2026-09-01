@@ -769,14 +769,14 @@ void DeviceMediaWorkflowController::onArtifactClaimFailed(
 }
 
 void DeviceMediaWorkflowController::onSaveAsNewRequested(
-    const TryxRuntimeMediaTransform &transform) {
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
     if (artifact_.artifactId.isEmpty() ||
         !pendingMutationOperationId_.isEmpty()) {
         return;
     }
     const QString operationId =
-        runtime_->queueRecoveredMediaUploadWithTransform(
-            artifact_.artifactId, artifact_.leaseId, transform);
+        runtime_->queueRecoveredMediaUploadWithPreparationProfile(
+            artifact_.artifactId, artifact_.leaseId, profile);
     if (operationId.isEmpty()) {
         error_ = runtime_->diagnostic();
         emit stateChanged();
@@ -790,17 +790,17 @@ void DeviceMediaWorkflowController::onSaveAsNewRequested(
 }
 
 void DeviceMediaWorkflowController::onReplaceRequested(
-    const TryxRuntimeMediaTransform &transform) {
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
     if (artifact_.artifactId.isEmpty() ||
         !pendingMutationOperationId_.isEmpty()) {
         return;
     }
     const QString operationId =
-        runtime_->queueReplaceDeviceMedia(
+        runtime_->queueReplaceDeviceMediaWithPreparationProfile(
             artifact_.artifactId, artifact_.leaseId,
             artifact_.mediaId,
             runtime_->currentDisplayApplyRequest(),
-            transform);
+            profile);
     if (operationId.isEmpty()) {
         error_ = runtime_->diagnostic();
         emit stateChanged();

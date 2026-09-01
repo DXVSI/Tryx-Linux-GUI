@@ -37,14 +37,38 @@ Popup {
     readonly property string targetResolution:
         qsTr("%1 × %2").arg(controller.targetWidth)
                        .arg(controller.targetHeight)
+    readonly property string preparationTargetLabel:
+        controller.preparationTarget === "SplitArea"
+        ? qsTr("Split area") : qsTr("Full screen")
+    readonly property string preparationTargetDescription:
+        controller.preparationTarget === "SplitArea"
+        ? qsTr("Prepares this copy for either the left or right side at %1. It does not choose a side or apply changes to the display.")
+          .arg(targetResolution)
+        : qsTr("Prepares this copy for the full display at %1. It does not apply changes to the display.")
+          .arg(targetResolution)
+    readonly property string splitTargetUnavailableText:
+        qsTr("Split area preparation is not available for the connected device.")
+    readonly property string preparationTargetResetWarning:
+        qsTr("Changing the target resets all editing settings.")
     readonly property string recoveredSourceResolution:
-        controller.originalMediaName.toLowerCase()
-                  .endsWith(".h264_1280x720")
-        ? qsTr("%1 × %2").arg(1280).arg(720)
-        : (controller.originalMediaName.toLowerCase()
-                     .endsWith(".h264_2240x1080")
-           ? qsTr("%1 × %2").arg(2240).arg(1080)
-           : targetResolution)
+        controller.deviceCopyDimensionsAvailable &&
+        controller.deviceCopyWidth > 0 &&
+        controller.deviceCopyHeight > 0
+        ? qsTr("%1 × %2").arg(controller.deviceCopyWidth)
+                           .arg(controller.deviceCopyHeight)
+        : ""
+    readonly property string deviceCopyDimensionsText:
+        recoveredSourceResolution.length > 0
+        ? recoveredSourceResolution : qsTr("Unavailable")
+    readonly property string deviceCopyDurationText:
+        controller.deviceCopyDurationAvailable
+        ? formatDuration(controller.deviceCopyDurationMilliseconds)
+        : qsTr("Unavailable")
+    readonly property string deviceCopyFrameRateText:
+        controller.deviceCopyFrameRateAvailable
+        ? formatFrameRate(controller.deviceCopyFrameRateNumerator,
+                          controller.deviceCopyFrameRateDenominator)
+        : qsTr("Unavailable")
 
     function synchronizeVisibility() {
         if (controller.open && !root.opened)
@@ -66,6 +90,54 @@ Popup {
         default:
             return ""
         }
+    }
+
+    function metadataStateText(status) {
+        switch (status) {
+        case "Loading":
+            return qsTr("Loading")
+        case "Ready":
+            return qsTr("Ready")
+        case "Partial":
+            return qsTr("Partial")
+        case "NotSupported":
+            return qsTr("Not supported")
+        case "Unavailable":
+        case "ProbeFailed":
+        default:
+            return qsTr("Unavailable")
+        }
+    }
+
+    function padTwo(value) {
+        return value < 10 ? "0" + value : value.toString()
+    }
+
+    function formatDuration(milliseconds) {
+        if (!Number.isFinite(milliseconds) || milliseconds < 0)
+            return qsTr("Unavailable")
+        const totalSeconds = Math.floor(milliseconds / 1000)
+        const seconds = totalSeconds % 60
+        const totalMinutes = Math.floor(totalSeconds / 60)
+        const minutes = totalMinutes % 60
+        const hours = Math.floor(totalMinutes / 60)
+        if (hours > 0) {
+            return padTwo(hours) + ":" + padTwo(minutes) +
+                   ":" + padTwo(seconds)
+        }
+        return padTwo(totalMinutes) + ":" + padTwo(seconds)
+    }
+
+    function formatFrameRate(numerator, denominator) {
+        if (numerator <= 0 || denominator <= 0)
+            return qsTr("Unavailable")
+        const value = numerator / denominator
+        const rounded = Math.round(value * 100) / 100
+        const text = Math.abs(rounded - Math.round(rounded)) < 0.0001
+                   ? Math.round(rounded).toString()
+                   : rounded.toFixed(2).replace(/0+$/, "")
+                                      .replace(/\.$/, "")
+        return qsTr("%1 FPS").arg(text)
     }
 
     Component.onCompleted: synchronizeVisibility()
@@ -149,12 +221,305 @@ Popup {
                         anchors.rightMargin: 12
                         text:
                             root.recoveredTransformIsGeometryNeutral
-                            ? qsTr("This device copy is already encoded at %1, so the current settings will not visibly change it. Existing padding is baked into the video. Choose Crop and raise Zoom above 100%, or rotate the video. Save as new does not change the active display; select the new copy in the library and apply it. Previously lost areas cannot be restored.").arg(root.recoveredSourceResolution)
+                            ? (root.recoveredSourceResolution.length > 0
+                               ? qsTr("This device copy is already encoded at %1, so the current settings will not visibly change it. Existing padding is baked into the video. Choose Crop and raise Zoom above 100%, or rotate the video. Save as new does not change the active display; select the new copy in the library and apply it. Previously lost areas cannot be restored.").arg(root.recoveredSourceResolution)
+                               : qsTr("This device copy is already encoded, so the current settings will not visibly change it. Existing padding is baked into the video. Choose Crop and raise Zoom above 100%, or rotate the video. Save as new does not change the active display; select the new copy in the library and apply it. Previously lost areas cannot be restored."))
                             : qsTr("This is a private working copy recovered from the device. Save as new stores another media item but does not change the active display; select the new copy in the library and apply it. Replace original updates the original item. Saving re-encodes the video; areas lost before the original upload cannot be restored.")
                         color:
                             root.recoveredTransformIsGeometryNeutral
                             ? "#f0c27b" : "#d8ddb9"
                         wrapMode: Text.WordWrap
+                    }
+                }
+
+                Rectangle {
+                    id: deviceCopyMetadata
+
+                    objectName: "deviceCopyMetadata"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth:
+                        Math.min(editorScrollableContent.width,
+                                 editorContent.width)
+                    Layout.maximumWidth:
+                        Math.min(editorScrollableContent.width,
+                                 editorContent.width)
+                    Layout.preferredHeight:
+                        deviceCopyMetadataContent.implicitHeight + 20
+                    visible: root.controller.recoveredDeviceCopy
+                    radius: 7
+                    color: "#242a2f"
+                    border.width: 1
+                    border.color: "#59636b"
+                    Accessible.name: deviceCopyMetadataTitle.text
+                    Accessible.description:
+                        deviceCopyMetadataTitle.text + ". " +
+                        deviceCopyMetadataState.text + ". " +
+                        deviceCopyDimensionsLabel.text + ": " +
+                        deviceCopyDimensionsValue.text + ". " +
+                        deviceCopyDurationLabel.text + ": " +
+                        deviceCopyDurationValue.text + ". " +
+                        deviceCopyFrameRateLabel.text + ": " +
+                        deviceCopyFrameRateValue.text + "."
+                    Accessible.role: Accessible.StaticText
+
+                    ColumnLayout {
+                        id: deviceCopyMetadataContent
+
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 6
+
+                        Label {
+                            id: deviceCopyMetadataTitle
+
+                            objectName: "deviceCopyMetadataTitle"
+                            Layout.fillWidth: true
+                            text: qsTr("Device copy metadata")
+                            textFormat: Text.PlainText
+                            font.bold: true
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Label {
+                            id: deviceCopyMetadataState
+
+                            objectName: "deviceCopyMetadataState"
+                            Layout.fillWidth: true
+                            text: root.metadataStateText(
+                                      root.controller
+                                          .deviceCopyMetadataStatus)
+                            textFormat: Text.PlainText
+                            color: "#b7bac7"
+                            wrapMode: Text.WordWrap
+                        }
+
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 2
+                            columnSpacing: 12
+                            rowSpacing: 4
+
+                            Label {
+                                id: deviceCopyDimensionsLabel
+
+                                objectName:
+                                    "deviceCopyDimensionsLabel"
+                                text: qsTr("Dimensions")
+                                textFormat: Text.PlainText
+                                color: "#aeb5bb"
+                                wrapMode: Text.WordWrap
+                            }
+                            Label {
+                                id: deviceCopyDimensionsValue
+
+                                objectName:
+                                    "deviceCopyDimensionsValue"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: root.deviceCopyDimensionsText
+                                textFormat: Text.PlainText
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Label {
+                                id: deviceCopyDurationLabel
+
+                                objectName:
+                                    "deviceCopyDurationLabel"
+                                text: qsTr("Duration")
+                                textFormat: Text.PlainText
+                                color: "#aeb5bb"
+                                wrapMode: Text.WordWrap
+                            }
+                            Label {
+                                id: deviceCopyDurationValue
+
+                                objectName:
+                                    "deviceCopyDurationValue"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: root.deviceCopyDurationText
+                                textFormat: Text.PlainText
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.WordWrap
+                            }
+
+                            Label {
+                                id: deviceCopyFrameRateLabel
+
+                                objectName:
+                                    "deviceCopyFrameRateLabel"
+                                text: qsTr("Frame rate")
+                                textFormat: Text.PlainText
+                                color: "#aeb5bb"
+                                wrapMode: Text.WordWrap
+                            }
+                            Label {
+                                id: deviceCopyFrameRateValue
+
+                                objectName:
+                                    "deviceCopyFrameRateValue"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: root.deviceCopyFrameRateText
+                                textFormat: Text.PlainText
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    id: preparationTargetGroup
+
+                    objectName: "mediaPreparationTargetGroup"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth:
+                        Math.min(editorScrollableContent.width,
+                                 editorContent.width)
+                    Layout.maximumWidth:
+                        Math.min(editorScrollableContent.width,
+                                 editorContent.width)
+                    title: qsTr("Prepare for")
+                    Accessible.role: Accessible.Grouping
+                    Accessible.name: title
+                    Accessible.description:
+                        preparationTargetDescription.text + " " +
+                        preparationTargetResetWarning.text +
+                        (splitTargetUnavailable.visible
+                         ? " " + splitTargetUnavailable.text : "")
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: 8
+
+                        ButtonGroup {
+                            id: preparationTargetButtons
+                        }
+
+                        GridLayout {
+                            id: preparationTargetChoices
+
+                            objectName:
+                                "mediaPreparationTargetChoices"
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            Layout.preferredWidth: 0
+                            columns:
+                                preparationTargetGroup.width >= 560
+                                ? 2 : 1
+                            columnSpacing: 10
+                            rowSpacing: 4
+
+                            RadioButton {
+                                id: fullFramePreparationTarget
+
+                                objectName:
+                                    "fullFramePreparationTarget"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: qsTr("Full screen")
+                                enabled:
+                                    !root.controller
+                                        .submissionPending
+                                checked:
+                                    root.controller
+                                        .preparationTarget ===
+                                    "FullFrame"
+                                ButtonGroup.group:
+                                    preparationTargetButtons
+                                Accessible.name: text
+                                Accessible.description:
+                                    qsTr("Prepare media for the full display.")
+                                onClicked:
+                                    root.controller
+                                        .preparationTarget =
+                                        "FullFrame"
+                            }
+
+                            RadioButton {
+                                id: splitAreaPreparationTarget
+
+                                objectName:
+                                    "splitAreaPreparationTarget"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: qsTr("Split area")
+                                enabled:
+                                    root.controller
+                                        .splitTargetAvailable &&
+                                    !root.controller
+                                        .submissionPending
+                                checked:
+                                    root.controller
+                                        .preparationTarget ===
+                                    "SplitArea"
+                                ButtonGroup.group:
+                                    preparationTargetButtons
+                                Accessible.name: text
+                                Accessible.description:
+                                    root.controller
+                                        .splitTargetAvailable
+                                    ? qsTr("Prepare media for either the left or right side of Split screen.")
+                                    : root.splitTargetUnavailableText
+                                onClicked:
+                                    root.controller
+                                        .preparationTarget =
+                                        "SplitArea"
+                            }
+                        }
+
+                        Label {
+                            id: preparationTargetDescription
+
+                            objectName:
+                                "mediaPreparationTargetDescription"
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            text: root.preparationTargetDescription
+                            textFormat: Text.PlainText
+                            color: "#b7bac7"
+                            wrapMode: Text.WordWrap
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
+                        }
+
+                        Label {
+                            id: preparationTargetResetWarning
+
+                            objectName:
+                                "mediaPreparationTargetResetWarning"
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            text: root.preparationTargetResetWarning
+                            textFormat: Text.PlainText
+                            color: "#f0c27b"
+                            wrapMode: Text.WordWrap
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
+                        }
+
+                        Label {
+                            id: splitTargetUnavailable
+
+                            objectName:
+                                "splitAreaPreparationUnavailable"
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            visible:
+                                !root.controller
+                                    .splitTargetAvailable
+                            text: root.splitTargetUnavailableText
+                            textFormat: Text.PlainText
+                            color: "#f0c27b"
+                            wrapMode: Text.WordWrap
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
+                        }
                     }
                 }
 
@@ -272,12 +637,20 @@ Popup {
 
                         Label {
                             objectName: "mediaTargetResolution"
+                            anchors.left: parent.left
                             anchors.right: parent.right
                             anchors.bottom: parent.bottom
                             anchors.margins: 8
-                            text: root.targetResolution
+                            text: qsTr("%1: %2")
+                                  .arg(root.preparationTargetLabel)
+                                  .arg(root.targetResolution)
+                            textFormat: Text.PlainText
                             color: "#b7bac7"
                             font.pixelSize: 11
+                            elide: Text.ElideLeft
+                            horizontalAlignment: Text.AlignRight
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
                         }
                     }
                 }

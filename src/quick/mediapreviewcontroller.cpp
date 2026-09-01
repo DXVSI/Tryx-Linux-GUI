@@ -18,6 +18,9 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
+#include <fcntl.h>
+#include <limits>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -35,12 +38,26 @@ constexpr qint64 kStaleInboxAgeMs =
     qint64(7) * 24 * 60 * 60 * 1000;
 constexpr qint64 kStalePreviewAgeMs =
     qint64(24) * 60 * 60 * 1000;
+constexpr qsizetype kMaxPreviewCleanupEntries = 4096;
 
 struct RegularFileIdentity {
     dev_t device = 0;
     ino_t inode = 0;
     bool valid = false;
 };
+
+struct PreviewCleanupCandidate {
+    QString name;
+    quint64 device = 0;
+    quint64 inode = 0;
+    qint64 logicalBytes = 0;
+};
+
+QString cleanupSystemError(const char *prefix) {
+    return QStringLiteral("%1: %2")
+        .arg(QString::fromLatin1(prefix),
+             QString::fromLocal8Bit(std::strerror(errno)));
+}
 
 QPointer<QProcess> drainingStageProcess;
 
@@ -232,7 +249,287 @@ QString MediaPreviewController::error() const {
     return error_;
 }
 
+bool MediaPreviewController::cleanupInterlockActive() const {
+    return cleanupInterlockActive_;
+}
+
+bool MediaPreviewController::acquireCleanupInterlock(
+    QString *errorMessage) {
+    const auto fail = [errorMessage](const QString &message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+    if (cleanupInterlockActive_) {
+        return fail(tr("Temporary file cleanup is already active"));
+    }
+    if (busy() || sourceProtected_ ||
+        !stagedPath_.isEmpty() || !pendingStagePath_.isEmpty() ||
+        !pendingOutputPath_.isEmpty() ||
+        !currentOutputPath_.isEmpty() ||
+        process_.state() != QProcess::NotRunning ||
+        stageHelperDrainInProgress()) {
+        return fail(tr(
+            "Close the media editor before temporary file cleanup"));
+    }
+    const QString previews = previewDirectoryPath();
+    QString directoryError;
+    if (previews.isEmpty() ||
+        !ensurePrivateDirectoryTree(previews, &directoryError)) {
+        return fail(
+            directoryError.isEmpty()
+                ? tr("The preview directory is unavailable")
+                : directoryError);
+    }
+    cleanupInterlockActive_ = true;
+    if (errorMessage) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
+void MediaPreviewController::releaseCleanupInterlock() {
+    cleanupInterlockActive_ = false;
+}
+
+MediaPreviewController::PreviewCleanupReport
+MediaPreviewController::cleanupInactivePreviews() {
+    PreviewCleanupReport report;
+    const auto fail = [&report](PreviewCleanupError error,
+                                const QString &detail) {
+        report.error = error;
+        report.detail = detail;
+        report.complete = false;
+        return report;
+    };
+    if (!cleanupInterlockActive_) {
+        return fail(
+            PreviewCleanupError::InterlockUnavailable,
+            tr("The preview cleanup interlock is not held"));
+    }
+    if (busy() || sourceProtected_ ||
+        !stagedPath_.isEmpty() || !pendingStagePath_.isEmpty() ||
+        !pendingOutputPath_.isEmpty() ||
+        !currentOutputPath_.isEmpty() ||
+        process_.state() != QProcess::NotRunning) {
+        return fail(
+            PreviewCleanupError::Busy,
+            tr("The media editor became active during cleanup"));
+    }
+
+    const QString previews = previewDirectoryPath();
+    if (previews.isEmpty() ||
+        !privateDirectoryTreeIsSafe(previews)) {
+        return fail(
+            PreviewCleanupError::DirectoryUnavailable,
+            tr("The private preview directory is unavailable"));
+    }
+    const QByteArray encodedDirectory = QFile::encodeName(previews);
+    const int planDescriptor = ::open(
+        encodedDirectory.constData(),
+        O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+    if (planDescriptor < 0) {
+        return fail(
+            PreviewCleanupError::DirectoryUnavailable,
+            cleanupSystemError("cannot open preview directory"));
+    }
+    struct stat planParent {};
+    if (::fstat(planDescriptor, &planParent) != 0 ||
+        !S_ISDIR(planParent.st_mode) ||
+        planParent.st_uid != ::geteuid() ||
+        (planParent.st_mode & 07777) != S_IRWXU) {
+        ::close(planDescriptor);
+        return fail(
+            PreviewCleanupError::DirectoryUnavailable,
+            tr("The private preview directory is unsafe"));
+    }
+
+    const int enumerationDescriptor = ::dup(planDescriptor);
+    DIR *directory = enumerationDescriptor < 0
+        ? nullptr
+        : ::fdopendir(enumerationDescriptor);
+    if (!directory) {
+        if (enumerationDescriptor >= 0) {
+            ::close(enumerationDescriptor);
+        }
+        const QString detail = cleanupSystemError(
+            "cannot enumerate preview directory");
+        ::close(planDescriptor);
+        return fail(
+            PreviewCleanupError::DirectoryUnavailable, detail);
+    }
+
+    QList<PreviewCleanupCandidate> candidates;
+    qint64 plannedBytes = 0;
+    qsizetype inspectedEntries = 0;
+    const qsizetype entryLimit = qBound<qsizetype>(
+        1, cleanupPlanEntryLimitForTesting_,
+        kMaxPreviewCleanupEntries);
+    PreviewCleanupError enumerationFailure =
+        PreviewCleanupError::None;
+    QString enumerationDetail;
+    while (true) {
+        errno = 0;
+        dirent *entry = ::readdir(directory);
+        if (!entry) {
+            if (errno != 0) {
+                enumerationFailure =
+                    PreviewCleanupError::DirectoryUnavailable;
+                enumerationDetail = cleanupSystemError(
+                    "cannot enumerate preview directory");
+            }
+            break;
+        }
+        const QByteArray rawName(entry->d_name);
+        if (rawName == QByteArrayLiteral(".") ||
+            rawName == QByteArrayLiteral("..")) {
+            continue;
+        }
+        ++inspectedEntries;
+        if (inspectedEntries > entryLimit) {
+            enumerationFailure =
+                PreviewCleanupError::PlanLimitExceeded;
+            enumerationDetail = tr(
+                "Preview cleanup reached its bounded directory entry limit");
+            break;
+        }
+        const QString name = QFile::decodeName(rawName);
+        if (!kPreviewFileName.match(name).hasMatch()) {
+            continue;
+        }
+        const QByteArray encodedName = QFile::encodeName(name);
+        if (encodedName != rawName) {
+            enumerationFailure =
+                PreviewCleanupError::UnsafeCandidate;
+            enumerationDetail = tr(
+                "A preview cleanup candidate has a non-canonical name");
+            break;
+        }
+        const QString path = QDir(previews).filePath(name);
+        if (path == currentOutputPath_ || path == pendingOutputPath_) {
+            continue;
+        }
+        struct stat status {};
+        errno = 0;
+        if (::fstatat(
+                planDescriptor, encodedName.constData(), &status,
+                AT_SYMLINK_NOFOLLOW) != 0) {
+            enumerationFailure =
+                PreviewCleanupError::UnsafeCandidate;
+            enumerationDetail = cleanupSystemError(
+                "cannot inspect preview cleanup candidate");
+            break;
+        }
+        if (!S_ISREG(status.st_mode) ||
+            status.st_uid != ::geteuid() ||
+            status.st_nlink != 1 || status.st_size < 0 ||
+            status.st_size > kMaxPreviewSourceBytes ||
+            (status.st_mode & 07777) !=
+                (S_IRUSR | S_IWUSR) ||
+            status.st_size >
+                std::numeric_limits<qint64>::max() - plannedBytes) {
+            enumerationFailure =
+                PreviewCleanupError::UnsafeCandidate;
+            enumerationDetail = tr(
+                "A preview cleanup candidate is unsafe");
+            break;
+        }
+        PreviewCleanupCandidate candidate;
+        candidate.name = name;
+        candidate.device = static_cast<quint64>(status.st_dev);
+        candidate.inode = static_cast<quint64>(status.st_ino);
+        candidate.logicalBytes = static_cast<qint64>(status.st_size);
+        candidates.append(candidate);
+        plannedBytes += candidate.logicalBytes;
+    }
+    ::closedir(directory);
+    ::close(planDescriptor);
+    if (enumerationFailure != PreviewCleanupError::None) {
+        return fail(enumerationFailure, enumerationDetail);
+    }
+    report.plannedFiles = candidates.size();
+
+    const int cleanupDescriptor = ::open(
+        encodedDirectory.constData(),
+        O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
+    if (cleanupDescriptor < 0) {
+        return fail(
+            PreviewCleanupError::DirectoryUnavailable,
+            cleanupSystemError("cannot reopen preview directory"));
+    }
+    struct stat cleanupParent {};
+    if (::fstat(cleanupDescriptor, &cleanupParent) != 0 ||
+        cleanupParent.st_dev != planParent.st_dev ||
+        cleanupParent.st_ino != planParent.st_ino ||
+        !S_ISDIR(cleanupParent.st_mode) ||
+        cleanupParent.st_uid != ::geteuid() ||
+        (cleanupParent.st_mode & 07777) != S_IRWXU) {
+        ::close(cleanupDescriptor);
+        return fail(
+            PreviewCleanupError::IdentityChanged,
+            tr("The preview directory changed during cleanup"));
+    }
+
+    for (const PreviewCleanupCandidate &candidate :
+         std::as_const(candidates)) {
+        const QByteArray encodedName = QFile::encodeName(candidate.name);
+        struct stat status {};
+        if (::fstatat(
+                cleanupDescriptor, encodedName.constData(), &status,
+                AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISREG(status.st_mode) ||
+            status.st_uid != ::geteuid() ||
+            status.st_nlink != 1 ||
+            static_cast<quint64>(status.st_dev) != candidate.device ||
+            static_cast<quint64>(status.st_ino) != candidate.inode ||
+            static_cast<qint64>(status.st_size) !=
+                candidate.logicalBytes ||
+            (status.st_mode & 07777) !=
+                (S_IRUSR | S_IWUSR)) {
+            ::close(cleanupDescriptor);
+            return fail(
+                PreviewCleanupError::IdentityChanged,
+                tr("A preview cleanup candidate changed before removal"));
+        }
+        errno = 0;
+        const int unlinkResult = cleanupUnlinkFunctionForTesting_
+            ? cleanupUnlinkFunctionForTesting_(
+                  cleanupDescriptor, encodedName)
+            : ::unlinkat(
+                  cleanupDescriptor, encodedName.constData(), 0);
+        if (unlinkResult != 0) {
+            const QString detail = cleanupSystemError(
+                "cannot remove preview cleanup candidate");
+            ::close(cleanupDescriptor);
+            return fail(
+                PreviewCleanupError::RemoveFailed, detail);
+        }
+        ++report.removedFiles;
+        report.removedLogicalBytes += candidate.logicalBytes;
+        errno = 0;
+        const int syncResult = cleanupFsyncFunctionForTesting_
+            ? cleanupFsyncFunctionForTesting_(cleanupDescriptor)
+            : ::fsync(cleanupDescriptor);
+        if (syncResult != 0) {
+            const QString detail = cleanupSystemError(
+                "cannot sync preview cleanup");
+            ::close(cleanupDescriptor);
+            return fail(PreviewCleanupError::SyncFailed, detail);
+        }
+    }
+    ::close(cleanupDescriptor);
+    report.complete = true;
+    return report;
+}
+
 void MediaPreviewController::load(const QUrl &source) {
+    if (cleanupInterlockActive_) {
+        error_ = tr(
+            "Wait for temporary file cleanup to finish");
+        emit stateChanged();
+        return;
+    }
     if (sourceProtected_) {
         error_ = tr(
             "Wait for the runtime to acknowledge the current upload request");
@@ -277,6 +574,12 @@ void MediaPreviewController::load(const QUrl &source) {
 
 void MediaPreviewController::loadRecoveredVideo(
     const TryxRuntimeDeviceMediaArtifact &artifact) {
+    if (cleanupInterlockActive_) {
+        error_ = tr(
+            "Wait for temporary file cleanup to finish");
+        emit stateChanged();
+        return;
+    }
     if (sourceProtected_) {
         error_ = tr(
             "Wait for the runtime to acknowledge the current upload request");
@@ -321,7 +624,8 @@ void MediaPreviewController::loadRecoveredVideo(
 
 void MediaPreviewController::setTransform(
     const TryxRuntimeMediaTransform &transform) {
-    if (!tryxMediaTransformIsValid(transform) ||
+    if (cleanupInterlockActive_ ||
+        !tryxMediaTransformIsValid(transform) ||
         tryxMediaTransformCanonicalValue(transform_) ==
             tryxMediaTransformCanonicalValue(transform)) {
         return;
@@ -335,7 +639,8 @@ void MediaPreviewController::setTransform(
 }
 
 void MediaPreviewController::setTargetSize(int width, int height) {
-    if (width <= 0 || height <= 0 || width % 2 != 0 ||
+    if (cleanupInterlockActive_ || width <= 0 || height <= 0 ||
+        width % 2 != 0 ||
         height % 2 != 0 ||
         (targetWidth_ == width && targetHeight_ == height)) {
         return;
@@ -350,6 +655,12 @@ void MediaPreviewController::setTargetSize(int width, int height) {
 }
 
 void MediaPreviewController::cancel() {
+    if (cleanupInterlockActive_) {
+        error_ = tr(
+            "Wait for temporary file cleanup to finish");
+        emit stateChanged();
+        return;
+    }
     if (sourceProtected_) {
         error_ = tr(
             "Wait for the runtime to acknowledge the current upload request");
@@ -373,7 +684,8 @@ void MediaPreviewController::cancel() {
 }
 
 bool MediaPreviewController::protectStagedSource() {
-    if (!ready() || sourceKind_ != SourceKind::InboxSnapshot ||
+    if (cleanupInterlockActive_ || !ready() ||
+        sourceKind_ != SourceKind::InboxSnapshot ||
         !isManagedInboxPath(stagedPath_)) {
         return false;
     }
@@ -901,6 +1213,10 @@ void MediaPreviewController::startStaging(
     const QString &suffix,
     qint64 expectedSize,
     const QDateTime &expectedModified) {
+    if (cleanupInterlockActive_) {
+        fail(tr("Wait for temporary file cleanup to finish"));
+        return;
+    }
     if (stageHelperDrainInProgress()) {
         fail(tr(
             "The previous media snapshot helper is still stopping"));
@@ -1112,6 +1428,9 @@ void MediaPreviewController::abortStagingProcess() {
 }
 
 void MediaPreviewController::schedulePreview() {
+    if (cleanupInterlockActive_) {
+        return;
+    }
     stopProcess();
     removePreviewArtifact(pendingOutputPath_);
     pendingOutputPath_.clear();
@@ -1121,7 +1440,8 @@ void MediaPreviewController::schedulePreview() {
 }
 
 void MediaPreviewController::startPreview() {
-    if (stagedPath_.isEmpty() || sourceProtected_) {
+    if (cleanupInterlockActive_ || stagedPath_.isEmpty() ||
+        sourceProtected_) {
         return;
     }
     const QString ffmpeg = QStandardPaths::findExecutable(

@@ -1,0 +1,204 @@
+.TH TRYX 1 "2026-09-01" "TRYX Panorama Manager 2.2.0" "User Commands"
+.SH NAME
+tryx \- inspect and manage the local TRYX runtime from a terminal
+.SH SYNOPSIS
+.B tryx
+.B \-\-help
+.br
+.B tryx
+.B \-\-version
+.br
+.B tryx
+.RI [ \-\-json ]
+.B status
+.br
+.B tryx
+.RI [ \-\-json ]
+.B capabilities
+.br
+.B tryx
+.RI [ \-\-json ]
+.B operations
+.br
+.B tryx
+.RI [ \-\-json ]
+.B prepare-downgrade-v10
+.br
+.B tryx
+.RI [ \-\-json ]
+.B abort-downgrade-v10
+.br
+.B tryx
+.RI [ \-\-json ]
+.B support-report
+.B \-\-output-dir
+.I ABSOLUTE_DIR
+.SH DESCRIPTION
+.B tryx
+is a one-shot command-line client for the background TRYX Panorama runtime
+shipped in the same native package.
+It connects only to an already available D-Bus user session for the same Unix
+user and addresses the existing runtime owner.
+It does not start the runtime, access USB directly, open a network listener, or
+connect to a remote or system bus.
+.PP
+Inspection and support-report commands are read-only.
+The explicit
+.B prepare-downgrade-v10
+command validates and latches a safe released-v10 compatibility state, then
+waits for that exact runtime owner to stop.
+It does not install, remove, or downgrade a package.
+.PP
+The offline
+.B abort-downgrade-v10
+command removes a preparation marker only when the safe user-session D-Bus is
+available, the runtime service name has no owner, and the marker belongs to the
+currently installed runtime executable.
+.PP
+The supported contract is a local terminal for the same Unix user as the D-Bus
+session. Remote terminal qualification is deferred to the project backlog.
+The command does not provide graphical forwarding or remote-desktop
+functionality.
+.SH COMMANDS
+.TP
+.B status
+Print a redacted runtime, device, recovery, and count summary from the validated
+support-snapshot interface.
+.TP
+.B capabilities
+Print the runtime API version and the allowlisted runtime and device
+capabilities available for the current exact device context.
+.TP
+.B operations
+Print at most the 32 most recent redacted operation records, in oldest-to-newest
+order within that bounded tail.
+.TP
+.B prepare-downgrade-v10
+Ask a runtime advertising
+.B runtime.downgrade-v10-preparation.v1
+to prepare its durable state for the released v10 runtime.
+Only the exact reply states
+.B Empty
+and
+.B FullFrame
+are accepted.
+Success is reported only after the original D-Bus owner has remained absent for
+a bounded stability check; an owner replacement fails closed.
+Run this command before the package downgrade.
+.TP
+.B abort-downgrade-v10
+Cancel a previously prepared v10 downgrade while the runtime is offline.
+The command does not use the runtime API or start the runtime.
+It fails closed when the runtime service has an owner, the marker is missing,
+the installed executable differs, or the marker cannot be validated and
+removed durably.
+.TP
+.B support-report \-\-output-dir ABSOLUTE_DIR
+Create a new private support report in an existing absolute directory owned by
+the current user.
+The command generates the filename and never overwrites an existing path.
+A host-only report can still be created with status
+.B unavailable
+when the user-session bus or runtime is unavailable.
+An incompatible runtime, a legacy API 8 runtime, or a runtime without the B3
+support-snapshot capability produces a host-only report with status
+.B unsupported
+and exit status 0.
+.SH OPTIONS
+.TP
+.B \-\-json
+Emit one compact UTF-8 JSON version 1 object followed by a newline.
+This option may appear once, before the command.
+Human-readable output is not a parseable interface.
+.TP
+.B \-\-output-dir ABSOLUTE_DIR
+Select the existing destination directory for
+.BR support-report .
+Relative, unsafe, group-writable, and other-writable destinations are rejected.
+.TP
+.B \-\-help
+Print usage and exit without initializing D-Bus or a graphical platform.
+.TP
+.B \-\-version
+Print
+.B tryx VERSION
+and exit without initializing D-Bus or a graphical platform.
+.SH EXIT STATUS
+.TP
+.B 0
+The command succeeded, including a successfully written host-only report.
+.TP
+.B 2
+Invalid command-line arguments.
+.TP
+.B 3
+The user-session D-Bus is unavailable.
+.TP
+.B 4
+The TRYX runtime owner is unavailable.
+.TP
+.B 5
+The runtime API is incompatible.
+.TP
+.B 6
+The requested command or capability is unsupported.
+.TP
+.B 7
+The shared D-Bus deadline expired.
+.TP
+.B 8
+The runtime owner changed during the command.
+.TP
+.B 9
+A runtime D-Bus call failed.
+.TP
+.B 10
+The runtime reply was invalid or did not match the current context.
+.TP
+.B 11
+The report destination is unsafe.
+.TP
+.B 12
+No-clobber publication found an existing destination.
+.TP
+.B 13
+The report could not be written or published safely.
+.TP
+.B 14
+The runtime refused downgrade preparation, or offline downgrade cancellation
+could not prove that removing the marker was safe.
+.TP
+.B 70
+An internal software invariant failed.
+.SH FILES
+.TP
+.I /usr/bin/tryx
+Public command-line client.
+.TP
+.I /usr/lib/tryx-panorama-manager/tryx-panorama-runtime
+Private background runtime queried by the client.
+.TP
+.I ${XDG_STATE_HOME:-$HOME/.local/state}/tryx-panorama-manager-downgrade-v10/runtime-downgrade-v10.json
+Owner-only durable preparation marker for the explicit released-v10 downgrade
+workflow. Do not edit or remove it manually; use
+.BR "tryx abort-downgrade-v10" .
+.TP
+.I /usr/lib/systemd/user/tryx-panorama.service
+Systemd user unit that an operator may start separately when required.
+.SH EXAMPLES
+.nf
+tryx status
+tryx --json capabilities
+tryx operations
+tryx prepare-downgrade-v10
+tryx abort-downgrade-v10
+tryx support-report --output-dir /home/user/support
+.fi
+.SH BUGS
+Report issues at
+.UR https://github.com/DXVSI/Tryx-Linux-GUI/issues
+.UE .
+.SH SEE ALSO
+.BR tryx-panorama-manager (1),
+.BR systemctl (1),
+.BR systemd.user (5)

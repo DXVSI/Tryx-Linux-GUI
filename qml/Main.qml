@@ -16,13 +16,16 @@ ApplicationWindow {
     required property var systemMetrics
     required property var settings
     required property var windowChrome
+    required property var supportBundle
+    required property var cacheManagement
     required property bool quickSmokeTest
+    required property bool autostartRequested
 
     width: 1420
     height: 900
     minimumWidth: 1060
     minimumHeight: 700
-    visible: !quickSmokeTest
+    visible: !quickSmokeTest && !autostartRequested
     title: qsTr("TRYX Panorama Manager")
     flags: Qt.Window | Qt.FramelessWindowHint
 
@@ -30,12 +33,160 @@ ApplicationWindow {
     Material.accent: "#def750"
     color: "#15181b"
 
-    onClosing: close => {
-        if (window.windowChrome.handleCloseRequest())
-            close.accepted = false
+    property int currentPage: 0
+    property bool approvedCloseBypass: false
+    property int guardedIntent: DirtyDraftGuard.NoIntent
+    property var guardedTarget
+    property string draftGuardMessage: ""
+    readonly property bool displayLeaveGuardRequired:
+        panoramaPage.hasUnsavedChanges || panoramaPage.applyPending ||
+        panoramaPage.applyUnresolved
+
+    Binding {
+        target: window.systemMetrics
+        property: "dashboardActive"
+        value: window.visible &&
+               window.visibility !== Window.Minimized &&
+               window.currentPage === 0
     }
 
-    property int currentPage: 0
+    function requestDirtyDraftIntent(intent, target) {
+        if (!dirtyDraftGuard.request(intent, target))
+            return false
+        guardedIntent = intent
+        guardedTarget = target
+        draftGuardMessage = ""
+        return true
+    }
+
+    function requestPage(targetPage) {
+        if (guardedIntent !== DirtyDraftGuard.NoIntent)
+            return
+        if (targetPage < 0 || targetPage > 2 ||
+            targetPage === currentPage) {
+            return
+        }
+        if (displayLeaveGuardRequired) {
+            requestDirtyDraftIntent(DirtyDraftGuard.RouteIntent,
+                                    targetPage)
+            return
+        }
+        currentPage = targetPage
+    }
+
+    function continueGuardedIntent(intent, target) {
+        if (displayLeaveGuardRequired) {
+            requestDirtyDraftIntent(intent, target)
+            return
+        }
+        switch (intent) {
+        case DirtyDraftGuard.RouteIntent:
+            requestPage(target)
+            break
+        case DirtyDraftGuard.HideToTrayIntent:
+            if (!windowChrome.hideWindowToTray()) {
+                approvedCloseBypass = true
+                Qt.callLater(function() {
+                    windowChrome.closeWindow()
+                })
+            }
+            break
+        case DirtyDraftGuard.WindowCloseIntent:
+            approvedCloseBypass = true
+            windowChrome.closeWindow()
+            break
+        case DirtyDraftGuard.ExplicitQuitIntent:
+            windowChrome.approveExplicitQuit()
+            break
+        }
+    }
+
+    function discardAndContinue(intent, target) {
+        panoramaPage.discardChanges()
+        if (panoramaPage.hasUnsavedChanges) {
+            guardedIntent = DirtyDraftGuard.NoIntent
+            guardedTarget = undefined
+            draftGuardMessage =
+                qsTr("The display draft could not be discarded.")
+            Qt.callLater(function() {
+                requestDirtyDraftIntent(intent, target)
+            })
+            return
+        }
+
+        guardedIntent = DirtyDraftGuard.NoIntent
+        guardedTarget = undefined
+        draftGuardMessage = ""
+        Qt.callLater(function() {
+            continueGuardedIntent(intent, target)
+        })
+    }
+
+    function finishGuardedApply(outcome, message) {
+        if (guardedIntent === DirtyDraftGuard.NoIntent)
+            return
+        if (outcome === "Succeeded" &&
+            !panoramaPage.hasUnsavedChanges &&
+            !panoramaPage.applyUnresolved) {
+            const intent = guardedIntent
+            const target = guardedTarget
+            guardedIntent = DirtyDraftGuard.NoIntent
+            guardedTarget = undefined
+            draftGuardMessage = ""
+            dirtyDraftGuard.complete()
+            Qt.callLater(function() {
+                continueGuardedIntent(intent, target)
+            })
+            return
+        }
+
+        if (outcome === "Succeeded") {
+            draftGuardMessage = qsTr(
+                "Display changes remain after Apply. Review them before continuing.")
+        } else if (message && message.length > 0) {
+            draftGuardMessage = message
+        } else if (!panoramaPage.applyUnresolved) {
+            draftGuardMessage = qsTr(
+                "Display changes were not applied. Review the draft and try again.")
+        }
+    }
+
+    function requestExplicitQuit() {
+        if (guardedIntent !== DirtyDraftGuard.NoIntent)
+            return
+        if (displayLeaveGuardRequired) {
+            requestDirtyDraftIntent(
+                DirtyDraftGuard.ExplicitQuitIntent, -1)
+            return
+        }
+        windowChrome.approveExplicitQuit()
+    }
+
+    onClosing: close => {
+        if (approvedCloseBypass) {
+            approvedCloseBypass = false
+            if (!displayLeaveGuardRequired) {
+                close.accepted = true
+                return
+            }
+        }
+        if (guardedIntent !== DirtyDraftGuard.NoIntent) {
+            close.accepted = false
+            return
+        }
+        if (!displayLeaveGuardRequired) {
+            if (windowChrome.handleCloseRequest())
+                close.accepted = false
+            return
+        }
+
+        close.accepted = false
+        const intent = windowChrome.closeWouldHideToTray()
+                     ? DirtyDraftGuard.HideToTrayIntent
+                     : DirtyDraftGuard.WindowCloseIntent
+        requestDirtyDraftIntent(intent, -1)
+    }
+
     readonly property string pageTitle:
         currentPage === 0 ? qsTr("Dashboard")
         : currentPage === 1 ? qsTr("Display")
@@ -195,14 +346,14 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         text: qsTr("Dashboard")
                         selected: window.currentPage === 0
-                        onClicked: window.currentPage = 0
+                        onClicked: window.requestPage(0)
                     }
 
                     NavButton {
                         Layout.fillWidth: true
                         text: qsTr("Display")
                         selected: window.currentPage === 1
-                        onClicked: window.currentPage = 1
+                        onClicked: window.requestPage(1)
                     }
 
                     Item { Layout.fillHeight: true }
@@ -211,7 +362,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         text: qsTr("Settings")
                         selected: window.currentPage === 2
-                        onClicked: window.currentPage = 2
+                        onClicked: window.requestPage(2)
                     }
 
                     Rectangle {
@@ -315,22 +466,53 @@ ApplicationWindow {
                         runtime: window.runtime
                         systemMetrics: window.systemMetrics
                         onOpenDisplayRequested:
-                            window.currentPage = 1
+                            window.requestPage(1)
                     }
 
                     PanoramaPage {
+                        id: panoramaPage
+                        objectName: "panoramaPage"
+
                         runtime: window.runtime
                         editor: window.mediaEditor
                         deviceMedia: window.deviceMedia
+                        onApplyFinished: (outcome, message) =>
+                            window.finishGuardedApply(outcome, message)
                     }
 
                     SettingsPage {
                         runtime: window.runtime
                         settings: window.settings
                         firmware: window.firmware
+                        windowChrome: window.windowChrome
+                        supportBundle: window.supportBundle
+                        cacheManagement: window.cacheManagement
                     }
                 }
             }
+        }
+    }
+
+    DirtyDraftGuard {
+        id: dirtyDraftGuard
+
+        applyEnabled: panoramaPage.canApplyChanges
+        applying: panoramaPage.applyPending
+        unresolved: panoramaPage.applyUnresolved
+        unresolvedMessage:
+            window.draftGuardMessage.length > 0
+            ? window.draftGuardMessage
+            : panoramaPage.applyBlockReason
+        onApplyRequested: {
+            window.draftGuardMessage = ""
+            panoramaPage.applyChanges()
+        }
+        onDiscardRequested: (intent, target) =>
+            window.discardAndContinue(intent, target)
+        onStayRequested: {
+            window.guardedIntent = DirtyDraftGuard.NoIntent
+            window.guardedTarget = undefined
+            window.draftGuardMessage = ""
         }
     }
 
@@ -362,6 +544,13 @@ ApplicationWindow {
             text: toast.message
             color: "#ffffff"
             wrapMode: Text.WordWrap
+        }
+    }
+
+    Connections {
+        target: window.windowChrome
+        function onExplicitQuitRequested() {
+            window.requestExplicitQuit()
         }
     }
 

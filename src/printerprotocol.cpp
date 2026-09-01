@@ -1,4 +1,7 @@
 #include "printerprotocol.h"
+#include "printermediaidentity.h"
+#include "runtimecontract.h"
+#include "turrismediaformat.h"
 
 #include "transport.pb.h"
 #include "configuration.pb.h"
@@ -38,15 +41,15 @@ std::optional<PrinterProductProfile> printerProductProfileForId(
     case 0x1021:
         return PrinterProductProfile{
             0x1021, 2240, 1080, PrinterIdleMode::OverlayLayout,
-            true, true, true, true, true};
+            true, true, true, true, true, true};
     case 0x1011:
         return PrinterProductProfile{
             0x1011, 2240, 1080, PrinterIdleMode::OverlayLayout,
-            true, true, true, true, false};
+            true, true, true, true, true, false};
     case 0x2011:
         return PrinterProductProfile{
             0x2011, 1280, 720, PrinterIdleMode::TransferOnly,
-            true, false, false, false, false};
+            true, false, false, false, false, false};
     default:
         return std::nullopt;
     }
@@ -77,10 +80,6 @@ constexpr quint16 kPaseProductId = 0x1021;
 constexpr quint16 kPanoProductId = 0x1011;
 constexpr quint16 kTurrisProductId = 0x2011;
 constexpr quint64 kTurrisTransferTrackId = 981521;
-constexpr quint32 kTurrisMediaMagic = 0x4d584844;
-constexpr qsizetype kMaxTurrisMediaMetadataSize = 4096;
-constexpr char kTurrisMediaDescription[] =
-    "Tryx media header v1, fps=30, size=1280x720";
 constexpr int kPollCancellationSliceMs = 100;
 constexpr int kMaxSkippedResponseFrames = 256;
 constexpr qsizetype kMaxSkippedResponseBytes = 4 * 1024 * 1024;
@@ -1833,282 +1832,90 @@ QString normalizedMediaReference(const std::string &value) {
     return reference.trimmed();
 }
 
-bool isSafeDeviceMediaName(const QString &fileName) {
-    if (fileName.isEmpty() || fileName.size() > 128 ||
-        fileName.startsWith(QLatin1Char('.')) ||
-        fileName.contains(QLatin1Char('/')) || fileName.contains(QLatin1Char('\\'))) {
-        return false;
-    }
-
-    for (const QChar character : fileName) {
-        if (character.isLetterOrNumber() || character == QLatin1Char('.') ||
-            character == QLatin1Char('_') || character == QLatin1Char('-')) {
-            continue;
+bool decodePaseActiveLayout(
+    const panorama::wire::v1::WorkConfiguration &work,
+    QString *screenMode, QString *playMode,
+    QStringList *media, QString *errorMessage) {
+    if (!screenMode || !playMode || !media) {
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "TRYX user configuration has no active-layout output");
         }
         return false;
     }
+
+    QString decodedScreenMode;
+    QString decodedPlayMode;
+    QStringList decodedMedia;
+    switch (work.media_mode()) {
+    case panorama::wire::v1::WorkConfiguration::MEDIA_DUAL:
+        decodedScreenMode = QStringLiteral("Screen Splitting");
+        decodedPlayMode = QStringLiteral("Single");
+        decodedMedia = {
+            normalizedMediaReference(
+                work.dual_mode_left_media_file()),
+            normalizedMediaReference(
+                work.dual_mode_right_media_file())};
+        break;
+    case panorama::wire::v1::WorkConfiguration::MEDIA_KALEIDOSCOPE:
+        decodedScreenMode = QStringLiteral("Kaleidoscope");
+        decodedPlayMode = QStringLiteral("Single");
+        decodedMedia = {
+            normalizedMediaReference(
+                work.kaleidoscope_media_file())};
+        break;
+    case panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE:
+        decodedScreenMode = QStringLiteral("Full Screen");
+        switch (work.loop_mode()) {
+        case panorama::wire::v1::WorkConfiguration::LOOP_ALL:
+            decodedPlayMode = QStringLiteral("Loop");
+            break;
+        case panorama::wire::v1::WorkConfiguration::LOOP_RANDOM:
+            decodedPlayMode = QStringLiteral("Shuffle");
+            break;
+        case panorama::wire::v1::WorkConfiguration::LOOP_SINGLE:
+            decodedPlayMode = QStringLiteral("Single");
+            break;
+        default:
+            if (errorMessage) {
+                *errorMessage = QObject::tr(
+                    "TRYX user configuration has an unknown playback mode");
+            }
+            return false;
+        }
+        decodedMedia = {
+            normalizedMediaReference(
+                work.single_mode_media_file())};
+        break;
+    default:
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "TRYX user configuration has an unknown screen mode");
+        }
+        return false;
+    }
+
+    *screenMode = decodedScreenMode;
+    *playMode = decodedPlayMode;
+    *media = decodedMedia;
     return true;
 }
 
-bool isSafeUploadFileName(const QString &fileName) {
-    if (!isSafeDeviceMediaName(fileName)) {
-        return false;
-    }
+bool isSafeDeviceMediaName(const QString &fileName) {
+    return tryx::printer_media_identity::isSafePrinterDeviceMediaName(
+        fileName);
+}
 
-    const QString lowerName = fileName.toLower();
-    for (const QString &suffix : {
-             QStringLiteral(".mp4"),
-             QStringLiteral(".png"),
-             QStringLiteral(".gif"),
-             QStringLiteral(".mp4.h264_2240x1080"),
-             QStringLiteral(".png.h264_2240x1080"),
-             QStringLiteral(".gif.h264_2240x1080"),
-             QStringLiteral(".mp4.h264_1280x720"),
-             QStringLiteral(".png.h264_1280x720"),
-             QStringLiteral(".gif.h264_1280x720"),
-         }) {
-        if (lowerName.endsWith(suffix)) {
-            return true;
-        }
-    }
-    return false;
+bool isSafeUploadFileName(const QString &fileName) {
+    return tryx::printer_media_identity::isSafePrinterUploadMediaName(
+        fileName);
 }
 
 bool isSafeUploadFileNameForProfile(
     const QString &fileName,
     const PrinterProductProfile &productProfile) {
-    if (!isSafeUploadFileName(fileName)) {
-        return false;
-    }
-    const bool turrisMedia = fileName.endsWith(
-        QStringLiteral(".h264_1280x720"), Qt::CaseInsensitive);
-    return productProfile.productId == kTurrisProductId
-        ? turrisMedia
-        : !turrisMedia;
-}
-
-struct TurrisMediaMetadata {
-    std::array<bool, 9> seen{};
-    quint64 magic = 0;
-    QByteArray description;
-    quint64 kind = 0;
-    quint64 headerVersion = 0;
-    quint64 framesPerSecond = 0;
-    quint64 width = 0;
-    quint64 height = 0;
-    quint64 frameCount = 0;
-};
-
-bool takeCanonicalProtoVarint(const QByteArray &bytes, qsizetype *offset,
-                              quint64 *value) {
-    if (!offset || !value || *offset < 0 || *offset >= bytes.size()) {
-        return false;
-    }
-
-    quint64 decoded = 0;
-    for (int index = 0; index < 10; ++index) {
-        if (*offset >= bytes.size()) {
-            return false;
-        }
-        const quint8 byte = static_cast<quint8>(bytes.at((*offset)++));
-        const quint8 payload = byte & 0x7fU;
-        if (index == 9 && payload > 1U) {
-            return false;
-        }
-        decoded |= static_cast<quint64>(payload) << (index * 7);
-        if ((byte & 0x80U) == 0) {
-            int canonicalSize = 1;
-            for (quint64 remaining = decoded; remaining >= 0x80U;
-                 remaining >>= 7U) {
-                ++canonicalSize;
-            }
-            if (canonicalSize != index + 1) {
-                return false;
-            }
-            *value = decoded;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool parseTurrisMediaMetadata(const QByteArray &bytes,
-                              TurrisMediaMetadata *metadata,
-                              QString *errorMessage) {
-    const auto reject = [errorMessage](const QString &reason) {
-        if (errorMessage) {
-            *errorMessage = reason;
-        }
-        return false;
-    };
-    if (!metadata || bytes.isEmpty() ||
-        bytes.size() > kMaxTurrisMediaMetadataSize) {
-        return reject(QStringLiteral("metadata size is invalid"));
-    }
-
-    qsizetype offset = 0;
-    while (offset < bytes.size()) {
-        quint64 key = 0;
-        if (!takeCanonicalProtoVarint(bytes, &offset, &key) || key == 0) {
-            return reject(QStringLiteral("metadata field key is invalid"));
-        }
-        const quint64 fieldNumber = key >> 3U;
-        const quint64 wireType = key & 0x07U;
-        if (fieldNumber < 1 || fieldNumber > 8 ||
-            metadata->seen.at(static_cast<size_t>(fieldNumber))) {
-            return reject(QStringLiteral(
-                "metadata contains an unknown or duplicate field"));
-        }
-
-        if (fieldNumber == 2) {
-            if (wireType != 2) {
-                return reject(QStringLiteral(
-                    "metadata description has the wrong wire type"));
-            }
-            quint64 length = 0;
-            if (!takeCanonicalProtoVarint(bytes, &offset, &length) ||
-                length != sizeof(kTurrisMediaDescription) - 1 ||
-                length > static_cast<quint64>(bytes.size() - offset)) {
-                return reject(QStringLiteral(
-                    "metadata description length is invalid"));
-            }
-            metadata->description = bytes.mid(
-                offset, static_cast<qsizetype>(length));
-            offset += static_cast<qsizetype>(length);
-        } else {
-            if (wireType != 0) {
-                return reject(QStringLiteral(
-                    "metadata numeric field has the wrong wire type"));
-            }
-            quint64 fieldValue = 0;
-            if (!takeCanonicalProtoVarint(bytes, &offset, &fieldValue)) {
-                return reject(QStringLiteral(
-                    "metadata numeric field is invalid"));
-            }
-            switch (fieldNumber) {
-            case 1:
-                metadata->magic = fieldValue;
-                break;
-            case 3:
-                metadata->kind = fieldValue;
-                break;
-            case 4:
-                metadata->headerVersion = fieldValue;
-                break;
-            case 5:
-                metadata->framesPerSecond = fieldValue;
-                break;
-            case 6:
-                metadata->width = fieldValue;
-                break;
-            case 7:
-                metadata->height = fieldValue;
-                break;
-            case 8:
-                metadata->frameCount = fieldValue;
-                break;
-            default:
-                return reject(QStringLiteral("metadata field is invalid"));
-            }
-        }
-        metadata->seen.at(static_cast<size_t>(fieldNumber)) = true;
-    }
-
-    for (size_t fieldNumber = 1; fieldNumber < metadata->seen.size();
-         ++fieldNumber) {
-        if (!metadata->seen.at(fieldNumber)) {
-            return reject(QStringLiteral("metadata is missing a field"));
-        }
-    }
-    return true;
-}
-
-bool validateTurrisMediaBlob(QFile *file, qint64 declaredSize,
-                             const QString &remoteFileName,
-                             QString *errorMessage) {
-    const auto reject = [errorMessage](const QString &reason) {
-        if (errorMessage) {
-            *errorMessage = QObject::tr(
-                "Turris media container is invalid: %1")
-                                .arg(reason);
-        }
-        return false;
-    };
-    if (!file || declaredSize < 8 || !file->seek(0)) {
-        return reject(QStringLiteral("container header is unavailable"));
-    }
-
-    const QByteArray lengthBytes = file->read(4);
-    if (lengthBytes.size() != 4) {
-        return reject(QStringLiteral("metadata length is truncated"));
-    }
-    const auto byteAt = [&lengthBytes](qsizetype index) {
-        return static_cast<quint32>(
-            static_cast<quint8>(lengthBytes.at(index)));
-    };
-    const quint32 metadataLength =
-        byteAt(0) | (byteAt(1) << 8U) | (byteAt(2) << 16U) |
-        (byteAt(3) << 24U);
-    const qint64 rawPayloadOffset =
-        4 + static_cast<qint64>(metadataLength);
-    if (metadataLength == 0 ||
-        metadataLength >
-            static_cast<quint32>(kMaxTurrisMediaMetadataSize) ||
-        rawPayloadOffset > declaredSize - 4) {
-        return reject(QStringLiteral("metadata length is out of bounds"));
-    }
-
-    const QByteArray metadataBytes = file->read(metadataLength);
-    if (metadataBytes.size() != static_cast<qsizetype>(metadataLength)) {
-        return reject(QStringLiteral("metadata is truncated"));
-    }
-    TurrisMediaMetadata metadata;
-    QString metadataError;
-    if (!parseTurrisMediaMetadata(metadataBytes, &metadata,
-                                  &metadataError)) {
-        return reject(metadataError);
-    }
-
-    const QString lowerName = remoteFileName.toLower();
-    quint64 expectedKind = 0;
-    if (lowerName.endsWith(
-            QStringLiteral(".png.h264_1280x720"))) {
-        expectedKind = 2;
-    } else if (lowerName.endsWith(
-                   QStringLiteral(".mp4.h264_1280x720")) ||
-               lowerName.endsWith(
-                   QStringLiteral(".gif.h264_1280x720"))) {
-        expectedKind = 4;
-    } else {
-        return reject(QStringLiteral("file name does not identify media kind"));
-    }
-
-    if (metadata.magic != kTurrisMediaMagic ||
-        metadata.description != QByteArray(kTurrisMediaDescription) ||
-        metadata.kind != expectedKind || metadata.headerVersion != 1 ||
-        metadata.framesPerSecond != 30 || metadata.width != 1280 ||
-        metadata.height != 720 || metadata.frameCount == 0 ||
-        metadata.frameCount > std::numeric_limits<quint32>::max() ||
-        (metadata.kind == 2 && metadata.frameCount != 1)) {
-        return reject(QStringLiteral("metadata values do not match the profile"));
-    }
-
-    const QByteArray rawPrefix = file->read(5);
-    const bool startsWithThreeByteAnnexB =
-        rawPrefix.size() >= 4 && rawPrefix.at(0) == '\0' &&
-        rawPrefix.at(1) == '\0' && rawPrefix.at(2) == '\1';
-    const bool startsWithFourByteAnnexB =
-        rawPrefix.size() >= 5 && rawPrefix.at(0) == '\0' &&
-        rawPrefix.at(1) == '\0' && rawPrefix.at(2) == '\0' &&
-        rawPrefix.at(3) == '\1';
-    if (!startsWithThreeByteAnnexB && !startsWithFourByteAnnexB) {
-        return reject(QStringLiteral(
-            "raw payload does not start with an Annex-B NAL unit"));
-    }
-    if (!file->seek(0)) {
-        return reject(QStringLiteral("container cannot be rewound"));
-    }
-    return true;
+    return tryx::printer_media_identity::
+        printerMediaNameMatchesProfile(fileName, productProfile);
 }
 
 struct MediaPullCandidate {
@@ -3219,6 +3026,7 @@ public:
     bool bootstrapSession(const QString &devicePath,
                           const OperationContext &context,
                           panorama::wire::v1::Response *deviceInfoResponse,
+                          panorama::wire::v1::Response *sysConfigResponse,
                           QString *errorMessage) {
         panorama::wire::v1::Request deviceInfoRequest;
         deviceInfoRequest.mutable_header()->set_version(1);
@@ -3524,7 +3332,8 @@ public:
              &makeBootstrapFrame,
              &readExactBootstrapResponse](
                 const panorama::wire::v1::Request &request,
-                panorama::wire::v1::Response::BodyCase expectedBody) {
+                panorama::wire::v1::Response::BodyCase expectedBody,
+                panorama::wire::v1::Response *result) {
                 if (isCancelled(context)) {
                     setCancelledError(errorMessage);
                     return false;
@@ -3551,15 +3360,17 @@ public:
                 }
                 return readExactBootstrapResponse(
                     expectedBody, transactionTimeoutMs_,
-                    nullptr);
+                    result);
             };
 
         if (!executeBootstrapExchangeOnce(
                 sysConfigRequest,
-                panorama::wire::v1::Response::kSystemConfiguration) ||
+                panorama::wire::v1::Response::kSystemConfiguration,
+                sysConfigResponse) ||
             !executeBootstrapExchangeOnce(
                 deviceAuthRequest,
-                panorama::wire::v1::Response::kDeviceAuthentication)) {
+                panorama::wire::v1::Response::kDeviceAuthentication,
+                nullptr)) {
             closeDevice();
             return false;
         }
@@ -5187,6 +4998,86 @@ PrinterProtocol::DeviceInfo makePrinterDeviceInfo(
     return info;
 }
 
+bool normalizedReportedProduct(
+    const std::string &rawProduct, QString *reportedProduct) {
+    if (!reportedProduct || rawProduct.empty()) {
+        return false;
+    }
+    const QString decoded = QString::fromUtf8(
+        rawProduct.data(), static_cast<qsizetype>(rawProduct.size()));
+    if (decoded.toUtf8() != QByteArray(
+            rawProduct.data(), static_cast<qsizetype>(rawProduct.size()))) {
+        return false;
+    }
+    for (const uint codePoint : decoded.toUcs4()) {
+        const QChar::Category category = QChar::category(codePoint);
+        const bool forbiddenCategory =
+            category == QChar::Other_Control ||
+            category == QChar::Other_Format ||
+            category == QChar::Separator_Line ||
+            category == QChar::Separator_Paragraph;
+        const bool forbiddenCodePoint =
+            codePoint <= 0x1fU ||
+            (codePoint >= 0x7fU && codePoint <= 0x9fU) ||
+            codePoint == 0x061cU || codePoint == 0x200eU ||
+            codePoint == 0x200fU ||
+            (codePoint >= 0x2028U && codePoint <= 0x202eU) ||
+            (codePoint >= 0x2066U && codePoint <= 0x206fU);
+        if (forbiddenCategory || forbiddenCodePoint) {
+            return false;
+        }
+    }
+    const QString normalized = decoded.trimmed();
+    if (normalized.isEmpty() || normalized.size() > 128) {
+        return false;
+    }
+    *reportedProduct = normalized;
+    return true;
+}
+
+PrinterProtocol::DeviceSpecifications makeDeviceSpecifications(
+    const panorama::wire::v1::SystemConfiguration &configuration) {
+    PrinterProtocol::DeviceSpecifications specifications;
+    if (!configuration.has_reported_product() ||
+        !configuration.has_board_summary() ||
+        !configuration.board_summary().has_display_panel() ||
+        !configuration.board_summary().display_panel().has_kind() ||
+        !configuration.has_video_output() ||
+        !configuration.video_output().has_width() ||
+        !configuration.video_output().has_height() ||
+        !configuration.has_runtime_behavior() ||
+        !configuration.runtime_behavior().has_usb_auto_keepalive() ||
+        !normalizedReportedProduct(
+            configuration.reported_product(),
+            &specifications.reportedProductName)) {
+        return {};
+    }
+
+    const quint32 width = configuration.video_output().width();
+    const quint32 height = configuration.video_output().height();
+    if (width == 0 || width > 16384 || height == 0 || height > 16384) {
+        return {};
+    }
+
+    switch (configuration.board_summary().display_panel().kind()) {
+    case panorama::wire::v1::DeviceDisplayPanelSummary::DISPLAY_PANEL_LCD:
+        specifications.screenType = QStringLiteral("LCD");
+        break;
+    case panorama::wire::v1::DeviceDisplayPanelSummary::DISPLAY_PANEL_OLED:
+        specifications.screenType = QStringLiteral("OLED");
+        break;
+    default:
+        return {};
+    }
+
+    specifications.videoOutputWidth = width;
+    specifications.videoOutputHeight = height;
+    specifications.usbAutoKeepalive =
+        configuration.runtime_behavior().usb_auto_keepalive();
+    specifications.valid = true;
+    return specifications;
+}
+
 struct PaseMetricDefinition {
     const char *name;
     const char *title;
@@ -5221,22 +5112,46 @@ const PaseMetricDefinition *paseMetricDefinition(const QString &name) {
     return nullptr;
 }
 
+bool paseOverlayMetricSelectionIsValid(
+    const PrinterProtocol::PaseOverlayConfig &overlay,
+    QString *errorMessage) {
+    const auto areaIsValid = [](const QStringList &metrics) {
+        if (metrics.size() > 3) {
+            return false;
+        }
+        QSet<QString> seen;
+        for (const QString &metric : metrics) {
+            if (metric.isEmpty() || seen.contains(metric) ||
+                !paseMetricDefinition(metric)) {
+                return false;
+            }
+            seen.insert(metric);
+        }
+        return true;
+    };
+    if (areaIsValid(overlay.left.metrics) &&
+        areaIsValid(overlay.right.metrics)) {
+        return true;
+    }
+    if (errorMessage) {
+        *errorMessage = QObject::tr(
+            "TRYX metric selections must contain at most three unique canonical metrics per area");
+    }
+    return false;
+}
+
 QList<const PaseMetricDefinition *> paseSelectedMetrics(
     const PrinterProtocol::PaseOverlayAreaConfig &area) {
     QList<const PaseMetricDefinition *> selected;
     QSet<QString> seen;
     for (const QString &name : area.metrics) {
-        const QString normalized = name.trimmed();
         const PaseMetricDefinition *definition =
-            paseMetricDefinition(normalized);
-        if (!definition || seen.contains(normalized)) {
+            paseMetricDefinition(name);
+        if (!definition || seen.contains(name)) {
             continue;
         }
-        seen.insert(normalized);
+        seen.insert(name);
         selected.append(definition);
-        if (selected.size() == 3) {
-            break;
-        }
     }
     return selected;
 }
@@ -5385,7 +5300,8 @@ void appendPaseOverlayArea(
             configurePaseLabel(
                 group->add_labels(), valueId, 0, 0, 160,
                 area.textColor,
-                now.time().toString(QStringLiteral("HH:mm")));
+                tryxFormatLocalTime(
+                    now.time(), overlay.timeFormat, QLocale()));
             continue;
         }
 
@@ -5400,12 +5316,17 @@ void appendPaseOverlayArea(
                     !area.initialValues.at(initialIndex).isEmpty()
                 ? area.initialValues.at(initialIndex)
                 : QStringLiteral("--");
+        const bool temperatureMetric =
+            definition.groupId == 100 || definition.groupId == 104;
+        const QString defaultUnit = temperatureMetric
+            ? tryxTemperatureUnitSymbol(overlay.temperatureUnit)
+            : QString::fromUtf8(definition.unit);
         const QString initialUnit =
             initialIndex >= 0 &&
                     initialIndex < area.initialUnits.size() &&
                     !area.initialUnits.at(initialIndex).isEmpty()
                 ? area.initialUnits.at(initialIndex)
-                : QString::fromUtf8(definition.unit);
+                : defaultUnit;
         configurePaseLabel(group->add_labels(), valueId, 0, 0,
                            160, area.textColor, initialValue);
         configurePaseLabel(group->add_labels(), unitId, 0, 0, 36,
@@ -5500,7 +5421,7 @@ PrinterProtocol::Result PrinterProtocol::startDisplaySession(
     const QString &devicePath, const OperationContext &context) {
     QString error;
     if (!impl_->openSessionTransport(devicePath, context, &error)) {
-        return {false, error, {}};
+        return {false, error, {}, {}};
     }
     if (productProfile_.idleMode == PrinterIdleMode::TransferOnly) {
         const DeviceInfo deviceInfo =
@@ -5511,28 +5432,33 @@ PrinterProtocol::Result PrinterProtocol::startDisplaySession(
                 false,
                 QObject::tr(
                     "TRYX USB operation was cancelled because the device state changed"),
-                {}};
+                {}, {}};
         }
         if (context.onDeviceInfoReady) {
             context.onDeviceInfoReady();
         }
-        return {true, {}, deviceInfo};
+        return {true, {}, deviceInfo, {}};
     }
 
     panorama::wire::v1::Response bootstrapResponse;
-    if (!impl_->bootstrapSession(devicePath, context, &bootstrapResponse,
-                                 &error)) {
-        return {false, error, {}};
+    panorama::wire::v1::Response sysConfigResponse;
+    if (!impl_->bootstrapSession(
+            devicePath, context, &bootstrapResponse,
+            &sysConfigResponse, &error)) {
+        return {false, error, {}, {}};
     }
     if (productProfile_.idleMode == PrinterIdleMode::OverlayLayout &&
         !sendRunConfigTrigger(devicePath, &error, context, nullptr)) {
         impl_->closeDevice();
-        return {false, error, {}};
+        return {false, error, {}, {}};
     }
     const DeviceInfo deviceInfo = makePrinterDeviceInfo(
         devicePath, bootstrapResponse.device_information());
+    const DeviceSpecifications deviceSpecifications =
+        makeDeviceSpecifications(
+            sysConfigResponse.system_configuration());
     impl_->closeDisplayActivationCycle();
-    return {true, {}, deviceInfo};
+    return {true, {}, deviceInfo, deviceSpecifications};
 }
 
 PrinterProtocol::Result PrinterProtocol::readDeviceInfo(
@@ -5543,11 +5469,11 @@ PrinterProtocol::Result PrinterProtocol::readDeviceInfo(
                 false,
                 QObject::tr(
                     "TRYX USB operation was cancelled because the device state changed"),
-                {}};
+                {}, {}};
         }
         return {
             true, {},
-            makeTransferOnlyDeviceInfo(devicePath, productProfile_)};
+            makeTransferOnlyDeviceInfo(devicePath, productProfile_), {}};
     }
 
     panorama::wire::v1::Request request;
@@ -5556,10 +5482,12 @@ PrinterProtocol::Result PrinterProtocol::readDeviceInfo(
     QString error;
     if (!impl_->execute(&request, panorama::wire::v1::Response::kDeviceInformation,
                         &response, devicePath, context, &error)) {
-        return {false, error, {}};
+        return {false, error, {}, {}};
     }
 
-    return {true, {}, makePrinterDeviceInfo(devicePath, response.device_information())};
+    return {true, {},
+            makePrinterDeviceInfo(devicePath, response.device_information()),
+            {}};
 }
 
 PrinterProtocol::MediaListResult PrinterProtocol::readMediaList(
@@ -5605,6 +5533,15 @@ PrinterProtocol::MediaPullResult PrinterProtocol::pullUserMedia(
         result.fileSize = expectedSize;
         result.error = unsupportedCapabilityError(
             productProfile_, QStringLiteral("media pull operations"));
+        return result;
+    }
+    if (!isSafeUploadFileNameForProfile(
+            mediaName, productProfile_)) {
+        MediaPullResult result;
+        result.mediaName = mediaName;
+        result.fileSize = expectedSize;
+        result.error = QObject::tr(
+            "Selected media geometry is not supported by this device");
         return result;
     }
     return impl_->pullUserMedia(
@@ -5719,6 +5656,19 @@ PrinterProtocol::readUserMediaReferences(
 
     const auto &configuration =
         configResponse.user_configuration();
+    if (!configuration.has_work_config() ||
+        !decodePaseActiveLayout(
+            configuration.work_config(),
+            &result.activeScreenMode,
+            &result.activePlayMode,
+            &result.activeMedia,
+            &result.error)) {
+        if (result.error.isEmpty()) {
+            result.error = QObject::tr(
+                "TRYX user configuration is missing work configuration");
+        }
+        return result;
+    }
     const auto &work = configuration.work_config();
     const auto &filter = configuration.filter_config();
     result.references = {
@@ -6243,8 +6193,8 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
                currentStatus.st_ctim.tv_nsec == initialFileStatus.st_ctim.tv_nsec;
     };
     if (productProfile_.productId == kTurrisProductId) {
-        if (!validateTurrisMediaBlob(&file, declaredSize,
-                                     remoteFileName, errorMessage)) {
+        if (!tryx::turris_media::validateBlob(
+                &file, declaredSize, remoteFileName, errorMessage)) {
             if (mutationDetails) {
                 mutationDetails->outcome = MutationOutcome::Rejected;
             }
@@ -6562,42 +6512,11 @@ PrinterProtocol::readPaseDisplayState(
         result.state.standbyMedia = QString::fromStdString(
             config.standby_config().media_file());
     }
-    switch (work.media_mode()) {
-    case panorama::wire::v1::WorkConfiguration::MEDIA_DUAL:
-        result.state.screenMode = QStringLiteral("Screen Splitting");
-        result.state.playMode = QStringLiteral("Single");
-        result.state.media = {
-            QString::fromStdString(
-                work.dual_mode_left_media_file()),
-            QString::fromStdString(
-                work.dual_mode_right_media_file())};
-        break;
-    case panorama::wire::v1::WorkConfiguration::MEDIA_KALEIDOSCOPE:
-        result.state.screenMode = QStringLiteral("Kaleidoscope");
-        result.state.playMode = QStringLiteral("Single");
-        result.state.media = {
-            QString::fromStdString(
-                work.kaleidoscope_media_file())};
-        break;
-    case panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE:
-    default:
-        result.state.screenMode = QStringLiteral("Full Screen");
-        switch (work.loop_mode()) {
-        case panorama::wire::v1::WorkConfiguration::LOOP_ALL:
-            result.state.playMode = QStringLiteral("Loop");
-            break;
-        case panorama::wire::v1::WorkConfiguration::LOOP_RANDOM:
-            result.state.playMode = QStringLiteral("Shuffle");
-            break;
-        case panorama::wire::v1::WorkConfiguration::LOOP_SINGLE:
-        default:
-            result.state.playMode = QStringLiteral("Single");
-            break;
-        }
-        result.state.media = {
-            QString::fromStdString(
-                work.single_mode_media_file())};
-        break;
+    if (!decodePaseActiveLayout(
+            work, &result.state.screenMode,
+            &result.state.playMode, &result.state.media,
+            &result.error)) {
+        return result;
     }
     result.success = true;
     return result;
@@ -6937,6 +6856,10 @@ bool PrinterProtocol::sendPaseMetricBatch(
         }
         return false;
     }
+    if (!paseOverlayMetricSelectionIsValid(
+            overlay, errorMessage)) {
+        return false;
+    }
     const QList<const PaseMetricDefinition *> leftSelected =
         paseSelectedMetrics(overlay.left);
     const QList<const PaseMetricDefinition *> rightSelected =
@@ -6951,7 +6874,7 @@ bool PrinterProtocol::sendPaseMetricBatch(
     auto *batch = request.mutable_metric_batch();
     const QDateTime now = QDateTime::currentDateTime();
     const auto appendArea =
-        [batch, &labels, &values, &units, &now](
+        [batch, &labels, &values, &units, &now, &overlay](
             const QList<const PaseMetricDefinition *> &selected,
             quint32 idOffset) {
             for (const PaseMetricDefinition *definition : selected) {
@@ -6972,27 +6895,32 @@ bool PrinterProtocol::sendPaseMetricBatch(
                             now.date(), QLocale::ShortFormat));
                     addPaseLabelUpdate(
                         batch, groupId, valueId,
-                        now.time().toString(
-                            QStringLiteral("HH:mm")));
+                        tryxFormatLocalTime(
+                            now.time(), overlay.timeFormat,
+                            QLocale()));
                     continue;
                 }
                 const int valueIndex = labels.indexOf(
                     QString::fromLatin1(definition->name));
-                if (valueIndex < 0 ||
-                    valueIndex >= values.size() ||
-                    values.at(valueIndex).isEmpty()) {
-                    continue;
-                }
+                const bool valueAvailable =
+                    valueIndex >= 0 && valueIndex < values.size() &&
+                    !values.at(valueIndex).isEmpty();
                 addPaseLabelUpdate(
                     batch, groupId, valueId,
-                    values.at(valueIndex));
-                if (definition->groupId == 100 ||
-                    definition->groupId == 104) {
+                    valueAvailable
+                        ? values.at(valueIndex)
+                        : QStringLiteral("--"));
+                const bool temperatureMetric =
+                    definition->groupId == 100 ||
+                    definition->groupId == 104;
+                if (temperatureMetric) {
                     const QString unit =
-                        valueIndex < units.size() &&
+                        valueIndex >= 0 &&
+                                valueIndex < units.size() &&
                                 !units.at(valueIndex).isEmpty()
                         ? units.at(valueIndex)
-                        : QString::fromUtf8(definition->unit);
+                        : tryxTemperatureUnitSymbol(
+                              overlay.temperatureUnit);
                     addPaseLabelUpdate(
                         batch, groupId, unitId, unit);
                 }
@@ -7155,6 +7083,13 @@ bool PrinterProtocol::sendRunConfigTrigger(const QString &devicePath,
                                            const OperationContext &context,
                                            const PaseOverlayConfig *overlay,
                                            MutationDetails *mutationDetails) {
+    if (overlay && !paseOverlayMetricSelectionIsValid(
+            *overlay, errorMessage)) {
+        if (mutationDetails) {
+            mutationDetails->outcome = MutationOutcome::Rejected;
+        }
+        return false;
+    }
     panorama::wire::v1::Request request;
     if (overlay) {
         *request.mutable_overlay_layout() = buildPaseRunConfig(*overlay);
@@ -7222,6 +7157,10 @@ PrinterProtocol::KeepaliveOutcome PrinterProtocol::sendDisplayKeepalive(
             *errorMessage = unsupportedCapabilityError(
                 productProfile_, QStringLiteral("display keepalive"));
         }
+        return KeepaliveOutcome::FatalFailure;
+    }
+    if (overlay && !paseOverlayMetricSelectionIsValid(
+            *overlay, errorMessage)) {
         return KeepaliveOutcome::FatalFailure;
     }
     panorama::wire::v1::Request request;

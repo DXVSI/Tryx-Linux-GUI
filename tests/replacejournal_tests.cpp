@@ -14,6 +14,7 @@ namespace {
 
 TryxReplaceJournalRecord validRecord() {
     TryxReplaceJournalRecord record;
+    record.productId = 0x1021;
     record.operationId =
         QStringLiteral("11111111-1111-4111-8111-111111111111");
     record.deviceIdentity = QStringLiteral("PASE-TEST-001");
@@ -59,6 +60,12 @@ class ReplaceJournalTests final : public QObject {
 private slots:
     void missingJournalIsNotAnError();
     void ownerOnlyRoundTripAndClear();
+    void version2BindsSupportedProduct_data();
+    void version2BindsSupportedProduct();
+    void legacyVersion1LoadsAs1021AndUpgradesOnTransition();
+    void version2ProductIdentityIsExactAndImmutable();
+    void duplicateTopLevelKeysFailClosed_data();
+    void duplicateTopLevelKeysFailClosed();
     void malformedAndUnexpectedFieldsFailClosed();
     void unsafeFilesystemEntriesFailClosed();
     void invalidWriteDoesNotReplaceValidJournal();
@@ -104,6 +111,9 @@ void ReplaceJournalTests::ownerOnlyRoundTripAndClear() {
     const TryxReplaceJournalLoadResult loaded = journal.load();
     QCOMPARE(loaded.status, TryxReplaceJournalLoadStatus::Loaded);
     QVERIFY(loaded.error.isEmpty());
+    QCOMPARE(loaded.record.formatVersion,
+             TryxReplaceJournal::FormatVersion);
+    QCOMPARE(loaded.record.productId, expected.productId);
     QCOMPARE(loaded.record.operationId, expected.operationId);
     QCOMPARE(loaded.record.deviceIdentity, expected.deviceIdentity);
     QCOMPARE(loaded.record.deviceGeneration,
@@ -127,6 +137,238 @@ void ReplaceJournalTests::ownerOnlyRoundTripAndClear() {
     QVERIFY(!QFileInfo::exists(path));
     QCOMPARE(journal.load().status,
              TryxReplaceJournalLoadStatus::Missing);
+}
+
+void ReplaceJournalTests::version2BindsSupportedProduct_data() {
+    QTest::addColumn<quint16>("productId");
+    QTest::addColumn<QString>("encodedProductId");
+
+    QTest::newRow("panorama-1011")
+        << quint16{0x1011} << QStringLiteral("1011");
+    QTest::newRow("pase-1021")
+        << quint16{0x1021} << QStringLiteral("1021");
+}
+
+void ReplaceJournalTests::version2BindsSupportedProduct() {
+    QFETCH(quint16, productId);
+    QFETCH(QString, encodedProductId);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path =
+        directory.filePath(QStringLiteral("replace-intent.json"));
+    TryxReplaceJournal journal(path);
+    TryxReplaceJournalRecord expected = validRecord();
+    expected.productId = productId;
+
+    QString error;
+    QVERIFY2(journal.write(expected, &error), qPrintable(error));
+    const TryxReplaceJournalLoadResult loaded = journal.load();
+    QCOMPARE(loaded.status, TryxReplaceJournalLoadStatus::Loaded);
+    QCOMPARE(loaded.record.formatVersion,
+             TryxReplaceJournal::FormatVersion);
+    QCOMPARE(loaded.record.productId, productId);
+
+    const QJsonDocument document =
+        QJsonDocument::fromJson(readFile(path));
+    QVERIFY(document.isObject());
+    QCOMPARE(document.object().value(
+                 QStringLiteral("version")).toInt(),
+             TryxReplaceJournal::FormatVersion);
+    QCOMPARE(document.object().value(
+                 QStringLiteral("productId")).toString(),
+             encodedProductId);
+}
+
+void ReplaceJournalTests::
+    legacyVersion1LoadsAs1021AndUpgradesOnTransition() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path =
+        directory.filePath(QStringLiteral("replace-intent.json"));
+    TryxReplaceJournal journal(path);
+    QString error;
+    QVERIFY2(journal.write(validRecord(), &error), qPrintable(error));
+
+    QJsonDocument document =
+        QJsonDocument::fromJson(readFile(path));
+    QVERIFY(document.isObject());
+    QJsonObject legacy = document.object();
+    legacy.insert(QStringLiteral("version"),
+                  TryxReplaceJournal::LegacyFormatVersion);
+    legacy.remove(QStringLiteral("productId"));
+    const QByteArray legacyBytes =
+        QJsonDocument(legacy).toJson(QJsonDocument::Compact);
+    QVERIFY(writeRawFile(
+        path, legacyBytes,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+
+    const TryxReplaceJournalLoadResult loaded = journal.load();
+    QCOMPARE(loaded.status, TryxReplaceJournalLoadStatus::Loaded);
+    QCOMPARE(loaded.record.formatVersion,
+             TryxReplaceJournal::LegacyFormatVersion);
+    QCOMPARE(loaded.record.productId, quint16{0x1021});
+    QCOMPARE(readFile(path), legacyBytes);
+
+    QVERIFY(!journal.write(loaded.record, &error));
+    QCOMPARE(readFile(path), legacyBytes);
+
+    TryxReplaceJournalRecord formatOnlyUpgrade = loaded.record;
+    formatOnlyUpgrade.formatVersion =
+        TryxReplaceJournal::FormatVersion;
+    QVERIFY(!journal.write(formatOnlyUpgrade, &error));
+    QCOMPARE(readFile(path), legacyBytes);
+
+    TryxReplaceJournalRecord upgraded = loaded.record;
+    upgraded.formatVersion = TryxReplaceJournal::FormatVersion;
+    upgraded.stage = QStringLiteral("Preparing");
+    QVERIFY2(journal.write(upgraded, &error), qPrintable(error));
+    const TryxReplaceJournalLoadResult reloaded = journal.load();
+    QCOMPARE(reloaded.status, TryxReplaceJournalLoadStatus::Loaded);
+    QCOMPARE(reloaded.record.formatVersion,
+             TryxReplaceJournal::FormatVersion);
+    QCOMPARE(reloaded.record.productId, quint16{0x1021});
+    document = QJsonDocument::fromJson(readFile(path));
+    QCOMPARE(document.object().value(
+                 QStringLiteral("productId")).toString(),
+             QStringLiteral("1021"));
+
+    const QString terminalPath =
+        directory.filePath(QStringLiteral("terminal-replace-intent.json"));
+    QJsonObject terminalLegacy = legacy;
+    terminalLegacy.insert(QStringLiteral("stage"),
+                          QStringLiteral("Terminal"));
+    terminalLegacy.insert(QStringLiteral("disposition"),
+                          QStringLiteral("OriginalRetained"));
+    const QByteArray terminalLegacyBytes =
+        QJsonDocument(terminalLegacy).toJson(QJsonDocument::Compact);
+    QVERIFY(writeRawFile(
+        terminalPath, terminalLegacyBytes,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    TryxReplaceJournal terminalJournal(terminalPath);
+    const TryxReplaceJournalLoadResult loadedTerminal =
+        terminalJournal.load();
+    QCOMPARE(loadedTerminal.status,
+             TryxReplaceJournalLoadStatus::Loaded);
+    TryxReplaceJournalRecord terminalFormatOnly =
+        loadedTerminal.record;
+    terminalFormatOnly.formatVersion =
+        TryxReplaceJournal::FormatVersion;
+    QVERIFY(!terminalJournal.write(terminalFormatOnly, &error));
+    QCOMPARE(readFile(terminalPath), terminalLegacyBytes);
+}
+
+void ReplaceJournalTests::
+    version2ProductIdentityIsExactAndImmutable() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path =
+        directory.filePath(QStringLiteral("replace-intent.json"));
+    TryxReplaceJournal journal(path);
+    TryxReplaceJournalRecord initial = validRecord();
+    initial.productId = 0x1011;
+    QString error;
+    QVERIFY2(journal.write(initial, &error), qPrintable(error));
+    const QByteArray committed = readFile(path);
+
+    TryxReplaceJournalRecord changed = initial;
+    changed.productId = 0x1021;
+    changed.stage = QStringLiteral("Preparing");
+    QVERIFY(!journal.write(changed, &error));
+    QCOMPARE(readFile(path), committed);
+
+    TryxReplaceJournalRecord invalid = initial;
+    invalid.productId = 0;
+    QVERIFY(!TryxReplaceJournal::validateRecord(invalid, &error));
+    invalid.productId = 0x2011;
+    QVERIFY(!TryxReplaceJournal::validateRecord(invalid, &error));
+
+    const auto ownerOnly =
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner;
+    QJsonDocument document = QJsonDocument::fromJson(committed);
+    QVERIFY(document.isObject());
+    const QJsonObject canonical = document.object();
+    const auto expectInvalid =
+        [&journal, &path, ownerOnly](QJsonObject object) {
+            const QByteArray payload =
+                QJsonDocument(object).toJson(QJsonDocument::Compact);
+            QVERIFY(writeRawFile(
+                path, payload, ownerOnly));
+            const TryxReplaceJournalLoadResult loaded = journal.load();
+            QCOMPARE(loaded.status,
+                     TryxReplaceJournalLoadStatus::Invalid);
+            QCOMPARE(readFile(path), payload);
+            QString mutationError;
+            QVERIFY(!journal.write(validRecord(), &mutationError));
+            QVERIFY(!mutationError.isEmpty());
+            QCOMPARE(readFile(path), payload);
+            QVERIFY(!journal.clear(&mutationError));
+            QVERIFY(!mutationError.isEmpty());
+            QCOMPARE(readFile(path), payload);
+        };
+
+    QJsonObject malformed = canonical;
+    malformed.remove(QStringLiteral("productId"));
+    expectInvalid(malformed);
+    malformed = canonical;
+    malformed.insert(QStringLiteral("productId"), 0x1011);
+    expectInvalid(malformed);
+    malformed = canonical;
+    malformed.insert(QStringLiteral("productId"),
+                     QStringLiteral("0x1011"));
+    expectInvalid(malformed);
+    malformed = canonical;
+    malformed.insert(QStringLiteral("productId"),
+                     QStringLiteral("2011"));
+    expectInvalid(malformed);
+    malformed = canonical;
+    malformed.insert(QStringLiteral("version"),
+                     TryxReplaceJournal::LegacyFormatVersion);
+    expectInvalid(malformed);
+    malformed = canonical;
+    malformed.insert(QStringLiteral("version"),
+                     TryxReplaceJournal::FormatVersion + 1);
+    expectInvalid(malformed);
+}
+
+void ReplaceJournalTests::duplicateTopLevelKeysFailClosed_data() {
+    QTest::addColumn<QByteArray>("duplicateSuffix");
+
+    QTest::newRow("duplicate-version")
+        << QByteArray(",\"version\":2}");
+    QTest::newRow("duplicate-product")
+        << QByteArray(",\"productId\":\"1021\"}");
+    QTest::newRow("escaped-duplicate-product")
+        << QByteArray(",\"\\u0070roductId\":\"1021\"}");
+}
+
+void ReplaceJournalTests::duplicateTopLevelKeysFailClosed() {
+    QFETCH(QByteArray, duplicateSuffix);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path =
+        directory.filePath(QStringLiteral("replace-intent.json"));
+    TryxReplaceJournal journal(path);
+    QString error;
+    QVERIFY2(journal.write(validRecord(), &error), qPrintable(error));
+
+    QByteArray payload = readFile(path);
+    QVERIFY(payload.endsWith('}'));
+    payload.chop(1);
+    payload += duplicateSuffix;
+    QVERIFY(writeRawFile(
+        path, payload,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+
+    const TryxReplaceJournalLoadResult loaded = journal.load();
+    QCOMPARE(loaded.status, TryxReplaceJournalLoadStatus::Invalid);
+    QVERIFY(!loaded.error.isEmpty());
+    QCOMPARE(readFile(path), payload);
+    QVERIFY(!journal.write(validRecord(), &error));
+    QCOMPARE(readFile(path), payload);
+    QVERIFY(!journal.clear(&error));
+    QCOMPARE(readFile(path), payload);
 }
 
 void ReplaceJournalTests::

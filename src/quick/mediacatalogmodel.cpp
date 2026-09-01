@@ -127,6 +127,28 @@ QString MediaCatalogModel::deviceCopyBlockReason(
     return tr("Media is not present in the current catalog");
 }
 
+bool MediaCatalogModel::uniqueEntryByName(
+    const QString &mediaName,
+    TryxRuntimeMediaEntry *entry) const {
+    const TryxRuntimeMediaEntry *match = nullptr;
+    for (const TryxRuntimeMediaEntry &candidate : entries_) {
+        if (candidate.name != mediaName) {
+            continue;
+        }
+        if (match) {
+            return false;
+        }
+        match = &candidate;
+    }
+    if (!match) {
+        return false;
+    }
+    if (entry) {
+        *entry = *match;
+    }
+    return true;
+}
+
 void MediaCatalogModel::applySnapshot(
     const TryxRuntimeMediaCatalogSnapshot &snapshot) {
     if (snapshot.revision <= revision_ && revision_ != 0) {

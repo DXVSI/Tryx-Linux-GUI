@@ -1,6 +1,7 @@
 #include "devicemanager.h"
 #include "firmwarebridge.h"
 #include "runtimebridge.h"
+#include "runtimedowngradestore.h"
 
 #include <panorama/config.hpp>
 
@@ -195,6 +196,37 @@ int main(int argc, char *argv[]) {
     configureApplicationIdentity(app);
     registerTryxRuntimeMetaTypes();
 
+    QString executableIdentityDetail;
+    const auto executableIdentity =
+        tryx::RuntimeDowngradeStore::currentExecutableIdentity(
+            &executableIdentityDetail);
+    if (!executableIdentity.isValid()) {
+        qCritical().noquote()
+            << "Runtime startup is blocked because the executable identity"
+               " could not be verified:"
+            << executableIdentityDetail;
+        // The user unit restarts only on failure. A clean stop preserves the
+        // fail-closed gate without creating a restart loop.
+        return 0;
+    }
+    const tryx::RuntimeDowngradeStore runtimeDowngradeStore;
+    const auto downgradeInspection =
+        runtimeDowngradeStore.inspect(executableIdentity);
+    if (downgradeInspection.status ==
+        tryx::RuntimeDowngradeStore::InspectStatus::
+            DifferentExecutable) {
+        qInfo() << "Ignoring a runtime downgrade marker committed by a"
+                   " different executable";
+    } else if (downgradeInspection.status !=
+               tryx::RuntimeDowngradeStore::InspectStatus::Missing) {
+        qCritical().noquote()
+            << "Runtime startup is blocked by the durable downgrade gate:"
+            << downgradeInspection.detail;
+        // Blocked, corrupt, unsafe and unreadable marker states all stop
+        // before D-Bus ownership and DeviceManager device discovery.
+        return 0;
+    }
+
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (!bus.isConnected()) {
         qCritical() << "The user D-Bus session is unavailable";
@@ -214,6 +246,12 @@ int main(int argc, char *argv[]) {
     // threads have been destroyed.
     ShutdownSignalPipe shutdownSignalPipe;
     DeviceManager manager;
+    QObject::connect(
+        &manager,
+        &DeviceManager::runtimeDowngradeV10PreparedForExit,
+        &app,
+        [&app]() { app.quit(); },
+        Qt::QueuedConnection);
     TryxRuntimeExportedObject exportedObject;
     TryxRuntimeManagerAdaptor connectionAdaptor(
         &exportedObject, &manager);

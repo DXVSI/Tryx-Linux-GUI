@@ -45,6 +45,9 @@ public:
         const QString &mediaId) const;
     Q_INVOKABLE QString deviceCopyBlockReason(
         const QString &mediaId) const;
+    bool uniqueEntryByName(
+        const QString &mediaName,
+        TryxRuntimeMediaEntry *entry) const;
     void applySnapshot(const TryxRuntimeMediaCatalogSnapshot &snapshot);
     void applyLegacyFiles(const QStringList &files,
                           quint64 revision,

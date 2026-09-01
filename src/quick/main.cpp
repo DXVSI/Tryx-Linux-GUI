@@ -1,4 +1,5 @@
 #include "appsettingscontroller.h"
+#include "cachemanagementcontroller.h"
 #include "devicemediaworkflowcontroller.h"
 #include "firmwarecontroller.h"
 #include "linuxtraycontroller.h"
@@ -6,6 +7,8 @@
 #include "mediapreviewcontroller.h"
 #include "runtimebootstrap.h"
 #include "runtimeclient.h"
+#include "startupvisibilitycontroller.h"
+#include "supportbundlecontroller.h"
 #include "systemmetricsmodel.h"
 #include "windowchromecontroller.h"
 
@@ -120,23 +123,37 @@ int main(int argc, char *argv[]) {
     const QStringList arguments = app.arguments();
     const bool smokeTest =
         hasArgument(arguments, QStringLiteral("--smoke-test"));
+    const bool autostartRequested =
+        hasArgument(arguments, QStringLiteral("--autostart"));
 
     QTranslator translator;
     applyLanguage(app, translator, configuredLanguage());
 
+    const QString instanceSocketPath =
+        quickbootstrap::instanceSocketPath();
+    quickbootstrap::SingleInstanceGuard instanceGuard(
+        instanceSocketPath);
     QLocalServer instanceServer;
     if (!smokeTest) {
-        const QString socketPath =
-            quickbootstrap::instanceSocketPath();
-        if (quickbootstrap::notifyRunningInstance(socketPath)) {
+        using quickbootstrap::SingleInstanceAcquireResult;
+
+        const quickbootstrap::InstanceLaunchIntent launchIntent =
+            autostartRequested
+                ? quickbootstrap::InstanceLaunchIntent::Autostart
+                : quickbootstrap::InstanceLaunchIntent::Manual;
+        QString socketError;
+        const SingleInstanceAcquireResult acquireResult =
+            instanceGuard.acquire(
+                &instanceServer, launchIntent, &socketError);
+        if (acquireResult ==
+            SingleInstanceAcquireResult::NotifiedExisting) {
             return 0;
         }
-        QString socketError;
-        if (!quickbootstrap::listenForSingleInstance(
-                &instanceServer, socketPath, &socketError)) {
-            qWarning().noquote()
-                << "Could not create the desktop client single-instance socket:"
+        if (acquireResult != SingleInstanceAcquireResult::Primary) {
+            qCritical().noquote()
+                << "Could not acquire the desktop client single-instance lease:"
                 << socketError;
+            return 1;
         }
 
         QString runtimeError;
@@ -149,14 +166,28 @@ int main(int argc, char *argv[]) {
     }
 
     RuntimeClient runtime(smokeTest);
+    SupportBundleController supportBundle(&runtime);
     MediaEditorController mediaEditor(&runtime);
+    CacheManagementController cacheManagement(
+        &runtime, &mediaEditor);
     DeviceMediaWorkflowController deviceMedia(
         &runtime, &mediaEditor);
     FirmwareController firmware;
     SystemMetricsModel systemMetrics;
     AppSettingsController settings(smokeTest);
     WindowChromeController windowChrome;
+    StartupVisibilityController startupVisibility(
+        &windowChrome);
     LinuxTrayController tray;
+
+    windowChrome.setHideToTrayOnClose(
+        settings.hideToTrayOnClose());
+    QObject::connect(
+        &settings, &AppSettingsController::closeBehaviorChanged,
+        &windowChrome, [&settings, &windowChrome]() {
+            windowChrome.setHideToTrayOnClose(
+                settings.hideToTrayOnClose());
+        });
 
     const auto updateTrayPresentation =
         [&tray, &runtime]() {
@@ -168,23 +199,24 @@ int main(int argc, char *argv[]) {
                 runtime.connectionStatus());
         };
     updateTrayPresentation();
-    windowChrome.setTrayAvailable(tray.available());
+    startupVisibility.setTrayAvailable(tray.available());
     QObject::connect(
         &tray, &LinuxTrayController::availableChanged,
-        &windowChrome, [&tray, &windowChrome]() {
-            windowChrome.setTrayAvailable(
+        &startupVisibility,
+        [&tray, &startupVisibility]() {
+            startupVisibility.setTrayAvailable(
                 tray.available());
         });
     QObject::connect(
-        &tray, &LinuxTrayController::showRequested,
-        &windowChrome,
-        &WindowChromeController::showWindow);
-    // QGuiApplication::quit() first closes every top-level window. The QML
-    // close handler deliberately rejects that close while the tray is
-    // available, so an explicit tray Quit must leave the event loop directly.
-    // Queue exit() because it must run on the application thread.
-    QObject::connect(
         &tray, &LinuxTrayController::quitRequested,
+        &windowChrome,
+        &WindowChromeController::requestExplicitQuit,
+        Qt::QueuedConnection);
+    // Approval is emitted only after Main.qml has either found no dirty
+    // display draft or resolved the guard. Exit directly so the normal
+    // close-to-tray policy cannot intercept an explicit Quit.
+    QObject::connect(
+        &windowChrome, &WindowChromeController::explicitQuitApproved,
         &app,
         []() { QCoreApplication::exit(0); },
         Qt::QueuedConnection);
@@ -197,12 +229,15 @@ int main(int argc, char *argv[]) {
         &settings, &AppSettingsController::languageChanged,
         &engine,
         [&app, &translator, &settings, &engine, &runtime, &firmware,
+         &supportBundle, &cacheManagement,
          &updateTrayPresentation]() {
             applyLanguage(
                 app, translator, settings.language());
             engine.retranslate();
             runtime.retranslate();
             firmware.retranslate();
+            supportBundle.retranslate();
+            cacheManagement.retranslate();
             updateTrayPresentation();
         });
     engine.setInitialProperties({
@@ -222,7 +257,15 @@ int main(int argc, char *argv[]) {
         {QStringLiteral("windowChrome"),
          QVariant::fromValue(
              static_cast<QObject *>(&windowChrome))},
+        {QStringLiteral("supportBundle"),
+         QVariant::fromValue(
+             static_cast<QObject *>(&supportBundle))},
+        {QStringLiteral("cacheManagement"),
+         QVariant::fromValue(
+             static_cast<QObject *>(&cacheManagement))},
         {QStringLiteral("quickSmokeTest"), smokeTest},
+        {QStringLiteral("autostartRequested"),
+         autostartRequested},
     });
 
     const QUrl entry(QStringLiteral("qrc:/qml/Main.qml"));
@@ -237,15 +280,34 @@ int main(int argc, char *argv[]) {
     auto *rootWindow =
         qobject_cast<QWindow *>(engine.rootObjects().constFirst());
     windowChrome.setWindow(rootWindow);
+
+    QObject::connect(
+        &tray, &LinuxTrayController::showRequested,
+        &startupVisibility,
+        &StartupVisibilityController::showWindow);
+
+    if (autostartRequested && !smokeTest) {
+        startupVisibility.beginAutostart();
+    }
+    const auto drainInstanceLaunchConnections =
+        [&instanceServer, &app, &startupVisibility]() {
+            quickbootstrap::drainPendingInstanceLaunchConnections(
+                &instanceServer, &app,
+                [&startupVisibility](
+                    quickbootstrap::InstanceLaunchIntent intent) {
+                    if (quickbootstrap::
+                            instanceLaunchIntentRequestsWindow(intent)) {
+                        startupVisibility.showWindow();
+                    }
+                });
+        };
     QObject::connect(
         &instanceServer, &QLocalServer::newConnection, &app,
-        [&instanceServer, &windowChrome]() {
-            while (QLocalSocket *connection =
-                       instanceServer.nextPendingConnection()) {
-                connection->deleteLater();
-            }
-            windowChrome.showWindow();
-        });
+        drainInstanceLaunchConnections);
+    // The server starts listening before the QML engine is ready. A launch
+    // can therefore already be pending by the time this signal handler is
+    // installed.
+    drainInstanceLaunchConnections();
     if (smokeTest) {
         QTimer::singleShot(0, &app, [&app]() { app.exit(0); });
     }

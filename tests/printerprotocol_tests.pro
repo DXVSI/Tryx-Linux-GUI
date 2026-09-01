@@ -54,31 +54,73 @@ protobuf_source.dependency_type = TYPE_C
 QMAKE_EXTRA_COMPILERS += protobuf_header protobuf_source
 
 HEADERS += \
+    $$PWD/../src/deleteintentstore.h \
+    $$PWD/../src/devicemediaartifactstore.h \
+    $$PWD/../src/devicemanagermessages.h \
     $$PWD/../src/printerprotocol.h \
     $$PWD/../src/runtimebridge.h \
     $$PWD/../src/devicemanager.h \
     $$PWD/../src/firmwarebridge.h \
     $$PWD/../src/firmwarerecoveryjournal.h \
     $$PWD/../src/firmwareupdater.h \
+    $$PWD/../src/gpuinventory.h \
+    $$PWD/../src/nvidiaprocesssupervisor.h \
+    $$PWD/../src/nvidiasmiparser.h \
+    $$PWD/../src/nvidiasmiprovider.h \
     $$PWD/../src/systemmonitor.h \
+    $$PWD/../src/mediacatalogstore.h \
     $$PWD/../src/mediatransform.h \
+    $$PWD/../src/paseoverlayconfig.h \
+    $$PWD/../src/pasemetricsconfigstore.h \
+    $$PWD/../src/privateruntimepaths.h \
+    $$PWD/../src/printermediafileintegrity.h \
+    $$PWD/../src/printermediaidentity.h \
     $$PWD/../src/printermediapreparer.h \
-    $$PWD/../src/printermediapreparersupport_p.h \
+    $$PWD/../src/printermediavalidator.h \
     $$PWD/../src/replacejournal.h \
-    $$PWD/../src/runtimecontract.h
+    $$PWD/../src/retrycachestore.h \
+    $$PWD/../src/retrycachetransitionstore.h \
+    $$PWD/../src/runtimeapplyrequestcodec.h \
+    $$PWD/../src/runtimedowngradestore.h \
+    $$PWD/../src/runtimepresentationpreferencesstore.h \
+    $$PWD/../src/savedlayoutstore.h \
+    $$PWD/../src/supportsnapshot.h \
+    $$PWD/../src/runtimecontract.h \
+    $$PWD/../src/turrismediaformat.h
 SOURCES += \
     printerprotocol_tests.cpp \
+    $$PWD/../src/deleteintentstore.cpp \
+    $$PWD/../src/devicemediaartifactstore.cpp \
     $$PWD/../src/printerprotocol.cpp \
     $$PWD/../src/runtimebridge.cpp \
     $$PWD/../src/devicemanager.cpp \
     $$PWD/../src/firmwarebridge.cpp \
     $$PWD/../src/firmwarerecoveryjournal.cpp \
     $$PWD/../src/firmwareupdater.cpp \
+    $$PWD/../src/gpuinventory.cpp \
+    $$PWD/../src/nvidiaprocesssupervisor.cpp \
+    $$PWD/../src/nvidiasmiparser.cpp \
+    $$PWD/../src/nvidiasmiprovider.cpp \
     $$PWD/../src/systemmonitor.cpp \
+    $$PWD/../src/mediacatalogstore.cpp \
     $$PWD/../src/mediatransform.cpp \
+    $$PWD/../src/paseoverlayconfig.cpp \
+    $$PWD/../src/pasemetricsconfigstore.cpp \
+    $$PWD/../src/privateruntimepaths.cpp \
+    $$PWD/../src/printermediafileintegrity.cpp \
+    $$PWD/../src/printermediaidentity.cpp \
     $$PWD/../src/printermediapreparer.cpp \
+    $$PWD/../src/printermediavalidator.cpp \
     $$PWD/../src/replacejournal.cpp \
+    $$PWD/../src/retrycachestore.cpp \
+    $$PWD/../src/retrycachetransitionstore.cpp \
+    $$PWD/../src/runtimeapplyrequestcodec.cpp \
+    $$PWD/../src/runtimedowngradestore.cpp \
+    $$PWD/../src/runtimepresentationpreferencesstore.cpp \
+    $$PWD/../src/savedlayoutstore.cpp \
+    $$PWD/../src/supportsnapshot.cpp \
     $$PWD/../src/runtimecontract.cpp \
+    $$PWD/../src/turrismediaformat.cpp \
     $$PWD/../src/core/protocol.cpp \
     $$PWD/../src/core/device.cpp \
     $$PWD/../src/core/adb.cpp \

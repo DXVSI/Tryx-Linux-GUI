@@ -160,7 +160,12 @@ jobs:
           rpm -V tryx-panorama-manager
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
-          for binary in tryx-panorama-manager; do
+          test "$(tryx --version)" = \
+            "tryx $(tr -d '\r\n' < VERSION)"
+          env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
+            tryx --help >/dev/null
+          for binary in tryx-panorama-manager tryx; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
@@ -320,7 +325,12 @@ jobs:
           dpkg --verify tryx-panorama-manager
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
-          for binary in tryx-panorama-manager; do
+          test "$(tryx --version)" = \
+            "tryx $(tr -d '\r\n' < VERSION)"
+          env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
+            tryx --help >/dev/null
+          for binary in tryx-panorama-manager tryx; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
@@ -448,7 +458,12 @@ jobs:
           pacman -Qkk tryx-panorama-manager
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $(tr -d '\r\n' < VERSION)"
-          for binary in tryx-panorama-manager; do
+          test "$(tryx --version)" = \
+            "tryx $(tr -d '\r\n' < VERSION)"
+          env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
+            tryx --help >/dev/null
+          for binary in tryx-panorama-manager tryx; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
@@ -515,7 +530,11 @@ jobs:
           version=$(rpm -q --qf '%{VERSION}' tryx-panorama-manager)
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $version"
-          for binary in tryx-panorama-manager; do
+          test "$(tryx --version)" = "tryx $version"
+          env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
+            tryx --help >/dev/null
+          for binary in tryx-panorama-manager tryx; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
@@ -558,7 +577,11 @@ jobs:
           version=${version%%-*}
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $version"
-          for binary in tryx-panorama-manager; do
+          test "$(tryx --version)" = "tryx $version"
+          env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
+            tryx --help >/dev/null
+          for binary in tryx-panorama-manager tryx; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1
@@ -606,7 +629,11 @@ jobs:
           version=${version%-*}
           test "$(tryx-panorama-manager --version)" = \
             "tryx-panorama-manager $version"
-          for binary in tryx-panorama-manager; do
+          test "$(tryx --version)" = "tryx $version"
+          env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/tryx-no-session-bus \
+            tryx --help >/dev/null
+          for binary in tryx-panorama-manager tryx; do
             ldd "/usr/bin/$binary" | tee "$RUNNER_TEMP/$binary.ldd"
             if grep -q 'not found' "$RUNNER_TEMP/$binary.ldd"; then
               exit 1

@@ -13,9 +13,11 @@ MOC_DIR = $$PWD/../../build/linuxtray-tests/moc
 
 HEADERS += \
     ../../src/quick/linuxtraycontroller.h \
+    ../../src/quick/startupvisibilitycontroller.h \
     ../../src/quick/windowchromecontroller.h
 
 SOURCES += \
     ../../src/quick/linuxtraycontroller.cpp \
+    ../../src/quick/startupvisibilitycontroller.cpp \
     ../../src/quick/windowchromecontroller.cpp \
     linuxtraycontroller_tests.cpp

@@ -82,7 +82,34 @@ message MediaCatalog {
   repeated MediaEntry preset_file_list = 2;
 }
 
-// The runtime only needs presence of this response body. Fields sent by a
-// newer peer remain in protobuf's unknown-field set.
+message DeviceDisplayPanelSummary {
+  enum Kind {
+    DISPLAY_PANEL_LCD = 0;
+    DISPLAY_PANEL_OLED = 1;
+  }
+
+  optional Kind kind = 1;
+}
+
+message DeviceBoardSummary {
+  DeviceDisplayPanelSummary display_panel = 2;
+}
+
+message DeviceVideoOutputSummary {
+  optional uint32 width = 1;
+  optional uint32 height = 2;
+}
+
+message DeviceRuntimeBehaviorSummary {
+  optional bool usb_auto_keepalive = 1;
+}
+
+// Minimal project-owned, read-only projection used by B10. Unknown peer fields
+// remain in protobuf's unknown-field set and are never exposed above the
+// protocol layer.
 message SystemConfiguration {
+  optional string reported_product = 1;
+  DeviceBoardSummary board_summary = 9;
+  DeviceVideoOutputSummary video_output = 12;
+  DeviceRuntimeBehaviorSummary runtime_behavior = 14;
 }

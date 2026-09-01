@@ -41,8 +41,37 @@ class MediaEditorController final : public QObject {
                    NOTIFY transformChanged)
     Q_PROPERTY(QString backgroundColor READ backgroundColor
                    WRITE setBackgroundColor NOTIFY transformChanged)
+    Q_PROPERTY(QString preparationTarget READ preparationTarget
+                   WRITE setPreparationTarget NOTIFY targetChanged)
+    Q_PROPERTY(bool splitTargetAvailable READ splitTargetAvailable
+                   NOTIFY targetChanged)
     Q_PROPERTY(int targetWidth READ targetWidth NOTIFY targetChanged)
     Q_PROPERTY(int targetHeight READ targetHeight NOTIFY targetChanged)
+    Q_PROPERTY(QString deviceCopyMetadataStatus
+                   READ deviceCopyMetadataStatus
+                   NOTIFY deviceCopyMetadataChanged)
+    Q_PROPERTY(bool deviceCopyDimensionsAvailable
+                   READ deviceCopyDimensionsAvailable
+                   NOTIFY deviceCopyMetadataChanged)
+    Q_PROPERTY(int deviceCopyWidth READ deviceCopyWidth
+                   NOTIFY deviceCopyMetadataChanged)
+    Q_PROPERTY(int deviceCopyHeight READ deviceCopyHeight
+                   NOTIFY deviceCopyMetadataChanged)
+    Q_PROPERTY(bool deviceCopyDurationAvailable
+                   READ deviceCopyDurationAvailable
+                   NOTIFY deviceCopyMetadataChanged)
+    Q_PROPERTY(double deviceCopyDurationMilliseconds
+                   READ deviceCopyDurationMilliseconds
+                   NOTIFY deviceCopyMetadataChanged)
+    Q_PROPERTY(bool deviceCopyFrameRateAvailable
+                   READ deviceCopyFrameRateAvailable
+                   NOTIFY deviceCopyMetadataChanged)
+    Q_PROPERTY(int deviceCopyFrameRateNumerator
+                   READ deviceCopyFrameRateNumerator
+                   NOTIFY deviceCopyMetadataChanged)
+    Q_PROPERTY(int deviceCopyFrameRateDenominator
+                   READ deviceCopyFrameRateDenominator
+                   NOTIFY deviceCopyMetadataChanged)
     Q_PROPERTY(QUrl homeFolder READ homeFolder CONSTANT)
 
 public:
@@ -68,10 +97,28 @@ public:
     int focusY() const;
     int rotation() const;
     QString backgroundColor() const;
+    QString preparationTarget() const;
+    bool splitTargetAvailable() const;
     int targetWidth() const;
     int targetHeight() const;
+    QString deviceCopyMetadataStatus() const;
+    bool deviceCopyDimensionsAvailable() const;
+    int deviceCopyWidth() const;
+    int deviceCopyHeight() const;
+    bool deviceCopyDurationAvailable() const;
+    double deviceCopyDurationMilliseconds() const;
+    bool deviceCopyFrameRateAvailable() const;
+    int deviceCopyFrameRateNumerator() const;
+    int deviceCopyFrameRateDenominator() const;
     QUrl homeFolder() const;
     TryxRuntimeMediaTransform transform() const;
+    TryxRuntimeMediaPreparationProfileV1 preparationProfile() const;
+    bool acquirePreviewCleanupInterlock(
+        QString *errorMessage = nullptr);
+    void releasePreviewCleanupInterlock();
+    bool previewCleanupInterlockActive() const;
+    MediaPreviewController::PreviewCleanupReport
+    cleanupInactivePreviews();
     void beginRecoveredVideo(
         const TryxRuntimeDeviceMediaArtifact &artifact);
     void beginRecoveredSubmission(
@@ -95,21 +142,34 @@ public slots:
     void setFocusY(int value);
     void setRotation(int value);
     void setBackgroundColor(const QString &value);
+    void setPreparationTarget(const QString &target);
 
 signals:
     void openChanged();
     void previewChanged();
     void transformChanged();
     void targetChanged();
+    void deviceCopyMetadataChanged();
     void submitted();
     void cancelled();
     void recoveredSaveAsNewRequested(
-        const TryxRuntimeMediaTransform &transform);
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     void recoveredReplaceRequested(
-        const TryxRuntimeMediaTransform &transform);
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     void recoveredClosed();
 
 private:
+    friend class QuickClientTests;
+
+    bool rejectWhilePreviewCleanupActive();
+    bool metadataMatchesRecoveredArtifact(
+        const TryxRuntimeDeviceMediaMetadataV1 &metadata) const;
+    void requestDeviceCopyMetadata();
+    void resetDeviceCopyMetadata(const QString &status);
+    void synchronizePreparationTargetAvailability();
+    void selectInitialRecoveredTarget(
+        const TryxRuntimeDeviceMediaArtifact &artifact);
+
     RuntimeClient *runtime_;
     MediaPreviewController preview_;
     bool open_ = false;
@@ -118,6 +178,10 @@ private:
     QString editorError_;
     QString pendingOperationId_;
     TryxRuntimeDeviceMediaArtifact recoveredArtifact_;
+    TryxRuntimeDeviceMediaMetadataV1 deviceCopyMetadata_;
+    QString deviceCopyMetadataStatus_ =
+        QStringLiteral("NotSupported");
+    bool deviceCopyMetadataAwaitingCapabilities_ = false;
     QString recoveredSubmissionAction_;
     QString mode_ = QStringLiteral("Fit");
     int zoomPercent_ = 100;
@@ -125,4 +189,5 @@ private:
     int focusY_ = 5000;
     int rotation_ = 0;
     QString backgroundColor_ = QStringLiteral("#000000");
+    QString preparationTarget_ = QStringLiteral("FullFrame");
 };

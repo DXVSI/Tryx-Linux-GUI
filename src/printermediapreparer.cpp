@@ -1,14 +1,16 @@
 #include "printermediapreparer.h"
 
 #include "mediatransform.h"
-#include "printermediapreparersupport_p.h"
+#include "printermediafileintegrity.h"
+#include "printermediaidentity.h"
 #include "printerprotocol.h"
+#include "turrismediaformat.h"
 
 #include <panorama/media.hpp>
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QHash>
 #include <QImageReader>
 #include <QMutexLocker>
 #include <QProcess>
@@ -22,27 +24,31 @@ namespace {
 constexpr int kMediaPreparationDeadlineMs = 15 * 60 * 1000;
 constexpr int kThumbnailPreparationDeadlineMs = 2 * 60 * 1000;
 const qint64 kMediaPreparationOutputCapBytes =
-    tryx::printer_media_preparer_support::kMaxRetryCacheBytes +
+    tryx::printer_media_file_integrity::kMaximumPreparedMediaBytes +
     1024LL * 1024LL;
+
+QString printerTempPath(const QString &fileName) {
+    const QString directory =
+        QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
+            .filePath(QStringLiteral("prepared-media"));
+    QDir().mkpath(directory);
+    return QDir(directory).filePath(fileName);
+}
 
 }  // namespace
 
-using tryx::printer_media_preparer_support::SafeSourceHashResult;
-using tryx::printer_media_preparer_support::TurrisMediaBlobResult;
-using tryx::printer_media_preparer_support::generatedPrinterMediaName;
-using tryx::printer_media_preparer_support::h264PrinterName;
-using tryx::printer_media_preparer_support::hashRegularSourceFile;
-using tryx::printer_media_preparer_support::isSha256Hex;
-using tryx::printer_media_preparer_support::kMaxRetryCacheBytes;
-using tryx::printer_media_preparer_support::kTurrisImageKind;
-using tryx::printer_media_preparer_support::kTurrisMediaHeight;
-using tryx::printer_media_preparer_support::kTurrisMediaWidth;
-using tryx::printer_media_preparer_support::kTurrisProductId;
-using tryx::printer_media_preparer_support::kTurrisVideoKind;
-using tryx::printer_media_preparer_support::printerConversionProfile;
-using tryx::printer_media_preparer_support::printerTempPath;
-using tryx::printer_media_preparer_support::sha256File;
-using tryx::printer_media_preparer_support::writeTurrisMediaBlob;
+using tryx::printer_media_file_integrity::SafeSourceHashResult;
+using tryx::printer_media_file_integrity::hashPrivateRegularFile;
+using tryx::printer_media_file_integrity::hashRegularSourceFile;
+using tryx::printer_media_file_integrity::isSha256Hex;
+using tryx::printer_media_file_integrity::sha256File;
+using tryx::printer_media_identity::generatedPrinterMediaName;
+using tryx::printer_media_identity::h264PrinterName;
+using tryx::printer_media_identity::printerConversionProfile;
+using tryx::printer_media_identity::printerMediaConversionIdentity;
+using tryx::printer_media_identity::printerMediaSizeForConversionIdentity;
+
+namespace turris_media = tryx::turris_media;
 
 PrinterMediaPreparer::PrinterMediaPreparer(QObject *parent)
     : QObject(parent),
@@ -85,6 +91,17 @@ void PrinterMediaPreparer::analyzeSource(
     quint64 generation,
     const TryxRuntimeMediaTransform &transform,
     quint16 productId) {
+    analyzeSourceWithPreparationProfile(
+        operationId, localPath, generation,
+        tryxFullFrameMediaPreparationProfile(transform),
+        productId);
+}
+
+void PrinterMediaPreparer::analyzeSourceWithPreparationProfile(
+    const QString &operationId, const QString &localPath,
+    quint64 generation,
+    const TryxRuntimeMediaPreparationProfileV1 &profile,
+    quint16 productId) {
     const auto isCancelled = [this, operationId, generation]() {
         const quint64 gate = preparationGenerationGate_.load(
             std::memory_order_acquire);
@@ -94,13 +111,13 @@ void PrinterMediaPreparer::analyzeSource(
         QMutexLocker locker(&preparationCancellationMutex_);
         return cancelledPreparationOperations_.contains(operationId);
     };
-    const QString profile = printerConversionProfile(
-        localPath, transform, productId);
-    if (profile.isEmpty()) {
+    const QString conversionProfile = printerConversionProfile(
+        localPath, profile, productId);
+    if (conversionProfile.isEmpty()) {
         emit failed(operationId,
-                    tryxMediaTransformIsValid(transform)
+                    tryxMediaPreparationProfileV1IsValid(profile)
                         ? tr("Unsupported media file type")
-                        : tr("Media transform is invalid"),
+                        : tr("Media preparation profile is invalid"),
                     generation);
         return;
     }
@@ -119,7 +136,7 @@ void PrinterMediaPreparer::analyzeSource(
         return;
     }
     emit sourceAnalyzed(operationId, localPath, result.sha256,
-                        result.size, profile, generation);
+                        result.size, conversionProfile, generation);
 }
 
 void PrinterMediaPreparer::cancelRetryValidation(
@@ -142,12 +159,14 @@ void PrinterMediaPreparer::requestOperationCancellation(
     if (operationId.isEmpty()) {
         return;
     }
+    QMutexLocker startLocker(&preparationStartMutex_);
     QMutexLocker locker(&preparationCancellationMutex_);
     cancelledPreparationOperations_.insert(operationId);
 }
 
 void PrinterMediaPreparer::requestGenerationCancellation(
     quint64 currentGeneration) {
+    QMutexLocker startLocker(&preparationStartMutex_);
     quint64 observed = preparationGenerationGate_.load(
         std::memory_order_acquire);
     while (observed < currentGeneration &&
@@ -164,32 +183,18 @@ void PrinterMediaPreparer::prepare(const QString &operationId,
                                    quint64 generation,
                                    const TryxRuntimeMediaTransform &transform,
                                    quint16 productId) {
-    if (shuttingDown_) {
-        return;
-    }
-    if (active_) {
-        pendingOperationId_ = operationId;
-        pendingDevicePath_ = devicePath;
-        pendingLocalPath_ = localPath;
-        pendingExpectedSourceSha256_ = expectedSourceSha256;
-        pendingTransform_ = transform;
-        pendingRecoveredVideo_ = false;
-        pendingProductId_ = productId;
-        pendingGeneration_ = generation;
-        hasPending_ = true;
-        cancelling_ = true;
-        process_->kill();
-        return;
-    }
-    startPreparation(operationId, devicePath, localPath,
-                     expectedSourceSha256, generation, transform, false,
-                     productId);
+    prepareWithPreparationProfile(
+        operationId, devicePath, localPath,
+        expectedSourceSha256, generation,
+        tryxFullFrameMediaPreparationProfile(transform),
+        productId);
 }
 
-void PrinterMediaPreparer::prepareRecovered(
+void PrinterMediaPreparer::prepareWithPreparationProfile(
     const QString &operationId, const QString &devicePath,
-    const QString &localPath, const QString &expectedSourceSha256,
-    quint64 generation, const TryxRuntimeMediaTransform &transform,
+    const QString &localPath,
+    const QString &expectedSourceSha256, quint64 generation,
+    const TryxRuntimeMediaPreparationProfileV1 &profile,
     quint16 productId) {
     if (shuttingDown_) {
         return;
@@ -199,7 +204,49 @@ void PrinterMediaPreparer::prepareRecovered(
         pendingDevicePath_ = devicePath;
         pendingLocalPath_ = localPath;
         pendingExpectedSourceSha256_ = expectedSourceSha256;
-        pendingTransform_ = transform;
+        pendingTransform_ = profile.transform;
+        pendingPreparationProfile_ = profile;
+        pendingRecoveredVideo_ = false;
+        pendingProductId_ = productId;
+        pendingGeneration_ = generation;
+        hasPending_ = true;
+        cancelling_ = true;
+        process_->kill();
+        return;
+    }
+    startPreparation(operationId, devicePath, localPath,
+                     expectedSourceSha256, generation, profile, false,
+                     productId);
+}
+
+void PrinterMediaPreparer::prepareRecovered(
+    const QString &operationId, const QString &devicePath,
+    const QString &localPath, const QString &expectedSourceSha256,
+    quint64 generation, const TryxRuntimeMediaTransform &transform,
+    quint16 productId) {
+    prepareRecoveredWithPreparationProfile(
+        operationId, devicePath, localPath,
+        expectedSourceSha256, generation,
+        tryxFullFrameMediaPreparationProfile(transform),
+        productId);
+}
+
+void PrinterMediaPreparer::prepareRecoveredWithPreparationProfile(
+    const QString &operationId, const QString &devicePath,
+    const QString &localPath,
+    const QString &expectedSourceSha256, quint64 generation,
+    const TryxRuntimeMediaPreparationProfileV1 &profile,
+    quint16 productId) {
+    if (shuttingDown_) {
+        return;
+    }
+    if (active_) {
+        pendingOperationId_ = operationId;
+        pendingDevicePath_ = devicePath;
+        pendingLocalPath_ = localPath;
+        pendingExpectedSourceSha256_ = expectedSourceSha256;
+        pendingTransform_ = profile.transform;
+        pendingPreparationProfile_ = profile;
         pendingRecoveredVideo_ = true;
         pendingProductId_ = productId;
         pendingGeneration_ = generation;
@@ -209,8 +256,21 @@ void PrinterMediaPreparer::prepareRecovered(
         return;
     }
     startPreparation(operationId, devicePath, localPath,
-                     expectedSourceSha256, generation, transform, true,
+                     expectedSourceSha256, generation, profile, true,
                      productId);
+}
+
+void PrinterMediaPreparer::startPreparation(
+    const QString &operationId, const QString &devicePath,
+    const QString &localPath,
+    const QString &expectedSourceSha256, quint64 generation,
+    const TryxRuntimeMediaTransform &transform,
+    bool recoveredVideo, quint16 productId) {
+    startPreparation(
+        operationId, devicePath, localPath,
+        expectedSourceSha256, generation,
+        tryxFullFrameMediaPreparationProfile(transform),
+        recoveredVideo, productId);
 }
 
 void PrinterMediaPreparer::startPreparation(const QString &operationId,
@@ -218,7 +278,7 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                                             const QString &localPath,
                                             const QString &expectedSourceSha256,
                                             quint64 generation,
-                                            const TryxRuntimeMediaTransform &transform,
+                                            const TryxRuntimeMediaPreparationProfileV1 &profile,
                                             bool recoveredVideo,
                                             quint16 productId) {
     const auto isCancelled = [this, operationId, generation]() {
@@ -263,11 +323,24 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         return;
     }
     QString transformError;
-    if (!tryxMediaTransformIsValid(transform, &transformError)) {
+    if (!tryxMediaPreparationProfileV1IsValid(
+            profile, &transformError)) {
         emit failed(operationId,
-                    tr("Media transform is invalid: %1")
+                    tr("Media preparation profile is invalid: %1")
                         .arg(transformError),
                     generation);
+        return;
+    }
+    const QString mediaConversion =
+        printerMediaConversionIdentity(*productProfile, profile);
+    const QSize targetSize = printerMediaSizeForConversionIdentity(
+        mediaConversion, *productProfile);
+    if (!targetSize.isValid()) {
+        emit failed(
+            operationId,
+            tr("The selected media preparation target is not supported for USB product %1")
+                .arg(printerProductIdString(productId)),
+            generation);
         return;
     }
 
@@ -297,7 +370,7 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                     generation);
         return;
     }
-    const bool turrisMedia = productId == kTurrisProductId;
+    const bool turrisMedia = productId == turris_media::kProductId;
     if (turrisMedia &&
         QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
         emit failed(operationId,
@@ -307,7 +380,8 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     }
 
     const QString remoteBaseName = generatedPrinterMediaName(baseExtension);
-    const QString remoteName = h264PrinterName(remoteBaseName, productId);
+    const QString remoteName = h264PrinterName(
+        remoteBaseName, productId, profile);
     const QString outputPath = printerTempPath(remoteName);
     const QString rawMediaPath = turrisMedia
         ? outputPath + QStringLiteral(".raw.h264")
@@ -319,7 +393,9 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     const QString stagedThumbnailTempPath =
         outputPath + QStringLiteral(".part.jpg");
     QFile::remove(outputPath);
-    QFile::remove(rawMediaPath);
+    if (!rawMediaPath.isEmpty()) {
+        QFile::remove(rawMediaPath);
+    }
     QFile::remove(stagedThumbnailPath);
     QFile::remove(stagedThumbnailTempPath);
 
@@ -335,8 +411,8 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                   << QStringLiteral("-framerate") << QStringLiteral("30");
     }
     const QString filter = tryxMediaTransformFfmpegFilter(
-        transform, productProfile->mediaWidth,
-        productProfile->mediaHeight);
+        profile.transform,
+        targetSize.width(), targetSize.height());
     if (filter.isEmpty()) {
         emit failed(operationId, tr("Media transform filter is invalid"),
                     generation);
@@ -409,12 +485,13 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     stagedThumbnailSha256_.clear();
     preparedSha256_.clear();
     expectedSourceSha256_ = expectedSourceSha256;
-    transform_ = transform;
+    transform_ = profile.transform;
+    preparationProfile_ = profile;
     recoveredVideo_ = recoveredVideo;
     productId_ = productId;
     turrisMediaKind_ = type == panorama::MediaType::Image
-        ? kTurrisImageKind
-        : kTurrisVideoKind;
+        ? turris_media::kImageKind
+        : turris_media::kVideoKind;
     generation_ = generation;
     processOutput_.clear();
     cancelling_ = false;
@@ -427,7 +504,10 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                   tr("Converting to printer-class H264..."), generation);
     process_->setProgram(ffmpeg);
     process_->setArguments(arguments);
-    process_->start();
+    if (!startProcessIfCurrent()) {
+        failPreparation(QString(), true);
+        return;
+    }
     processDeadlineTimer_->start(kMediaPreparationDeadlineMs);
 }
 
@@ -454,12 +534,13 @@ void PrinterMediaPreparer::finishMediaPreparation(int exitCode,
         return;
     }
     const bool cancelled = cancelling_ || shuttingDown_;
-    const QString encodedMediaPath = productId_ == kTurrisProductId
+    const QString encodedMediaPath = productId_ == turris_media::kProductId
         ? rawMediaPath_
         : uploadPath_;
     const QFileInfo outputInfo(encodedMediaPath);
     if (!cancelled && outputInfo.exists() && outputInfo.isFile() &&
-        outputInfo.size() > kMaxRetryCacheBytes) {
+        outputInfo.size() >
+            tryx::printer_media_file_integrity::kMaximumPreparedMediaBytes) {
         failPreparation(
             tr("Prepared H264 exceeds the supported upload size"), false);
         return;
@@ -495,7 +576,7 @@ void PrinterMediaPreparer::finishMediaPreparation(int exitCode,
         QMutexLocker locker(&preparationCancellationMutex_);
         return cancelledPreparationOperations_.contains(activeOperationId);
     };
-    if (productId_ != kTurrisProductId) {
+    if (productId_ != turris_media::kProductId) {
         preparedSha256_ = sha256File(uploadPath_, hashCancelled);
         if (preparedSha256_.isEmpty()) {
             if (mediaPreparationDeadline_.hasExpired()) {
@@ -545,7 +626,10 @@ void PrinterMediaPreparer::finishMediaPreparation(int exitCode,
          QStringLiteral("-frames:v"), QStringLiteral("1"),
          QStringLiteral("-q:v"), QStringLiteral("4"),
          stagedThumbnailTempPath_});
-    process_->start();
+    if (!startProcessIfCurrent()) {
+        failPreparation(QString(), true);
+        return;
+    }
     processDeadlineTimer_->start(kThumbnailPreparationDeadlineMs);
 }
 
@@ -558,7 +642,7 @@ void PrinterMediaPreparer::finishThumbnailPreparation(int exitCode,
             operationId_,
             tr("Persistent preview timed out; continuing with a placeholder"),
             generation_);
-        if (productId_ == kTurrisProductId) {
+        if (productId_ == turris_media::kProductId) {
             startTurrisFrameCountPreparation(QString());
         } else {
             completePreparation(QString());
@@ -586,7 +670,7 @@ void PrinterMediaPreparer::finishThumbnailPreparation(int exitCode,
         QFile::remove(stagedThumbnailTempPath_);
         QFile::remove(stagedThumbnailPath_);
     }
-    if (productId_ == kTurrisProductId) {
+    if (productId_ == turris_media::kProductId) {
         startTurrisFrameCountPreparation(thumbnailSha256);
     } else {
         completePreparation(thumbnailSha256);
@@ -628,8 +712,38 @@ void PrinterMediaPreparer::startTurrisFrameCountPreparation(
          QStringLiteral("-of"),
          QStringLiteral("default=noprint_wrappers=1"),
          rawMediaPath_});
-    process_->start();
+    if (!startProcessIfCurrent()) {
+        failPreparation(QString(), true);
+        return;
+    }
     processDeadlineTimer_->start(static_cast<int>(remainingMs));
+}
+
+bool PrinterMediaPreparer::startProcessIfCurrent() {
+#ifdef TRYX_PROTOCOL_TESTING
+    if (beforeProcessStartHookForTesting_) {
+        beforeProcessStartHookForTesting_(phase_);
+    }
+#endif
+
+    QMutexLocker startLocker(&preparationStartMutex_);
+    if (shuttingDown_ || cancelling_) {
+        return false;
+    }
+    const quint64 gate = preparationGenerationGate_.load(
+        std::memory_order_acquire);
+    if (gate != 0 && gate != generation_) {
+        return false;
+    }
+    {
+        QMutexLocker cancellationLocker(
+            &preparationCancellationMutex_);
+        if (cancelledPreparationOperations_.contains(operationId_)) {
+            return false;
+        }
+    }
+    process_->start();
+    return true;
 }
 
 void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
@@ -643,42 +757,10 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
         failPreparation(QString(), true);
         return;
     }
-    QHash<QString, QString> probeValues;
-    QString probeText = QString::fromLatin1(processOutput_);
-    probeText.replace(QLatin1Char('\r'), QLatin1Char('\n'));
-    const QStringList probeLines =
-        probeText.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    bool probeShapeValid = true;
-    for (const QString &rawLine : probeLines) {
-        const QString line = rawLine.trimmed();
-        const qsizetype separator = line.indexOf(QLatin1Char('='));
-        if (separator <= 0) {
-            probeShapeValid = false;
-            break;
-        }
-        const QString key = line.left(separator);
-        if ((key != QStringLiteral("width") &&
-             key != QStringLiteral("height") &&
-             key != QStringLiteral("nb_read_frames")) ||
-            probeValues.contains(key)) {
-            probeShapeValid = false;
-            break;
-        }
-        probeValues.insert(key, line.mid(separator + 1));
-    }
-    bool frameCountOk = false;
-    const quint64 frameCount =
-        probeValues.value(QStringLiteral("nb_read_frames")).toULongLong(
-            &frameCountOk);
-    const bool geometryValid =
-        probeValues.value(QStringLiteral("width")) ==
-            QString::number(kTurrisMediaWidth) &&
-        probeValues.value(QStringLiteral("height")) ==
-            QString::number(kTurrisMediaHeight);
-    if (!normalExit || exitCode != 0 || !probeShapeValid ||
-        probeValues.size() != 3 || !geometryValid || !frameCountOk ||
-        frameCount == 0 || frameCount > 0xffffffffULL ||
-        (turrisMediaKind_ == kTurrisImageKind && frameCount != 1)) {
+    const turris_media::FrameCountProbeResult probe =
+        turris_media::parseFrameCountProbe(
+            processOutput_, turrisMediaKind_);
+    if (!normalExit || exitCode != 0 || !probe.valid) {
         QString detail = QString::fromLocal8Bit(processOutput_).trimmed();
         if (detail.size() > 1000) {
             detail = detail.right(1000);
@@ -691,6 +773,7 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
             false);
         return;
     }
+    const quint64 frameCount = probe.frameCount;
 
     const QString activeOperationId = operationId_;
     const quint64 activeGeneration = generation_;
@@ -709,7 +792,7 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
     };
     emit progress(operationId_, tr("Finalizing Turris media blob..."),
                   generation_);
-    const TurrisMediaBlobResult blob = writeTurrisMediaBlob(
+    const turris_media::WriteResult blob = turris_media::writeBlob(
         rawMediaPath_, uploadPath_, turrisMediaKind_, frameCount,
         isCancelled);
     if (blob.sha256.isEmpty()) {
@@ -801,6 +884,8 @@ void PrinterMediaPreparer::resetPreparationState() {
     preparedSha256_.clear();
     expectedSourceSha256_.clear();
     transform_ = tryxLegacyFitMediaTransform();
+    preparationProfile_ =
+        tryxFullFrameMediaPreparationProfile();
     recoveredVideo_ = false;
     productId_ = 0x1021;
     turrisMediaKind_ = 0;
@@ -822,7 +907,8 @@ void PrinterMediaPreparer::startPendingIfAvailable() {
     const QString localPath = pendingLocalPath_;
     const QString expectedSourceSha256 =
         pendingExpectedSourceSha256_;
-    const TryxRuntimeMediaTransform transform = pendingTransform_;
+    const TryxRuntimeMediaPreparationProfileV1 profile =
+        pendingPreparationProfile_;
     const bool recoveredVideo = pendingRecoveredVideo_;
     const quint16 productId = pendingProductId_;
     const quint64 generation = pendingGeneration_;
@@ -832,11 +918,13 @@ void PrinterMediaPreparer::startPendingIfAvailable() {
     pendingLocalPath_.clear();
     pendingExpectedSourceSha256_.clear();
     pendingTransform_ = tryxLegacyFitMediaTransform();
+    pendingPreparationProfile_ =
+        tryxFullFrameMediaPreparationProfile();
     pendingRecoveredVideo_ = false;
     pendingProductId_ = 0x1021;
     pendingGeneration_ = 0;
     startPreparation(operationId, devicePath, localPath,
-                     expectedSourceSha256, generation, transform,
+                     expectedSourceSha256, generation, profile,
                      recoveredVideo, productId);
 }
 
@@ -849,6 +937,8 @@ void PrinterMediaPreparer::cancelStale(quint64 currentGeneration) {
         pendingLocalPath_.clear();
         pendingExpectedSourceSha256_.clear();
         pendingTransform_ = tryxLegacyFitMediaTransform();
+        pendingPreparationProfile_ =
+            tryxFullFrameMediaPreparationProfile();
         pendingRecoveredVideo_ = false;
         pendingProductId_ = 0x1021;
         pendingGeneration_ = 0;
@@ -869,6 +959,8 @@ void PrinterMediaPreparer::cancelOperation(const QString &operationId) {
         pendingLocalPath_.clear();
         pendingExpectedSourceSha256_.clear();
         pendingTransform_ = tryxLegacyFitMediaTransform();
+        pendingPreparationProfile_ =
+            tryxFullFrameMediaPreparationProfile();
         pendingRecoveredVideo_ = false;
         pendingProductId_ = 0x1021;
         pendingGeneration_ = 0;
@@ -886,42 +978,66 @@ void PrinterMediaPreparer::cancelOperation(const QString &operationId) {
     }
 }
 
-void PrinterMediaPreparer::validateRetryCache(
-    const QString &validationId, const QString &preparedPath,
-    const QString &expectedSha256) {
-    const auto isCancelled = [this, validationId]() {
+void PrinterMediaPreparer::validateRetryCacheArtifact(
+    const QString &validationToken,
+    const QString &artifactPath, qint64 expectedSize,
+    const QString &expectedSha256,
+    quint64 expectedDevice, quint64 expectedInode) {
+    const auto isCancelled = [this, validationToken]() {
         QMutexLocker locker(&retryValidationMutex_);
-        return cancelledRetryValidations_.contains(validationId);
+        return cancelledRetryValidations_.contains(validationToken);
+    };
+    const auto emitResult = [this, &validationToken](
+                                bool valid, bool cancelled,
+                                qint64 actualSize,
+                                const QString &actualSha256,
+                                quint64 actualDevice,
+                                quint64 actualInode,
+                                const QString &message) {
+        emit retryCacheArtifactValidated(
+            validationToken, valid, cancelled, actualSize,
+            actualSha256, actualDevice, actualInode, message);
     };
     if (isCancelled()) {
-        emit retryCacheValidated(
-            validationId, false, true,
-            tr("Prepared-media validation was cancelled"));
+        emitResult(
+            false, true, 0, {}, 0, 0,
+            tr("Retry-cache artifact validation was cancelled"));
         return;
     }
-    const QFileInfo info(preparedPath);
-    if (validationId.isEmpty() || !info.exists() || !info.isFile() ||
-        info.isSymLink() ||
-        info.size() <= 0 || !isSha256Hex(expectedSha256)) {
-        emit retryCacheValidated(
-            validationId, false, false,
-            tr("Prepared media failed retry-cache validation"));
+    if (validationToken.isEmpty() || artifactPath.isEmpty() ||
+        expectedSize <= 0 ||
+        expectedSize >
+            tryx::printer_media_file_integrity::
+                kMaximumPreparedMediaBytes ||
+        !isSha256Hex(expectedSha256)) {
+        emitResult(
+            false, false, 0, {}, 0, 0,
+            tr("Retry-cache artifact validation request is invalid"));
         return;
     }
-    const QString actualSha256 = sha256File(preparedPath, isCancelled);
-    if (isCancelled()) {
-        emit retryCacheValidated(
-            validationId, false, true,
-            tr("Prepared-media validation was cancelled"));
+
+    const auto result = hashPrivateRegularFile(
+        artifactPath, expectedSize, isCancelled);
+    if (result.cancelled) {
+        emitResult(
+            false, true, result.size, result.sha256,
+            result.device, result.inode,
+            tr("Retry-cache artifact validation was cancelled"));
         return;
     }
-    if (actualSha256.isEmpty() || actualSha256 != expectedSha256) {
-        emit retryCacheValidated(
-            validationId, false, false,
-            tr("Prepared media hash does not match the retry cache"));
-        return;
-    }
-    emit retryCacheValidated(validationId, true, false, QString());
+    const bool valid = result.error.isEmpty() &&
+        result.size == expectedSize &&
+        result.sha256 == expectedSha256 &&
+        result.device == expectedDevice &&
+        result.inode == expectedInode;
+    emitResult(
+        valid, false, result.size, result.sha256,
+        result.device, result.inode,
+        valid
+            ? QString()
+            : result.error.isEmpty()
+                ? tr("Retry-cache artifact identity or hash changed")
+                : result.error);
 }
 
 void PrinterMediaPreparer::releasePreparedFile(const QString &uploadPath) {
@@ -940,6 +1056,8 @@ void PrinterMediaPreparer::shutdown() {
     pendingLocalPath_.clear();
     pendingExpectedSourceSha256_.clear();
     pendingTransform_ = tryxLegacyFitMediaTransform();
+    pendingPreparationProfile_ =
+        tryxFullFrameMediaPreparationProfile();
     pendingRecoveredVideo_ = false;
     pendingProductId_ = 0x1021;
     pendingGeneration_ = 0;

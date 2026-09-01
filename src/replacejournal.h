@@ -11,6 +11,8 @@ enum class TryxReplaceJournalLoadStatus {
 };
 
 struct TryxReplaceJournalRecord {
+    int formatVersion = 2;
+    quint16 productId = 0;
     QString operationId;
     QString deviceIdentity;
     quint64 deviceGeneration = 0;
@@ -42,7 +44,8 @@ struct TryxReplaceJournalLoadResult {
 
 class TryxReplaceJournal final {
 public:
-    static constexpr int FormatVersion = 1;
+    static constexpr int LegacyFormatVersion = 1;
+    static constexpr int FormatVersion = 2;
     static constexpr qint64 MaximumBytes = 256 * 1024;
 
     explicit TryxReplaceJournal(QString path);

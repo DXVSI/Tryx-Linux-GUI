@@ -1,5 +1,6 @@
 #include "mediaeditorcontroller.h"
 
+#include "mediatransform.h"
 #include "runtimeclient.h"
 
 #include <QColor>
@@ -28,9 +29,52 @@ MediaEditorController::MediaEditorController(
             });
     connect(runtime_, &RuntimeClient::connectionChanged,
             this, [this]() {
-                preview_.setTargetSize(
-                    targetWidth(), targetHeight());
-                emit targetChanged();
+                synchronizePreparationTargetAvailability();
+            });
+    connect(runtime_, &RuntimeClient::capabilitiesChanged,
+            this, [this]() {
+                synchronizePreparationTargetAvailability();
+                if (deviceCopyMetadataAwaitingCapabilities_ &&
+                    recoveredDeviceCopy() &&
+                    runtime_->capabilitiesReady()) {
+                    requestDeviceCopyMetadata();
+                }
+            });
+    connect(runtime_, &RuntimeClient::displayChanged,
+            this, [this]() {
+                emit previewChanged();
+            });
+    connect(runtime_, &RuntimeClient::deviceMediaMetadataReady,
+            this,
+            [this](
+                const TryxRuntimeDeviceMediaMetadataV1 &metadata) {
+                if (!metadataMatchesRecoveredArtifact(metadata)) {
+                    return;
+                }
+                if (!tryxRuntimeDeviceMediaMetadataV1IsValid(
+                        metadata)) {
+                    resetDeviceCopyMetadata(
+                        QStringLiteral("Unavailable"));
+                    return;
+                }
+                deviceCopyMetadata_ = metadata;
+                deviceCopyMetadataStatus_ =
+                    metadata.status == QStringLiteral("ProbeFailed")
+                    ? QStringLiteral("Unavailable")
+                    : metadata.status;
+                emit deviceCopyMetadataChanged();
+            });
+    connect(runtime_, &RuntimeClient::deviceMediaMetadataFailed,
+            this,
+            [this](const QString &artifactId,
+                   const QString &) {
+                if (artifactId != recoveredArtifact_.artifactId ||
+                    deviceCopyMetadataStatus_ !=
+                        QStringLiteral("Loading")) {
+                    return;
+                }
+                resetDeviceCopyMetadata(
+                    QStringLiteral("Unavailable"));
             });
     connect(runtime_, &RuntimeClient::operationRequestAccepted,
             this, [this](const QString &operationId,
@@ -60,7 +104,7 @@ MediaEditorController::MediaEditorController(
                 pendingOperationId_.clear();
                 preview_.restoreStagedSourceOwnership();
                 editorError_ = message;
-                emit previewChanged();
+                synchronizePreparationTargetAvailability();
             });
 }
 
@@ -102,15 +146,40 @@ QString MediaEditorController::originalMediaName() const {
 }
 
 bool MediaEditorController::replaceAllowed() const {
-    return recoveredDeviceCopy() &&
-           !recoveredArtifact_.mediaId.isEmpty();
+    if (!recoveredDeviceCopy() ||
+        recoveredArtifact_.mediaId.isEmpty() ||
+        !runtime_->displayStateValid() ||
+        runtime_->displayDeviceIdentity() !=
+            recoveredArtifact_.deviceIdentity ||
+        !runtime_->displayedMedia().contains(
+            recoveredArtifact_.remoteName)) {
+        return false;
+    }
+    return (preparationTarget_ == QStringLiteral("FullFrame") &&
+            runtime_->currentScreenMode() ==
+                QStringLiteral("Full Screen")) ||
+           (preparationTarget_ == QStringLiteral("SplitArea") &&
+            runtime_->currentScreenMode() ==
+                QStringLiteral("Screen Splitting"));
 }
 
 QString MediaEditorController::replaceBlockReason() const {
     if (!recoveredDeviceCopy() || replaceAllowed()) {
         return {};
     }
-    return tr("The original media identity is unavailable");
+    if (recoveredArtifact_.mediaId.isEmpty()) {
+        return tr("The original media identity is unavailable");
+    }
+    if (!runtime_->displayStateValid() ||
+        runtime_->displayDeviceIdentity() !=
+            recoveredArtifact_.deviceIdentity ||
+        !runtime_->displayedMedia().contains(
+            recoveredArtifact_.remoteName)) {
+        return tr(
+            "Replace requires a fresh active layout that references the original media");
+    }
+    return tr(
+        "The selected preparation target does not match the active layout");
 }
 
 QString MediaEditorController::submissionAction() const {
@@ -149,12 +218,80 @@ QString MediaEditorController::backgroundColor() const {
     return backgroundColor_;
 }
 
+QString MediaEditorController::preparationTarget() const {
+    return preparationTarget_;
+}
+
+bool MediaEditorController::splitTargetAvailable() const {
+    return runtime_->hasRuntimeCapability(
+               tryxRuntimeMediaPreparationProfileV1Token()) &&
+           runtime_->hasDeviceCapability(
+               tryxDeviceDisplayConfigurationV1Token()) &&
+           runtime_->hasDeviceCapability(
+               tryxDeviceMediaSplitAreaV1Token());
+}
+
 int MediaEditorController::targetWidth() const {
-    return runtime_->mediaTargetWidth();
+    return preparationTarget_ == QStringLiteral("SplitArea")
+        ? kTryxMediaSplitTargetWidth
+        : runtime_->mediaTargetWidth();
 }
 
 int MediaEditorController::targetHeight() const {
     return runtime_->mediaTargetHeight();
+}
+
+QString MediaEditorController::deviceCopyMetadataStatus() const {
+    return deviceCopyMetadataStatus_;
+}
+
+bool MediaEditorController::deviceCopyDimensionsAvailable() const {
+    return recoveredDeviceCopy() &&
+           (deviceCopyMetadata_.availableFields &
+            kTryxDeviceMediaMetadataDimensions) != 0U;
+}
+
+int MediaEditorController::deviceCopyWidth() const {
+    return deviceCopyDimensionsAvailable()
+        ? static_cast<int>(deviceCopyMetadata_.width) : 0;
+}
+
+int MediaEditorController::deviceCopyHeight() const {
+    return deviceCopyDimensionsAvailable()
+        ? static_cast<int>(deviceCopyMetadata_.height) : 0;
+}
+
+bool MediaEditorController::deviceCopyDurationAvailable() const {
+    return recoveredDeviceCopy() &&
+           (deviceCopyMetadata_.availableFields &
+            kTryxDeviceMediaMetadataDuration) != 0U;
+}
+
+double MediaEditorController::deviceCopyDurationMilliseconds() const {
+    return deviceCopyDurationAvailable()
+        ? static_cast<double>(
+              deviceCopyMetadata_.durationMilliseconds)
+        : 0.0;
+}
+
+bool MediaEditorController::deviceCopyFrameRateAvailable() const {
+    return recoveredDeviceCopy() &&
+           (deviceCopyMetadata_.availableFields &
+            kTryxDeviceMediaMetadataFrameRate) != 0U;
+}
+
+int MediaEditorController::deviceCopyFrameRateNumerator() const {
+    return deviceCopyFrameRateAvailable()
+        ? static_cast<int>(
+              deviceCopyMetadata_.frameRateNumerator)
+        : 0;
+}
+
+int MediaEditorController::deviceCopyFrameRateDenominator() const {
+    return deviceCopyFrameRateAvailable()
+        ? static_cast<int>(
+              deviceCopyMetadata_.frameRateDenominator)
+        : 0;
 }
 
 QUrl MediaEditorController::homeFolder() const {
@@ -184,8 +321,55 @@ TryxRuntimeMediaTransform MediaEditorController::transform() const {
     return result;
 }
 
+TryxRuntimeMediaPreparationProfileV1
+MediaEditorController::preparationProfile() const {
+    TryxRuntimeMediaPreparationProfileV1 profile;
+    profile.target = preparationTarget_;
+    profile.transform = transform();
+    return profile;
+}
+
+bool MediaEditorController::acquirePreviewCleanupInterlock(
+    QString *errorMessage) {
+    if (open_ || busy()) {
+        const QString message = tr(
+            "Close the media editor before temporary file cleanup");
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    }
+    return preview_.acquireCleanupInterlock(errorMessage);
+}
+
+void MediaEditorController::releasePreviewCleanupInterlock() {
+    preview_.releaseCleanupInterlock();
+}
+
+bool MediaEditorController::previewCleanupInterlockActive() const {
+    return preview_.cleanupInterlockActive();
+}
+
+MediaPreviewController::PreviewCleanupReport
+MediaEditorController::cleanupInactivePreviews() {
+    return preview_.cleanupInactivePreviews();
+}
+
+bool MediaEditorController::rejectWhilePreviewCleanupActive() {
+    if (!preview_.cleanupInterlockActive()) {
+        return false;
+    }
+    editorError_ = tr(
+        "Wait for temporary file cleanup to finish");
+    emit previewChanged();
+    return true;
+}
+
 void MediaEditorController::beginRecoveredVideo(
     const TryxRuntimeDeviceMediaArtifact &artifact) {
+    if (rejectWhilePreviewCleanupActive()) {
+        return;
+    }
     if (!pendingOperationId_.isEmpty()) {
         editorError_ = tr(
             "Wait for the current media operation to finish");
@@ -193,6 +377,7 @@ void MediaEditorController::beginRecoveredVideo(
         return;
     }
     preview_.cancel();
+    selectInitialRecoveredTarget(artifact);
     reset();
     recoveredArtifact_ = artifact;
     recoveredSubmissionAction_.clear();
@@ -205,6 +390,7 @@ void MediaEditorController::beginRecoveredVideo(
     }
     emit previewChanged();
     preview_.loadRecoveredVideo(artifact);
+    requestDeviceCopyMetadata();
 }
 
 void MediaEditorController::beginRecoveredSubmission(
@@ -232,7 +418,7 @@ void MediaEditorController::finishRecoveredSubmission(
         editorError_ = message.isEmpty()
             ? tr("The recovered media operation failed")
             : message;
-        emit previewChanged();
+        synchronizePreparationTargetAvailability();
         return;
     }
 
@@ -240,6 +426,7 @@ void MediaEditorController::finishRecoveredSubmission(
     localPath_.clear();
     sourceName_.clear();
     recoveredArtifact_ = {};
+    resetDeviceCopyMetadata(QStringLiteral("NotSupported"));
     editorError_.clear();
     if (open_) {
         open_ = false;
@@ -250,6 +437,9 @@ void MediaEditorController::finishRecoveredSubmission(
 }
 
 void MediaEditorController::begin(const QUrl &source) {
+    if (rejectWhilePreviewCleanupActive()) {
+        return;
+    }
     if (!pendingOperationId_.isEmpty()) {
         editorError_ = tr(
             "Wait for the runtime to acknowledge the current upload request");
@@ -257,8 +447,14 @@ void MediaEditorController::begin(const QUrl &source) {
         return;
     }
     preview_.cancel();
+    if (preparationTarget_ != QStringLiteral("FullFrame")) {
+        preparationTarget_ = QStringLiteral("FullFrame");
+        preview_.setTargetSize(targetWidth(), targetHeight());
+        emit targetChanged();
+    }
     reset();
     recoveredArtifact_ = {};
+    resetDeviceCopyMetadata(QStringLiteral("NotSupported"));
     recoveredSubmissionAction_.clear();
     editorError_.clear();
     sourceName_ = source.isLocalFile()
@@ -275,6 +471,9 @@ void MediaEditorController::begin(const QUrl &source) {
 
 void MediaEditorController::beginDropped(
     const QVariantList &sources) {
+    if (rejectWhilePreviewCleanupActive()) {
+        return;
+    }
     if (!pendingOperationId_.isEmpty()) {
         editorError_ = tr(
             "Wait for the runtime to acknowledge the current upload request");
@@ -310,6 +509,7 @@ void MediaEditorController::cancel() {
     localPath_.clear();
     sourceName_.clear();
     recoveredArtifact_ = {};
+    resetDeviceCopyMetadata(QStringLiteral("NotSupported"));
     recoveredSubmissionAction_.clear();
     editorError_.clear();
     if (open_) {
@@ -358,8 +558,6 @@ void MediaEditorController::submit() {
         emit previewChanged();
         return;
     }
-    const TryxRuntimeMediaTransform selectedTransform =
-        transform();
     if (!preview_.protectStagedSource()) {
         editorError_ = tr(
             "The private media snapshot is no longer available");
@@ -368,8 +566,8 @@ void MediaEditorController::submit() {
     }
 
     pendingOperationId_ =
-        runtime_->queueUploadWithTransform(
-            localPath_, selectedTransform);
+        runtime_->queueUploadWithPreparationProfile(
+            localPath_, preparationProfile());
     if (pendingOperationId_.isEmpty()) {
         preview_.restoreStagedSourceOwnership();
         editorError_ = runtime_->diagnostic();
@@ -390,7 +588,7 @@ void MediaEditorController::submitSaveAsNew() {
         emit previewChanged();
         return;
     }
-    emit recoveredSaveAsNewRequested(transform());
+    emit recoveredSaveAsNewRequested(preparationProfile());
 }
 
 void MediaEditorController::submitReplace() {
@@ -409,7 +607,7 @@ void MediaEditorController::submitReplace() {
         emit previewChanged();
         return;
     }
-    emit recoveredReplaceRequested(transform());
+    emit recoveredReplaceRequested(preparationProfile());
 }
 
 void MediaEditorController::setMode(const QString &mode) {
@@ -495,4 +693,94 @@ void MediaEditorController::setBackgroundColor(
     }
     backgroundColor_ = normalized;
     emit transformChanged();
+}
+
+void MediaEditorController::setPreparationTarget(
+    const QString &target) {
+    if (!pendingOperationId_.isEmpty() ||
+        (target != QStringLiteral("FullFrame") &&
+         target != QStringLiteral("SplitArea")) ||
+        (target == QStringLiteral("SplitArea") &&
+         !splitTargetAvailable()) ||
+        preparationTarget_ == target) {
+        return;
+    }
+    preparationTarget_ = target;
+    preview_.setTargetSize(targetWidth(), targetHeight());
+    reset();
+    emit targetChanged();
+    emit previewChanged();
+}
+
+void MediaEditorController::
+synchronizePreparationTargetAvailability() {
+    if (preparationTarget_ == QStringLiteral("SplitArea") &&
+        !splitTargetAvailable() &&
+        pendingOperationId_.isEmpty()) {
+        preparationTarget_ = QStringLiteral("FullFrame");
+        reset();
+    }
+    preview_.setTargetSize(targetWidth(), targetHeight());
+    emit targetChanged();
+    emit previewChanged();
+}
+
+void MediaEditorController::selectInitialRecoveredTarget(
+    const TryxRuntimeDeviceMediaArtifact &artifact) {
+    const bool exactReference = runtime_->displayStateValid() &&
+        runtime_->displayDeviceIdentity() == artifact.deviceIdentity &&
+        runtime_->displayedMedia().contains(artifact.remoteName);
+    const QString target =
+        exactReference && splitTargetAvailable() &&
+        runtime_->currentScreenMode() ==
+            QStringLiteral("Screen Splitting")
+        ? QStringLiteral("SplitArea")
+        : QStringLiteral("FullFrame");
+    if (preparationTarget_ != target) {
+        preparationTarget_ = target;
+        preview_.setTargetSize(targetWidth(), targetHeight());
+        emit targetChanged();
+    }
+}
+
+bool MediaEditorController::metadataMatchesRecoveredArtifact(
+    const TryxRuntimeDeviceMediaMetadataV1 &metadata) const {
+    return recoveredDeviceCopy() &&
+           metadata.operationId == recoveredArtifact_.operationId &&
+           metadata.artifactId == recoveredArtifact_.artifactId &&
+           metadata.mediaId == recoveredArtifact_.mediaId &&
+           metadata.deviceIdentity ==
+               recoveredArtifact_.deviceIdentity &&
+           metadata.decodedSha256 ==
+               recoveredArtifact_.decodedSha256;
+}
+
+void MediaEditorController::requestDeviceCopyMetadata() {
+    if (!recoveredDeviceCopy()) {
+        resetDeviceCopyMetadata(QStringLiteral("NotSupported"));
+        return;
+    }
+    if (!runtime_->capabilitiesReady()) {
+        resetDeviceCopyMetadata(QStringLiteral("Loading"));
+        deviceCopyMetadataAwaitingCapabilities_ = true;
+        return;
+    }
+    if (!runtime_->hasRuntimeCapability(
+            tryxRuntimeDeviceMediaMetadataV1Token())) {
+        resetDeviceCopyMetadata(QStringLiteral("NotSupported"));
+        return;
+    }
+
+    resetDeviceCopyMetadata(QStringLiteral("Loading"));
+    if (!runtime_->requestDeviceMediaMetadata(recoveredArtifact_)) {
+        resetDeviceCopyMetadata(QStringLiteral("Unavailable"));
+    }
+}
+
+void MediaEditorController::resetDeviceCopyMetadata(
+    const QString &status) {
+    deviceCopyMetadataAwaitingCapabilities_ = false;
+    deviceCopyMetadata_ = {};
+    deviceCopyMetadataStatus_ = status;
+    emit deviceCopyMetadataChanged();
 }

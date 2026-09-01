@@ -11,6 +11,9 @@
 #include <QTimer>
 
 #include <atomic>
+#ifdef TRYX_PROTOCOL_TESTING
+#include <functional>
+#endif
 
 class QProcess;
 
@@ -36,6 +39,11 @@ public slots:
                        const TryxRuntimeMediaTransform &transform =
                            TryxRuntimeMediaTransform{},
                        quint16 productId = 0x1021);
+    void analyzeSourceWithPreparationProfile(
+        const QString &operationId, const QString &localPath,
+        quint64 generation,
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
+        quint16 productId = 0x1021);
     void prepare(const QString &operationId, const QString &devicePath,
                  const QString &localPath,
                  const QString &expectedSourceSha256,
@@ -43,6 +51,13 @@ public slots:
                  const TryxRuntimeMediaTransform &transform =
                      TryxRuntimeMediaTransform{},
                  quint16 productId = 0x1021);
+    void prepareWithPreparationProfile(
+        const QString &operationId, const QString &devicePath,
+        const QString &localPath,
+        const QString &expectedSourceSha256,
+        quint64 generation,
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
+        quint16 productId = 0x1021);
     void prepareRecovered(const QString &operationId,
                           const QString &devicePath,
                           const QString &localPath,
@@ -51,11 +66,20 @@ public slots:
                           const TryxRuntimeMediaTransform &transform =
                               TryxRuntimeMediaTransform{},
                           quint16 productId = 0x1021);
+    void prepareRecoveredWithPreparationProfile(
+        const QString &operationId, const QString &devicePath,
+        const QString &localPath,
+        const QString &expectedSourceSha256,
+        quint64 generation,
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
+        quint16 productId = 0x1021);
     void cancelStale(quint64 currentGeneration);
     void cancelOperation(const QString &operationId);
-    void validateRetryCache(const QString &validationId,
-                            const QString &preparedPath,
-                            const QString &expectedSha256);
+    void validateRetryCacheArtifact(
+        const QString &validationToken,
+        const QString &artifactPath, qint64 expectedSize,
+        const QString &expectedSha256,
+        quint64 expectedDevice, quint64 expectedInode);
     void releasePreparedFile(const QString &uploadPath);
     void shutdown();
 
@@ -76,8 +100,11 @@ signals:
                   quint64 generation);
     void failed(const QString &operationId, const QString &message,
                 quint64 generation);
-    void retryCacheValidated(const QString &validationId, bool valid,
-                             bool cancelled, const QString &message);
+    void retryCacheArtifactValidated(
+        const QString &validationToken, bool valid,
+        bool cancelled, qint64 actualSize,
+        const QString &actualSha256, quint64 actualDevice,
+        quint64 actualInode, const QString &message);
 
 private:
     enum class PreparationPhase {
@@ -96,6 +123,14 @@ private:
                               TryxRuntimeMediaTransform{},
                           bool recoveredVideo = false,
                           quint16 productId = 0x1021);
+    void startPreparation(
+        const QString &operationId, const QString &devicePath,
+        const QString &localPath,
+        const QString &expectedSourceSha256,
+        quint64 generation,
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
+        bool recoveredVideo = false,
+        quint16 productId = 0x1021);
     void finishPreparation(int exitCode, bool normalExit);
     void finishMediaPreparation(int exitCode, bool normalExit);
     void finishThumbnailPreparation(int exitCode, bool normalExit);
@@ -104,6 +139,7 @@ private:
     void finishTurrisFrameCountPreparation(int exitCode, bool normalExit);
     void completePreparation(const QString &thumbnailSha256);
     void failPreparation(const QString &message, bool cancelled);
+    bool startProcessIfCurrent();
     void resetPreparationState();
     void startPendingIfAvailable();
 
@@ -122,6 +158,7 @@ private:
     QString preparedSha256_;
     QString expectedSourceSha256_;
     TryxRuntimeMediaTransform transform_;
+    TryxRuntimeMediaPreparationProfileV1 preparationProfile_;
     quint16 productId_ = 0x1021;
     quint32 turrisMediaKind_ = 0;
     bool recoveredVideo_ = false;
@@ -138,13 +175,19 @@ private:
     QString pendingLocalPath_;
     QString pendingExpectedSourceSha256_;
     TryxRuntimeMediaTransform pendingTransform_;
+    TryxRuntimeMediaPreparationProfileV1 pendingPreparationProfile_;
     bool pendingRecoveredVideo_ = false;
     quint16 pendingProductId_ = 0x1021;
     quint64 pendingGeneration_ = 0;
     QSet<QString> deliveredPaths_;
     mutable QMutex retryValidationMutex_;
     QSet<QString> cancelledRetryValidations_;
+    mutable QMutex preparationStartMutex_;
     mutable QMutex preparationCancellationMutex_;
     QSet<QString> cancelledPreparationOperations_;
     std::atomic<quint64> preparationGenerationGate_{0};
+#ifdef TRYX_PROTOCOL_TESTING
+    std::function<void(PreparationPhase)>
+        beforeProcessStartHookForTesting_;
+#endif
 };

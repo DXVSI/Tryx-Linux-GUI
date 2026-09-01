@@ -107,6 +107,7 @@ udevadm verify --resolve-names=never \
 %license %{_licensedir}/%{name}/picojson-BSD-2-Clause.txt
 %doc README.md
 %{_bindir}/tryx-panorama-manager
+%{_bindir}/tryx
 %{_prefix}/lib/tryx-panorama-manager/tryx-panorama-runtime
 %{_userunitdir}/tryx-panorama.service
 %{_userpresetdir}/90-tryx-panorama.preset
@@ -116,6 +117,7 @@ udevadm verify --resolve-names=never \
 %{_iconsdir}/hicolor/256x256/apps/tryx-panorama.png
 %{_metainfodir}/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
 %{_mandir}/man1/tryx-panorama-manager.1*
+%{_mandir}/man1/tryx.1*
 
 %changelog
 * Sun Aug 09 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.2.0-1

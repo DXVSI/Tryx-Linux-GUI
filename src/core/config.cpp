@@ -46,6 +46,10 @@ bool valid_pase_overlay_lease_mode(const std::string& mode) {
   return mode == "ping-and-overlay-lease" || mode == "ping-only";
 }
 
+bool valid_close_behavior(const std::string& behavior) {
+  return behavior == "hide-to-tray" || behavior == "quit-gui";
+}
+
 bool parse_root_object(const std::string& raw, picojson::object& out) {
   picojson::value parsed;
   std::string parse_err = picojson::parse(parsed, raw);
@@ -135,6 +139,15 @@ std::optional<Config> ConfigManager::load_config() {
   cfg.keepalive_interval =
       extract_number(root, "keepalive_interval", cfg.keepalive_interval);
   cfg.language = extract_text(root, "language", cfg.language);
+  const auto close_behavior = root.find("close_behavior");
+  if (close_behavior != root.end() &&
+      close_behavior->second.is<std::string>()) {
+    const std::string configured =
+        close_behavior->second.get<std::string>();
+    if (valid_close_behavior(configured)) {
+      cfg.close_behavior = configured;
+    }
+  }
   const auto overlay_mode = root.find("pase_overlay_lease_mode");
   if (overlay_mode != root.end()) {
     if (!overlay_mode->second.is<std::string>()) {
@@ -151,7 +164,8 @@ std::optional<Config> ConfigManager::load_config() {
 }
 
 bool ConfigManager::save_config(const Config& config) {
-  if (!valid_pase_overlay_lease_mode(config.pase_overlay_lease_mode)) {
+  if (!valid_close_behavior(config.close_behavior) ||
+      !valid_pase_overlay_lease_mode(config.pase_overlay_lease_mode)) {
     return false;
   }
   auto dir_path = get_config_dir();
@@ -162,6 +176,7 @@ bool ConfigManager::save_config(const Config& config) {
   root["brightness"] = to_json_number(config.brightness);
   root["keepalive_interval"] = to_json_number(config.keepalive_interval);
   root["language"] = to_json_text(config.language);
+  root["close_behavior"] = to_json_text(config.close_behavior);
   root["pase_overlay_lease_mode"] =
       to_json_text(config.pase_overlay_lease_mode);
 

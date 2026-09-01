@@ -83,9 +83,9 @@ private:
         const QString &operationId, const QString &artifactId,
         const QString &message);
     void onSaveAsNewRequested(
-        const TryxRuntimeMediaTransform &transform);
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     void onReplaceRequested(
-        const TryxRuntimeMediaTransform &transform);
+        const TryxRuntimeMediaPreparationProfileV1 &profile);
     void onRuntimeInvalidated();
 
     RuntimeClient *runtime_;

@@ -35,6 +35,10 @@ class SystemMetricsModel final : public QObject {
                    NOTIFY metricsChanged)
     Q_PROPERTY(bool gpuFrequencyAvailable
                    READ gpuFrequencyAvailable NOTIFY metricsChanged)
+    Q_PROPERTY(double gpuPowerWatts READ gpuPowerWatts
+                   NOTIFY metricsChanged)
+    Q_PROPERTY(bool gpuPowerAvailable READ gpuPowerAvailable
+                   NOTIFY metricsChanged)
     Q_PROPERTY(qint64 gpuVramUsedMB READ gpuVramUsedMB
                    NOTIFY metricsChanged)
     Q_PROPERTY(qint64 gpuVramTotalMB READ gpuVramTotalMB
@@ -57,6 +61,9 @@ class SystemMetricsModel final : public QObject {
                    NOTIFY metricsChanged)
     Q_PROPERTY(double txSpeedKBs READ txSpeedKBs
                    NOTIFY metricsChanged)
+    Q_PROPERTY(bool dashboardActive READ dashboardActive
+                   WRITE setDashboardActive
+                   NOTIFY dashboardActiveChanged)
 
 public:
     explicit SystemMetricsModel(QObject *parent = nullptr);
@@ -78,6 +85,8 @@ public:
     bool gpuTemperatureAvailable() const;
     double gpuFrequencyMHz() const;
     bool gpuFrequencyAvailable() const;
+    double gpuPowerWatts() const;
+    bool gpuPowerAvailable() const;
     qint64 gpuVramUsedMB() const;
     qint64 gpuVramTotalMB() const;
     bool gpuVramAvailable() const;
@@ -95,11 +104,14 @@ public:
     bool networkAvailable() const;
     double rxSpeedKBs() const;
     double txSpeedKBs() const;
+    bool dashboardActive() const;
 
     Q_INVOKABLE void refresh();
+    void setDashboardActive(bool active);
 
 signals:
     void metricsChanged();
+    void dashboardActiveChanged();
 
 private:
     friend class QuickClientTests;
@@ -113,4 +125,6 @@ private:
     SystemMetrics metrics_;
     QString cpuName_;
     bool sampled_ = false;
+    bool autoStart_ = false;
+    bool dashboardActive_ = false;
 };

@@ -11,42 +11,107 @@
 - [x] A1. Зафиксировать characterization baseline.
 - [x] A2. Удалить неиспользуемый remote-mode из `DeviceManager`.
 - [x] A3. Вынести `PrinterMediaPreparer`.
-- [ ] A4. Вынести чистые media, path и serialization helpers.
-- [ ] A5. Выделить catalog, metrics, artifact и recovery stores.
+- [x] A4. Вынести чистые media, path и serialization helpers.
+- [x] A5. Выделить catalog, metrics, artifact и recovery stores, включая
+  product-bound `TryxReplaceJournal` v2 с legacy v1 только для `0x1021`.
 
 ## M1A: API-8-safe Linux usability
 
-- [ ] B1. Реальная модель, product ID, live firmware и app version из уже
+- [x] B1. Реальная модель, product ID, live firmware и app version из уже
   доступного API 8 snapshot.
-- [ ] B4. Close behavior.
-- [ ] B7. Только существующие legal/about links.
-- [ ] B8. Отдельный GUI autostart без смешивания с background service.
+- [x] B4. Close behavior.
+- [x] B7. Только существующие legal/about links.
+- [x] B8. Отдельный GUI autostart без смешивания с background service.
 - [ ] B11. Дополнительные локализации с native-speaker review и English
   fallback.
-- [ ] C1. Независимое Left/Right styling.
-- [ ] C2. Dirty-state guard.
-- [ ] C3. API-8-safe media source, size и origin badges.
+- [x] C1. Независимое Left/Right styling. Software acceptance завершён;
+  hardware visual smoke остаётся отдельной проверкой с явным разрешением.
+- [x] C2. Dirty-state guard, включая production Material QML gate и
+  детерминированное ожидание popup lifecycle.
+- [x] C3. API-8-safe media source, size и origin badges. Software acceptance
+  завершён; hardware/USB smoke для presentation-only среза не требовался.
 - [ ] D6. Brightness power-cycle test на `1021` и `1011`.
 
 ## M1B: Versioned contracts и telemetry
 
-- [ ] B0. Добавить capability handshake при неизменном API 8. `Manager1` и
+- [x] B0. Добавить capability handshake при неизменном API 8. `Manager1` и
   опубликованный `Manager2` остаются замороженными; новые поля получают новые
   versioned methods/types, а настоящий breaking change требует `Manager3`.
-- [ ] B2. Runtime-owned °C/°F и 12/24H.
-- [ ] B3. Redacted support bundle и bounded log export.
-- [ ] B9. Полный NVIDIA temperature/usage/frequency/power/VRAM backend после
-  выбора packaged backend.
-- [ ] B10. Device Specifications: для `1011/1021` декодировать существующий
-  bootstrap response без повторного USB query и опубликовать поля через
-  versioned contract.
-- [ ] C12. Dimensions, duration и FPS без изменения старого API 8 tuple.
+  Выполнено 28 августа 2026 года; полный `package-check` и независимое review
+  прошли.
+- [x] B2. Runtime-owned °C/°F и 12/24H. Выполнено 28 августа 2026 года;
+  software `package-check` и три независимых read-only review прошли.
+- [x] B3. Redacted support report и bounded typed lifecycle ring. Выполнено
+  30 августа 2026 года; полный software `package-check` и три независимых
+  read-only review прошли, raw journal/log export не добавлялся.
+- [x] B9.1 software. Реализован 31 августа 2026 года optional bounded
+  `nvidia-smi` provider: generation-scoped PCI `entityKey` с UUID enrichment,
+  единый badge/value ordering, temperature/usage/frequency/power/VRAM,
+  timeout/TTL/breaker и unavailable вместо нуля. API остался равным `8`, hard
+  NVIDIA package dependency не добавлена, полный fresh `package-check` прошёл.
+- [ ] B9 NVIDIA hardware acceptance. На реальной NVIDIA GeForce подтвердить
+  actual temperature, usage, graphics frequency, power и VRAM; mixed/dual GPU
+  ordering дополнительно проверить, если такой host доступен.
+- [x] B10. Device Specifications software implementation завершена 31 августа
+  2026 года. Для `1011/1021` декодируется только существующий bootstrap response
+  без повторного USB query; добавлены generation-fenced cache, additive
+  Manager2 getter и честные Settings states. API остаётся `8`; fresh
+  `package-check` и независимые read-only review прошли.
+- [ ] B10. Device Specifications hardware acceptance. На реальном `1021`
+  сохранить обычный bootstrap capture и сверить четыре безопасных значения без
+  дополнительного SysConfig query; для `1011` выполнить отдельный
+  community/maintainer smoke. До этого новая geometry/model support не
+  заявляется.
+- [x] C12. Extended media metadata contract реализован 31 августа 2026 года:
+  artifact-scoped dimensions, duration и FPS публикуются additive Manager2
+  getter после existing explicit FilePull; exact managed-origin hash proof,
+  owner/lease и stale-response fences сохранены. API остался `8`, новый USB
+  operation и device write не добавлены; fresh `package-check`, обязательный
+  английский/русский baseline и три независимых read-only review прошли.
+- [x] C15.1. Реализован 31 августа 2026 года: owner-fenced полный catalog через
+  `GetMetricsCapabilities()`, grouped/searchable selector с явным Full `3/3`,
+  независимым Split `3+3`, selected-unavailable state и positional replacement
+  без silent eviction. Полный fresh `package-check`, независимый read-only
+  review, русский/английский QML baseline и frozen API/wire/persistence
+  regressions прошли. 4+ метрик, pages и rotation остаются после D1 и hardware
+  captures/readback.
+- [x] B12. Local headless CLI: реализован 31 августа 2026 года. Новый one-shot
+  binary `tryx` использует только существующий exact-owner user-session D-Bus
+  runtime для read-only status/capabilities/redacted operations и B3 export;
+  позднее C4 добавляет только явно названные local-state prepare/abort команды.
+  CLI не запускает runtime, не добавляет network listener/remote D-Bus и не
+  обещает GUI forwarding. Process-level CLI suite, fresh `package-check`, staged install
+  verifier и независимые read-only reviews прошли. Remote terminal qualification
+  не входит в B12 и перенесена в backlog. Clean-HEAD source archive gate пройден
+  после создания локального Git snapshot: archive script принял чистое дерево,
+  собрал committed `HEAD` и подтвердил обязательные CLI members.
 
 ## M2: Media workflow
 
-- [ ] C4. Split-aware crop.
-- [ ] C5. Saved layouts.
-- [ ] C6. Safe cache management.
+- [x] C4. Split-aware crop. Реализован 1 сентября 2026 года, 02:02:36 UTC+7:
+  Full и Split используют отдельные versioned preparation profiles, честные
+  `2240x1080` и `1120x1080` canvas и раздельные conversion identities;
+  Replace fail-closed проверяет exact live layout, а подготовленный downgrade
+  v11 -> released v10 атомарно останавливает runtime mutations. Fresh
+  `package-check` и два независимых read-only review прошли. Визуальный Apply
+  на физическом Split-дисплее остаётся отдельной hardware acceptance в D1.
+- [x] C5. Saved layouts. Реализован 1 сентября 2026 года, 12:04:10 UTC+7;
+  формальный проход занял 1 час 51 минуту 57 секунд. Добавлены runtime-owned
+  versioned device-scoped store, additive Manager2 Get/Put/Delete/Queue,
+  strict raw identity/owner fencing, fresh FileList proof в одной serialized
+  foreground Apply operation и Quick/QML UI с explicit confirmations.
+  Fresh `package-check` завершён: 1538 passed, 0 failed, 4 ожидаемых skip;
+  три независимых read-only review дали `APPROVE`. Физический Full/Split Apply
+  на `1021` и community `1011` остаётся отдельной hardware acceptance.
+- [x] C6. Safe cache management. Реализован 1 сентября 2026 года,
+  17:25:38 UTC+7; формальный проход занял 5 часов 2 минуты 3 секунды.
+  `DeviceManager` сериализует additive API-8 cleanup operation через exact
+  blockers и exclusive latch; store-методы удаляют только unindexed thumbnail
+  orphans и expired/revoked idle artifacts, а Quick interlock защищает active
+  previews. Indexed thumbnails, весь retry/recovery state, journals, leases и
+  active operations остаются protected. Fresh build, полный `package-check`,
+  translation/baseline gates и три раздельных read-only review-прохода прошли.
+  Открытых задач внутри C6 нет; C7 остаётся следующим, но не начат.
 
 ## M3: Network и portals
 
@@ -84,6 +149,12 @@
 - [ ] A9. Разделить transport, framing, discovery и model clients в
   `PrinterProtocol`.
 
+## Backlog
+
+- [ ] Квалификация `tryx` для SSH и VS Code Remote SSH. Это отдельный будущий
+  support/test track без встроенного SSH server, remote D-Bus или GUI
+  forwarding; текущий contract ограничен локальным terminal.
+
 ## Уже подтверждено и не должно возвращаться в TODO
 
 - [x] AMD telemetry и vendor-neutral NVIDIA/Intel model/badge resolution.
@@ -99,6 +170,7 @@
 не должна показываться как нулевое измерение. Новые hardware counters требуют
 отдельного источника и проверки, а не только нового label.
 
-Полный NVIDIA telemetry, CPU Voltage и legacy serial FileTransport fallback
-остаются отдельными задачами. Запуск GUI на NVIDIA не доказывает доступность
-NVIDIA temperature, usage или frequency.
+Software B9.1 реализован. Отдельный real NVIDIA hardware acceptance, CPU
+Voltage и legacy serial FileTransport fallback остаются задачами. Запуск GUI на
+NVIDIA сам по себе не доказывает доступность temperature, usage, frequency,
+power или VRAM.

@@ -1,15 +1,20 @@
 <RCC>
     <qresource prefix="/">
         <file alias="qml/Main.qml">../qml/Main.qml</file>
+        <file alias="qml/components/DirtyDraftGuard.qml">../qml/components/DirtyDraftGuard.qml</file>
         <file alias="qml/components/MediaEditor.qml">../qml/components/MediaEditor.qml</file>
         <file alias="qml/components/MediaExportPicker.qml">../qml/components/MediaExportPicker.qml</file>
         <file alias="qml/components/MediaFilePicker.qml">../qml/components/MediaFilePicker.qml</file>
         <file alias="qml/components/FirmwareFilePicker.qml">../qml/components/FirmwareFilePicker.qml</file>
         <file alias="qml/components/FirmwarePanel.qml">../qml/components/FirmwarePanel.qml</file>
         <file alias="qml/components/MetricCard.qml">../qml/components/MetricCard.qml</file>
+        <file alias="qml/components/MetricSelector.qml">../qml/components/MetricSelector.qml</file>
         <file alias="qml/components/NavButton.qml">../qml/components/NavButton.qml</file>
         <file alias="qml/components/OperationBanner.qml">../qml/components/OperationBanner.qml</file>
+        <file alias="qml/components/OverlayStyleEditor.qml">../qml/components/OverlayStyleEditor.qml</file>
         <file alias="qml/components/PrimaryButton.qml">../qml/components/PrimaryButton.qml</file>
+        <file alias="qml/components/SavedLayoutsPanel.qml">../qml/components/SavedLayoutsPanel.qml</file>
+        <file alias="qml/components/SupportBundleExportPicker.qml">../qml/components/SupportBundleExportPicker.qml</file>
         <file alias="qml/components/WindowResizeHandle.qml">../qml/components/WindowResizeHandle.qml</file>
         <file alias="qml/pages/HomePage.qml">../qml/pages/HomePage.qml</file>
         <file alias="qml/pages/PanoramaPage.qml">../qml/pages/PanoramaPage.qml</file>

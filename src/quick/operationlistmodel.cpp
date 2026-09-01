@@ -46,6 +46,8 @@ QVariant OperationListModel::data(const QModelIndex &index, int role) const {
             : 0.0;
     case RetryModeRole:
         return info.retryMode;
+    case TerminalOutcomeRole:
+        return info.terminalOutcome;
     case CanRetryRole:
         return info.state == QStringLiteral("RetryAvailable");
     case TerminalRole:
@@ -69,6 +71,7 @@ QHash<int, QByteArray> OperationListModel::roleNames() const {
         {TotalRole, "total"},
         {ProgressRole, "progress"},
         {RetryModeRole, "retryMode"},
+        {TerminalOutcomeRole, "terminalOutcome"},
         {CanRetryRole, "canRetry"},
         {TerminalRole, "terminal"},
     };
