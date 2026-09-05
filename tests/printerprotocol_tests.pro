@@ -60,6 +60,7 @@ HEADERS += \
     $$PWD/../src/printerprotocol.h \
     $$PWD/../src/runtimebridge.h \
     $$PWD/../src/devicemanager.h \
+    $$PWD/../src/deviceworker.h \
     $$PWD/../src/firmwarebridge.h \
     $$PWD/../src/firmwarerecoveryjournal.h \
     $$PWD/../src/firmwareupdater.h \
@@ -97,6 +98,7 @@ SOURCES += \
     $$PWD/../src/printerprotocol.cpp \
     $$PWD/../src/runtimebridge.cpp \
     $$PWD/../src/devicemanager.cpp \
+    $$PWD/../src/deviceworker.cpp \
     $$PWD/../src/firmwarebridge.cpp \
     $$PWD/../src/firmwarerecoveryjournal.cpp \
     $$PWD/../src/firmwareupdater.cpp \

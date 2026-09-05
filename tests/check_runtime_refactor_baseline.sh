@@ -30,6 +30,31 @@ reject_source_pattern() {
 }
 
 require_source_pattern \
+    src/deviceworker.h \
+    'class DeviceWorker : public QObject'
+require_source_pattern \
+    src/deviceworker.cpp \
+    'DeviceWorker::DeviceWorker(QObject *parent)'
+require_source_pattern \
+    tryx-panorama.pro \
+    'src/deviceworker.h'
+require_source_pattern \
+    tryx-panorama.pro \
+    'src/deviceworker.cpp'
+require_source_pattern \
+    tests/printerprotocol_tests.pro \
+    '$$PWD/../src/deviceworker.h'
+require_source_pattern \
+    tests/printerprotocol_tests.pro \
+    '$$PWD/../src/deviceworker.cpp'
+reject_source_pattern \
+    src/devicemanager.h \
+    'class DeviceWorker : public QObject'
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'DeviceWorker::DeviceWorker(QObject *parent)'
+
+require_source_pattern \
     src/printersessioncontroller.h \
     'class PrinterSessionController final : public QObject'
 require_source_pattern \
@@ -333,7 +358,7 @@ require_source_pattern \
     src/quick/runtimeclient.cpp \
     'QStringLiteral("QueueSavedLayoutApplyV1")'
 require_source_pattern \
-    src/devicemanager.cpp \
+    src/deviceworker.cpp \
     'QStringLiteral("VerifyingSavedLayout")'
 require_source_pattern \
     src/savedlayoutstore.cpp \

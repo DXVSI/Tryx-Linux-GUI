@@ -99,6 +99,7 @@ HEADERS += \
     src/devicemediaartifactstore.h \
     src/devicemanagermessages.h \
     src/devicemanager.h \
+    src/deviceworker.h \
     src/firmwarebridge.h \
     src/firmwarerecoveryjournal.h \
     src/gpuinventory.h \
@@ -137,6 +138,7 @@ SOURCES += \
     src/deleteintentstore.cpp \
     src/devicemediaartifactstore.cpp \
     src/devicemanager.cpp \
+    src/deviceworker.cpp \
     src/firmwarebridge.cpp \
     src/firmwarerecoveryjournal.cpp \
     src/gpuinventory.cpp \

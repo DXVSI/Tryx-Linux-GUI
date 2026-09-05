@@ -18,8 +18,8 @@
   выполняться отдельными небольшими изменениями. Один общий rewrite запрещён.
 - Предложение A8, A9 и B5 согласовано 5 сентября 2026 года с уточнённым B5:
   тихая проверка при запуске GUI и каждый час, без opt-in и self-update.
-  Ниже зафиксирован implementation contract для отдельного согласования.
-  Реализация этих трёх пунктов ещё не начата; порядок: A8, затем A9, затем B5.
+  Implementation contract ниже также согласован; начата реализация A8.
+  Порядок сохраняется: A8, затем A9, затем B5.
 
 Этот документ является новым каноническим планом. Он заменяет
 `todo-next.md` как подробный источник задач и уточняет
@@ -1259,14 +1259,14 @@ download/flash features, schema/API migration, QML redesign, GIPHY и recorder.
 
 **Зависимости:** A7.
 
-**Статус:** предложение согласовано; документ ожидает согласования перед
-реализацией. A8 не закрыт.
+**Статус:** документ согласован 5 сентября 2026 года; реализация начата.
+A8 не закрыт: вынос worker завершён, разделение policy ещё выполняется.
 
 #### Подтверждённая база и цель
 
 На базе `c841bf9` A6 и A7 уже вынесли operation coordination и runtime session
-lifecycle из manager. `DeviceWorker` остаётся в `devicemanager.{h,cpp}` и
-совмещает legacy `panorama::Device`, printer `PrinterProtocol`, четыре таймера,
+lifecycle из manager. Перед A8 `DeviceWorker` находился в `devicemanager.{h,cpp}`
+и совмещал legacy `panorama::Device`, printer `PrinterProtocol`, четыре таймера,
 printer FSM, metrics и немедленные cancellation/generation gates.
 
 Legacy serial/ADB и printer-class code получают отдельные session/policy
@@ -1333,6 +1333,20 @@ thread-safe entry points не превращаются в queued calls: они �
 или отключение тестов ради extraction запрещено. Закрытие A8 требует фактического
 переноса policy state, а не только forwarding к прежнему общему worker body.
 
+Первый срез выполнен: `DeviceWorker` перенесён в `deviceworker.{h,cpp}`;
+сравнение с `2066d1a` подтвердило неизменность всего class declaration и всех
+method bodies. Runtime и test build прошли, полный protocol suite дал
+893 passed / 0 failed / 0 skipped, structural baseline прошёл. Появилась
+отдельная source guard на worker module и qmake wiring; существующая проверка
+`VerifyingSavedLayout` перенесена вслед за реализацией без ослабления.
+Физический hardware I/O не выполнялся.
+
+Общий источник SystemMonitor уже использовался и legacy, и printer metrics.
+При выделении policy legacy сохраняет заимствованный доступ к тому же provider
+через worker wiring; отдельный telemetry collector не создаётся. QObject
+parentage обязателен для переноса обеих session и timers вместе с worker,
+см. [Qt QObject thread affinity](https://doc.qt.io/qt-6/qobject.html#thread-affinity).
+
 Основной риск: lifetime, thread affinity и порядок событий при переходе через
 новые объекты. Его проверяют behavioral fixtures и teardown/reentrancy cases.
 Откат ограничен коммитами A8, сохраняет A6/A7 и не требует on-disk migration.
@@ -1345,8 +1359,8 @@ protocol split A9, изменение runtime API, UI redesign и физичес
 **Зависимости:** A7; в согласованной последовательности выполняется после A8
 и остаётся последним архитектурным этапом.
 
-**Статус:** предложение согласовано; документ ожидает согласования перед
-реализацией. A9 не закрыт.
+**Статус:** документ согласован 5 сентября 2026 года; реализация ожидает A8.
+A9 не закрыт.
 
 #### Подтверждённая база и цель
 
@@ -1935,9 +1949,9 @@ client, 23 runtime bootstrap и 13 tray. Hardware smoke не выполнялс�
 
 ### B5. Тихое уведомление о новой версии приложения
 
-**Статус:** предложение согласовано 5 сентября 2026 года после уточнения
-пользователем startup/hourly policy; документ ожидает согласования перед
-реализацией. B5 не закрыт. Выполняется отдельным feature change после A8/A9.
+**Статус:** документ согласован 5 сентября 2026 года после уточнения
+пользователем startup/hourly policy. B5 не закрыт; реализация ожидает A8/A9
+и выполняется отдельным feature change.
 
 #### Подтверждённая база и принятое решение
 
