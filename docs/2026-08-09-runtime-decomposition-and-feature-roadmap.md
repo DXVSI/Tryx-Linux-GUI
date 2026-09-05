@@ -3,7 +3,7 @@
 ## Статус
 
 - Статус: active, выполняется небольшими последовательными изменениями.
-- Дата фиксации: 9 августа 2026 года; обновлено 31 августа 2026 года.
+- Дата фиксации: 9 августа 2026 года; обновлено 5 сентября 2026 года.
 - Базовая версия приложения: `2.2.0`.
 - Исходная база на момент составления:
   `feature/panorama-1011-support`, commit `1e93479`.
@@ -16,6 +16,10 @@
   явного согласия для точной модели.
 - Каждый архитектурный refactor и каждая пользовательская функция должны
   выполняться отдельными небольшими изменениями. Один общий rewrite запрещён.
+- Предложение A8, A9 и B5 согласовано 5 сентября 2026 года с уточнённым B5:
+  тихая проверка при запуске GUI и каждый час, без opt-in и self-update.
+  Ниже зафиксирован implementation contract для отдельного согласования.
+  Реализация этих трёх пунктов ещё не начата; порядок: A8, затем A9, затем B5.
 
 Этот документ является новым каноническим планом. Он заменяет
 `todo-next.md` как подробный источник задач и уточняет
@@ -1255,24 +1259,170 @@ download/flash features, schema/API migration, QML redesign, GIPHY и recorder.
 
 **Зависимости:** A7.
 
-Legacy serial/ADB и printer-class code получают отдельные policy/session
-объекты, но продолжают исполняться через один контролируемый worker context.
-Создание двух независимых USB writers запрещено.
+**Статус:** предложение согласовано; документ ожидает согласования перед
+реализацией. A8 не закрыт.
+
+#### Подтверждённая база и цель
+
+На базе `c841bf9` A6 и A7 уже вынесли operation coordination и runtime session
+lifecycle из manager. `DeviceWorker` остаётся в `devicemanager.{h,cpp}` и
+совмещает legacy `panorama::Device`, printer `PrinterProtocol`, четыре таймера,
+printer FSM, metrics и немедленные cancellation/generation gates.
+
+Legacy serial/ADB и printer-class code получают отдельные session/policy
+объекты, сохраняя один контролируемый worker context и очередь I/O. Разделение
+меняет владельцев реализации, но не протокол, режимы поддержки или retry policy.
+
+#### Владение и границы
+
+Названия ниже задают целевые внутренние модули, а не новый публичный API.
+
+| Модуль | Собственное состояние и ответственность | Граница |
+|---|---|---|
+| `DeviceWorker` в `deviceworker.{h,cpp}` | Существующий QObject façade, очередь команд, немедленные gates, cancellation eventfds и общий quiesce | Единственная точка dispatch для обеих policy; существующие slots/signals и их порядок сохраняются |
+| `LegacyDeviceSession` | `panorama::Device`, legacy handshake, команды serial/ADB и legacy metrics timer | Исполнение только в worker context; нет собственной очереди допуска или reconnect authority |
+| `PrinterClassSession` | Один `PrinterProtocol`, printer FSM, keepalive/recovery/metrics timers, SystemMonitor, overlay и foreground state | Исполнение только в том же worker context; не владеет runtime generation или firmware lease из A7 |
+
+Композиция сохраняет текущие различия протоколов без общей базовой policy,
+plugin framework или второго worker thread. Каждая session имеет одного
+владельца, все её QObject children перемещаются вместе с worker. Получатели
+команд не обращаются назад к manager и не обходят очередь I/O.
+
+`DeviceWorker` остаётся единственным владельцем атомарных generation/readiness
+gates, cancellation set/mutex/eventfds и опубликованных presentation preferences.
+Policy используют узкий заимствованный доступ к этому состоянию; второй копии
+gates или независимого решения о допуске операции не появляется. Немедленные
+thread-safe entry points не превращаются в queued calls: они должны прервать
+уже ожидающий ответ I/O, не дожидаясь освобождения worker.
+
+Общий quiesce останавливает обе policy и закрывает transport до существующего
+подтверждения firmware handoff. При уничтожении worker все callbacks и transport
+ожидания завершаются до закрытия cancellation fds и уничтожения shared context.
+Точный порядок observable signals и fences сохраняется по текущему baseline.
+
+#### Инварианты и критерии закрытия
+
+- Один runtime I/O owner; две policy не создают двух независимых USB writers.
+  Переключение legacy/printer, disconnect, downgrade и firmware quiesce проходят
+  через существующий контролируемый dispatch.
+- A6 operation ledger и A7 generation/session/lease authority не возвращаются
+  в worker. API 8, identities, revisions, persistence и translations сохраняются.
+- Passive printer worker не отправляет frames; foreground operation по-прежнему
+  приостанавливает периодические metrics/keepalive. Отмена операции не отменяет
+  независимое session recovery и не теряется при drain следующей команды.
+- Same-path re-enumeration немедленно инвалидирует старый generation; stale
+  completion не возобновляет timers и не снимает новый firmware fence.
+- Сохранены DeviceInfo readiness, bootstrap-once, overlay activation, retry
+  deadlines, Turris transfer-only policy и запрет автоматического mutation replay.
+
+#### Последовательность реализации и проверки
+
+1. Вынести worker façade в собственный модуль, обновить qmake wiring и tests,
+   сохранив исходное поведение и один worker thread.
+2. Отделить legacy session; проверить connect/disconnect, handshake, команды,
+   metrics timer и общий transport quiesce через test doubles, без hardware I/O.
+3. Отделить printer session; сохранить shared gates, signal forwarding и
+   destruction order. Проверить обе policy в одном worker context, отсутствие
+   I/O после quiesce и неизменность отмены уже заблокированного request.
+4. Выполнить чистые runtime/test builds, полный protocol suite и `package-check`.
+   В focused matrix обязательны passive/foreground, cancel/drain, same-path
+   generation, восстановление overlay и late firmware quiesce/release fence.
+
+Каждый проверенный срез сохраняется отдельно по уже данному запросу на commits.
+Адаптация private test fixtures допустима, ослабление assertions, deadlines
+или отключение тестов ради extraction запрещено. Закрытие A8 требует фактического
+переноса policy state, а не только forwarding к прежнему общему worker body.
+
+Основной риск: lifetime, thread affinity и порядок событий при переходе через
+новые объекты. Его проверяют behavioral fixtures и teardown/reentrancy cases.
+Откат ограничен коммитами A8, сохраняет A6/A7 и не требует on-disk migration.
+
+**Out of scope:** новые capabilities, USB reset, новые retries, firmware writes,
+protocol split A9, изменение runtime API, UI redesign и физическая qualification.
 
 ### A9. Разделить PrinterProtocol по слоям
 
-**Зависимости:** A7. Выполнять последним из архитектурных этапов.
+**Зависимости:** A7; в согласованной последовательности выполняется после A8
+и остаётся последним архитектурным этапом.
 
-Отдельными задачами:
+**Статус:** предложение согласовано; документ ожидает согласования перед
+реализацией. A9 не закрыт.
 
-- `UsbPrinterTransport`;
-- frame/transaction channel;
-- discovery и `PrinterDeviceMonitor`;
-- PASE config/media client;
-- Turris container и media client.
+#### Подтверждённая база и цель
 
-Wire fixtures, response matching, drain/cancel и ambiguous-outcome semantics
-должны оставаться побитно совместимыми.
+На базе `c841bf9` в `printerprotocol.cpp` ещё находятся discovery, udev monitor,
+native/scripted libusb backend, `LibusbAsyncTransport`, frame codec, общий
+`PrinterProtocol::Impl` и PASE/Turris workflows. `turrismediaformat.{h,cpp}` уже
+владеет MXHD container write/validation и переиспользуется без второго формата.
+
+Стабильный façade `PrinterProtocol` сохраняет используемые методы, nested value
+types, profiles и test entry points. Runtime API 8 и вызывающий worker не должны
+зависеть от новых внутренних transport/client классов.
+
+#### Целевые слои
+
+| Слой | Владение | Не входит в ответственность |
+|---|---|---|
+| `UsbPrinterTransport` | Один libusb handle/claimed interface, byte I/O, native/test backend, async transfer lifetime, cancel wakeup и transport failure latch | Frames, track IDs, protobuf payload и model policy |
+| `PrinterFrameCodec` | Stateless frame encode/decode и существующий payload limit | Transport, запросы к устройству и session lifecycle |
+| Frame/transaction channel | Единственный transport, receive buffer, track IDs, response matching, transaction deadlines, optional-response drain и outbound activity clock | Выбор product capabilities и пользовательского media/config workflow |
+| Discovery и `PrinterDeviceMonitor` | Passive enumeration, sysfs/udev identity, monitor fd/notifier и publication snapshot | Открытие USB transport или protocol OUT |
+| PASE config/media client | Подтверждённые PASE/PANORAMA readiness, config, overlay, metrics, media и readback workflows | Собственный transport, очередь или независимая нумерация транзакций |
+| Turris media client | Подтверждённый transfer-only workflow с существующим MXHD helper | PASE bootstrap, catalog, brightness, metrics, presets или новые capabilities |
+
+Façade владеет одним channel и model clients; clients заимствуют channel на
+срок, меньший его lifetime. Transport принадлежит channel и живёт в том же I/O
+context, что A8 worker. Codec и общие value types имеют по одному определению;
+source compatibility существующих имён сохраняется через заголовки/aliases.
+Общие model-neutral transfer helpers переиспользуются без копирования одной
+upload/ack последовательности в каждый client и без второго I/O owner.
+
+Model clients возвращают прежние typed результаты. Channel сохраняет различие
+NotSent, Cancelled, PartiallySent, AcknowledgementTimeout, TransportFailure,
+InvalidResponse, SentOutcomeUnknown, Rejected и Acknowledged. Преобразование
+в публичный MutationOutcome остаётся прежним, включая FinalizationUnknown
+и PartialOrUnknown; потеря final ACK не становится разрешением повторить запись.
+
+#### Инварианты и критерии закрытия
+
+- Wire fixtures остаются побитно совместимыми: payload, frame boundaries,
+  tracked/untracked requests, response validator и profile-specific traffic.
+- Сохраняются fragmented/concatenated/malformed frames, bounds receive buffer,
+  wrong-track rejection, optional ACK/Pong drain и строго ограниченный fallback
+  unframed response после transport error.
+- Partial write, cancel, timeout и неизвестный исход не смешиваются. In-flight
+  keepalive и FileTransmit boundary deadlines не меняют текущую последовательность.
+- Одно USB claim на connection epoch; no-op display activation close остаётся
+  no-op. IN transfer policy, cancellation teardown и persistent input failure
+  latch сохраняются, включая scripted backend tests.
+- Monitor устанавливается до первого rescan, отличает физический remove/add
+  от собственных bind/unbind, сохраняет forced same-path snapshot и fail-closed
+  MonitoringUnavailable. Monitor никогда не выполняет I/O за model client.
+- Turris upload не получает PASE traffic, catalog reconciliation или retransmit
+  после lost final ACK. Проверка MXHD до USB сохраняется.
+
+#### Последовательность реализации и проверки
+
+1. Вынести profiles/discovery/monitor и frame codec с текущими fixtures.
+2. Отделить byte transport и его native/scripted backend; сохранить fd test seam,
+   claim lifetime и существующие failure/cancel scenarios.
+3. Выделить один transaction channel из `Impl`, проверив response matching,
+   partial sends, drain, cancellation и outcome mapping до переноса clients.
+4. Отделить PASE и Turris workflows; façade только выбирает профиль/делегирует,
+   а mutable transport/channel state не остаётся общим скрытым model `Impl`.
+5. Проверить qmake runtime/test wiring, чистые builds, весь protocol suite,
+   translation/structural gates и полный `package-check`. Старые fixtures
+   остаются обязательными; новые тесты проверяют реальные границы владения.
+
+Каждый слой фиксируется отдельным проверенным коммитом. Основные риски связаны
+с lifetime callbacks, потерей latched error или изменением ambiguous-outcome
+semantics. Для каждого переноса обязательны focused tests до следующего слоя.
+Откат выполняется в обратном порядке коммитов A9, сохраняя A8 и A6/A7;
+on-disk migration не требуется.
+
+**Out of scope:** новая wire protocol revision, API 9, USB reset/retry redesign,
+новые model capabilities, второй transport writer, новые библиотеки/стек,
+hardware queries/writes или qualification неизвестных профилей.
 
 ## Workstream B: Linux Settings и диагностика
 
@@ -1283,7 +1433,7 @@ Wire fixtures, response matching, drain/cancel и ambiguous-outcome semantics
 | B2 | °C/°F и 12/24H | B0, B1 | Dashboard и runtime overlay используют одну persisted setting; timezone остаётся системным; runtime работает после закрытия GUI |
 | B3 | Redacted support bundle | A5, B0, B1 | Локальный JSON не больше 1 MiB содержит host/app/runtime versions, безопасный runtime snapshot и bounded typed lifecycle events текущего запуска; raw journal, environment, usernames/home paths, serial, chip ID, operation/media identifiers и содержимое media не экспортируются |
 | B4 | Close behavior | нет | Пользователь выбирает Hide to tray или Quit GUI; Hide недоступен без StatusNotifier host; runtime не останавливается |
-| B5 | GitHub release notification | нет | Проверка выполняется явно или с opt-in interval; только уведомление и ссылка; без self-update и без restart active runtime |
+| B5 | GitHub release notification | нет | Тихая проверка при старте основного GUI и каждый час, включая tray; без opt-in, progress UI и видимых сетевых ошибок; только более новая стабильная версия, одно уведомление о той же версии за запуск и ссылка на релиз; без self-update, фоновой сети в runtime и restart active runtime |
 | B6 | Remote firmware availability research | B1 | Сначала определить официальный source, authenticity/signature, compatibility manifest и rollback contract; до отдельного proposal нет remote download, update badge или flash |
 | B7 | Legal/About links | нет | Показываются только существующие project License, Privacy или User Agreement URLs; отсутствующая политика не выдумывается |
 | B8 | GUI autostart option | B4 | Фоновый systemd service и запуск GUI разделены; состояние доступно и обратимо через user session |
@@ -1782,6 +1932,141 @@ D-Bus API 8 и USB protocol не менялись. Полный software `packag
 прошёл: 778 printer protocol cases, 17 replace journal, 33 QML, 44 Quick
 client, 23 runtime bootstrap и 13 tray. Hardware smoke не выполнялся; B4 не
 добавляет USB-команд и не меняет их wire bytes.
+
+### B5. Тихое уведомление о новой версии приложения
+
+**Статус:** предложение согласовано 5 сентября 2026 года после уточнения
+пользователем startup/hourly policy; документ ожидает согласования перед
+реализацией. B5 не закрыт. Выполняется отдельным feature change после A8/A9.
+
+#### Подтверждённая база и принятое решение
+
+В текущем GUI есть версия из `VERSION` через `TRYX_APP_VERSION`, Settings/About,
+проверенные project links, single-instance guard и системные уведомления через
+`LinuxTrayController`. Release checker и сетевые настройки B5 отсутствуют.
+`ConfigManager` перезаписывает общий `config.json`, который используют GUI и
+runtime; новый network state туда не добавляется.
+
+Принятое поведение заменяет прежнее предложение ручной проверки/opt-in раз
+в сутки. Проверка обязательна для обычного GUI, но невидима пользователю до
+обнаружения обновления. Это только уведомление о приложении, не о firmware.
+
+#### Пользовательский контракт и расписание
+
+- После успешного старта основного GUI process запускается одна асинхронная
+  проверка, не блокирующая первый показ окна или работу интерфейса.
+- Пока этот process работает, проверка повторяется раз в час, в том числе
+  при скрытом в tray окне и GUI autostart. Повторный запуск, лишь активирующий
+  существующий single instance, не создаёт второй checker или дополнительный poll.
+- Используется monotonic interval 60 минут, не wall-clock дедлайн. Одновременно
+  разрешён один request; после suspend или задержки event loop пропущенные
+  интервалы не накапливаются в очередь запросов. Quit отменяет request и timer.
+- Нет opt-in, первого диалога согласия, переключателя, ручной кнопки проверки,
+  spinner, состояния «проверяем» или сообщений «обновлений нет».
+- Новая стабильная версия вызывает одно системное уведомление. В Settings/About
+  появляется строка доступной версии и кнопка открытия соответствующего релиза
+  в системном браузере. До подтверждённого обновления этот UI отсутствует.
+- Та же версия не вызывает повторное уведомление при следующем часовом poll.
+  Если за этот запуск появится ещё более новая версия, она получает отдельное
+  уведомление. После нового старта GUI неустановленное обновление можно сообщить
+  снова. Закрытие popup не удаляет строку и ссылку из Settings.
+- При отсутствии notifications service или при его отказе сохраняется строка
+  в Settings; окно принудительно не раскрывается, modal fallback не появляется.
+  Настройки desktop/DND могут скрыть popup; реальную доставку нельзя обещать
+  только по успешной отправке D-Bus запроса.
+- Offline, TLS/DNS errors, timeout, rate limit, отсутствие релиза и malformed
+  response не показывают ошибок пользователю и не означают «последняя версия».
+  Неудачный poll не уничтожает ранее подтверждённое уведомление этого запуска.
+- Полностью закрытый GUI ничего не проверяет. Runtime, CLI, firmware flow,
+  `--version`, export helper и smoke/offline tests не получают release polling.
+
+#### Архитектура, данные и сетевые границы
+
+Один GUI-owned `ReleaseUpdateController` использует асинхронный Qt Network
+client и timer; Qt Network подключается к GUI/test target, не к USB worker.
+Существующий `LinuxTrayController` отправляет системное уведомление, Settings
+получает только подтверждённые version/URL и наличие обновления. Worker,
+runtime D-Bus API, device state и single-instance policy остаются без изменений.
+
+Endpoint фиксирован: HTTPS `api.github.com`, путь
+`/repos/DXVSI/Tryx-Linux-GUI/releases/latest`. Публичный latest-release endpoint
+предоставляет опубликованный non-draft/non-prerelease release без токена.
+Дата release/commit не заменяет сравнение версии. Источник проверен
+5 сентября 2026 года: [GitHub REST, Get the latest release](https://docs.github.com/en/rest/releases/releases#get-the-latest-release).
+Для запроса используются `Accept: application/vnd.github+json`, неперсональный
+application User-Agent и документированный `X-GitHub-Api-Version: 2026-03-10`.
+
+Контракт обработки внешних данных:
+
+- Один GET с общим deadline 10 секунд и ограничением полученного тела 1 MiB.
+  Размер ограничивается во время чтения, а не только по Content-Length.
+  Нет бесконечного retry; после неудачи остаётся следующий часовой poll.
+- TLS проверяется штатно, redirects не следуются, endpoint не настраивается
+  через пользовательские URL/env. GitHub credentials, cookies, serial/chip ID,
+  system/device logs и media metadata не отправляются. Сетевая проверка сама
+  по себе раскрывает GitHub обычные данные HTTP соединения, включая IP; это
+  поведение документируется в README без нового GUI consent flow.
+- HTTP 200 принимается только как bounded JSON object с корректными типами,
+  `draft=false`, `prerelease=false`, непустой датой публикации и строгим version
+  tag. Принимаются `vX.Y.Z` и `X.Y.Z`; beta/RC, suffixes, пустые/некорректные
+  компоненты и overflow не становятся обновлением. Версия GUI сравнивается
+  численно по major/minor/patch, не строкой и не по `published_at`.
+- Только release version строго больше версии исполняемого GUI публикует
+  availability. Равная/более старая версия и непарсируемая локальная dev version
+  не вызывают ложного предложения обновиться или понизить версию.
+- Release URL строится из фиксированного prefix
+  `https://github.com/DXVSI/Tryx-Linux-GUI/releases/tag/` и проверенного tag.
+  Произвольные `html_url`, release body/Markdown/HTML, assets, картинки и
+  redirect locations не открываются, не отображаются и не загружаются.
+  Браузер открывается только по действию пользователя на проверенной ссылке.
+- ETag сохраняется лишь вместе с прошедшим проверку release snapshot. HTTP 304
+  использует только этот snapshot; без него обновление не объявляется. 404,
+  403/429, 5xx и invalid response остаются тихими неуспешными проверками.
+  Rate-limit Retry-After/reset, если они валидны, могут отложить следующий poll
+  позже часа, но не запускают дополнительные запросы или видимый отсчёт.
+
+Данные живут только в памяти основного GUI process: validated release snapshot
+и ETag, текущий request/timer, cooldown и максимальная уже объявленная версия.
+Так hourly polling не дублирует уведомление и не сообщает старую версию после
+новой. Нужды в persisted opt-in, suppression или новом GUI settings file нет;
+общий `config.json`, runtime stores и on-disk schemas не меняются. Последний
+успешный ответ с равной/старой стабильной версией снимает availability;
+сетевой/parse error не выдаётся за такой ответ.
+
+#### Реализация, acceptance и откат
+
+1. Добавить typed parsing/version comparison с deterministic fixtures для
+   newer/equal/older, `2.10.0` против `2.9.0`, optional `v`, malformed fields,
+   draft/prerelease, неизвестной локальной версии и untrusted URL/body.
+2. Добавить GUI controller и сеть с test-only transport/clock seams. Проверить
+   startup + 60-minute schedule без настоящего часового ожидания, один in-flight,
+   teardown/cancel, delayed reply, timeout, oversized body, redirects, 200/304,
+   404, rate limit и 5xx. Tests не обращаются к живому GitHub.
+3. Подключить controller только к primary GUI. Проверить hidden/tray/autostart,
+   secondary invocation, smoke/offline/helper paths, отсутствие runtime/USB
+   вызовов и отсутствие новой periodic systemd job.
+4. Подключить notification и условный Settings UI, RU/EN strings, keyboard focus
+   и безопасный browser handoff. Проверить duplicate suppression, новую версию
+   в том же запуске, notification failure fallback и невидимость no-update/error.
+5. Обновить README с startup/hourly network behavior и ручным обновлением через
+   страницу релиза. Выполнить чистые GUI/runtime/test builds, Quick/QML/network
+   fixtures, translations, release/structural checks и полный `package-check`.
+
+Сетевые тесты не доказывают появление popup на реальном desktop. При закрытии
+B5 отдельно сообщаются результаты GUI/notification smoke и недоступные проверки;
+hardware traffic для этой функции не требуется. B5 сохраняется отдельными
+feature/test commits, не смешанными с архитектурными A8/A9; push не разрешён.
+
+Риски: silent errors могут задержать уведомление; desktop policy может скрыть
+popup; publisher может выбрать latest tag, не превосходящий локальную версию.
+Защита: bounded checks, строгая проверка ответа, числовое сравнение, постоянная
+условная ссылка в Settings и deterministic error-path tests. Откат коммитов B5
+удаляет GUI wiring/client/UI; runtime и сохранённые пользовательские данные
+не затрагиваются, cleanup или migration не нужны.
+
+**Out of scope:** self-update, asset download, package installation, restart GUI
+или runtime, firmware notification/update, changelog renderer, telemetry,
+проверка при закрытом GUI, opt-in/manual controls, GIPHY и recorder.
 
 ### B7. Legal/About links
 
