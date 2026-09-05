@@ -225,6 +225,9 @@ TestCase {
         const host = createSelector(selected, catalog)
         const selector = host.selector
         const fourth = child(selector, "fullMetricGpuTemperature")
+        // Focus can be assigned before the first frame. Mouse input also
+        // requires a rendered target when this runs in the full QML suite.
+        verify(waitForRendering(fourth, 1000))
         fourth.forceActiveFocus()
         tryVerify(() => fourth.activeFocus)
         mouseClick(fourth)
