@@ -2164,6 +2164,7 @@ private slots:
     void concatenatedFrames();
     void malformedAndOversizedFrames();
     void runtimeOperationDbusRoundTrip();
+    void operationCoordinatorOwnsLedgerBehindSynchronousManagerFacade();
     void runtimeMediaCatalogDbusRoundTrip();
     void runtimeDeviceMediaArtifactDbusRoundTrip();
     void runtimeDeviceMediaMetadataDbusRoundTrip();
@@ -2652,7 +2653,7 @@ private:
 TryxRuntimeSavedLayoutV1 PrinterProtocolTests::savedLayoutForTesting(
     DeviceManager *manager, const QString &name, bool split) {
     TryxRuntimeSavedLayoutV1 layout;
-    if (!manager || manager->mediaCatalog_.entries.size() <
+    if (!manager || manager->operationCoordinator_.mediaCatalog_.entries.size() <
             (split ? 2 : 1)) {
         return layout;
     }
@@ -2663,7 +2664,7 @@ TryxRuntimeSavedLayoutV1 PrinterProtocolTests::savedLayoutForTesting(
     const int mediaCount = split ? 2 : 1;
     for (int index = 0; index < mediaCount; ++index) {
         const TryxRuntimeMediaEntry &entry =
-            manager->mediaCatalog_.entries.at(index);
+            manager->operationCoordinator_.mediaCatalog_.entries.at(index);
         TryxRuntimeSavedMediaRefV1 reference;
         reference.mediaId = entry.mediaId;
         reference.name = entry.name;
@@ -2716,30 +2717,31 @@ bool PrinterProtocolTests::armRetryCacheDispatchForTesting(
     QObject::disconnect(
         manager, &DeviceManager::requestPrinterUploadPrepared,
         manager->worker_, &DeviceWorker::uploadPreparedPrinterMedia);
-    auto fixture = manager->operations_.find(operationId);
-    if (fixture != manager->operations_.end() &&
+    auto fixture = manager->operationCoordinator_.operations_.find(operationId);
+    if (fixture != manager->operationCoordinator_.operations_.end() &&
         fixture->mediaConversion.isEmpty()) {
         fixture->mediaConversion =
             mediaConversionForProduct(
                 fixture->printerProductId,
                 fixture->mediaPreparationProfile);
     }
-    if (!manager->dispatchPreparedUploadWithRetryBarrier(
+    if (!manager->operationCoordinator_.dispatchPreparedUploadWithRetryBarrier(
+            manager->operationContext(),
             manager->currentPrinterPath(), operationId,
             manager->printerGeneration_)) {
         return false;
     }
-    const auto found = manager->operations_.constFind(operationId);
-    if (found == manager->operations_.constEnd()) {
+    const auto found = manager->operationCoordinator_.operations_.constFind(operationId);
+    if (found == manager->operationCoordinator_.operations_.constEnd()) {
         return false;
     }
     if (canonicalPreparedPath) {
         *canonicalPreparedPath = found->preparedPath;
     }
-    return manager->retryCacheSnapshot_.inFlightDispatch.has_value() &&
-        manager->retryCacheSnapshot_.inFlightDispatch->operationId ==
+    return manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value() &&
+        manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->operationId ==
             operationId &&
-        manager->retryCacheSnapshot_.inFlightDispatch->phase ==
+        manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->phase ==
             tryx::RetryCacheStore::DispatchPhase::DispatchArmed;
 }
 
@@ -2867,6 +2869,85 @@ void PrinterProtocolTests::runtimeOperationDbusRoundTrip() {
     QCOMPARE(actualInfo.attempt, expectedInfo.attempt);
     QCOMPARE(actualInfo.deviceGeneration, expectedInfo.deviceGeneration);
     QCOMPARE(actualInfo.applyAfterUpload, expectedInfo.applyAfterUpload);
+}
+
+void PrinterProtocolTests::
+    operationCoordinatorOwnsLedgerBehindSynchronousManagerFacade() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("dev"));
+    int forwardedSignalCount = 0;
+    quint64 forwardedRevision = 0;
+    TryxRuntimeOperationInfo forwardedInfo;
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    connect(
+        manager.get(), &DeviceManager::operationChanged,
+        manager.get(),
+        [&](const TryxRuntimeOperationInfo &info, quint64 revision) {
+            ++forwardedSignalCount;
+            forwardedInfo = info;
+            forwardedRevision = revision;
+        });
+
+    const QString operationId = QStringLiteral(
+        "16161616-1616-4616-8616-161616161616");
+    manager->rejectOperation(
+        operationId, QStringLiteral("Upload"),
+        QStringLiteral("ownership-test.png"),
+        QStringLiteral("TestRejected"),
+        QStringLiteral("coordinator facade test"));
+
+    QCOMPARE(forwardedSignalCount, 1);
+    QCOMPARE(forwardedInfo.id, operationId);
+    QCOMPARE(forwardedInfo.state, QStringLiteral("Failed"));
+    QCOMPARE(forwardedInfo.stage, QStringLiteral("Rejected"));
+
+    const TryxRuntimeOperationsSnapshot coordinatorSnapshot =
+        manager->operationCoordinator_.operationSnapshot();
+    const TryxRuntimeOperationsSnapshot facadeSnapshot =
+        manager->operationSnapshot();
+    QCOMPARE(facadeSnapshot.revision, coordinatorSnapshot.revision);
+    QCOMPARE(forwardedRevision, coordinatorSnapshot.revision);
+    QCOMPARE(facadeSnapshot.activeOperationId,
+             coordinatorSnapshot.activeOperationId);
+    QCOMPARE(facadeSnapshot.operations.size(), 1);
+    QCOMPARE(coordinatorSnapshot.operations.size(), 1);
+    QCOMPARE(facadeSnapshot.operations.constFirst().id, operationId);
+    QCOMPARE(manager->operationInfo(operationId).id,
+             manager->operationCoordinator_.operationInfo(operationId).id);
+    QCOMPARE(manager->activeOperationInfo().id,
+             manager->operationCoordinator_.activeOperationInfo().id);
+
+    PrinterOperationCoordinator coordinator;
+    PrinterOperationCoordinator::OperationRecord activeRecord;
+    activeRecord.info.id = QStringLiteral(
+        "17171717-1717-4717-8717-171717171717");
+    activeRecord.info.deviceGeneration = 9;
+    coordinator.operations_.insert(activeRecord.info.id, activeRecord);
+    coordinator.activeOperationId_ = activeRecord.info.id;
+
+    PrinterOperationContext context;
+    context.productId = 0x1021;
+    context.generation = 9;
+    context.printerClassConnected = true;
+    context.printerEndpointReady = true;
+    QVERIFY(!coordinator.operationResultIsExpected(
+        context, activeRecord.info.id, context.generation));
+
+    coordinator.operations_[activeRecord.info.id].printerProductId =
+        context.productId;
+    QVERIFY(coordinator.operationResultIsExpected(
+        context, activeRecord.info.id, context.generation));
+
+    context.productId = 0xffff;
+    coordinator.operations_[activeRecord.info.id].printerProductId =
+        context.productId;
+    QVERIFY(!coordinator.operationResultIsExpected(
+        context, activeRecord.info.id, context.generation));
 }
 
 void PrinterProtocolTests::runtimeMediaCatalogDbusRoundTrip() {
@@ -3877,12 +3958,12 @@ void PrinterProtocolTests::savedLayoutQueueRejectsBeforeWorkerDispatch() {
     manager->printerDeviceSerial_ = QStringLiteral("1-1");
 
     const QList<TryxRuntimeMediaEntry> authoritativeEntries =
-        manager->mediaCatalog_.entries;
-    manager->mediaCatalog_.entries.clear();
+        manager->operationCoordinator_.mediaCatalog_.entries;
+    manager->operationCoordinator_.mediaCatalog_.entries.clear();
     expectRejected(
         saved.layoutId, saved.revision, saved.request,
         QStringLiteral("UnsupportedConfiguration"));
-    manager->mediaCatalog_.entries = authoritativeEntries;
+    manager->operationCoordinator_.mediaCatalog_.entries = authoritativeEntries;
 
     TryxRuntimeApplyRequest incomplete = saved.request;
     incomplete.display.brightnessPresent = false;
@@ -3914,11 +3995,11 @@ void PrinterProtocolTests::savedLayoutQueueRejectsBeforeWorkerDispatch() {
         QStringLiteral("SessionLost"));
     manager->printerDisplaySessionActive_ = true;
 
-    manager->retryCacheLoadComplete_ = false;
+    manager->operationCoordinator_.retryCacheLoadComplete_ = false;
     expectRejected(
         saved.layoutId, saved.revision, saved.request,
         QStringLiteral("RetryCacheConflict"));
-    manager->retryCacheLoadComplete_ = true;
+    manager->operationCoordinator_.retryCacheLoadComplete_ = true;
 
     manager->runtimeDowngradeV10Prepared_ = true;
     expectRejected(
@@ -5404,7 +5485,7 @@ void PrinterProtocolTests::
     manager->printerRecoveryRequired_ = true;
     manager->firmwareRecoveryInterlockActive_ = true;
 
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.info.id = QStringLiteral("SECRET-OPERATION-ID");
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Uploading");
@@ -5412,8 +5493,8 @@ void PrinterProtocolTests::
     record.info.subject = QStringLiteral("private-media.mp4");
     record.info.message = QStringLiteral("/home/alice/private-media.mp4");
     record.info.attempt = 2;
-    manager->operations_.insert(record.info.id, record);
-    manager->operationOrder_.append(record.info.id);
+    manager->operationCoordinator_.operations_.insert(record.info.id, record);
+    manager->operationCoordinator_.operationOrder_.append(record.info.id);
 
     TryxRuntimeExportedObject exportedObject;
     TryxRuntimeManagerAdaptor managerAdaptor(
@@ -5704,19 +5785,19 @@ void PrinterProtocolTests::
         DeviceManager::createForTesting(sysRoot, devRoot));
 
     const QString protectedRetryPath =
-        QDir(manager->retryCacheDirectory()).filePath(
+        QDir(manager->operationCoordinator_.retryCacheDirectory()).filePath(
             QStringLiteral("protected-recovery.bin"));
-    QVERIFY(QDir().mkpath(manager->retryCacheDirectory()));
+    QVERIFY(QDir().mkpath(manager->operationCoordinator_.retryCacheDirectory()));
     QVERIFY(writeTextFile(
         protectedRetryPath, QByteArrayLiteral("retry-recovery")));
     QString runtimeDirectoryError;
-    QVERIFY(manager->ensureMediaRuntimeDirectories(
+    QVERIFY(manager->operationCoordinator_.ensureMediaRuntimeDirectories(
         &runtimeDirectoryError));
     const QString protectedInboxPath =
-        QDir(manager->mediaInboxDirectory()).filePath(
+        QDir(manager->operationCoordinator_.mediaInboxDirectory()).filePath(
             QStringLiteral("protected-inbox.bin"));
     const QString protectedSpoolPath =
-        QDir(manager->mediaSpoolDirectory()).filePath(
+        QDir(manager->operationCoordinator_.mediaSpoolDirectory()).filePath(
             QStringLiteral("protected-spool.bin"));
     const QString protectedLayoutPath =
         QDir(manager->savedLayoutStore_->directory()).filePath(
@@ -5735,7 +5816,7 @@ void PrinterProtocolTests::
 
     const QByteArray orphanBytes("orphan-runtime");
     const QString orphanPath = QDir(
-        manager->mediaCatalogStore_->thumbnailDirectory())
+        manager->operationCoordinator_.mediaCatalogStore_->thumbnailDirectory())
         .filePath(QString(64, QLatin1Char('e')) +
                   QStringLiteral(".jpg"));
     QVERIFY(writeTextFile(orphanPath, orphanBytes));
@@ -5772,8 +5853,8 @@ void PrinterProtocolTests::
              QByteArrayLiteral("layout"));
     QCOMPARE(stageMediaSpy.count(), 0);
     QCOMPARE(workerCancelSpy.count(), 0);
-    QVERIFY(manager->activeOperationId_.isEmpty());
-    QVERIFY(!manager->cacheCleanupExclusiveActive_);
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+    QVERIFY(!manager->operationCoordinator_.cacheCleanupExclusiveActive_);
 
     QCOMPARE(manager->queueCacheCleanupOperation(
                  operationId, &errorName, &errorMessage),
@@ -5788,13 +5869,13 @@ void PrinterProtocolTests::
     QCOMPARE(deduplicated.confirmedBytes,
              succeeded.confirmedBytes);
 
-    DeviceManager::OperationRecord collision;
+    PrinterOperationCoordinator::OperationRecord collision;
     collision.info.id =
         QStringLiteral("52525252-5252-4252-8252-525252525252");
     collision.info.kind = QStringLiteral("Upload");
     collision.info.state = QStringLiteral("Failed");
-    manager->operations_.insert(collision.info.id, collision);
-    manager->operationOrder_.append(collision.info.id);
+    manager->operationCoordinator_.operations_.insert(collision.info.id, collision);
+    manager->operationCoordinator_.operationOrder_.append(collision.info.id);
     errorName.clear();
     errorMessage.clear();
     QVERIFY(manager->queueCacheCleanupOperation(
@@ -5857,10 +5938,10 @@ void PrinterProtocolTests::
     rejected(QStringLiteral("FirmwareUpdateActive"));
     manager->firmwareExclusiveLeaseId_.clear();
 
-    manager->activeOperationId_ =
+    manager->operationCoordinator_.activeOperationId_ =
         QStringLiteral("56565656-5656-4656-8656-565656565656");
     rejected(QStringLiteral("Busy"));
-    manager->activeOperationId_.clear();
+    manager->operationCoordinator_.activeOperationId_.clear();
 
     manager->printerRecoveryRequired_ = true;
     rejected(QStringLiteral("DeviceRecoveryRequired"));
@@ -5870,28 +5951,28 @@ void PrinterProtocolTests::
     rejected(QStringLiteral("SessionLost"));
     manager->printerDisplaySessionLost_ = false;
 
-    manager->retryCacheLoadComplete_ = false;
+    manager->operationCoordinator_.retryCacheLoadComplete_ = false;
     rejected(QStringLiteral("RetryCacheValidationPending"));
-    manager->retryCacheLoadComplete_ = true;
+    manager->operationCoordinator_.retryCacheLoadComplete_ = true;
 
-    DeviceManager::OperationRecord retryAvailable;
+    PrinterOperationCoordinator::OperationRecord retryAvailable;
     retryAvailable.info.id =
         QStringLiteral("57575757-5757-4757-8757-575757575757");
     retryAvailable.info.kind = QStringLiteral("Upload");
     retryAvailable.info.state = QStringLiteral("RetryAvailable");
-    manager->operations_.insert(
+    manager->operationCoordinator_.operations_.insert(
         retryAvailable.info.id, retryAvailable);
-    manager->operationOrder_.append(retryAvailable.info.id);
+    manager->operationCoordinator_.operationOrder_.append(retryAvailable.info.id);
     rejected(QStringLiteral("RetryCacheConflict"));
-    manager->operations_.remove(retryAvailable.info.id);
-    manager->operationOrder_.removeAll(retryAvailable.info.id);
+    manager->operationCoordinator_.operations_.remove(retryAvailable.info.id);
+    manager->operationCoordinator_.operationOrder_.removeAll(retryAvailable.info.id);
 
-    manager->pendingDeleteOperationId_ =
+    manager->operationCoordinator_.pendingDeleteOperationId_ =
         QStringLiteral("pending-delete");
     rejected(QStringLiteral("RecoveryJournalPresent"));
-    manager->pendingDeleteOperationId_.clear();
+    manager->operationCoordinator_.pendingDeleteOperationId_.clear();
 
-    const QString danglingJournal = manager->deleteIntentPath();
+    const QString danglingJournal = manager->operationCoordinator_.deleteIntentPath();
     QVERIFY(!QFileInfo::exists(danglingJournal));
     QCOMPARE(
         ::symlink(
@@ -5911,9 +5992,9 @@ void PrinterProtocolTests::
     QCOMPARE(readFileBytes(danglingJournal), journalBytes);
     QVERIFY(QFile::remove(danglingJournal));
 
-    auto retryCacheStore = std::move(manager->retryCacheStore_);
+    auto retryCacheStore = std::move(manager->operationCoordinator_.retryCacheStore_);
     rejected(QStringLiteral("CacheUnavailable"));
-    manager->retryCacheStore_ = std::move(retryCacheStore);
+    manager->operationCoordinator_.retryCacheStore_ = std::move(retryCacheStore);
 
     tryx::DeviceMediaArtifactStore::ReservationInput reservation;
     reservation.artifactId =
@@ -5928,14 +6009,14 @@ void PrinterProtocolTests::
     reservation.logicalType = QStringLiteral("Video");
     reservation.ownerUniqueName = QStringLiteral(":1.5800");
     const auto reserved =
-        manager->deviceMediaArtifactStore_->reserve(reservation);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->reserve(reservation);
     QVERIFY2(reserved.ok(), qPrintable(reserved.result.detail));
     rejected(QStringLiteral("ArtifactLeaseActive"));
-    QVERIFY(manager->deviceMediaArtifactStore_->discardReservation(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->discardReservation(
                 reservation.artifactId, reservation.operationId).ok());
 
     const QString orphanPath = QDir(
-        manager->mediaCatalogStore_->thumbnailDirectory())
+        manager->operationCoordinator_.mediaCatalogStore_->thumbnailDirectory())
         .filePath(QString(64, QLatin1Char('f')) +
                   QStringLiteral(".jpg"));
     QVERIFY(writeTextFile(orphanPath, QByteArrayLiteral("cancel-me")));
@@ -5952,7 +6033,7 @@ void PrinterProtocolTests::
     QCOMPARE(cancelled.completed, 0);
     QCOMPARE(cancelled.confirmedBytes, 0);
     QVERIFY(QFileInfo::exists(orphanPath));
-    QVERIFY(!manager->cacheCleanupExclusiveActive_);
+    QVERIFY(!manager->operationCoordinator_.cacheCleanupExclusiveActive_);
 }
 
 void PrinterProtocolTests::
@@ -5973,7 +6054,7 @@ void PrinterProtocolTests::
     };
     const auto orphanPath = [](DeviceManager *manager,
                                const QString &key) {
-        return QDir(manager->mediaCatalogStore_->thumbnailDirectory())
+        return QDir(manager->operationCoordinator_.mediaCatalogStore_->thumbnailDirectory())
             .filePath(key + QStringLiteral(".jpg"));
     };
 
@@ -5983,7 +6064,7 @@ void PrinterProtocolTests::
         const QString path = orphanPath(
             manager.get(), QString(64, QLatin1Char('b')));
         QVERIFY(writeTextFile(path, QByteArrayLiteral("preserve")));
-        manager->mediaCatalogStore_
+        manager->operationCoordinator_.mediaCatalogStore_
             ->setCleanupUnlinkFunctionForTesting(
                 [](const QString &) {
                     errno = EACCES;
@@ -6016,7 +6097,7 @@ void PrinterProtocolTests::
         const QString path = orphanPath(
             manager.get(), QString(64, QLatin1Char('c')));
         QVERIFY(writeTextFile(path, payload));
-        manager->mediaCatalogStore_
+        manager->operationCoordinator_.mediaCatalogStore_
             ->setCleanupFsyncFunctionForTesting([]() {
                 errno = EIO;
                 return -1;
@@ -6049,7 +6130,7 @@ void PrinterProtocolTests::
         manager->printerDeviceSerial_ =
             QStringLiteral("PASE-CACHE-LATCH");
         const quint64 catalogRevisionBefore =
-            manager->mediaCatalog_.revision;
+            manager->operationCoordinator_.mediaCatalog_.revision;
         QStringList paths;
         for (int index = 1; index <= 17; ++index) {
             const QString key = QStringLiteral("%1").arg(
@@ -6084,8 +6165,8 @@ void PrinterProtocolTests::
                     deferred.source =
                         PrinterProtocol::MediaSource::User;
                     manager->updateMediaCatalog({deferred});
-                    QVERIFY(manager->deferredMediaCatalogUpdatePending_);
-                    QCOMPARE(manager->mediaCatalog_.revision,
+                    QVERIFY(manager->operationCoordinator_.deferredMediaCatalogUpdatePending_);
+                    QCOMPARE(manager->operationCoordinator_.mediaCatalog_.revision,
                              catalogRevisionBefore);
                     cancelIssued = true;
                     manager->cancelOperation(operationId);
@@ -6113,12 +6194,12 @@ void PrinterProtocolTests::
             remaining += QFileInfo::exists(path) ? 1 : 0;
         }
         QCOMPARE(remaining, 1);
-        QVERIFY(manager->activeOperationId_.isEmpty());
-        QVERIFY(!manager->cacheCleanupExclusiveActive_);
+        QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+        QVERIFY(!manager->operationCoordinator_.cacheCleanupExclusiveActive_);
         QTRY_COMPARE_WITH_TIMEOUT(
-            manager->mediaCatalog_.revision,
+            manager->operationCoordinator_.mediaCatalog_.revision,
             catalogRevisionBefore + 1, 2000);
-        QCOMPARE(manager->mediaCatalog_.deviceIdentity,
+        QCOMPARE(manager->operationCoordinator_.mediaCatalog_.deviceIdentity,
                  QStringLiteral("PASE-CACHE-LATCH"));
     }
 }
@@ -6213,7 +6294,7 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
                 BlockedCurrentExecutable);
         QCOMPARE(marker.mode, QStringLiteral("Empty"));
         QCOMPARE(marker.storeRevision,
-                 manager->retryCacheSnapshot_.storeRevision);
+                 manager->operationCoordinator_.retryCacheSnapshot_.storeRevision);
 
         QString repeatedMode;
         QVERIFY(manager->prepareRuntimeDowngradeV10(
@@ -6277,7 +6358,7 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
             .filePath(QStringLiteral("dev"));
         std::unique_ptr<DeviceManager> manager(
             DeviceManager::createForTesting(sysRoot, devRoot));
-        manager->activeOperationId_ = QStringLiteral(
+        manager->operationCoordinator_.activeOperationId_ = QStringLiteral(
             "11111111-1111-4111-8111-111111111111");
         QSignalSpy exitSpy(
             manager.get(),
@@ -6378,9 +6459,9 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
                 "split-runtime-downgrade.mp4.h264_1120x1080");
             input.retryRemoteName = input.originalRemoteName;
         }
-        auto &store = manager->retryCacheStore();
+        auto &store = manager->operationCoordinator_.retryCacheStore();
         const auto persisted = store.persistPrepared(
-            manager->retryCacheSnapshot_, input);
+            manager->operationCoordinator_.retryCacheSnapshot_, input);
         if (!persisted.ok() || !persisted.snapshot.has_value()) {
             *detail = persisted.detail;
             return false;
@@ -6412,7 +6493,7 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
             *detail = recorded.detail;
             return false;
         }
-        manager->retryCacheSnapshot_ = *recorded.snapshot;
+        manager->operationCoordinator_.retryCacheSnapshot_ = *recorded.snapshot;
         return true;
     };
 
@@ -6430,18 +6511,19 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
                      manager.get(), temporaryDirectory.path(),
                      split, &setupDetail),
                  qPrintable(setupDetail));
-        manager->synchronizeRetryCacheSurface();
-        QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
+        manager->operationCoordinator_.synchronizeRetryCacheSurface(
+            manager->printerGeneration_);
+        QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
         const auto candidateBefore =
-            *manager->retryCacheSnapshot_.retryCandidate;
+            *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
         const quint64 storeRevisionBefore =
-            manager->retryCacheSnapshot_.storeRevision;
+            manager->operationCoordinator_.retryCacheSnapshot_.storeRevision;
         const QString canonicalManifestPath =
-            manager->retryCacheStore().canonicalManifestPath();
+            manager->operationCoordinator_.retryCacheStore().canonicalManifestPath();
         const QString shadowManifestPath =
-            manager->retryCacheStore().legacyShadowManifestPath();
+            manager->operationCoordinator_.retryCacheStore().legacyShadowManifestPath();
         const QString preparedPath =
-            manager->retryCacheArtifactPath(
+            manager->operationCoordinator_.retryCacheArtifactPath(
                 candidateBefore.prepared);
         const QByteArray canonicalManifestBefore =
             readFileBytes(canonicalManifestPath);
@@ -6487,15 +6569,15 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
                     BlockedCurrentExecutable);
             QCOMPARE(marker.mode, QStringLiteral("FullFrame"));
             QCOMPARE(marker.storeRevision,
-                     manager->retryCacheSnapshot_.storeRevision);
+                     manager->operationCoordinator_.retryCacheSnapshot_.storeRevision);
 
             manager->cancelOperation(
                 candidateBefore.operationId);
-            QCOMPARE(manager->retryCacheSnapshot_.storeRevision,
+            QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.storeRevision,
                      storeRevisionBefore);
-            QVERIFY(manager->retryCacheSnapshot_
+            QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_
                         .retryCandidate.has_value());
-            QCOMPARE(manager->retryCacheSnapshot_
+            QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_
                          .retryCandidate->operationId,
                      candidateBefore.operationId);
             QCOMPARE(readFileBytes(canonicalManifestPath),
@@ -6588,8 +6670,8 @@ void PrinterProtocolTests::runtimeArtifactAdaptorCapturesCallerIdentity() {
         operationId, QStringLiteral("not-a-sha256"));
     QVERIFY2(reply.isValid(), qPrintable(reply.error().message()));
     QCOMPARE(reply.value(), operationId);
-    const auto found = manager->operations_.constFind(operationId);
-    QVERIFY(found != manager->operations_.constEnd());
+    const auto found = manager->operationCoordinator_.operations_.constFind(operationId);
+    QVERIFY(found != manager->operationCoordinator_.operations_.constEnd());
     QCOMPARE(found->artifactOwner, bus.baseService());
     QCOMPARE(found->info.state, QStringLiteral("Failed"));
     QCOMPARE(found->info.errorCategory,
@@ -6615,7 +6697,7 @@ void PrinterProtocolTests::runtimeArtifactAdaptorCapturesCallerIdentity() {
     metadataReservation.logicalType = QStringLiteral("Video");
     metadataReservation.ownerUniqueName = bus.baseService();
     const auto metadataReserved =
-        manager->deviceMediaArtifactStore_->reserve(metadataReservation);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->reserve(metadataReservation);
     QVERIFY2(metadataReserved.ok(),
              qPrintable(metadataReserved.result.detail));
     QVERIFY(writeTextFile(
@@ -6642,15 +6724,15 @@ void PrinterProtocolTests::runtimeArtifactAdaptorCapturesCallerIdentity() {
     metadataCompletion.height = 1080;
     metadataCompletion.frameCount = 2;
     metadataCompletion.managedOriginPreparedSha256 = cachedDigest;
-    QVERIFY(manager->deviceMediaArtifactStore_
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_
                 ->finalize(metadataCompletion)
                 .ok());
-    QVERIFY(manager->deviceMediaArtifactStore_
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_
                 ->releaseOperationHold(
                     metadataArtifactId, metadataOperationId)
                 .ok());
     const auto metadataClaimed =
-        manager->deviceMediaArtifactStore_->claim(
+        manager->operationCoordinator_.deviceMediaArtifactStore_->claim(
             metadataArtifactId, metadataOperationId,
             bus.baseService());
     QVERIFY2(metadataClaimed.ok(),
@@ -6666,13 +6748,13 @@ void PrinterProtocolTests::runtimeArtifactAdaptorCapturesCallerIdentity() {
              qPrintable(cachedMetadata.error().message()));
     QCOMPARE(cachedMetadata.value().status, QStringLiteral("Ready"));
     QCOMPARE(cachedMetadata.value().durationMilliseconds, quint64{67});
-    QCOMPARE(manager->deviceMediaArtifactStore_
+    QCOMPARE(manager->operationCoordinator_.deviceMediaArtifactStore_
                  ->inspectClaimed(
                      metadataArtifactId, metadataClaimed.leaseId,
                      bus.baseService(), true)
                  .result.code,
              tryx::DeviceMediaArtifactStore::ErrorCode::HashChanged);
-    QVERIFY(manager->deviceMediaArtifactStore_
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_
                 ->release(
                     metadataArtifactId, metadataClaimed.leaseId,
                     bus.baseService())
@@ -7169,9 +7251,9 @@ void PrinterProtocolTests::
     remote.source = PrinterProtocol::MediaSource::User;
     remote.readOnly = false;
     manager->updateMediaCatalog({remote});
-    QCOMPARE(manager->mediaCatalog_.entries.size(), 1);
+    QCOMPARE(manager->operationCoordinator_.mediaCatalog_.entries.size(), 1);
     const QString mediaId =
-        manager->mediaCatalog_.entries.constFirst().mediaId;
+        manager->operationCoordinator_.mediaCatalog_.entries.constFirst().mediaId;
     QVERIFY(tryx::printer_media_file_integrity::isSha256Hex(mediaId));
 
     tryx::MediaCatalogStore::OriginInput origin;
@@ -7188,7 +7270,7 @@ void PrinterProtocolTests::
         QStringLiteral("41414141-4141-4141-8141-414141414141");
     origin.confirmedUtc = QDateTime::currentDateTimeUtc();
     const auto persistedOrigin =
-        manager->mediaCatalogStore_->persistOrigin(origin);
+        manager->operationCoordinator_.mediaCatalogStore_->persistOrigin(origin);
     QVERIFY2(persistedOrigin.ok(),
              qPrintable(persistedOrigin.detail));
 
@@ -7211,10 +7293,10 @@ void PrinterProtocolTests::
              readyOperationId);
     QCOMPARE(stageSpy.count(), 1);
     const QString readyArtifactId =
-        manager->operations_.value(readyOperationId).artifactId;
+        manager->operationCoordinator_.operations_.value(readyOperationId).artifactId;
     QVERIFY(!readyArtifactId.isEmpty());
     const auto readyReserved =
-        manager->deviceMediaArtifactStore_->artifact(readyArtifactId);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->artifact(readyArtifactId);
     QVERIFY2(readyReserved.ok(),
              qPrintable(readyReserved.result.detail));
     QCOMPARE(stageSpy.constFirst().at(1).toString(), remote.name);
@@ -7262,9 +7344,9 @@ void PrinterProtocolTests::
              mismatchedOperationId);
     QCOMPARE(stageSpy.count(), 1);
     const QString mismatchedArtifactId =
-        manager->operations_.value(mismatchedOperationId).artifactId;
+        manager->operationCoordinator_.operations_.value(mismatchedOperationId).artifactId;
     const auto mismatchedReserved =
-        manager->deviceMediaArtifactStore_->artifact(
+        manager->operationCoordinator_.deviceMediaArtifactStore_->artifact(
             mismatchedArtifactId);
     QVERIFY2(mismatchedReserved.ok(),
              qPrintable(mismatchedReserved.result.detail));
@@ -7275,7 +7357,7 @@ void PrinterProtocolTests::
         QFileDevice::ReadOwner | QFileDevice::WriteOwner));
     const QString wrongMediaId(64, QLatin1Char('0'));
     QVERIFY(wrongMediaId != mediaId);
-    manager->operations_[mismatchedOperationId].originalMediaId =
+    manager->operationCoordinator_.operations_[mismatchedOperationId].originalMediaId =
         wrongMediaId;
     emit manager->worker_->printerMediaStaged(
         mismatchedOperationId, remote.name,
@@ -7796,7 +7878,7 @@ void PrinterProtocolTests::deviceMediaArtifactOwnershipAndLease() {
     reservation.logicalType = QStringLiteral("Video");
     reservation.ownerUniqueName = owner;
     const auto reserved =
-        manager->deviceMediaArtifactStore_->reserve(reservation);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->reserve(reservation);
     QVERIFY(reserved.ok());
     const QString artifactPath = reserved.artifact.canonicalPath;
     QVERIFY(writeTextFile(artifactPath, payload));
@@ -7815,19 +7897,19 @@ void PrinterProtocolTests::deviceMediaArtifactOwnershipAndLease() {
     completion.chunkCount = 1;
     completion.rawSha256 = digest;
     completion.decodedSha256 = digest;
-    QVERIFY(manager->deviceMediaArtifactStore_->finalize(completion).ok());
-    QVERIFY(manager->deviceMediaArtifactStore_->releaseOperationHold(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->finalize(completion).ok());
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->releaseOperationHold(
                      artifactId, operationId)
                 .ok());
 
-    DeviceManager::OperationRecord operation;
+    PrinterOperationCoordinator::OperationRecord operation;
     operation.info.id = operationId;
     operation.info.kind = QStringLiteral("StageDeviceMedia");
     operation.info.state = QStringLiteral("Succeeded");
     operation.info.resultName = artifactId;
     operation.artifactId = artifactId;
     operation.artifactOwner = owner;
-    manager->operations_.insert(operationId, operation);
+    manager->operationCoordinator_.operations_.insert(operationId, operation);
 
     QString error;
     QVERIFY(!manager->renewDeviceMediaArtifactLease(
@@ -7865,7 +7947,7 @@ void PrinterProtocolTests::deviceMediaArtifactOwnershipAndLease() {
     QVERIFY(manager->renewDeviceMediaArtifactLease(
         artifactId, claimed.leaseId, owner, &error));
 
-    QVERIFY(manager->deviceMediaArtifactStore_->acquireOperationHold(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->acquireOperationHold(
                      artifactId, QStringLiteral("busy"),
                      claimed.leaseId, owner)
                 .ok());
@@ -7873,11 +7955,11 @@ void PrinterProtocolTests::deviceMediaArtifactOwnershipAndLease() {
         artifactId, claimed.leaseId, owner, &error));
     QVERIFY(QFileInfo::exists(artifactPath));
 
-    QVERIFY(manager->deviceMediaArtifactStore_->releaseOperationHold(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->releaseOperationHold(
                      artifactId, QStringLiteral("busy"))
                 .ok());
     failUnlink = true;
-    manager->deviceMediaArtifactStore_->setUnlinkFunctionForTesting(
+    manager->operationCoordinator_.deviceMediaArtifactStore_->setUnlinkFunctionForTesting(
         [&failUnlink](const QString &path) {
             if (failUnlink) {
                 errno = EACCES;
@@ -7890,7 +7972,7 @@ void PrinterProtocolTests::deviceMediaArtifactOwnershipAndLease() {
         artifactId, claimed.leaseId, owner, &error));
     QVERIFY(!error.isEmpty());
     const auto cleanupPending =
-        manager->deviceMediaArtifactStore_->artifact(artifactId);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->artifact(artifactId);
     QVERIFY(cleanupPending.ok());
     QVERIFY(cleanupPending.artifact.revoked);
     QVERIFY(QFileInfo::exists(artifactPath));
@@ -7899,7 +7981,7 @@ void PrinterProtocolTests::deviceMediaArtifactOwnershipAndLease() {
 
     failUnlink = false;
     manager->sweepDeviceMediaArtifacts();
-    QVERIFY(!manager->deviceMediaArtifactStore_->contains(artifactId));
+    QVERIFY(!manager->operationCoordinator_.deviceMediaArtifactStore_->contains(artifactId));
     QVERIFY(!QFileInfo::exists(artifactPath));
 }
 
@@ -7938,10 +8020,10 @@ void PrinterProtocolTests::
     reservation.logicalType = QStringLiteral("Video");
     reservation.ownerUniqueName = owner;
     const auto reserved =
-        manager->deviceMediaArtifactStore_->reserve(reservation);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->reserve(reservation);
     QVERIFY(reserved.ok());
 
-    DeviceManager::OperationRecord operation;
+    PrinterOperationCoordinator::OperationRecord operation;
     operation.info.id = operationId;
     operation.info.kind = QStringLiteral("StageDeviceMedia");
     operation.info.state = QStringLiteral("Pulling");
@@ -7950,9 +8032,9 @@ void PrinterProtocolTests::
     operation.artifactId = artifactId;
     operation.artifactOwner = owner;
     operation.deviceChangePending = true;
-    manager->operations_.insert(operationId, operation);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, operation);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     manager->artifactOwnerWatcher_->addWatchedService(owner);
 
     QVERIFY(writeTextFile(reserved.artifact.canonicalPath, payload));
@@ -7968,7 +8050,7 @@ void PrinterProtocolTests::
     QString disconnectError;
     QVERIFY2(waitForDbusNameToDisappear(owner, &disconnectError),
              qPrintable(disconnectError));
-    QVERIFY(!manager->operations_.value(operationId).cancelRequested);
+    QVERIFY(!manager->operationCoordinator_.operations_.value(operationId).cancelRequested);
 
     emit manager->worker_->printerMediaStaged(
         operationId, reservation.remoteName,
@@ -7982,9 +8064,9 @@ void PrinterProtocolTests::
              QStringLiteral("Cancelled"));
     QCOMPARE(manager->operationInfo(operationId).errorCategory,
              QStringLiteral("UserCancelled"));
-    QVERIFY(manager->operations_.value(operationId).cancelRequested);
-    QVERIFY(manager->activeOperationId_.isEmpty());
-    QVERIFY(!manager->deviceMediaArtifactStore_->contains(artifactId));
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId).cancelRequested);
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+    QVERIFY(!manager->operationCoordinator_.deviceMediaArtifactStore_->contains(artifactId));
     QVERIFY(!QFileInfo::exists(reserved.artifact.canonicalPath));
     QVERIFY(!manager->artifactOwnerWatcher_->watchedServices().contains(
         owner));
@@ -8024,7 +8106,7 @@ void PrinterProtocolTests::
     reservation.logicalType = QStringLiteral("Video");
     reservation.ownerUniqueName = owner;
     const auto reserved =
-        manager->deviceMediaArtifactStore_->reserve(reservation);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->reserve(reservation);
     QVERIFY(reserved.ok());
     QVERIFY(writeTextFile(reserved.artifact.canonicalPath, payload));
     QVERIFY(QFile::setPermissions(
@@ -8042,30 +8124,30 @@ void PrinterProtocolTests::
     completion.chunkCount = 1;
     completion.rawSha256 = digest;
     completion.decodedSha256 = digest;
-    QVERIFY(manager->deviceMediaArtifactStore_->finalize(completion).ok());
-    QVERIFY(manager->deviceMediaArtifactStore_->releaseOperationHold(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->finalize(completion).ok());
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->releaseOperationHold(
                      artifactId, stageOperationId)
                 .ok());
-    const auto claimed = manager->deviceMediaArtifactStore_->claim(
+    const auto claimed = manager->operationCoordinator_.deviceMediaArtifactStore_->claim(
         artifactId, stageOperationId, owner);
     QVERIFY(claimed.ok());
 
     const QString activeOperationId =
         QStringLiteral("a3a3a3a3-a3a3-43a3-83a3-a3a3a3a3a3a3");
-    QVERIFY(manager->deviceMediaArtifactStore_->acquireOperationHold(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->acquireOperationHold(
                      artifactId, activeOperationId,
                      claimed.leaseId, owner)
                 .ok());
-    DeviceManager::OperationRecord activeOperation;
+    PrinterOperationCoordinator::OperationRecord activeOperation;
     activeOperation.info.id = activeOperationId;
     activeOperation.info.kind = QStringLiteral("RecoveredMediaUpload");
     activeOperation.info.state = QStringLiteral("Uploading");
     activeOperation.artifactId = artifactId;
     activeOperation.artifactOwner = owner;
     activeOperation.artifactLeaseId = claimed.leaseId;
-    manager->operations_.insert(activeOperationId, activeOperation);
-    manager->operationOrder_.append(activeOperationId);
-    manager->activeOperationId_ = activeOperationId;
+    manager->operationCoordinator_.operations_.insert(activeOperationId, activeOperation);
+    manager->operationCoordinator_.operationOrder_.append(activeOperationId);
+    manager->operationCoordinator_.activeOperationId_ = activeOperationId;
 
     const QString queuedStageOperationId =
         QStringLiteral("a4a4a4a4-a4a4-44a4-84a4-a4a4a4a4a4a4");
@@ -8078,7 +8160,7 @@ void PrinterProtocolTests::
     queuedReservation.expectedSize =
         static_cast<quint64>(queuedPayload.size());
     const auto queuedReserved =
-        manager->deviceMediaArtifactStore_->reserve(queuedReservation);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->reserve(queuedReservation);
     QVERIFY(queuedReserved.ok());
     QVERIFY(writeTextFile(
         queuedReserved.artifact.canonicalPath, queuedPayload));
@@ -8097,14 +8179,14 @@ void PrinterProtocolTests::
     queuedCompletion.fileSize = queuedPayload.size();
     queuedCompletion.rawSha256 = queuedDigest;
     queuedCompletion.decodedSha256 = queuedDigest;
-    QVERIFY(manager->deviceMediaArtifactStore_->finalize(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->finalize(
                      queuedCompletion)
                 .ok());
-    QVERIFY(manager->deviceMediaArtifactStore_->releaseOperationHold(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->releaseOperationHold(
                      queuedArtifactId, queuedStageOperationId)
                 .ok());
     const auto queuedClaimed =
-        manager->deviceMediaArtifactStore_->claim(
+        manager->operationCoordinator_.deviceMediaArtifactStore_->claim(
             queuedArtifactId, queuedStageOperationId, owner);
     QVERIFY(queuedClaimed.ok());
     manager->artifactOwnerWatcher_->addWatchedService(owner);
@@ -8126,18 +8208,18 @@ void PrinterProtocolTests::
                 TryxRuntimeMediaTransform{})
                 .isEmpty());
 
-    QVERIFY(!manager->operations_.contains(recoveredOperationId));
-    QVERIFY(manager->operations_.value(activeOperationId).cancelRequested);
+    QVERIFY(!manager->operationCoordinator_.operations_.contains(recoveredOperationId));
+    QVERIFY(manager->operationCoordinator_.operations_.value(activeOperationId).cancelRequested);
     QCOMPARE(prepareSpy.count(), 0);
-    QVERIFY(manager->deviceMediaArtifactStore_->contains(artifactId));
-    QVERIFY(!manager->deviceMediaArtifactStore_->contains(queuedArtifactId));
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->contains(artifactId));
+    QVERIFY(!manager->operationCoordinator_.deviceMediaArtifactStore_->contains(queuedArtifactId));
     QVERIFY(QFileInfo::exists(reserved.artifact.canonicalPath));
     QVERIFY(!QFileInfo::exists(queuedReserved.artifact.canonicalPath));
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         activeOperationId, QStringLiteral("Cancelled"),
         QStringLiteral("UserCancelled"), QString(),
         QStringLiteral("owner disconnected"));
-    QVERIFY(!manager->deviceMediaArtifactStore_->contains(artifactId));
+    QVERIFY(!manager->operationCoordinator_.deviceMediaArtifactStore_->contains(artifactId));
     QVERIFY(!QFileInfo::exists(reserved.artifact.canonicalPath));
     QVERIFY(!manager->artifactOwnerWatcher_->watchedServices().contains(
         owner));
@@ -8722,7 +8804,7 @@ void PrinterProtocolTests::
 
     const auto makeRecord = [](const QString &operationId,
                                const QString &artifactId) {
-        DeviceManager::OperationRecord record;
+        PrinterOperationCoordinator::OperationRecord record;
         record.printerProductId = 0x1021;
         record.info.id = operationId;
         record.info.kind =
@@ -8757,76 +8839,76 @@ void PrinterProtocolTests::
 
     const QString completedId =
         QStringLiteral("66666666-6666-4666-8666-666666666666");
-    manager->operations_.insert(
+    manager->operationCoordinator_.operations_.insert(
         completedId,
         makeRecord(
             completedId,
             QStringLiteral(
                 "77777777-7777-4777-8777-777777777777")));
-    manager->activeOperationId_ = completedId;
+    manager->operationCoordinator_.activeOperationId_ = completedId;
     QString error;
-    QVERIFY2(manager->writeReplaceJournal(
+    QVERIFY2(manager->operationCoordinator_.writeReplaceJournal(
                  completedId, QStringLiteral("Preflight"),
                  &error),
              qPrintable(error));
-    auto &completed = manager->operations_[completedId];
+    auto &completed = manager->operationCoordinator_.operations_[completedId];
     completed.replaceJournal.newRemoteName =
         QStringLiteral("new.mp4.h264_2240x1080");
     completed.replaceJournal.newSize = 2048;
     completed.replaceJournal.uploadVerified = true;
     completed.replaceJournal.disposition =
         QStringLiteral("NewCopyReady");
-    QVERIFY2(manager->writeReplaceJournal(
+    QVERIFY2(manager->operationCoordinator_.writeReplaceJournal(
                  completedId,
                  QStringLiteral("UploadVerified"),
                  &error),
              qPrintable(error));
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         completedId, QStringLiteral("Succeeded"),
         QStringLiteral("OriginalRetained"), QString(),
         QStringLiteral("new copy ready"));
     QCOMPARE(manager->operationInfo(completedId).state,
              QStringLiteral("Succeeded"));
-    QVERIFY(manager->pendingReplaceJournalOperationId_.isEmpty());
-    QVERIFY(!QFileInfo::exists(manager->replaceIntentPath()));
+    QVERIFY(manager->operationCoordinator_.pendingReplaceJournalOperationId_.isEmpty());
+    QVERIFY(!QFileInfo::exists(manager->operationCoordinator_.replaceIntentPath()));
 
     const QString unknownId =
         QStringLiteral("88888888-8888-4888-8888-888888888888");
-    manager->operations_.insert(
+    manager->operationCoordinator_.operations_.insert(
         unknownId,
         makeRecord(
             unknownId,
             QStringLiteral(
                 "99999999-9999-4999-8999-999999999999")));
-    manager->activeOperationId_ = unknownId;
-    QVERIFY2(manager->writeReplaceJournal(
+    manager->operationCoordinator_.activeOperationId_ = unknownId;
+    QVERIFY2(manager->operationCoordinator_.writeReplaceJournal(
                  unknownId, QStringLiteral("Preflight"),
                  &error),
              qPrintable(error));
-    auto &unknown = manager->operations_[unknownId];
+    auto &unknown = manager->operationCoordinator_.operations_[unknownId];
     unknown.replaceJournal.newRemoteName =
         QStringLiteral("newer.mp4.h264_2240x1080");
     unknown.replaceJournal.newSize = 4096;
     unknown.replaceJournal.uploadVerified = true;
     unknown.replaceJournal.disposition =
         QStringLiteral("NewCopyReady");
-    QVERIFY2(manager->writeReplaceJournal(
+    QVERIFY2(manager->operationCoordinator_.writeReplaceJournal(
                  unknownId,
                  QStringLiteral("UploadVerified"),
                  &error),
              qPrintable(error));
     unknown.replaceJournal.applyMayHaveStarted = true;
-    QVERIFY2(manager->writeReplaceJournal(
+    QVERIFY2(manager->operationCoordinator_.writeReplaceJournal(
                  unknownId, QStringLiteral("Applying"),
                  &error),
              qPrintable(error));
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         unknownId, QStringLiteral("RetryAvailable"),
         QStringLiteral("PartialOrUnknown"),
         QStringLiteral("ReconcileOnly"),
         QStringLiteral("apply outcome unknown"));
 
-    TryxReplaceJournal journal(manager->replaceIntentPath());
+    TryxReplaceJournal journal(manager->operationCoordinator_.replaceIntentPath());
     const TryxReplaceJournalLoadResult loaded = journal.load();
     QCOMPARE(loaded.status,
              TryxReplaceJournalLoadStatus::Loaded);
@@ -8834,31 +8916,31 @@ void PrinterProtocolTests::
              QStringLiteral("ApplyVerification"));
     QCOMPARE(loaded.record.disposition,
              QStringLiteral("PartialOrUnknown"));
-    QVERIFY2(manager->clearReplaceJournal(&error),
+    QVERIFY2(manager->operationCoordinator_.clearReplaceJournal(&error),
              qPrintable(error));
 
     const QString uploadOnlyId =
         QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-    manager->operations_.insert(
+    manager->operationCoordinator_.operations_.insert(
         uploadOnlyId,
         makeRecord(
             uploadOnlyId,
             QStringLiteral(
                 "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")));
-    manager->activeOperationId_ = uploadOnlyId;
-    QVERIFY2(manager->writeReplaceJournal(
+    manager->operationCoordinator_.activeOperationId_ = uploadOnlyId;
+    QVERIFY2(manager->operationCoordinator_.writeReplaceJournal(
                  uploadOnlyId, QStringLiteral("Preflight"),
                  &error),
              qPrintable(error));
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         uploadOnlyId, QStringLiteral("RetryAvailable"),
         QStringLiteral("PartialOrUnknown"),
         QStringLiteral("ReconcileOnly"),
         QStringLiteral("upload outcome unknown"));
     QCOMPARE(manager->operationInfo(uploadOnlyId).state,
              QStringLiteral("RetryAvailable"));
-    QVERIFY(manager->pendingReplaceJournalOperationId_.isEmpty());
-    QVERIFY(!QFileInfo::exists(manager->replaceIntentPath()));
+    QVERIFY(manager->operationCoordinator_.pendingReplaceJournalOperationId_.isEmpty());
+    QVERIFY(!QFileInfo::exists(manager->operationCoordinator_.replaceIntentPath()));
 }
 
 void PrinterProtocolTests::
@@ -8941,7 +9023,7 @@ void PrinterProtocolTests::
     record.applyMayHaveStarted = true;
     record.disposition = QStringLiteral("PartialOrUnknown");
 
-    const QString journalPath = manager->replaceIntentPath();
+    const QString journalPath = manager->operationCoordinator_.replaceIntentPath();
     QVERIFY(QDir().mkpath(QFileInfo(journalPath).absolutePath()));
     TryxReplaceJournal journal(journalPath);
     QString error;
@@ -8966,12 +9048,12 @@ void PrinterProtocolTests::
     const QByteArray beforeLoad = persisted.readAll();
     persisted.close();
 
-    manager->loadReplaceJournal();
-    QCOMPARE(manager->pendingReplaceJournalOperationId_,
+    manager->operationCoordinator_.loadReplaceJournal();
+    QCOMPARE(manager->operationCoordinator_.pendingReplaceJournalOperationId_,
              record.operationId);
-    QVERIFY(manager->operations_.contains(record.operationId));
-    const DeviceManager::OperationRecord recovered =
-        manager->operations_.value(record.operationId);
+    QVERIFY(manager->operationCoordinator_.operations_.contains(record.operationId));
+    const PrinterOperationCoordinator::OperationRecord recovered =
+        manager->operationCoordinator_.operations_.value(record.operationId);
     QCOMPARE(recovered.printerProductId, journalProductId);
     QCOMPARE(recovered.replaceJournal.productId, journalProductId);
     QCOMPARE(recovered.replaceJournal.formatVersion,
@@ -8992,19 +9074,22 @@ void PrinterProtocolTests::
         manager.get(),
         &DeviceManager::requestPrinterReplacePreflight);
 
-    manager->operations_[record.operationId]
+    manager->operationCoordinator_.operations_[record.operationId]
         .replaceJournal.productId = otherProductId;
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(reconcileSpy.count(), 0);
-    manager->operations_[record.operationId]
+    manager->operationCoordinator_.operations_[record.operationId]
         .replaceJournal.productId = journalProductId;
 
     manager->printerProductId_ = otherProductId;
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(reconcileSpy.count(), 0);
 
     manager->printerProductId_ = journalProductId;
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(reconcileSpy.count(), 1);
     QCOMPARE(reconcileSpy.constFirst().at(1).toString(),
              record.originalRemoteName);
@@ -9084,8 +9169,8 @@ void PrinterProtocolTests::
         QCOMPARE(manager->printerProductId_, deviceProductId);
         deviceIdentity = manager->printerDeviceSerial_.trimmed();
         QVERIFY(!deviceIdentity.isEmpty());
-        replacePath = manager->replaceIntentPath();
-        deletePath = manager->deleteIntentPath();
+        replacePath = manager->operationCoordinator_.replaceIntentPath();
+        deletePath = manager->operationCoordinator_.deleteIntentPath();
         QVERIFY(QDir().mkpath(QFileInfo(replacePath).absolutePath()));
 
         TryxReplaceJournalRecord replace;
@@ -9161,9 +9246,9 @@ void PrinterProtocolTests::
     recovered->rescanPrinterForTesting();
     recovered->printerDisplaySessionActive_ = true;
     QCOMPARE(recovered->printerProductId_, deviceProductId);
-    QCOMPARE(recovered->pendingReplaceJournalOperationId_,
+    QCOMPARE(recovered->operationCoordinator_.pendingReplaceJournalOperationId_,
              replaceOperationId);
-    QCOMPARE(recovered->pendingDeleteOperationId_,
+    QCOMPARE(recovered->operationCoordinator_.pendingDeleteOperationId_,
              deleteOperationId);
 
     QObject::disconnect(
@@ -9182,7 +9267,7 @@ void PrinterProtocolTests::
                  QStringList{originalName});
         QCOMPARE(reconciliationSpy.constFirst().at(4).toBool(), true);
     } else {
-        QVERIFY(recovered->activeOperationId_.isEmpty());
+        QVERIFY(recovered->operationCoordinator_.activeOperationId_.isEmpty());
     }
 }
 
@@ -9204,7 +9289,7 @@ void PrinterProtocolTests::
 
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(sysRoot, devRoot));
-    manager->mediaCatalogStore_ =
+    manager->operationCoordinator_.mediaCatalogStore_ =
         std::make_unique<tryx::MediaCatalogStore>(
             QDir(temporaryDirectory.path()).filePath(
                 QStringLiteral("media-catalog")));
@@ -9221,9 +9306,9 @@ void PrinterProtocolTests::
     original.source = PrinterProtocol::MediaSource::User;
     original.readOnly = false;
     manager->updateMediaCatalog({original});
-    QCOMPARE(manager->mediaCatalog_.entries.size(), 1);
+    QCOMPARE(manager->operationCoordinator_.mediaCatalog_.entries.size(), 1);
     const TryxRuntimeMediaEntry originalEntry =
-        manager->mediaCatalog_.entries.constFirst();
+        manager->operationCoordinator_.mediaCatalog_.entries.constFirst();
 
     const QString artifactId =
         QStringLiteral("12121212-1212-4212-8212-121212121212");
@@ -9248,7 +9333,7 @@ void PrinterProtocolTests::
     reservation.logicalType = QStringLiteral("Video");
     reservation.ownerUniqueName = owner;
     const auto reserved =
-        manager->deviceMediaArtifactStore_->reserve(reservation);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->reserve(reservation);
     QVERIFY(reserved.ok());
     const QString artifactPath = reserved.artifact.canonicalPath;
     QVERIFY(writeTextFile(artifactPath, payload));
@@ -9267,11 +9352,11 @@ void PrinterProtocolTests::
     completion.chunkCount = 1;
     completion.rawSha256 = digest;
     completion.decodedSha256 = digest;
-    QVERIFY(manager->deviceMediaArtifactStore_->finalize(completion).ok());
-    QVERIFY(manager->deviceMediaArtifactStore_->releaseOperationHold(
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->finalize(completion).ok());
+    QVERIFY(manager->operationCoordinator_.deviceMediaArtifactStore_->releaseOperationHold(
                      artifactId, stageOperationId)
                 .ok());
-    const auto claimed = manager->deviceMediaArtifactStore_->claim(
+    const auto claimed = manager->operationCoordinator_.deviceMediaArtifactStore_->claim(
         artifactId, stageOperationId, owner);
     QVERIFY(claimed.ok());
     const QString leaseId = claimed.leaseId;
@@ -9350,8 +9435,8 @@ void PrinterProtocolTests::
     QCOMPARE(replacePreflightSpy.count(), 0);
     QCOMPARE(foregroundSpy.count(), 0);
     QCOMPARE(profilePrepareSpy.count(), 0);
-    QVERIFY(manager->activeOperationId_.isEmpty());
-    QVERIFY(!QFileInfo::exists(manager->replaceIntentPath()));
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+    QVERIFY(!QFileInfo::exists(manager->operationCoordinator_.replaceIntentPath()));
 
     manager->displayStateReadGeneration_ =
         manager->printerGeneration_ - 1;
@@ -9369,8 +9454,8 @@ void PrinterProtocolTests::
     QCOMPARE(replacePreflightSpy.count(), 0);
     QCOMPARE(foregroundSpy.count(), 0);
     QCOMPARE(profilePrepareSpy.count(), 0);
-    QVERIFY(manager->activeOperationId_.isEmpty());
-    QVERIFY(!QFileInfo::exists(manager->replaceIntentPath()));
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+    QVERIFY(!QFileInfo::exists(manager->operationCoordinator_.replaceIntentPath()));
     manager->displayStateReadGeneration_ =
         manager->printerGeneration_;
 
@@ -9423,8 +9508,8 @@ void PrinterProtocolTests::
             foregroundEndSpy.count() != foregroundEndBefore + 1 ||
             legacyPrepareSpy.count() != legacyPrepareBefore ||
             profilePrepareSpy.count() != profilePrepareBefore ||
-            !manager->activeOperationId_.isEmpty() ||
-            QFileInfo::exists(manager->replaceIntentPath())) {
+            !manager->operationCoordinator_.activeOperationId_.isEmpty() ||
+            QFileInfo::exists(manager->operationCoordinator_.replaceIntentPath())) {
             return QStringLiteral(
                 "fresh-layout mismatch advanced replacement");
         }
@@ -9506,14 +9591,14 @@ void PrinterProtocolTests::
         replaceOperationId);
     QCOMPARE(replacePreflightSpy.count(), acceptedPreflightBefore + 1);
     const TryxRuntimeApplyRequest canonicalApplyRequest =
-        manager->operations_.value(replaceOperationId).applyRequest;
+        manager->operationCoordinator_.operations_.value(replaceOperationId).applyRequest;
     QCOMPARE(canonicalApplyRequest.settingsPosition,
              QStringLiteral("Top"));
     QCOMPARE(canonicalApplyRequest.settingsColor,
              QStringLiteral("#dcdcdc"));
     QCOMPARE(canonicalApplyRequest.settingsAlign,
              QStringLiteral("Left"));
-    manager->operations_[replaceOperationId]
+    manager->operationCoordinator_.operations_[replaceOperationId]
         .applyRequest.media = {
             QStringLiteral("new.mp4.h264_2240x1080")};
     QCOMPARE(
@@ -9529,7 +9614,7 @@ void PrinterProtocolTests::
                 transform, owner)
                 .isEmpty());
 
-    manager->operations_[replaceOperationId].applyRequest =
+    manager->operationCoordinator_.operations_[replaceOperationId].applyRequest =
         canonicalApplyRequest;
     QStringList references(9, QString());
     references[2] = original.name;
@@ -9541,25 +9626,25 @@ void PrinterProtocolTests::
         canonicalApplyRequest.media,
         true, false, true, QString(), manager->printerGeneration_);
     const auto journalRecord =
-        manager->operations_.value(replaceOperationId).replaceJournal;
+        manager->operationCoordinator_.operations_.value(replaceOperationId).replaceJournal;
     QCOMPARE(journalRecord.productId, quint16{0x1011});
     QCOMPARE(journalRecord.formatVersion,
              TryxReplaceJournal::FormatVersion);
     const TryxReplaceJournalLoadResult persistedJournal =
-        TryxReplaceJournal(manager->replaceIntentPath()).load();
+        TryxReplaceJournal(manager->operationCoordinator_.replaceIntentPath()).load();
     QCOMPARE(persistedJournal.status,
              TryxReplaceJournalLoadStatus::Loaded);
     QCOMPARE(persistedJournal.record.productId, quint16{0x1011});
     QCOMPARE(persistedJournal.record.formatVersion,
              TryxReplaceJournal::FormatVersion);
 
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         replaceOperationId, QStringLiteral("Cancelled"),
         QStringLiteral("TestBoundary"), QString(),
         QStringLiteral("test cleanup"));
-    QVERIFY(manager->activeOperationId_.isEmpty());
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
     const auto releasedHold =
-        manager->deviceMediaArtifactStore_->artifact(artifactId);
+        manager->operationCoordinator_.deviceMediaArtifactStore_->artifact(artifactId);
     QVERIFY(releasedHold.ok());
     QVERIFY(releasedHold.artifact.inUseOperationId.isEmpty());
 
@@ -9575,8 +9660,8 @@ void PrinterProtocolTests::
             recoveredOperationId, artifactId, leaseId,
             owner, transform),
         recoveredOperationId);
-    DeviceManager::OperationRecord &recoveredRecord =
-        manager->operations_[recoveredOperationId];
+    PrinterOperationCoordinator::OperationRecord &recoveredRecord =
+        manager->operationCoordinator_.operations_[recoveredOperationId];
     QVERIFY(tryx::printer_media_identity::
                 isCanonicalPrinterConversionProfile(
                     recoveredRecord.conversionProfile));
@@ -9590,8 +9675,9 @@ void PrinterProtocolTests::
     verifiedRecovered.source = 1;
     verifiedRecovered.readOnly = false;
     QString originError;
-    QVERIFY2(manager->persistMediaOriginForOperation(
-                 recoveredOperationId, verifiedRecovered,
+    QVERIFY2(manager->operationCoordinator_.persistMediaOriginForOperation(
+                 manager->operationContext(), recoveredOperationId,
+                 verifiedRecovered,
                  &originError),
              qPrintable(originError));
     PrinterProtocol::MediaFile freshRecovered;
@@ -9599,12 +9685,13 @@ void PrinterProtocolTests::
     freshRecovered.size = verifiedRecovered.size;
     freshRecovered.source = PrinterProtocol::MediaSource::User;
     freshRecovered.readOnly = false;
-    QCOMPARE(manager->findReusableMediaOrigin(
+    QCOMPARE(manager->operationCoordinator_.findReusableMediaOrigin(
+                 manager->operationContext(),
                  recoveredRecord.sourceContentSha256,
                  recoveredRecord.conversionProfile,
                  {freshRecovered}),
              freshRecovered.name);
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         recoveredOperationId,
         QStringLiteral("Cancelled"),
         QStringLiteral("TestBoundary"), QString(),
@@ -9673,7 +9760,7 @@ void PrinterProtocolTests::
         QStringLiteral("stale.mp4.h264_2240x1080");
     const quint64 staleGeneration =
         manager->printerGeneration_;
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.info.id = operationId;
     record.info.kind =
         QStringLiteral("ReplaceDeviceMedia");
@@ -9686,12 +9773,12 @@ void PrinterProtocolTests::
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = staleGeneration;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
-    manager->operations_[operationId]
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_[operationId]
         .deviceChangePending = true;
-    manager->operations_[operationId]
+    manager->operationCoordinator_.operations_[operationId]
         .deviceChangeMessage =
         QStringLiteral("simulated generation change");
     ++manager->printerGeneration_;
@@ -9713,7 +9800,7 @@ void PrinterProtocolTests::
     QCOMPARE(
         manager->operationInfo(operationId).errorCategory,
         QStringLiteral("DeviceChanged"));
-    QVERIFY(manager->activeOperationId_.isEmpty());
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
 }
 
 void PrinterProtocolTests::
@@ -9752,7 +9839,7 @@ void PrinterProtocolTests::
             const QString &artifactId,
             const QString &original,
             const QString &replacement) {
-            DeviceManager::OperationRecord record;
+            PrinterOperationCoordinator::OperationRecord record;
             record.printerProductId = 0x1021;
             record.info.id = operationId;
             record.info.kind =
@@ -9821,18 +9908,18 @@ void PrinterProtocolTests::
 
     const auto installJournal =
         [manager = manager.get()](
-            const DeviceManager::OperationRecord &record) {
+            const PrinterOperationCoordinator::OperationRecord &record) {
             TryxReplaceJournal journal(
-                manager->replaceIntentPath());
+                manager->operationCoordinator_.replaceIntentPath());
             QString error;
             QVERIFY2(journal.write(
                          record.replaceJournal, &error),
                      qPrintable(error));
-            manager->operations_.insert(
+            manager->operationCoordinator_.operations_.insert(
                 record.info.id, record);
-            manager->operationOrder_.append(
+            manager->operationCoordinator_.operationOrder_.append(
                 record.info.id);
-            manager->pendingReplaceJournalOperationId_ =
+            manager->operationCoordinator_.pendingReplaceJournalOperationId_ =
                 record.info.id;
         };
 
@@ -9846,7 +9933,8 @@ void PrinterProtocolTests::
         deletedOperationId,
         QStringLiteral("19191919-1919-4919-8919-191919191919"),
         deletedOriginal, deletedReplacement));
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(deleteSpy.count(), 1);
     QCOMPARE(
         deleteSpy.constLast().at(1).toStringList(),
@@ -9874,8 +9962,8 @@ void PrinterProtocolTests::
             deletedOperationId).terminalOutcome,
         QStringLiteral("Replaced"));
     QVERIFY(!QFileInfo::exists(
-        manager->replaceIntentPath()));
-    QVERIFY(manager->pendingReplaceJournalOperationId_.isEmpty());
+        manager->operationCoordinator_.replaceIntentPath()));
+    QVERIFY(manager->operationCoordinator_.pendingReplaceJournalOperationId_.isEmpty());
 
     const QString retainedOperationId =
         QStringLiteral("20202020-2020-4020-8020-202020202020");
@@ -9887,7 +9975,8 @@ void PrinterProtocolTests::
         retainedOperationId,
         QStringLiteral("21212121-2121-4121-8121-212121212121"),
         retainedOriginal, retainedReplacement));
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(deleteSpy.count(), 2);
     QCOMPARE(deleteSpy.constLast().at(4).toBool(), true);
     QCOMPARE(deleteSpy.constLast().at(5).toLongLong(),
@@ -9923,8 +10012,8 @@ void PrinterProtocolTests::
             retainedOperationId).errorCategory,
         QStringLiteral("OriginalRetained"));
     QVERIFY(!QFileInfo::exists(
-        manager->replaceIntentPath()));
-    QVERIFY(manager->pendingReplaceJournalOperationId_.isEmpty());
+        manager->operationCoordinator_.replaceIntentPath()));
+    QVERIFY(manager->operationCoordinator_.pendingReplaceJournalOperationId_.isEmpty());
 
     const QString missingOperationId =
         QStringLiteral("24242424-2424-4424-8424-242424242424");
@@ -9936,7 +10025,8 @@ void PrinterProtocolTests::
         missingOperationId,
         QStringLiteral("25252525-2525-4525-8525-252525252525"),
         missingOriginal, missingReplacement));
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(deleteSpy.count(), 3);
     QCOMPARE(deleteSpy.constLast().at(4).toBool(), true);
     emit manager->worker_->printerDeleteFinished(
@@ -9956,22 +10046,23 @@ void PrinterProtocolTests::
             missingOperationId).terminalOutcome,
         QStringLiteral("PartialOrUnknown"));
     QVERIFY(QFileInfo::exists(
-        manager->replaceIntentPath()));
+        manager->operationCoordinator_.replaceIntentPath()));
     QCOMPARE(
-        manager->pendingReplaceJournalOperationId_,
+        manager->operationCoordinator_.pendingReplaceJournalOperationId_,
         missingOperationId);
 
-    manager->operations_[missingOperationId]
+    manager->operationCoordinator_.operations_[missingOperationId]
         .deviceChangePending = true;
-    manager->operations_[missingOperationId]
+    manager->operationCoordinator_.operations_[missingOperationId]
         .deviceChangeMessage =
         QStringLiteral("simulated reconnect");
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(deleteSpy.count(), 4);
     QCOMPARE(deleteSpy.constLast().at(4).toBool(), true);
-    QVERIFY(!manager->operations_[missingOperationId]
+    QVERIFY(!manager->operationCoordinator_.operations_[missingOperationId]
                  .deviceChangePending);
-    QVERIFY(manager->operations_[missingOperationId]
+    QVERIFY(manager->operationCoordinator_.operations_[missingOperationId]
                 .deviceChangeMessage.isEmpty());
 }
 
@@ -10012,7 +10103,7 @@ void PrinterProtocolTests::
         QStringLiteral("22222222-2222-4222-8222-222222222222");
     const QString original =
         QStringLiteral("apply-old.mp4.h264_2240x1080");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind =
@@ -10066,17 +10157,18 @@ void PrinterProtocolTests::
         QStringLiteral("PartialOrUnknown");
 
     TryxReplaceJournal journal(
-        manager->replaceIntentPath());
+        manager->operationCoordinator_.replaceIntentPath());
     QString error;
     QVERIFY2(journal.write(
                  record.replaceJournal, &error),
              qPrintable(error));
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->pendingReplaceJournalOperationId_ =
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.pendingReplaceJournalOperationId_ =
         operationId;
 
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(displaySpy.count(), 0);
     QCOMPARE(preflightSpy.count(), 1);
     QCOMPARE(
@@ -10112,13 +10204,13 @@ void PrinterProtocolTests::
     QVERIFY(info.message.contains(
         QStringLiteral("outcome remains unknown")));
     QVERIFY(!QFileInfo::exists(
-        manager->replaceIntentPath()));
-    QVERIFY(manager->pendingReplaceJournalOperationId_.isEmpty());
+        manager->operationCoordinator_.replaceIntentPath()));
+    QVERIFY(manager->operationCoordinator_.pendingReplaceJournalOperationId_.isEmpty());
 
     const QString unresolvedOperationId =
         QStringLiteral(
             "24242424-2424-4424-8424-242424242424");
-    DeviceManager::OperationRecord unresolved = record;
+    PrinterOperationCoordinator::OperationRecord unresolved = record;
     unresolved.info.id = unresolvedOperationId;
     unresolved.info.state =
         QStringLiteral("RetryAvailable");
@@ -10137,14 +10229,15 @@ void PrinterProtocolTests::
         journal.write(
             unresolved.replaceJournal, &error),
         qPrintable(error));
-    manager->operations_.insert(
+    manager->operationCoordinator_.operations_.insert(
         unresolvedOperationId, unresolved);
-    manager->operationOrder_.append(
+    manager->operationCoordinator_.operationOrder_.append(
         unresolvedOperationId);
-    manager->pendingReplaceJournalOperationId_ =
+    manager->operationCoordinator_.pendingReplaceJournalOperationId_ =
         unresolvedOperationId;
 
-    manager->resumePendingReplaceReconciliation();
+    manager->operationCoordinator_.resumePendingReplaceReconciliation(
+        manager->operationContext());
     QCOMPARE(preflightSpy.count(), 2);
     emit manager->worker_->
         printerReplacePreflightFinished(
@@ -10175,9 +10268,9 @@ void PrinterProtocolTests::
         QStringLiteral("did not prove"),
         Qt::CaseInsensitive));
     QVERIFY(QFileInfo::exists(
-        manager->replaceIntentPath()));
+        manager->operationCoordinator_.replaceIntentPath()));
     QCOMPARE(
-        manager->pendingReplaceJournalOperationId_,
+        manager->operationCoordinator_.pendingReplaceJournalOperationId_,
         unresolvedOperationId);
 }
 
@@ -11854,9 +11947,9 @@ runtimePreparationProfileAdaptorPreservesSplitTarget() {
     QCOMPARE(actual.target, QStringLiteral("SplitArea"));
     QCOMPARE(actual.transform.mode, QStringLiteral("Crop"));
     QCOMPARE(
-        manager->operations_.value(operationId).mediaConversion,
+        manager->operationCoordinator_.operations_.value(operationId).mediaConversion,
         QStringLiteral("h264-yuv420p-1120x1080-30fps"));
-    QVERIFY(manager->operations_.value(operationId)
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
                 .conversionProfile.startsWith(
                     QStringLiteral(
                         "pase-h264-v3-image-60s-split-area-1120x1080-")));
@@ -11903,7 +11996,7 @@ splitPreparationTargetRejectsTurrisBeforePreparation() {
              QStringLiteral("UnsupportedMediaPreparationTarget"));
     QCOMPARE(profilePrepareSpy.count(), 0);
     QCOMPARE(legacyPrepareSpy.count(), 0);
-    QVERIFY(manager->activeOperationId_.isEmpty());
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
     QVERIFY(QFileInfo::exists(sourcePath));
 }
 
@@ -12034,16 +12127,18 @@ void PrinterProtocolTests::mediaTransformProfilePreventsOriginReuse() {
         QStringLiteral("29292929-2929-4929-8929-292929292929");
     origin.confirmedUtc = QDateTime::currentDateTimeUtc();
     const auto persisted =
-        manager->mediaCatalogStore_->persistOrigin(origin);
+        manager->operationCoordinator_.mediaCatalogStore_->persistOrigin(origin);
     QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
     const QList<PrinterProtocol::MediaFile> mediaFiles{remote};
     QCOMPARE(
-        manager->findReusableMediaOrigin(
-            sourceSha, legacyProfile, mediaFiles),
+        manager->operationCoordinator_.findReusableMediaOrigin(
+            manager->operationContext(), sourceSha, legacyProfile,
+            mediaFiles),
         remote.name);
     QVERIFY(
-        manager->findReusableMediaOrigin(
-            sourceSha, cropProfile, mediaFiles).isEmpty());
+        manager->operationCoordinator_.findReusableMediaOrigin(
+            manager->operationContext(), sourceSha, cropProfile,
+            mediaFiles).isEmpty());
 }
 
 void PrinterProtocolTests::quickStagedSourceIsClaimedBeforeAcceptance() {
@@ -12075,7 +12170,7 @@ void PrinterProtocolTests::quickStagedSourceIsClaimedBeforeAcceptance() {
         QUuid::createUuid().toString(QUuid::WithoutBraces) +
         QStringLiteral(".png");
     const QString inboxPath =
-        QDir(manager->mediaInboxDirectory()).filePath(stagedName);
+        QDir(manager->operationCoordinator_.mediaInboxDirectory()).filePath(stagedName);
     QVERIFY(writeTextFile(inboxPath, QByteArray("staged-source")));
     QVERIFY(QFile::setPermissions(
         inboxPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
@@ -12089,23 +12184,23 @@ void PrinterProtocolTests::quickStagedSourceIsClaimedBeforeAcceptance() {
         operationId);
 
     const QString spoolPath =
-        QDir(manager->mediaSpoolDirectory())
+        QDir(manager->operationCoordinator_.mediaSpoolDirectory())
             .filePath(operationId + QStringLiteral(".png"));
     QVERIFY(!QFileInfo::exists(inboxPath));
     QVERIFY(QFileInfo::exists(spoolPath));
     QCOMPARE(prepareSpy.count(), 1);
     QCOMPARE(prepareSpy.first().at(2).toString(), spoolPath);
-    QVERIFY(manager->operations_.value(operationId).ownsSourcePath);
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId).ownsSourcePath);
     QCOMPARE(
-        manager->operations_.value(operationId).sourcePath,
+        manager->operationCoordinator_.operations_.value(operationId).sourcePath,
         spoolPath);
 
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         operationId, QStringLiteral("Failed"),
         QStringLiteral("TestFailure"), QString(),
         QStringLiteral("test terminal cleanup"));
     QVERIFY(!QFileInfo::exists(spoolPath));
-    QVERIFY(!manager->operations_.value(operationId).ownsSourcePath);
+    QVERIFY(!manager->operationCoordinator_.operations_.value(operationId).ownsSourcePath);
 }
 
 void PrinterProtocolTests::
@@ -12131,7 +12226,7 @@ void PrinterProtocolTests::
         QUuid::createUuid().toString(QUuid::WithoutBraces) +
         QStringLiteral(".png");
     const QString inboxPath =
-        QDir(manager->mediaInboxDirectory()).filePath(stagedName);
+        QDir(manager->operationCoordinator_.mediaInboxDirectory()).filePath(stagedName);
     QVERIFY(writeTextFile(inboxPath, QByteArray("rejected-source")));
     QVERIFY(QFile::setPermissions(
         inboxPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
@@ -12151,7 +12246,7 @@ void PrinterProtocolTests::
         manager->operationInfo(operationId).errorCategory,
         QStringLiteral("UnsupportedConfiguration"));
     QVERIFY(QFileInfo::exists(inboxPath));
-    QVERIFY(QDir(manager->mediaSpoolDirectory())
+    QVERIFY(QDir(manager->operationCoordinator_.mediaSpoolDirectory())
                 .entryList(QDir::Files | QDir::NoDotAndDotDot)
                 .isEmpty());
 }
@@ -12183,7 +12278,7 @@ void PrinterProtocolTests::
         manager.get(), &DeviceManager::requestPreparePrinterMedia);
 
     const auto stagedPath = [manager = manager.get()]() {
-        return QDir(manager->mediaInboxDirectory())
+        return QDir(manager->operationCoordinator_.mediaInboxDirectory())
             .filePath(
                 QUuid::createUuid().toString(
                     QUuid::WithoutBraces) +
@@ -12240,7 +12335,7 @@ void PrinterProtocolTests::
     QVERIFY(QFileInfo(symlinkPath).isSymLink());
 
     const QString nestedDirectory =
-        QDir(manager->mediaInboxDirectory())
+        QDir(manager->operationCoordinator_.mediaInboxDirectory())
             .filePath(QStringLiteral("nested"));
     QVERIFY(QDir().mkpath(nestedDirectory));
     const QString nestedPath =
@@ -12267,7 +12362,7 @@ void PrinterProtocolTests::
             QStringLiteral("inbox-alias"));
     QVERIFY(::symlink(
                 QFile::encodeName(
-                    manager->mediaInboxDirectory()).constData(),
+                    manager->operationCoordinator_.mediaInboxDirectory()).constData(),
                 QFile::encodeName(aliasedInbox).constData()) == 0);
     const QString aliasedFinalPath = stagedPath();
     QVERIFY(writeTextFile(
@@ -12302,9 +12397,9 @@ void PrinterProtocolTests::
     QCOMPARE(
         prepareSpy.first().at(2).toString(),
         QFileInfo(externalPath).absoluteFilePath());
-    QVERIFY(!manager->operations_.value(externalId).ownsSourcePath);
+    QVERIFY(!manager->operationCoordinator_.operations_.value(externalId).ownsSourcePath);
     QVERIFY(QFileInfo::exists(externalPath));
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         externalId, QStringLiteral("Failed"),
         QStringLiteral("TestFailure"), QString(),
         QStringLiteral("test terminal cleanup"));
@@ -12325,13 +12420,13 @@ void PrinterProtocolTests::mediaRuntimeStartupCleanupIsBounded() {
     manager->cleanupMediaRuntimeStaging();
 
     const QString oldInbox =
-        QDir(manager->mediaInboxDirectory())
+        QDir(manager->operationCoordinator_.mediaInboxDirectory())
             .filePath(QStringLiteral("old.part"));
     const QString freshInbox =
-        QDir(manager->mediaInboxDirectory())
+        QDir(manager->operationCoordinator_.mediaInboxDirectory())
             .filePath(QStringLiteral("fresh.part"));
     const QString orphanSpool =
-        QDir(manager->mediaSpoolDirectory())
+        QDir(manager->operationCoordinator_.mediaSpoolDirectory())
             .filePath(QStringLiteral("orphan.png"));
     QVERIFY(writeTextFile(oldInbox, QByteArray("old")));
     QVERIFY(writeTextFile(freshInbox, QByteArray("fresh")));
@@ -16686,7 +16781,7 @@ void PrinterProtocolTests::mediaCatalogPersistsThumbnailAndPrunesAuthoritatively
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->printerDeviceSerial_ = QStringLiteral("PASE-CATALOG-1");
 
-    const QString stagedDirectory = manager->retryCacheDirectory();
+    const QString stagedDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(stagedDirectory));
     const QString stagedPath =
         QDir(stagedDirectory).filePath(QStringLiteral("preview.jpg"));
@@ -16702,11 +16797,11 @@ void PrinterProtocolTests::mediaCatalogPersistsThumbnailAndPrunesAuthoritatively
 
     const QString operationId =
         QStringLiteral("44444444-4444-4444-8444-444444444444");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.info.id = operationId;
     record.stagedThumbnailPath = stagedPath;
     record.stagedThumbnailSha256 = stagedHash;
-    manager->operations_.insert(operationId, record);
+    manager->operationCoordinator_.operations_.insert(operationId, record);
 
     TryxRuntimeMediaEntry verified;
     verified.name = QStringLiteral("upload.mp4.h264_2240x1080");
@@ -16714,11 +16809,12 @@ void PrinterProtocolTests::mediaCatalogPersistsThumbnailAndPrunesAuthoritatively
     verified.source = 1;
     verified.readOnly = false;
     const QString key =
-        manager->promoteThumbnailForOperation(operationId, verified);
+        manager->operationCoordinator_.promoteThumbnailForOperation(
+            manager->operationContext(), operationId, verified);
     QVERIFY(!key.isEmpty());
     const QString persistentPath = manager->mediaThumbnailPath(key);
     QVERIFY(!persistentPath.isEmpty());
-    QVERIFY(QFileInfo::exists(manager->mediaCatalogStore_->indexPath()));
+    QVERIFY(QFileInfo::exists(manager->operationCoordinator_.mediaCatalogStore_->indexPath()));
 
     PrinterProtocol::MediaFile media;
     media.name = verified.name;
@@ -16733,8 +16829,8 @@ void PrinterProtocolTests::mediaCatalogPersistsThumbnailAndPrunesAuthoritatively
     manager->clearMediaCatalogView();
     QVERIFY(QFileInfo::exists(persistentPath));
     const QString catalogDirectory =
-        manager->mediaCatalogStore_->rootDirectory();
-    manager->mediaCatalogStore_ =
+        manager->operationCoordinator_.mediaCatalogStore_->rootDirectory();
+    manager->operationCoordinator_.mediaCatalogStore_ =
         std::make_unique<tryx::MediaCatalogStore>(catalogDirectory);
     manager->loadMediaCatalogStore();
     manager->updateMediaCatalog({media});
@@ -16808,7 +16904,7 @@ void PrinterProtocolTests::mediaCatalogV1MigrationStripsForgedOrigin() {
 
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(sysRoot, devRoot));
-    QFile migrated(manager->mediaCatalogStore_->indexPath());
+    QFile migrated(manager->operationCoordinator_.mediaCatalogStore_->indexPath());
     QVERIFY(migrated.open(QIODevice::ReadOnly));
     const QJsonObject migratedRoot =
         QJsonDocument::fromJson(migrated.readAll()).object();
@@ -16863,7 +16959,7 @@ void PrinterProtocolTests::mediaCatalogV1MigrationRejectsStaleRollback() {
 
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(sysRoot, devRoot));
-    QVERIFY(!manager->mediaCatalogStore_->writesEnabled());
+    QVERIFY(!manager->operationCoordinator_.mediaCatalogStore_->writesEnabled());
     QFile index(indexPath);
     QVERIFY(index.open(QIODevice::ReadOnly));
     QCOMPARE(QJsonDocument::fromJson(index.readAll()).object(), currentRoot);
@@ -17620,7 +17716,7 @@ void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation() {
         QStringLiteral("13131313-1313-4313-8313-131313131313");
     origin.confirmedUtc = QDateTime::currentDateTimeUtc();
     const auto persisted =
-        manager->mediaCatalogStore_->persistOrigin(origin);
+        manager->operationCoordinator_.mediaCatalogStore_->persistOrigin(origin);
     QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
 
     QObject::disconnect(manager.get(),
@@ -17781,7 +17877,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
     manager->printerDisplaySessionActive_ = true;
-    QVERIFY(manager->retryCacheLoadComplete_);
+    QVERIFY(manager->operationCoordinator_.retryCacheLoadComplete_);
 
     const QString preparedStagingPath =
         QDir(temporaryDirectory.path()).filePath(
@@ -17805,7 +17901,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
         QStringLiteral("30303030-3030-4030-8030-303030303030");
     const QString remoteName =
         QStringLiteral("verified.mp4.h264_2240x1080");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -17829,9 +17925,9 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
 
     QString canonicalPreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
@@ -17839,7 +17935,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
                  &canonicalPreparedPath),
              qPrintable(manager->operationInfo(operationId).message));
     const QString canonicalThumbnailPath =
-        manager->operations_.value(operationId)
+        manager->operationCoordinator_.operations_.value(operationId)
             .stagedThumbnailPath;
     QVERIFY(QFileInfo::exists(canonicalPreparedPath));
     QVERIFY(QFileInfo::exists(canonicalThumbnailPath));
@@ -17848,11 +17944,11 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
 
     const QString catalogRoot = manager->mediaCatalogDirectory();
     const QString catalogIndexPath =
-        manager->mediaCatalogStore_->indexPath();
+        manager->operationCoordinator_.mediaCatalogStore_->indexPath();
     QString thumbnailBlockerPath;
     if (indexCommitFailure) {
         QVERIFY(QDir().mkpath(
-            manager->mediaCatalogStore_->thumbnailDirectory()));
+            manager->operationCoordinator_.mediaCatalogStore_->thumbnailDirectory()));
         QVERIFY(QDir().mkpath(catalogIndexPath));
     } else {
         tryx::MediaCatalogStore::RemoteEntry blockerRemote;
@@ -17861,12 +17957,12 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
         blockerRemote.source = 1U;
         blockerRemote.readOnly = false;
         const QString blockerKey =
-            manager->mediaCatalogStore_->mediaId(
+            manager->operationCoordinator_.mediaCatalogStore_->mediaId(
                 manager->printerDeviceSerial_.trimmed(),
                 blockerRemote);
         QVERIFY(!blockerKey.isEmpty());
         thumbnailBlockerPath =
-            QDir(manager->mediaCatalogStore_
+            QDir(manager->operationCoordinator_.mediaCatalogStore_
                      ->thumbnailDirectory())
                 .filePath(blockerKey + QStringLiteral(".jpg"));
         QVERIFY(!thumbnailBlockerPath.isEmpty());
@@ -17910,10 +18006,10 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
                  : QStringLiteral("ThumbnailPersistenceFailed"));
     QVERIFY(failedCommit.message.contains(
         QStringLiteral("preview"), Qt::CaseInsensitive));
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
     const auto deferredCandidate =
-        *manager->retryCacheSnapshot_.retryCandidate;
+        *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
     QCOMPARE(deferredCandidate.operationId, operationId);
     QCOMPARE(deferredCandidate.outcome,
              tryx::RetryCacheStore::TerminalOutcome::NotStarted);
@@ -17939,9 +18035,9 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     QObject::disconnect(
         restarted.get(), &DeviceManager::requestStartPrinterSession,
         restarted->worker_, &DeviceWorker::startPrinterDisplaySession);
-    QTRY_VERIFY_WITH_TIMEOUT(restarted->retryCacheLoadComplete_, 5000);
-    QVERIFY(!restarted->retryCacheStartupFailure_);
-    QVERIFY(restarted->retryCacheSnapshot_.retryCandidate.has_value());
+    QTRY_VERIFY_WITH_TIMEOUT(restarted->operationCoordinator_.retryCacheLoadComplete_, 5000);
+    QVERIFY(!restarted->operationCoordinator_.retryCacheStartupFailure_);
+    QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     restarted->setAutoConnectModeForTesting(true);
     restarted->rescanPrinterForTesting();
     QVERIFY(restarted->isPrinterClassConnected());
@@ -17963,7 +18059,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     const bool consumeCleanupFailure =
         !indexCommitFailure && !finalizationRecovery;
     if (consumeCleanupFailure) {
-        restarted->retryCacheStore()
+        restarted->operationCoordinator_.retryCacheStore()
             .setStopAfterRetirementTombstoneForTesting(true);
     }
     restarted->worker_->printerMediaListReady(
@@ -17975,17 +18071,17 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     QCOMPARE(restarted->mediaCatalogSnapshot().entries.size(), 1);
     QVERIFY(!restarted->mediaCatalogSnapshot()
                  .entries.first().thumbnailKey.isEmpty());
-    QVERIFY(!restarted->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!restarted->retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!restarted->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
     if (consumeCleanupFailure) {
         QCOMPARE(restarted->operationInfo(retryId).errorCategory,
                  QStringLiteral("RetryCacheCleanupFailed"));
-        QVERIFY(!restarted->retryCacheSnapshot_.cleanupPending.isEmpty());
+        QVERIFY(!restarted->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
         QVERIFY(restarted->retryCacheMutationGateActive());
         QVERIFY(QFileInfo::exists(canonicalPreparedPath));
         QVERIFY(QFileInfo::exists(canonicalThumbnailPath));
         const QString retryDirectory =
-            restarted->retryCacheDirectory();
+            restarted->operationCoordinator_.retryCacheDirectory();
         restarted.reset();
         tryx::RetryCacheStore cleanup(retryDirectory);
         const auto loaded = cleanup.load();
@@ -17995,7 +18091,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
         QVERIFY(loaded.snapshot.has_value());
         QVERIFY(loaded.snapshot->cleanupPending.isEmpty());
     } else {
-        QVERIFY(restarted->retryCacheSnapshot_.cleanupPending.isEmpty());
+        QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
     }
     QVERIFY(!QFileInfo::exists(canonicalPreparedPath));
     QVERIFY(!QFileInfo::exists(canonicalThumbnailPath));
@@ -18023,7 +18119,7 @@ void PrinterProtocolTests::
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
     manager->printerDisplaySessionActive_ = true;
-    QVERIFY(manager->retryCacheLoadComplete_);
+    QVERIFY(manager->operationCoordinator_.retryCacheLoadComplete_);
 
     const QString preparedStagingPath =
         QDir(temporaryDirectory.path()).filePath(
@@ -18058,7 +18154,7 @@ void PrinterProtocolTests::
         QStringLiteral("retry-source.mp4.h264_2240x1080");
     const QString reusableRemoteName =
         QStringLiteral("existing-origin.mp4.h264_2240x1080");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -18082,9 +18178,9 @@ void PrinterProtocolTests::
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
 
     QString canonicalPreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
@@ -18092,7 +18188,7 @@ void PrinterProtocolTests::
                  &canonicalPreparedPath),
              qPrintable(manager->operationInfo(operationId).message));
     const QString canonicalThumbnailPath =
-        manager->operations_.value(operationId)
+        manager->operationCoordinator_.operations_.value(operationId)
             .stagedThumbnailPath;
     TryxRuntimeMediaEntry originalVerified;
     originalVerified.name = originalRemoteName;
@@ -18100,28 +18196,28 @@ void PrinterProtocolTests::
     originalVerified.source = 1U;
     originalVerified.readOnly = false;
     QString storeError;
-    QVERIFY2(manager->beginRetryCacheLocalCommit(
+    QVERIFY2(manager->operationCoordinator_.beginRetryCacheLocalCommit(
                  operationId, originalVerified, &storeError),
              qPrintable(storeError));
-    QVERIFY2(manager->deferRetryCacheLocalCommit(
-                 operationId,
+    QVERIFY2(manager->operationCoordinator_.deferRetryCacheLocalCommit(
+                 manager->operationContext(), operationId,
                  QStringLiteral("ThumbnailPersistenceFailed"),
                  QStringLiteral("injected local commit failure"),
                  &storeError),
              qPrintable(storeError));
-    auto source = manager->operations_.find(operationId);
-    QVERIFY(source != manager->operations_.end());
+    auto source = manager->operationCoordinator_.operations_.find(operationId);
+    QVERIFY(source != manager->operationCoordinator_.operations_.end());
     source->info.terminalOutcome = QStringLiteral("NotStarted");
     source->info.primaryErrorCategory =
         QStringLiteral("ThumbnailPersistenceFailed");
     source->info.primaryErrorMessage =
         QStringLiteral("injected local commit failure");
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         operationId, QStringLiteral("RetryAvailable"),
         QStringLiteral("ThumbnailPersistenceFailed"),
         QStringLiteral("PreparedMedia"),
         QStringLiteral("injected local commit failure"));
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     QVERIFY(QFileInfo::exists(canonicalPreparedPath));
     QVERIFY(QFileInfo::exists(canonicalThumbnailPath));
 
@@ -18144,16 +18240,16 @@ void PrinterProtocolTests::
         QStringLiteral("33333333-3333-4333-8333-333333333333");
     origin.confirmedUtc = QDateTime::currentDateTimeUtc();
     const auto persistedOrigin =
-        manager->mediaCatalogStore_->persistOrigin(origin);
+        manager->operationCoordinator_.mediaCatalogStore_->persistOrigin(origin);
     QVERIFY2(persistedOrigin.ok(),
              qPrintable(persistedOrigin.detail));
 
     const QString reusableMediaId =
-        manager->mediaCatalogStore_->mediaId(
+        manager->operationCoordinator_.mediaCatalogStore_->mediaId(
             manager->printerDeviceSerial_.trimmed(), origin.remote);
     QVERIFY(!reusableMediaId.isEmpty());
     const QString thumbnailBlockerPath =
-        QDir(manager->mediaCatalogStore_->thumbnailDirectory())
+        QDir(manager->operationCoordinator_.mediaCatalogStore_->thumbnailDirectory())
             .filePath(reusableMediaId + QStringLiteral(".jpg"));
     QVERIFY(QDir().mkpath(thumbnailBlockerPath));
 
@@ -18177,8 +18273,8 @@ void PrinterProtocolTests::
     QCOMPARE(failed.terminalOutcome,
              QStringLiteral("NotStarted"));
     QCOMPARE(uploadSpy.count(), 0);
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QCOMPARE(manager->retryCacheSnapshot_.retryCandidate->operationId,
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->operationId,
              operationId);
     QVERIFY(QFileInfo::exists(canonicalPreparedPath));
     QVERIFY(QFileInfo::exists(canonicalThumbnailPath));
@@ -18189,7 +18285,7 @@ void PrinterProtocolTests::
     QCOMPARE(manager->retryOperation(operationId, successfulRetryId),
              successfulRetryId);
     QCOMPARE(refreshSpy.count(), 2);
-    manager->retryCacheStore()
+    manager->operationCoordinator_.retryCacheStore()
         .setStopAfterRetirementTombstoneForTesting(true);
     manager->worker_->printerMediaListReady(
         successfulRetryId, {reusable}, manager->printerGeneration_);
@@ -18207,14 +18303,14 @@ void PrinterProtocolTests::
     QCOMPARE(catalog.entries.size(), 1);
     QCOMPARE(catalog.entries.first().name, reusableRemoteName);
     QVERIFY(!catalog.entries.first().thumbnailKey.isEmpty());
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.cleanupPending.isEmpty());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
     QVERIFY(manager->retryCacheMutationGateActive());
     QVERIFY(QFileInfo::exists(canonicalPreparedPath));
     QVERIFY(QFileInfo::exists(canonicalThumbnailPath));
 
-    const QString retryDirectory = manager->retryCacheDirectory();
+    const QString retryDirectory = manager->operationCoordinator_.retryCacheDirectory();
     manager.reset();
     tryx::RetryCacheStore restarted(retryDirectory);
     const auto loaded = restarted.load();
@@ -18273,17 +18369,17 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
         manager->printerDeviceSerial_.trimmed();
     candidateInput.deviceGeneration = manager->printerGeneration_;
     const auto candidatePrepared =
-        manager->retryCacheStore().persistPrepared(
-            manager->retryCacheSnapshot_, candidateInput);
+        manager->operationCoordinator_.retryCacheStore().persistPrepared(
+            manager->operationCoordinator_.retryCacheSnapshot_, candidateInput);
     QVERIFY2(candidatePrepared.ok(),
              qPrintable(candidatePrepared.detail));
     QVERIFY(candidatePrepared.snapshot.has_value());
     const auto candidateDispatch =
         *candidatePrepared.snapshot->inFlightDispatch;
     const auto candidateExpected =
-        manager->retryCacheExpectedDispatch(candidateDispatch);
+        manager->operationCoordinator_.retryCacheExpectedDispatch(candidateDispatch);
     const auto candidateArmed =
-        manager->retryCacheStore().armDispatch(
+        manager->operationCoordinator_.retryCacheStore().armDispatch(
             *candidatePrepared.snapshot, candidateExpected);
     QVERIFY2(candidateArmed.ok(), qPrintable(candidateArmed.detail));
     tryx::RetryCacheStore::RetryableOutcomeInput candidateOutcome;
@@ -18295,7 +18391,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     candidateOutcome.primaryErrorMessage =
         QStringLiteral("Preserved candidate A");
     const auto candidateRecorded =
-        manager->retryCacheStore().recordRetryableOutcome(
+        manager->operationCoordinator_.retryCacheStore().recordRetryableOutcome(
             *candidateArmed.snapshot, candidateExpected,
             candidateOutcome);
     QVERIFY2(candidateRecorded.ok(),
@@ -18304,21 +18400,22 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     const auto recoveryCandidate =
         *candidateRecorded.snapshot->retryCandidate;
     const auto candidateRecovered =
-        manager->retryCacheStore().resolveCandidateRecovery(
+        manager->operationCoordinator_.retryCacheStore().resolveCandidateRecovery(
             *candidateRecorded.snapshot,
-            manager->retryCacheExpectedDispatch(recoveryCandidate),
+            manager->operationCoordinator_.retryCacheExpectedDispatch(recoveryCandidate),
             tryx::RetryCacheStore::CandidateRecoveryProof::
                 PhysicalReconnectObserved);
     QVERIFY2(candidateRecovered.ok(),
              qPrintable(candidateRecovered.detail));
     QVERIFY(candidateRecovered.snapshot.has_value());
-    manager->retryCacheSnapshot_ = *candidateRecovered.snapshot;
-    manager->synchronizeRetryCacheSurface();
+    manager->operationCoordinator_.retryCacheSnapshot_ = *candidateRecovered.snapshot;
+    manager->operationCoordinator_.synchronizeRetryCacheSurface(
+        manager->printerGeneration_);
 
     const auto candidateBefore =
-        *manager->retryCacheSnapshot_.retryCandidate;
+        *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
     const QString candidateCanonicalPath =
-        manager->retryCacheArtifactPath(candidateBefore.prepared);
+        manager->operationCoordinator_.retryCacheArtifactPath(candidateBefore.prepared);
     QVERIFY(QFileInfo::exists(candidateCanonicalPath));
     QCOMPARE(manager->operationInfo(candidateBefore.operationId).state,
              QStringLiteral("RetryAvailable"));
@@ -18330,7 +18427,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     QVERIFY(writeAtomicOwnerFile(dispatchStaging, dispatchBytes));
     const QString dispatchOperationId =
         QStringLiteral("25252525-2525-4525-8525-252525252525");
-    DeviceManager::OperationRecord dispatchRecord;
+    PrinterOperationCoordinator::OperationRecord dispatchRecord;
     dispatchRecord.info.id = dispatchOperationId;
     dispatchRecord.info.kind = QStringLiteral("Upload");
     dispatchRecord.info.state = QStringLiteral("Preflight");
@@ -18353,10 +18450,10 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
         manager->printerDeviceSerial_.trimmed();
     dispatchRecord.uploadDeviceGeneration =
         manager->printerGeneration_;
-    manager->operations_.insert(
+    manager->operationCoordinator_.operations_.insert(
         dispatchOperationId, dispatchRecord);
-    manager->operationOrder_.append(dispatchOperationId);
-    manager->activeOperationId_ = dispatchOperationId;
+    manager->operationCoordinator_.operationOrder_.append(dispatchOperationId);
+    manager->operationCoordinator_.activeOperationId_ = dispatchOperationId;
 
     QString dispatchCanonicalPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
@@ -18364,11 +18461,11 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
                  &dispatchCanonicalPath),
              qPrintable(manager->operationInfo(
                  dispatchOperationId).message));
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QCOMPARE(manager->retryCacheSnapshot_.retryCandidate->lineageId,
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->lineageId,
              candidateBefore.lineageId);
-    QCOMPARE(manager->retryCacheSnapshot_.inFlightDispatch->operationId,
+    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->operationId,
              dispatchOperationId);
 
     QSignalSpy refreshSpy(
@@ -18385,7 +18482,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     uploaded.size = dispatchBytes.size();
     uploaded.source = PrinterProtocol::MediaSource::User;
     uploaded.readOnly = false;
-    manager->retryCacheStore()
+    manager->operationCoordinator_.retryCacheStore()
         .setStopAfterRetirementTombstoneForTesting(cleanupFailure);
     manager->worker_->printerMediaListReady(
         dispatchOperationId, {uploaded},
@@ -18398,13 +18495,13 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
                  ? QStringLiteral("RetryCacheCleanupFailed")
                  : QString());
     QVERIFY(manager->operationInfo(dispatchOperationId).retryMode.isEmpty());
-    QVERIFY(manager->activeOperationId_.isEmpty());
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QCOMPARE(!manager->retryCacheSnapshot_.cleanupPending.isEmpty(),
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QCOMPARE(!manager->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty(),
              cleanupFailure);
     const auto candidateAfter =
-        *manager->retryCacheSnapshot_.retryCandidate;
+        *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
     QCOMPARE(candidateAfter.lineageId, candidateBefore.lineageId);
     QCOMPARE(candidateAfter.dispatchId, candidateBefore.dispatchId);
     QCOMPARE(candidateAfter.operationId, candidateBefore.operationId);
@@ -18419,7 +18516,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
 
     if (cleanupFailure) {
         const QString retryDirectory =
-            manager->retryCacheDirectory();
+            manager->operationCoordinator_.retryCacheDirectory();
         manager.reset();
 
         tryx::RetryCacheStore restarted(retryDirectory);
@@ -21471,22 +21568,22 @@ void PrinterProtocolTests::
     monitor->setDiscoveryRootsForTesting(sysRoot, devRoot);
     std::unique_ptr<DeviceManager> manager(
         new DeviceManager(monitor, false, nullptr));
-    manager->retryCacheDirectoryOverride_ = retryDirectory;
-    manager->mediaRuntimeRootOverride_ =
+    manager->operationCoordinator_.retryCacheDirectoryOverride_ = retryDirectory;
+    manager->operationCoordinator_.mediaRuntimeRootOverride_ =
         QDir(temporaryDirectory.path()).filePath(
             QStringLiteral("runtime-staging"));
-    manager->deviceMediaArtifactStore_ =
+    manager->operationCoordinator_.deviceMediaArtifactStore_ =
         std::make_unique<tryx::DeviceMediaArtifactStore>(
-            QDir(manager->mediaRuntimeRootOverride_).filePath(
+            QDir(manager->operationCoordinator_.mediaRuntimeRootOverride_).filePath(
                 QStringLiteral("device-media-outbox")));
 
-    DeviceManager::OperationRecord collision;
+    PrinterOperationCoordinator::OperationRecord collision;
     collision.info.id = originalCandidate.operationId;
     collision.info.kind = QStringLiteral("Upload");
     collision.info.state = QStringLiteral("Succeeded");
     collision.info.stage = QStringLiteral("Succeeded");
-    manager->operations_.insert(collision.info.id, collision);
-    manager->operationOrder_.append(collision.info.id);
+    manager->operationCoordinator_.operations_.insert(collision.info.id, collision);
+    manager->operationCoordinator_.operationOrder_.append(collision.info.id);
 
     QObject::disconnect(
         manager.get(),
@@ -21497,16 +21594,17 @@ void PrinterProtocolTests::
         manager.get(),
         &DeviceManager::requestValidatePrinterRetryCacheArtifact);
 
-    manager->loadRetryCache();
+    manager->operationCoordinator_.loadRetryCache(
+        manager->operationContext());
 
-    QVERIFY(!manager->retryCacheLoadComplete_);
-    QVERIFY(!manager->retryCacheStartupFailure_);
+    QVERIFY(!manager->operationCoordinator_.retryCacheLoadComplete_);
+    QVERIFY(!manager->operationCoordinator_.retryCacheStartupFailure_);
     QVERIFY(manager->retryCacheMutationGateActive());
     QVERIFY(validationSpy.count() >= 2);
     QCOMPARE(validationSpy.count(),
-             manager->pendingRetryCacheValidations_.size());
+             manager->operationCoordinator_.pendingRetryCacheValidations_.size());
     const auto pending =
-        manager->pendingRetryCacheValidations_.values();
+        manager->operationCoordinator_.pendingRetryCacheValidations_.values();
     QCOMPARE(pending.size(), validationSpy.count());
 
     const QString gateProbeId =
@@ -21521,8 +21619,8 @@ void PrinterProtocolTests::
              QStringLiteral("Failed"));
     QCOMPARE(manager->operationInfo(gateProbeId).errorCategory,
              QStringLiteral("RetryCacheValidationPending"));
-    manager->operations_.remove(gateProbeId);
-    manager->operationOrder_.removeAll(gateProbeId);
+    manager->operationCoordinator_.operations_.remove(gateProbeId);
+    manager->operationCoordinator_.operationOrder_.removeAll(gateProbeId);
 
     for (const auto &request : pending) {
         const auto matching = std::find_if(
@@ -21547,33 +21645,34 @@ void PrinterProtocolTests::
         const auto &request = pending.at(index);
         const bool last = index + 1 == pending.size();
         if (last && stopAfterTransitionIntent) {
-            manager->retryCacheStore()
+            manager->operationCoordinator_.retryCacheStore()
                 .setStopAfterCandidateTransitionIntentForTesting(
                     true);
         }
-        manager->handleRetryCacheArtifactValidation(
-            request.token, true, false, request.expectedSize,
+        manager->operationCoordinator_.handleRetryCacheArtifactValidation(
+            manager->operationContext(), request.token, true, false,
+            request.expectedSize,
             request.expectedSha256, request.expectedDevice,
             request.expectedInode, QString());
         if (!last) {
-            QVERIFY(!manager->retryCacheLoadComplete_);
-            QVERIFY(!manager->retryCacheStartupFailure_);
+            QVERIFY(!manager->operationCoordinator_.retryCacheLoadComplete_);
+            QVERIFY(!manager->operationCoordinator_.retryCacheStartupFailure_);
             QVERIFY(manager->retryCacheMutationGateActive());
         }
     }
 
-    QVERIFY(manager->pendingRetryCacheValidations_.isEmpty());
-    QCOMPARE(manager->operations_.value(
+    QVERIFY(manager->operationCoordinator_.pendingRetryCacheValidations_.isEmpty());
+    QCOMPARE(manager->operationCoordinator_.operations_.value(
                  originalCandidate.operationId).info.state,
              QStringLiteral("Succeeded"));
     if (stopAfterTransitionIntent) {
-        QVERIFY(!manager->retryCacheLoadComplete_);
-        QVERIFY(manager->retryCacheStartupFailure_);
-        QVERIFY(manager->retryCacheStore().blocksMutations());
+        QVERIFY(!manager->operationCoordinator_.retryCacheLoadComplete_);
+        QVERIFY(manager->operationCoordinator_.retryCacheStartupFailure_);
+        QVERIFY(manager->operationCoordinator_.retryCacheStore().blocksMutations());
         QVERIFY(manager->retryCacheMutationGateActive());
-        QCOMPARE(manager->operations_.size(), 1);
+        QCOMPARE(manager->operationCoordinator_.operations_.size(), 1);
         QFile manifest(
-            manager->retryCacheStore().canonicalManifestPath());
+            manager->operationCoordinator_.retryCacheStore().canonicalManifestPath());
         QVERIFY(manifest.open(QIODevice::ReadOnly));
         const QJsonObject canonical =
             QJsonDocument::fromJson(manifest.readAll()).object();
@@ -21589,22 +21688,22 @@ void PrinterProtocolTests::
         return;
     }
 
-    QVERIFY(manager->retryCacheLoadComplete_);
-    QVERIFY(!manager->retryCacheStartupFailure_);
-    QVERIFY(!manager->retryCacheStore().blocksMutations());
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheLoadComplete_);
+    QVERIFY(!manager->operationCoordinator_.retryCacheStartupFailure_);
+    QVERIFY(!manager->operationCoordinator_.retryCacheStore().blocksMutations());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     const auto remapped =
-        *manager->retryCacheSnapshot_.retryCandidate;
+        *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
     QVERIFY(remapped.operationId != originalCandidate.operationId);
     QCOMPARE(remapped.lineageId, originalCandidate.lineageId);
     QCOMPARE(remapped.dispatchId, originalCandidate.dispatchId);
-    QCOMPARE(manager->retryCacheSnapshot_.storeRevision,
+    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.storeRevision,
              fixture.snapshot.storeRevision + 2);
-    QVERIFY(manager->operations_.contains(remapped.operationId));
-    QCOMPARE(manager->operations_.value(remapped.operationId)
+    QVERIFY(manager->operationCoordinator_.operations_.contains(remapped.operationId));
+    QCOMPARE(manager->operationCoordinator_.operations_.value(remapped.operationId)
                  .info.state,
              QStringLiteral("RetryAvailable"));
-    QCOMPARE(manager->operations_.size(), 2);
+    QCOMPARE(manager->operationCoordinator_.operations_.size(), 2);
 }
 
 void PrinterProtocolTests::
@@ -31181,7 +31280,7 @@ void PrinterProtocolTests::uploadDispatchBarrierPersistsBeforeUsb() {
             QStringLiteral("dispatch-source.mp4"));
     const QByteArray sourceBytes("dispatch-source");
     QVERIFY(writeTextFile(sourcePath, sourceBytes));
-    const QString cacheDirectory = manager->retryCacheDirectory();
+    const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
     const QString preparedPath =
         QDir(cacheDirectory).filePath(
@@ -31193,7 +31292,7 @@ void PrinterProtocolTests::uploadDispatchBarrierPersistsBeforeUsb() {
         QStringLiteral("71717171-7171-4171-8171-717171717171");
     const QString remoteName =
         QStringLiteral("dispatch.mp4.h264_2240x1080");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Converting");
@@ -31215,19 +31314,19 @@ void PrinterProtocolTests::uploadDispatchBarrierPersistsBeforeUsb() {
         tryx::printer_media_file_integrity::sourceFingerprint(sourcePath);
     record.uploadDeviceIdentity = manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
 
     bool barrierVisibleAtDispatch = false;
     QObject::connect(
         manager.get(), &DeviceManager::requestPrinterUploadPrepared,
         manager.get(), [&]() {
             QFile shadowManifest(
-                manager->retryCacheStore()
+                manager->operationCoordinator_.retryCacheStore()
                     .legacyShadowManifestPath());
             QFile canonicalManifest(
-                manager->retryCacheStore().canonicalManifestPath());
+                manager->operationCoordinator_.retryCacheStore().canonicalManifestPath());
             if (!shadowManifest.open(QIODevice::ReadOnly) ||
                 !canonicalManifest.open(QIODevice::ReadOnly)) {
                 return;
@@ -31274,15 +31373,15 @@ void PrinterProtocolTests::uploadDispatchBarrierPersistsBeforeUsb() {
     QVERIFY(barrierVisibleAtDispatch);
     QCOMPARE(manager->operationInfo(operationId).terminalOutcome,
              QString());
-    QVERIFY(manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QCOMPARE(manager->retryCacheSnapshot_.inFlightDispatch->operationId,
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->operationId,
              operationId);
-    QCOMPARE(manager->retryCacheSnapshot_.inFlightDispatch->phase,
+    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->phase,
              tryx::RetryCacheStore::DispatchPhase::DispatchArmed);
     QCOMPARE(
-        manager->operations_.value(operationId).preparedPath,
-        QDir(manager->retryCacheStore().canonicalDirectory()).filePath(
-            manager->retryCacheSnapshot_.inFlightDispatch->prepared.name));
+        manager->operationCoordinator_.operations_.value(operationId).preparedPath,
+        QDir(manager->operationCoordinator_.retryCacheStore().canonicalDirectory()).filePath(
+            manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->prepared.name));
     QVERIFY(!QFileInfo::exists(preparedPath));
 }
 
@@ -31318,7 +31417,7 @@ void PrinterProtocolTests::uploadDispatchBarrierFailureStopsBeforeUsb() {
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
 
-    const QString cacheDirectory = manager->retryCacheDirectory();
+    const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
     const QString preparedPath = QDir(cacheDirectory).filePath(
         QStringLiteral("blocked-dispatch.h264"));
@@ -31327,7 +31426,7 @@ void PrinterProtocolTests::uploadDispatchBarrierFailureStopsBeforeUsb() {
 
     const QString operationId =
         QStringLiteral("72727272-7272-4272-8272-727272727272");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Preflight");
@@ -31351,27 +31450,28 @@ void PrinterProtocolTests::uploadDispatchBarrierFailureStopsBeforeUsb() {
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
 
     QSignalSpy uploadSpy(
         manager.get(), &DeviceManager::requestPrinterUploadPrepared);
     if (stopAfterShadowCommit) {
-        manager->retryCacheStore()
+        manager->operationCoordinator_.retryCacheStore()
             .setStopAfterShadowCommitForTesting(true);
     } else {
-        manager->retryCacheStore()
+        manager->operationCoordinator_.retryCacheStore()
             .setStopAfterPreparedArtifactCommitForTesting(true);
     }
-    QVERIFY(!manager->dispatchPreparedUploadWithRetryBarrier(
+    QVERIFY(!manager->operationCoordinator_.dispatchPreparedUploadWithRetryBarrier(
+        manager->operationContext(),
         manager->currentPrinterPath(), operationId,
         manager->printerGeneration_));
     if (stopAfterShadowCommit) {
-        manager->retryCacheStore()
+        manager->operationCoordinator_.retryCacheStore()
             .setStopAfterShadowCommitForTesting(false);
     } else {
-        manager->retryCacheStore()
+        manager->operationCoordinator_.retryCacheStore()
             .setStopAfterPreparedArtifactCommitForTesting(false);
     }
 
@@ -31386,22 +31486,22 @@ void PrinterProtocolTests::uploadDispatchBarrierFailureStopsBeforeUsb() {
              QString());
     QCOMPARE(manager->operationInfo(operationId).retryMode,
              QString());
-    QVERIFY(manager->activeOperationId_.isEmpty());
-    QCOMPARE(manager->operations_.value(operationId).uploadDispatched,
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+    QCOMPARE(manager->operationCoordinator_.operations_.value(operationId).uploadDispatched,
              false);
-    QCOMPARE(manager->retryCacheStore().blocksMutations(), true);
+    QCOMPARE(manager->operationCoordinator_.retryCacheStore().blocksMutations(), true);
     QCOMPARE(manager->retryCacheMutationGateActive(), true);
     QCOMPARE(
-        manager->retryCacheSnapshot_.inFlightDispatch.has_value(),
+        manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value(),
         stopAfterShadowCommit);
     if (stopAfterShadowCommit) {
         QCOMPARE(
-            manager->retryCacheSnapshot_.inFlightDispatch->phase,
+            manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->phase,
             tryx::RetryCacheStore::DispatchPhase::Preparing);
         QVERIFY(QFileInfo::exists(
-            manager->retryCacheStore().canonicalManifestPath()));
+            manager->operationCoordinator_.retryCacheStore().canonicalManifestPath()));
         QVERIFY(QFileInfo::exists(
-            manager->retryCacheStore().legacyShadowManifestPath()));
+            manager->operationCoordinator_.retryCacheStore().legacyShadowManifestPath()));
     }
     QVERIFY(!QFileInfo::exists(preparedPath));
 }
@@ -31442,7 +31542,7 @@ void PrinterProtocolTests::
     const QString operationId = QStringLiteral(
         "75757575-7575-4575-8575-757575757575");
 
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Preflight");
@@ -31465,18 +31565,19 @@ void PrinterProtocolTests::
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
 
     QSignalSpy uploadSpy(
         manager.get(), &DeviceManager::requestPrinterUploadPrepared);
-    manager->retryCacheStore()
+    manager->operationCoordinator_.retryCacheStore()
         .setPreparedArtifactDirectorySyncFailureForTesting(true);
-    QVERIFY(!manager->dispatchPreparedUploadWithRetryBarrier(
+    QVERIFY(!manager->operationCoordinator_.dispatchPreparedUploadWithRetryBarrier(
+        manager->operationContext(),
         manager->currentPrinterPath(), operationId,
         manager->printerGeneration_));
-    manager->retryCacheStore()
+    manager->operationCoordinator_.retryCacheStore()
         .setPreparedArtifactDirectorySyncFailureForTesting(false);
 
     QCOMPARE(uploadSpy.count(), 0);
@@ -31486,22 +31587,22 @@ void PrinterProtocolTests::
              QStringLiteral("RetryCacheWriteFailed"));
     QVERIFY(failed.message.contains(
         QStringLiteral("sync"), Qt::CaseInsensitive));
-    QVERIFY(!manager->operations_.value(operationId)
+    QVERIFY(!manager->operationCoordinator_.operations_.value(operationId)
                  .uploadDispatched);
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QVERIFY(manager->retryCacheStore().blocksMutations());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheStore().blocksMutations());
     QVERIFY(manager->retryCacheMutationGateActive());
     QVERIFY(!QFileInfo::exists(preparedPath));
-    const QString retryDirectory = manager->retryCacheDirectory();
+    const QString retryDirectory = manager->operationCoordinator_.retryCacheDirectory();
     const QString canonicalDirectory =
-        manager->retryCacheStore().canonicalDirectory();
+        manager->operationCoordinator_.retryCacheStore().canonicalDirectory();
     const QStringList orphanNames = QDir(canonicalDirectory).entryList(
         {QStringLiteral("prepared-*.bin")},
         QDir::Files | QDir::NoDotAndDotDot);
     QVERIFY(!orphanNames.isEmpty());
     QVERIFY(!QFileInfo::exists(
-        manager->retryCacheStore().canonicalManifestPath()));
+        manager->operationCoordinator_.retryCacheStore().canonicalManifestPath()));
     manager.reset();
     for (const QString &orphanName : orphanNames) {
         QVERIFY(QFileInfo::exists(
@@ -31512,7 +31613,7 @@ void PrinterProtocolTests::
     restartMonitor->setDiscoveryRootsForTesting(sysRoot, devRoot);
     std::unique_ptr<DeviceManager> restarted(
         new DeviceManager(restartMonitor, false, nullptr));
-    restarted->retryCacheDirectoryOverride_ = retryDirectory;
+    restarted->operationCoordinator_.retryCacheDirectoryOverride_ = retryDirectory;
     QObject::disconnect(
         restarted.get(), &DeviceManager::requestStartPrinterSession,
         restarted->worker_, &DeviceWorker::startPrinterDisplaySession);
@@ -31527,12 +31628,13 @@ void PrinterProtocolTests::
 
     restarted->loadRetryCache();
 
-    QVERIFY(restarted->retryCacheLoadComplete_);
-    QVERIFY(!restarted->retryCacheStartupFailure_);
-    QVERIFY(!restarted->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!restarted->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QVERIFY(restarted->retryCacheSnapshot_.cleanupPending.isEmpty());
-    QVERIFY(!restarted->retryCacheStore().blocksMutations());
+    QVERIFY(restarted->operationCoordinator_.retryCacheLoadComplete_);
+    QVERIFY(!restarted->operationCoordinator_.retryCacheStartupFailure_);
+    QVERIFY(!restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!restarted->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
+    QVERIFY(!restarted->operationCoordinator_.retryCacheStore()
+                 .blocksMutations());
     QVERIFY(!restarted->retryCacheMutationGateActive());
     for (const QString &orphanName : orphanNames) {
         QVERIFY(!QFileInfo::exists(
@@ -31592,7 +31694,7 @@ void PrinterProtocolTests::
     const QString operationId = QStringLiteral(
         "77777777-7777-4777-8777-777777777777");
 
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.info.state = QStringLiteral("Preflight");
@@ -31615,9 +31717,9 @@ void PrinterProtocolTests::
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
 
     bool invalidated = false;
     connect(
@@ -31642,7 +31744,8 @@ void PrinterProtocolTests::
     QSignalSpy uploadSpy(
         manager.get(), &DeviceManager::requestPrinterUploadPrepared);
 
-    QVERIFY(!manager->dispatchPreparedUploadWithRetryBarrier(
+    QVERIFY(!manager->operationCoordinator_.dispatchPreparedUploadWithRetryBarrier(
+        manager->operationContext(),
         manager->currentPrinterPath(), operationId,
         manager->printerGeneration_));
 
@@ -31655,13 +31758,13 @@ void PrinterProtocolTests::
     QCOMPARE(stopped.errorCategory,
              cancelOperation ? QStringLiteral("UserCancelled")
                              : QStringLiteral("DeviceChanged"));
-    QVERIFY(!manager->operations_.value(operationId)
+    QVERIFY(!manager->operationCoordinator_.operations_.value(operationId)
                  .uploadDispatched);
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QVERIFY(manager->retryCacheSnapshot_.cleanupPending.isEmpty());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
     QVERIFY(!QFileInfo::exists(
-        manager->operations_.value(operationId).preparedPath));
+        manager->operationCoordinator_.operations_.value(operationId).preparedPath));
 }
 
 void PrinterProtocolTests::
@@ -31698,7 +31801,7 @@ void PrinterProtocolTests::
             QDir(temporaryDirectory.path()).filePath(
                 QStringLiteral("shutdown-prepared.h264"));
         QVERIFY(writeAtomicOwnerFile(preparedPath, preparedBytes));
-        DeviceManager::OperationRecord record;
+        PrinterOperationCoordinator::OperationRecord record;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("Upload");
         record.info.state = QStringLiteral("Preflight");
@@ -31717,16 +31820,16 @@ void PrinterProtocolTests::
         record.uploadDeviceIdentity =
             manager->printerDeviceSerial_.trimmed();
         record.uploadDeviceGeneration = manager->printerGeneration_;
-        manager->operations_.insert(operationId, record);
-        manager->operationOrder_.append(operationId);
-        manager->activeOperationId_ = operationId;
+        manager->operationCoordinator_.operations_.insert(operationId, record);
+        manager->operationCoordinator_.operationOrder_.append(operationId);
+        manager->operationCoordinator_.activeOperationId_ = operationId;
         QVERIFY2(armRetryCacheDispatchForTesting(
                      manager.get(), operationId,
                      &durablePreparedPath),
                  qPrintable(manager->operationInfo(
                      operationId).message));
         QVERIFY(QFileInfo::exists(durablePreparedPath));
-        QCOMPARE(manager->retryCacheSnapshot_.inFlightDispatch->phase,
+        QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->phase,
                  tryx::RetryCacheStore::DispatchPhase::DispatchArmed);
     }
 
@@ -31734,16 +31837,16 @@ void PrinterProtocolTests::
     std::unique_ptr<DeviceManager> restarted(
         DeviceManager::createForTesting(sysRoot, devRoot));
     QTRY_VERIFY_WITH_TIMEOUT(
-        restarted->retryCacheLoadComplete_ ||
-            restarted->retryCacheStartupFailure_,
+        restarted->operationCoordinator_.retryCacheLoadComplete_ ||
+            restarted->operationCoordinator_.retryCacheStartupFailure_,
         5000);
-    QVERIFY2(!restarted->retryCacheStartupFailure_,
-             qPrintable(restarted->retryCacheFailureDetail_));
-    QVERIFY(restarted->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!restarted->retryCacheSnapshot_
+    QVERIFY2(!restarted->operationCoordinator_.retryCacheStartupFailure_,
+             qPrintable(restarted->operationCoordinator_.retryCacheFailureDetail_));
+    QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!restarted->operationCoordinator_.retryCacheSnapshot_
                  .inFlightDispatch.has_value());
     const auto &candidate =
-        *restarted->retryCacheSnapshot_.retryCandidate;
+        *restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
     QCOMPARE(candidate.operationId, operationId);
     QCOMPARE(candidate.outcome,
              tryx::RetryCacheStore::TerminalOutcome::
@@ -32168,7 +32271,7 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
 
     const QString operationId =
         QStringLiteral("31313131-3131-4131-8131-313131313131");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -32188,9 +32291,9 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
 
     QString canonicalPreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
@@ -32203,28 +32306,28 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
     verified.source = 1U;
     verified.readOnly = false;
     QString storeError;
-    QVERIFY2(manager->beginRetryCacheLocalCommit(
+    QVERIFY2(manager->operationCoordinator_.beginRetryCacheLocalCommit(
                  operationId, verified, &storeError),
              qPrintable(storeError));
-    QVERIFY2(manager->deferRetryCacheLocalCommit(
-                 operationId,
+    QVERIFY2(manager->operationCoordinator_.deferRetryCacheLocalCommit(
+                 manager->operationContext(), operationId,
                  QStringLiteral("LocalMediaCommitFailed"),
                  QStringLiteral("injected local commit failure"),
                  &storeError),
              qPrintable(storeError));
-    auto retryRecord = manager->operations_.find(operationId);
-    QVERIFY(retryRecord != manager->operations_.end());
+    auto retryRecord = manager->operationCoordinator_.operations_.find(operationId);
+    QVERIFY(retryRecord != manager->operationCoordinator_.operations_.end());
     retryRecord->info.terminalOutcome = QStringLiteral("NotStarted");
-    manager->finishOperation(
+    manager->operationCoordinator_.finishOperation(
         operationId, QStringLiteral("RetryAvailable"),
         QStringLiteral("LocalMediaCommitFailed"),
         QStringLiteral("PreparedMedia"),
         QStringLiteral("injected local commit failure"));
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     const QString lineageId =
-        manager->retryCacheSnapshot_.retryCandidate->lineageId;
+        manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->lineageId;
     const QString shadowPreparedPath =
-        QDir(manager->retryCacheDirectory()).filePath(
+        QDir(manager->operationCoordinator_.retryCacheDirectory()).filePath(
             QStringLiteral("shadow-%1-prepared.bin")
                 .arg(lineageId));
     QVERIFY(QFileInfo::exists(canonicalPreparedPath));
@@ -32232,7 +32335,7 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
 
     QSignalSpy uploadSpy(
         manager.get(), &DeviceManager::requestPrinterUploadPrepared);
-    manager->retryCacheStore()
+    manager->operationCoordinator_.retryCacheStore()
         .setStopAfterRetirementTombstoneForTesting(true);
     manager->cancelOperation(operationId);
 
@@ -32245,22 +32348,22 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
     QVERIFY(manager->operationInfo(operationId).retryMode.isEmpty());
     QVERIFY(manager->operationInfo(operationId).message.contains(
         QStringLiteral("cleanup"), Qt::CaseInsensitive));
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.cleanupPending.isEmpty());
-    QVERIFY(manager->retryCacheStore().blocksMutations());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
+    QVERIFY(manager->operationCoordinator_.retryCacheStore().blocksMutations());
     QVERIFY(manager->retryCacheMutationGateActive());
     QVERIFY(QFileInfo::exists(canonicalPreparedPath));
     QVERIFY(QFileInfo::exists(shadowPreparedPath));
     QVERIFY(QFileInfo(
-                QDir(manager->retryCacheDirectory()).filePath(
+                QDir(manager->operationCoordinator_.retryCacheDirectory()).filePath(
                     QStringLiteral("suspended-v10")))
                 .isDir());
     QVERIFY(!QFileInfo::exists(
-        manager->retryCacheStore().legacyShadowManifestPath()));
+        manager->operationCoordinator_.retryCacheStore().legacyShadowManifestPath()));
 
     QFile tombstone(
-        manager->retryCacheStore().canonicalManifestPath());
+        manager->operationCoordinator_.retryCacheStore().canonicalManifestPath());
     QVERIFY(tombstone.open(QIODevice::ReadOnly));
     const QJsonObject tombstoneObject =
         QJsonDocument::fromJson(tombstone.readAll()).object();
@@ -32284,7 +32387,7 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
              QStringLiteral("RetryCacheConflict"));
     QCOMPARE(uploadSpy.count(), 0);
 
-    const QString retryDirectory = manager->retryCacheDirectory();
+    const QString retryDirectory = manager->operationCoordinator_.retryCacheDirectory();
     manager.reset();
     {
         tryx::RetryCacheStore blocked(retryDirectory);
@@ -32343,7 +32446,7 @@ void PrinterProtocolTests::
 
     const QString operationId =
         QStringLiteral("20112011-2011-4011-8011-201120112014");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x2011;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -32366,21 +32469,21 @@ void PrinterProtocolTests::
         "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
     record.sourceContentSha256 = record.preparedSha256;
     record.sourceSize = preparedBytes.size();
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     QString canonicalPreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId,
                  &canonicalPreparedPath),
              qPrintable(manager->operationInfo(operationId).message));
     const QString lineageId =
-        manager->retryCacheSnapshot_.inFlightDispatch->lineageId;
+        manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch->lineageId;
     const QString shadowPreparedPath =
-        QDir(manager->retryCacheDirectory()).filePath(
+        QDir(manager->operationCoordinator_.retryCacheDirectory()).filePath(
             QStringLiteral("shadow-%1-prepared.bin")
                 .arg(lineageId));
-    manager->retryCacheStore()
+    manager->operationCoordinator_.retryCacheStore()
         .setStopAfterRetirementTombstoneForTesting(true);
 
     QSignalSpy uploadedSpy(manager.get(), &DeviceManager::mediaUploaded);
@@ -32403,17 +32506,17 @@ void PrinterProtocolTests::
     QCOMPARE(uploadedSpy.first().first().toString(),
              record.remoteName);
     QCOMPARE(refreshSpy.count(), 0);
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.cleanupPending.isEmpty());
-    QVERIFY(manager->retryCacheStore().blocksMutations());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
+    QVERIFY(manager->operationCoordinator_.retryCacheStore().blocksMutations());
     QVERIFY(manager->retryCacheMutationGateActive());
     QVERIFY(QFileInfo::exists(canonicalPreparedPath));
     QVERIFY(QFileInfo::exists(shadowPreparedPath));
     QVERIFY(!QFileInfo::exists(
-        manager->retryCacheStore().legacyShadowManifestPath()));
+        manager->operationCoordinator_.retryCacheStore().legacyShadowManifestPath()));
     QVERIFY(QFileInfo(
-                QDir(manager->retryCacheDirectory()).filePath(
+                QDir(manager->operationCoordinator_.retryCacheDirectory()).filePath(
                     QStringLiteral("suspended-v10")))
                 .isDir());
 
@@ -32424,7 +32527,7 @@ void PrinterProtocolTests::
              QStringLiteral("RetryCacheConflict"));
     QCOMPARE(retryUploadSpy.count(), 0);
 
-    const QString retryDirectory = manager->retryCacheDirectory();
+    const QString retryDirectory = manager->operationCoordinator_.retryCacheDirectory();
     manager.reset();
     tryx::RetryCacheStore restarted(retryDirectory);
     const auto loaded = restarted.load();
@@ -32705,7 +32808,7 @@ void PrinterProtocolTests::postUploadRefreshFailureRemainsUnknownAndRetryable() 
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
 
-    const QString cacheDirectory = manager->retryCacheDirectory();
+    const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
     const QString preparedPath =
         QDir(cacheDirectory).filePath(QStringLiteral("refresh-failure.h264"));
@@ -32714,7 +32817,7 @@ void PrinterProtocolTests::postUploadRefreshFailureRemainsUnknownAndRetryable() 
 
     const QString operationId =
         QStringLiteral("66666666-6666-4666-8666-666666666666");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -32734,9 +32837,9 @@ void PrinterProtocolTests::postUploadRefreshFailureRemainsUnknownAndRetryable() 
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration =
         manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     QString durablePreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId, &durablePreparedPath),
@@ -32752,14 +32855,14 @@ void PrinterProtocolTests::postUploadRefreshFailureRemainsUnknownAndRetryable() 
     QCOMPARE(manager->operationInfo(operationId).retryMode,
              QStringLiteral("PreparedMedia"));
     QVERIFY(QFileInfo::exists(durablePreparedPath));
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QCOMPARE(manager->retryCacheSnapshot_.retryCandidate->operationId,
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->operationId,
              operationId);
 
     manager->cancelOperation(operationId);
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
 }
 
 void PrinterProtocolTests::
@@ -32779,7 +32882,7 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
 
-    const QString cacheDirectory = manager->retryCacheDirectory();
+    const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
     const QString preparedPath =
         QDir(cacheDirectory).filePath(
@@ -32791,7 +32894,7 @@ void PrinterProtocolTests::
         QStringLiteral("69696969-6969-4969-8969-696969696969");
     const QString remoteName =
         QStringLiteral("finalized.mp4.h264_2240x1080");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -32811,9 +32914,9 @@ void PrinterProtocolTests::
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     QString durablePreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId, &durablePreparedPath),
@@ -32856,10 +32959,10 @@ void PrinterProtocolTests::
              QStringLiteral("Succeeded"));
     QVERIFY(manager->printerDisplaySessionActive_);
     QCOMPARE(retransmitSpy.count(), 0);
-    QVERIFY(manager->activeOperationId_.isEmpty());
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
 }
 
 void PrinterProtocolTests::
@@ -32928,7 +33031,7 @@ void PrinterProtocolTests::
             QStringLiteral("composite-finalization.h264"));
     QVERIFY(writeAtomicOwnerFile(preparedPath, preparedBytes));
 
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = replaceOperation
@@ -32986,12 +33089,12 @@ void PrinterProtocolTests::
             QStringLiteral("OriginalRetained");
     }
 
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     if (replaceOperation) {
         QString journalError;
-        QVERIFY2(manager->writeReplaceJournal(
+        QVERIFY2(manager->operationCoordinator_.writeReplaceJournal(
                      operationId, QStringLiteral("Uploading"),
                      &journalError),
                  qPrintable(journalError));
@@ -33017,20 +33120,20 @@ void PrinterProtocolTests::
     QCOMPARE(refreshSpy.count(), 1);
     QCOMPARE(retransmitSpy.count(), 0);
     if (replaceOperation) {
-        TryxReplaceJournal journal(manager->replaceIntentPath());
+        TryxReplaceJournal journal(manager->operationCoordinator_.replaceIntentPath());
         const auto paused = journal.load();
         QCOMPARE(paused.status,
                  TryxReplaceJournalLoadStatus::Loaded);
         QCOMPARE(paused.record.stage,
                  QStringLiteral("Uploading"));
-        QCOMPARE(manager->pendingReplaceJournalOperationId_,
+        QCOMPARE(manager->operationCoordinator_.pendingReplaceJournalOperationId_,
                  operationId);
-        QVERIFY(manager->operations_.value(operationId)
+        QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
                     .replaceJournalActive);
     }
 
     if (cleanupFailure) {
-        manager->retryCacheStore()
+        manager->operationCoordinator_.retryCacheStore()
             .setStopAfterRetirementTombstoneForTesting(true);
     }
     PrinterProtocol::MediaFile exact;
@@ -33051,11 +33154,11 @@ void PrinterProtocolTests::
                  QStringLiteral("RetryCacheCleanupFailed"));
         QCOMPARE(failed.terminalOutcome,
                  QStringLiteral("NewCopyReady"));
-        QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-        QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-        QVERIFY(!manager->retryCacheSnapshot_.cleanupPending.isEmpty());
+        QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+        QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+        QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
         QVERIFY(QFileInfo::exists(durablePreparedPath));
-        TryxReplaceJournal journal(manager->replaceIntentPath());
+        TryxReplaceJournal journal(manager->operationCoordinator_.replaceIntentPath());
         const auto preserved = journal.load();
         QCOMPARE(preserved.status,
                  TryxReplaceJournalLoadStatus::Loaded);
@@ -33067,7 +33170,7 @@ void PrinterProtocolTests::
         QVERIFY(preserved.record.uploadVerified);
         QVERIFY(!preserved.record.applyMayHaveStarted);
         QVERIFY(!preserved.record.fileRemoveMayHaveStarted);
-        QCOMPARE(manager->pendingReplaceJournalOperationId_,
+        QCOMPARE(manager->operationCoordinator_.pendingReplaceJournalOperationId_,
                  operationId);
         return;
     }
@@ -33085,7 +33188,7 @@ void PrinterProtocolTests::
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
 
     if (replaceOperation) {
-        TryxReplaceJournal journal(manager->replaceIntentPath());
+        TryxReplaceJournal journal(manager->operationCoordinator_.replaceIntentPath());
         const auto applying = journal.load();
         QCOMPARE(applying.status,
                  TryxReplaceJournalLoadStatus::Loaded);
@@ -33158,7 +33261,7 @@ void PrinterProtocolTests::
     const QString remoteName = QStringLiteral(
         "ambiguous.mp4.h264_2240x1080");
 
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = sourceOperationId;
     record.info.kind = QStringLiteral("Upload");
@@ -33177,9 +33280,9 @@ void PrinterProtocolTests::
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(sourceOperationId, record);
-    manager->operationOrder_.append(sourceOperationId);
-    manager->activeOperationId_ = sourceOperationId;
+    manager->operationCoordinator_.operations_.insert(sourceOperationId, record);
+    manager->operationCoordinator_.operationOrder_.append(sourceOperationId);
+    manager->operationCoordinator_.activeOperationId_ = sourceOperationId;
 
     QString durablePreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
@@ -33202,25 +33305,25 @@ void PrinterProtocolTests::
         verified.source = 1U;
         verified.readOnly = false;
         QString storeError;
-        QVERIFY2(manager->beginRetryCacheLocalCommit(
+        QVERIFY2(manager->operationCoordinator_.beginRetryCacheLocalCommit(
                      sourceOperationId, verified, &storeError),
                  qPrintable(storeError));
-        QVERIFY2(manager->deferRetryCacheLocalCommit(
-                     sourceOperationId,
+        QVERIFY2(manager->operationCoordinator_.deferRetryCacheLocalCommit(
+                     manager->operationContext(), sourceOperationId,
                      QStringLiteral("LocalMediaCommitFailed"),
                      QStringLiteral("injected local commit failure"),
                      &storeError),
                  qPrintable(storeError));
-        auto deferred = manager->operations_.find(sourceOperationId);
-        QVERIFY(deferred != manager->operations_.end());
+        auto deferred = manager->operationCoordinator_.operations_.find(sourceOperationId);
+        QVERIFY(deferred != manager->operationCoordinator_.operations_.end());
         deferred->info.terminalOutcome =
             QStringLiteral("NotStarted");
-        manager->finishOperation(
+        manager->operationCoordinator_.finishOperation(
             sourceOperationId, QStringLiteral("RetryAvailable"),
             QStringLiteral("LocalMediaCommitFailed"),
             QStringLiteral("PreparedMedia"),
             QStringLiteral("injected local commit failure"));
-        QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
+        QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
 
         operationId = QStringLiteral(
             "74747474-7474-4474-8474-747474747474");
@@ -33256,12 +33359,12 @@ void PrinterProtocolTests::
             uploadSpy.first().at(2).toString();
         QVERIFY(!replacementName.isEmpty());
         QVERIFY(replacementName != remoteName);
-        QVERIFY(manager->retryCacheSnapshot_
+        QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_
                     .inFlightDispatch.has_value());
-        QCOMPARE(manager->retryCacheSnapshot_.inFlightDispatch
+        QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch
                      ->operationId,
                  operationId);
-        QCOMPARE(manager->retryCacheSnapshot_.inFlightDispatch
+        QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch
                      ->retryRemoteName,
                  replacementName);
         return;
@@ -33274,10 +33377,10 @@ void PrinterProtocolTests::
              QStringLiteral("PartialOrUnknown"));
     QCOMPARE(failed.retryMode,
              QStringLiteral("PreparedMedia"));
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate
                 ->requiresDeviceRecovery);
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate
                 ->requiresNewRemoteName);
     QVERIFY(QFileInfo::exists(durablePreparedPath));
 }
@@ -33335,7 +33438,7 @@ void PrinterProtocolTests::
             QDir(temporaryDirectory.path()).filePath(
                 QStringLiteral("restart-finalization.h264"));
         QVERIFY(writeAtomicOwnerFile(preparedPath, preparedBytes));
-        DeviceManager::OperationRecord record;
+        PrinterOperationCoordinator::OperationRecord record;
         record.printerProductId = 0x1021;
         record.info.id = operationId;
         record.info.kind = QStringLiteral("Upload");
@@ -33364,9 +33467,9 @@ void PrinterProtocolTests::
             manager->printerDeviceSerial_.trimmed();
         record.uploadDeviceGeneration =
             manager->printerGeneration_;
-        manager->operations_.insert(operationId, record);
-        manager->operationOrder_.append(operationId);
-        manager->activeOperationId_ = operationId;
+        manager->operationCoordinator_.operations_.insert(operationId, record);
+        manager->operationCoordinator_.operationOrder_.append(operationId);
+        manager->operationCoordinator_.activeOperationId_ = operationId;
         QVERIFY2(armRetryCacheDispatchForTesting(
                      manager.get(), operationId,
                      &durablePreparedPath),
@@ -33378,9 +33481,9 @@ void PrinterProtocolTests::
             PrinterProtocol::MutationOutcome::FinalizationUnknown,
             QStringLiteral("FileTransmitEnd status timed out"),
             manager->printerGeneration_);
-        QVERIFY(manager->retryCacheSnapshot_
+        QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_
                     .retryCandidate.has_value());
-        QCOMPARE(manager->retryCacheSnapshot_.retryCandidate->outcome,
+        QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->outcome,
                  tryx::RetryCacheStore::TerminalOutcome::
                      FinalizationUnknown);
         QVERIFY(QFileInfo::exists(durablePreparedPath));
@@ -33389,14 +33492,14 @@ void PrinterProtocolTests::
     std::unique_ptr<DeviceManager> restarted(
         DeviceManager::createForTesting(sysRoot, devRoot));
     QTRY_VERIFY_WITH_TIMEOUT(
-        restarted->retryCacheLoadComplete_ ||
-            restarted->retryCacheStartupFailure_,
+        restarted->operationCoordinator_.retryCacheLoadComplete_ ||
+            restarted->operationCoordinator_.retryCacheStartupFailure_,
         5000);
-    QVERIFY2(!restarted->retryCacheStartupFailure_,
-             qPrintable(restarted->retryCacheFailureDetail_));
-    QVERIFY(restarted->retryCacheSnapshot_
+    QVERIFY2(!restarted->operationCoordinator_.retryCacheStartupFailure_,
+             qPrintable(restarted->operationCoordinator_.retryCacheFailureDetail_));
+    QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_
                 .retryCandidate.has_value());
-    QCOMPARE(restarted->retryCacheSnapshot_.retryCandidate->outcome,
+    QCOMPARE(restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate->outcome,
              tryx::RetryCacheStore::TerminalOutcome::
                  FinalizationUnknown);
 
@@ -33442,7 +33545,7 @@ void PrinterProtocolTests::
         preset.readOnly = true;
         observedMedia.append(preset);
     }
-    restarted->retryCacheStore()
+    restarted->operationCoordinator_.retryCacheStore()
         .setStopAfterRetirementTombstoneForTesting(cleanupFailure);
     restarted->worker_->printerMediaListReady(
         operationId, observedMedia,
@@ -33457,11 +33560,11 @@ void PrinterProtocolTests::
                      ? QStringLiteral("RetryCacheCleanupFailed")
                      : QString());
         QVERIFY(restarted->operationInfo(operationId).retryMode.isEmpty());
-        QVERIFY(!restarted->retryCacheSnapshot_
+        QVERIFY(!restarted->operationCoordinator_.retryCacheSnapshot_
                      .retryCandidate.has_value());
-        QVERIFY(!restarted->retryCacheSnapshot_
+        QVERIFY(!restarted->operationCoordinator_.retryCacheSnapshot_
                      .inFlightDispatch.has_value());
-        QCOMPARE(!restarted->retryCacheSnapshot_.cleanupPending.isEmpty(),
+        QCOMPARE(!restarted->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty(),
                  cleanupFailure);
         QCOMPARE(QFileInfo::exists(durablePreparedPath), cleanupFailure);
         QCOMPARE(restarted->retryCacheMutationGateActive(), cleanupFailure);
@@ -33473,11 +33576,11 @@ void PrinterProtocolTests::
     QCOMPARE(restarted->operationInfo(operationId).terminalOutcome,
              QStringLiteral("PartialOrUnknown"));
     QVERIFY(restarted->printerRecoveryRequired_);
-    QVERIFY(restarted->retryCacheSnapshot_
+    QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_
                 .retryCandidate.has_value());
-    QVERIFY(restarted->retryCacheSnapshot_.retryCandidate
+    QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate
                 ->requiresDeviceRecovery);
-    QVERIFY(restarted->retryCacheSnapshot_.retryCandidate
+    QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate
                 ->requiresNewRemoteName);
     QVERIFY(QFileInfo::exists(durablePreparedPath));
 
@@ -33516,12 +33619,12 @@ void PrinterProtocolTests::
         uploadSpy.first().at(2).toString();
     QVERIFY(!replacementRemoteName.isEmpty());
     QVERIFY(replacementRemoteName != remoteName);
-    QVERIFY(restarted->retryCacheSnapshot_
+    QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_
                 .inFlightDispatch.has_value());
-    QCOMPARE(restarted->retryCacheSnapshot_.inFlightDispatch
+    QCOMPARE(restarted->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch
                  ->operationId,
              retryId);
-    QCOMPARE(restarted->retryCacheSnapshot_.inFlightDispatch
+    QCOMPARE(restarted->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch
                  ->retryRemoteName,
              replacementRemoteName);
 }
@@ -33543,7 +33646,7 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
 
-    const QString cacheDirectory = manager->retryCacheDirectory();
+    const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
     const QString preparedPath =
         QDir(cacheDirectory).filePath(
@@ -33555,7 +33658,7 @@ void PrinterProtocolTests::
         QStringLiteral("6a6a6a6a-6a6a-4a6a-8a6a-6a6a6a6a6a6a");
     const QString remoteName =
         QStringLiteral("generation.mp4.h264_2240x1080");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -33575,9 +33678,9 @@ void PrinterProtocolTests::
     record.uploadDeviceIdentity =
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     QString durablePreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId, &durablePreparedPath),
@@ -33606,10 +33709,10 @@ void PrinterProtocolTests::
     QCOMPARE(refreshSpy.count(), 2);
     QCOMPARE(refreshSpy.last().at(2).toULongLong(),
              recoveryGeneration);
-    QCOMPARE(manager->operations_.value(operationId)
+    QCOMPARE(manager->operationCoordinator_.operations_.value(operationId)
                  .info.deviceGeneration,
              recoveryGeneration);
-    QVERIFY(!manager->operations_.value(operationId)
+    QVERIFY(!manager->operationCoordinator_.operations_.value(operationId)
                  .deviceChangePending);
     QCOMPARE(retransmitSpy.count(), 0);
 
@@ -33624,10 +33727,10 @@ void PrinterProtocolTests::
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
     QCOMPARE(retransmitSpy.count(), 0);
-    QVERIFY(manager->activeOperationId_.isEmpty());
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
 }
 
 void PrinterProtocolTests::
@@ -33649,7 +33752,7 @@ void PrinterProtocolTests::
 
     const QString originalIdentity = manager->printerDeviceSerial_;
     QVERIFY(!originalIdentity.isEmpty());
-    const QString cacheDirectory = manager->retryCacheDirectory();
+    const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
     const QString preparedPath =
         QDir(cacheDirectory).filePath(
@@ -33661,7 +33764,7 @@ void PrinterProtocolTests::
         QStringLiteral("6d6d6d6d-6d6d-4d6d-8d6d-6d6d6d6d6d6d");
     const QString remoteName =
         QStringLiteral("replacement.mp4.h264_2240x1080");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -33680,9 +33783,9 @@ void PrinterProtocolTests::
     record.originalRemoteName = remoteName;
     record.uploadDeviceIdentity = originalIdentity;
     record.uploadDeviceGeneration = manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     QString durablePreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId, &durablePreparedPath),
@@ -33704,7 +33807,7 @@ void PrinterProtocolTests::
         PrinterProtocol::MutationOutcome::FinalizationUnknown,
         QStringLiteral("FileTransmitEnd status timed out"),
         uploadGeneration);
-    QCOMPARE(manager->operations_.value(operationId)
+    QCOMPARE(manager->operationCoordinator_.operations_.value(operationId)
                  .uploadDeviceIdentity,
              originalIdentity);
 
@@ -33716,14 +33819,14 @@ void PrinterProtocolTests::
              QStringLiteral("RetryAvailable"));
     QCOMPARE(manager->operationInfo(operationId).errorCategory,
              QStringLiteral("PartialOrUnknown"));
-    QVERIFY(manager->operations_.value(operationId)
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
                 .requiresDeviceRecovery);
-    QVERIFY(manager->activeOperationId_.isEmpty());
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
 
     manager->cancelOperation(operationId);
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
 }
 
 
@@ -33864,7 +33967,7 @@ applyPreflightTimeoutPreservesNotStartedBeforeSessionLoss() {
              QStringLiteral("NotStarted"));
     QVERIFY(info.retryMode.isEmpty());
     QVERIFY(manager->activeOperationInfo().id.isEmpty());
-    QVERIFY(!manager->operations_.value(operationId)
+    QVERIFY(!manager->operationCoordinator_.operations_.value(operationId)
                  .deviceChangePending);
     QVERIFY(manager->printerDisplaySessionLost_);
 }
@@ -33890,23 +33993,23 @@ void PrinterProtocolTests::generationChangeWaitsForStructuredApplyOutcome() {
         QStringLiteral("77777777-7777-4777-8777-777777777777");
     const QString mediaName =
         QStringLiteral("existing.mp4.h264_2240x1080");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Apply");
     record.info.state = QStringLiteral("Applying");
     record.info.stage = QStringLiteral("Applying");
     record.info.deviceGeneration = oldGeneration;
     record.mediaFile = mediaName;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
 
     manager->cancelForegroundForGenerationChange(
         QStringLiteral("USB generation changed"));
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Applying"));
     QCOMPARE(manager->activeOperationInfo().id, operationId);
-    QVERIFY(manager->operations_.value(operationId).deviceChangePending);
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId).deviceChangePending);
 
     ++manager->printerGeneration_;
     manager->worker_->printerApplyFinished(
@@ -34862,15 +34965,15 @@ void PrinterProtocolTests::
 
     const QString retrySourceId =
         QStringLiteral("69696969-6969-4969-8969-696969696965");
-    DeviceManager::OperationRecord retrySource;
+    PrinterOperationCoordinator::OperationRecord retrySource;
     retrySource.printerProductId = 0x1021;
     retrySource.info.id = retrySourceId;
     retrySource.info.kind = QStringLiteral("Upload");
     retrySource.info.state = QStringLiteral("RetryAvailable");
     retrySource.info.retryMode = QStringLiteral("PreparedMedia");
     retrySource.info.subject = QStringLiteral("prepared.mp4");
-    manager->operations_.insert(retrySourceId, retrySource);
-    manager->operationOrder_.append(retrySourceId);
+    manager->operationCoordinator_.operations_.insert(retrySourceId, retrySource);
+    manager->operationCoordinator_.operationOrder_.append(retrySourceId);
 
     const QString retryId =
         QStringLiteral("69696969-6969-4969-8969-696969696966");
@@ -34925,23 +35028,23 @@ void PrinterProtocolTests::productChangeDoesNotReuseSessionOrRecovery() {
 
     const QString operationId =
         QStringLiteral("10212011-1021-4021-8021-102120111021");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
     record.uploadDeviceIdentity = usbName;
-    manager->operations_.insert(operationId, record);
-    manager->retryCacheSnapshot_.retryCandidate.emplace();
-    manager->retryCacheSnapshot_.retryCandidate->operationId = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.emplace();
+    manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->operationId = operationId;
     manager->printerRecoveryRequired_ = true;
     manager->printerRecoveryRemovalObserved_ = true;
 
     QVERIFY(!manager->completePrinterRecoveryAfterRemoval(
         usbName, 0x2011));
     QVERIFY(manager->printerRecoveryRequired_);
-    QVERIFY(manager->operations_.value(operationId).info.message.contains(
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId).info.message.contains(
         QStringLiteral("391a:1021")));
-    QVERIFY(manager->operations_.value(operationId).info.message.contains(
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId).info.message.contains(
         QStringLiteral("391a:2011")));
 }
 
@@ -34975,7 +35078,7 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
         QStringLiteral("20112011-2011-4011-8011-201120112013");
     const QString remoteName =
         QStringLiteral("turris.mp4.h264_1280x720");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x2011;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -35001,9 +35104,9 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
                                  QCryptographicHash::Sha256)
             .toHex());
     record.sourceSize = preparedBytes.size();
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     QString durablePreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId, &durablePreparedPath),
@@ -35022,9 +35125,9 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
     QCOMPARE(refreshSpy.count(), 0);
     QCOMPARE(uploadedSpy.count(), 1);
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
-    QVERIFY(manager->activeOperationId_.isEmpty());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
 }
 
 void PrinterProtocolTests::
@@ -35048,7 +35151,7 @@ void PrinterProtocolTests::
     manager->rescanPrinterForTesting();
     QCOMPARE(manager->printerProductId_, quint16{0x2011});
 
-    const QString cacheDirectory = manager->retryCacheDirectory();
+    const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
     const QString preparedPath = QDir(cacheDirectory).filePath(
         QStringLiteral("turris-finalization-unknown.h264"));
@@ -35058,7 +35161,7 @@ void PrinterProtocolTests::
         QStringLiteral("20112011-2011-4011-8011-201120112017");
     const QString remoteName =
         QStringLiteral("turris.mp4.h264_1280x720");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x2011;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -35083,9 +35186,9 @@ void PrinterProtocolTests::
                                  QCryptographicHash::Sha256)
             .toHex());
     record.sourceSize = preparedBytes.size();
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     QString durablePreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId, &durablePreparedPath),
@@ -35108,24 +35211,24 @@ void PrinterProtocolTests::
     QCOMPARE(failed.retryMode, QStringLiteral("PreparedMedia"));
     QVERIFY(failed.message.contains(QStringLiteral("Power-cycle"),
                                     Qt::CaseInsensitive));
-    QVERIFY(manager->operations_.value(operationId)
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
                 .requiresDeviceRecovery);
-    QVERIFY(manager->operations_.value(operationId)
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
                 .retryMustUseNewRemoteName);
-    QVERIFY(!manager->operations_.value(operationId)
+    QVERIFY(!manager->operationCoordinator_.operations_.value(operationId)
                  .uploadFinalizationReconciliationPending);
     QVERIFY(manager->printerRecoveryRequired_);
     QCOMPARE(refreshSpy.count(), 0);
     QCOMPARE(retransmitSpy.count(), 0);
     QVERIFY(QFileInfo::exists(durablePreparedPath));
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QCOMPARE(manager->retryCacheSnapshot_.retryCandidate->operationId,
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->operationId,
              operationId);
 
     manager->cancelOperation(operationId);
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
-    QVERIFY(!manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(!manager->retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
 }
 
 void PrinterProtocolTests::
@@ -35495,7 +35598,7 @@ void PrinterProtocolTests::
         !manager->firmwareExclusiveActive());
 
     manager->connected_ = true;
-    manager->activeOperationId_ =
+    manager->operationCoordinator_.activeOperationId_ =
         QStringLiteral("active-operation");
     QString activeError;
     QVERIFY(!manager->acquireFirmwareExclusive(
@@ -35503,7 +35606,7 @@ void PrinterProtocolTests::
         &activeError));
     QVERIFY(activeError.contains(
         QStringLiteral("active-operation")));
-    manager->activeOperationId_.clear();
+    manager->operationCoordinator_.activeOperationId_.clear();
 }
 
 void PrinterProtocolTests::
@@ -35602,19 +35705,19 @@ void PrinterProtocolTests::
             QVERIFY(!manager->firmwareExclusiveActive());
         };
 
-    manager->pendingDeleteOperationId_ =
+    manager->operationCoordinator_.pendingDeleteOperationId_ =
         QStringLiteral("pending-delete");
     expectRejected(
         QStringLiteral("firmware-delete-lease"),
         QStringLiteral("delete"));
-    manager->pendingDeleteOperationId_.clear();
+    manager->operationCoordinator_.pendingDeleteOperationId_.clear();
 
-    manager->pendingReplaceJournalOperationId_ =
+    manager->operationCoordinator_.pendingReplaceJournalOperationId_ =
         QStringLiteral("pending-replace");
     expectRejected(
         QStringLiteral("firmware-replace-lease"),
         QStringLiteral("replacement"));
-    manager->pendingReplaceJournalOperationId_.clear();
+    manager->operationCoordinator_.pendingReplaceJournalOperationId_.clear();
 
     manager->printerRecoveryRequired_ = true;
     expectRejected(
@@ -35631,26 +35734,26 @@ void PrinterProtocolTests::
     const QString retryOperationId =
         QStringLiteral(
             "76767676-7676-4676-8676-767676767676");
-    DeviceManager::OperationRecord retryRecord;
+    PrinterOperationCoordinator::OperationRecord retryRecord;
     retryRecord.info.id = retryOperationId;
     retryRecord.info.terminalOutcome =
         QStringLiteral("FinalizationUnknown");
     retryRecord.uploadFinalizationReconciliationPending =
         true;
-    manager->operations_.insert(
+    manager->operationCoordinator_.operations_.insert(
         retryOperationId, retryRecord);
-    manager->retryCacheSnapshot_.retryCandidate.emplace();
-    manager->retryCacheSnapshot_.retryCandidate->operationId =
+    manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.emplace();
+    manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->operationId =
         retryOperationId;
     expectRejected(
         QStringLiteral("firmware-retry-lease"),
         QStringLiteral("unresolved"));
-    manager->retryCacheSnapshot_.retryCandidate.reset();
-    manager->operations_.remove(retryOperationId);
+    manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.reset();
+    manager->operationCoordinator_.operations_.remove(retryOperationId);
 
     QVERIFY(QDir().mkpath(
-        QFileInfo(manager->deleteIntentPath()).absolutePath()));
-    QFile deleteIntent(manager->deleteIntentPath());
+        QFileInfo(manager->operationCoordinator_.deleteIntentPath()).absolutePath()));
+    QFile deleteIntent(manager->operationCoordinator_.deleteIntentPath());
     QVERIFY(deleteIntent.open(
         QIODevice::WriteOnly | QIODevice::Truncate));
     QCOMPARE(deleteIntent.write("{}"), 2);
@@ -35660,7 +35763,7 @@ void PrinterProtocolTests::
         QStringLiteral("delete"));
     QVERIFY(deleteIntent.remove());
 
-    QFile replaceIntent(manager->replaceIntentPath());
+    QFile replaceIntent(manager->operationCoordinator_.replaceIntentPath());
     QVERIFY(replaceIntent.open(
         QIODevice::WriteOnly | QIODevice::Truncate));
     QCOMPARE(replaceIntent.write("{}"), 2);
@@ -37113,7 +37216,7 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
 
-    const QString cacheDirectory = manager->retryCacheDirectory();
+    const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
     const QString preparedPath =
         QDir(cacheDirectory).filePath(QStringLiteral("partial.h264"));
@@ -37122,7 +37225,7 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
 
     const QString operationId =
         QStringLiteral("64646464-6464-4464-8464-646464646464");
-    DeviceManager::OperationRecord record;
+    PrinterOperationCoordinator::OperationRecord record;
     record.printerProductId = 0x1021;
     record.info.id = operationId;
     record.info.kind = QStringLiteral("Upload");
@@ -37150,9 +37253,9 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
         manager->printerDeviceSerial_.trimmed();
     record.uploadDeviceGeneration =
         manager->printerGeneration_;
-    manager->operations_.insert(operationId, record);
-    manager->operationOrder_.append(operationId);
-    manager->activeOperationId_ = operationId;
+    manager->operationCoordinator_.operations_.insert(operationId, record);
+    manager->operationCoordinator_.operationOrder_.append(operationId);
+    manager->operationCoordinator_.activeOperationId_ = operationId;
     QString durablePreparedPath;
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId, &durablePreparedPath),
@@ -37162,8 +37265,9 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     QCOMPARE(manager->printerGeneration_, generationBeforeRecovery + 1);
     QVERIFY(!manager->worker_->printerEndpointReady_.load(
         std::memory_order_acquire));
-    manager->handlePreparedUploadFailure(
-        operationId, QStringLiteral("write outcome unknown"),
+    manager->operationCoordinator_.handlePreparedUploadFailure(
+        manager->operationContext(), operationId,
+        QStringLiteral("write outcome unknown"),
         PrinterProtocol::MutationOutcome::PartialOrUnknown);
 
     QCOMPARE(manager->operationInfo(operationId).state,
@@ -37171,9 +37275,9 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     QCOMPARE(manager->operationInfo(operationId).errorCategory,
              QStringLiteral("PartialOrUnknown"));
     QVERIFY(manager->printerRecoveryRequired_);
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     const auto &candidate =
-        *manager->retryCacheSnapshot_.retryCandidate;
+        *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
     QCOMPARE(candidate.operationId, operationId);
     QCOMPARE(candidate.outcome,
              tryx::RetryCacheStore::TerminalOutcome::PartialOrUnknown);
@@ -37243,7 +37347,7 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
         uploadSpy.first().at(2).toString();
     QVERIFY(!replacementRemoteName.isEmpty());
     QVERIFY(replacementRemoteName != uncertainRemoteName);
-    QCOMPARE(manager->operations_.value(acceptedRetryId).remoteName,
+    QCOMPARE(manager->operationCoordinator_.operations_.value(acceptedRetryId).remoteName,
              replacementRemoteName);
     QCOMPARE(manager->operationInfo(acceptedRetryId).terminalOutcome,
              QString());
@@ -37253,10 +37357,10 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     QCOMPARE(manager->operationInfo(acceptedRetryId)
                  .lastConfirmedChunkIndex,
              -1);
-    QVERIFY(manager->retryCacheSnapshot_.retryCandidate.has_value());
-    QVERIFY(manager->retryCacheSnapshot_.inFlightDispatch.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
+    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
     const auto &retryDispatch =
-        *manager->retryCacheSnapshot_.inFlightDispatch;
+        *manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch;
     QCOMPARE(retryDispatch.operationId, acceptedRetryId);
     QCOMPARE(retryDispatch.phase,
              tryx::RetryCacheStore::DispatchPhase::DispatchArmed);
@@ -40136,11 +40240,12 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
         QCOMPARE(deleteRequestSpy.count(), 1);
         QCOMPARE(deleteRequestSpy.first().at(4).toBool(), false);
         QString intentError;
-        QVERIFY2(manager->writeDeleteIntent(
-                     operationId, QStringLiteral("Dispatch"), true, 0,
+        QVERIFY2(manager->operationCoordinator_.writeDeleteIntent(
+                     manager->operationContext(), operationId,
+                     QStringLiteral("Dispatch"), true, 0,
                      target, {}, &intentError),
                  qPrintable(intentError));
-        QFile persistedIntent(manager->deleteIntentPath());
+        QFile persistedIntent(manager->operationCoordinator_.deleteIntentPath());
         QVERIFY(persistedIntent.open(QIODevice::ReadOnly));
         const QJsonObject persistedRoot =
             QJsonDocument::fromJson(
@@ -40150,13 +40255,13 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
         QCOMPARE(persistedRoot.value(
                      QStringLiteral("productId")).toString(),
                  QStringLiteral("1011"));
-        const auto cachedIntent = manager->pendingDeleteIntent_;
-        manager->pendingDeleteIntent_.reset();
+        const auto cachedIntent = manager->operationCoordinator_.pendingDeleteIntent_;
+        manager->operationCoordinator_.pendingDeleteIntent_.reset();
         QString clearError;
-        QVERIFY(!manager->clearDeleteIntent(operationId, &clearError));
+        QVERIFY(!manager->operationCoordinator_.clearDeleteIntent(operationId, &clearError));
         QVERIFY(!clearError.isEmpty());
-        QVERIFY(QFileInfo::exists(manager->deleteIntentPath()));
-        manager->pendingDeleteIntent_ = cachedIntent;
+        QVERIFY(QFileInfo::exists(manager->operationCoordinator_.deleteIntentPath()));
+        manager->operationCoordinator_.pendingDeleteIntent_ = cachedIntent;
         emit manager->worker_->printerDeleteFinished(
             operationId, QStringList{target}, {}, {}, false,
             PrinterProtocol::MutationOutcome::PartialOrUnknown,
@@ -40166,9 +40271,9 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
             manager->operationInfo(operationId);
         QCOMPARE(pending.state, QStringLiteral("RetryAvailable"));
         QCOMPARE(pending.retryMode, QStringLiteral("DeleteReconcile"));
-        QVERIFY(QFileInfo::exists(manager->deleteIntentPath()));
+        QVERIFY(QFileInfo::exists(manager->operationCoordinator_.deleteIntentPath()));
         manager->cancelOperation(operationId);
-        QVERIFY(QFileInfo::exists(manager->deleteIntentPath()));
+        QVERIFY(QFileInfo::exists(manager->operationCoordinator_.deleteIntentPath()));
         QCOMPARE(manager->operationInfo(operationId).retryMode,
                  QStringLiteral("DeleteReconcile"));
     }
@@ -40179,10 +40284,10 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
     recovered->rescanPrinterForTesting();
     recovered->printerDisplaySessionActive_ = true;
     recovered->loadDeleteIntent();
-    QCOMPARE(recovered->pendingDeleteOperationId_, operationId);
+    QCOMPARE(recovered->operationCoordinator_.pendingDeleteOperationId_, operationId);
     QCOMPARE(recovered->operationInfo(operationId).retryMode,
              QStringLiteral("DeleteReconcile"));
-    QCOMPARE(recovered->operations_.value(operationId).printerProductId,
+    QCOMPARE(recovered->operationCoordinator_.operations_.value(operationId).printerProductId,
              quint16(0x1011));
     QObject::disconnect(recovered.get(),
                         &DeviceManager::requestPrinterDeleteMedia,
@@ -40193,7 +40298,8 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
     recovered->printerDeviceSerial_ = QStringLiteral("different-device");
     recovered->resumePendingDeleteReconciliation();
     QCOMPARE(reconciliationSpy.count(), 0);
-    QVERIFY(QFileInfo::exists(recovered->deleteIntentPath()));
+    QVERIFY(QFileInfo::exists(
+        recovered->operationCoordinator_.deleteIntentPath()));
 
     recovered->printerDeviceSerial_ = deviceIdentity;
     recovered->printerProductId_ = 0x1021;
@@ -40212,8 +40318,9 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
         recovered->printerGeneration_);
     QCOMPARE(recovered->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
-    QVERIFY(!QFileInfo::exists(recovered->deleteIntentPath()));
-    QVERIFY(recovered->pendingDeleteOperationId_.isEmpty());
+    QVERIFY(!QFileInfo::exists(
+        recovered->operationCoordinator_.deleteIntentPath()));
+    QVERIFY(recovered->operationCoordinator_.pendingDeleteOperationId_.isEmpty());
 }
 
 void PrinterProtocolTests::passivePrinterWorkerSendsNoFrames() {

@@ -804,18 +804,208 @@ recovery до существующего upload dispatch, но не добавл
 
 ### A6. Выделить PrinterOperationCoordinator
 
+**Статус:** реализовано 5 сентября 2026 года. Software acceptance завершён;
+hardware smoke для software-only refactor не требовался и не выполнялся.
+
 **Зависимости:** A5.
 
-**Scope:** перенести queue/retry/cancel и четыре крупных completion workflow
-целиком, не дробя recovery branch между владельцами.
+**Пользовательская цель:** уменьшить связанность `DeviceManager` и получить
+одного явного владельца полного operation lifecycle без изменения функций,
+видимых пользователю. Этот boundary разблокирует последующие A7-A9, но сам не
+переносит session либо protocol ownership.
 
-**Acceptance:**
+#### Подтверждённое состояние до реализации
 
-- только coordinator владеет active operation и operation history;
-- upload, pull, apply, delete, replace, metrics и retry сохраняют exact
-  terminal outcomes;
-- сначала переносятся существующие string contracts без изменения D-Bus;
-- typed internal enum/variant вводятся только отдельным последующим изменением.
+- `src/devicemanager.cpp` содержит 14 257 строк, а
+  `src/devicemanager.h` содержит 1 100 строк. `DeviceManager` одновременно
+  связывает worker threads, владеет discovery/session state и реализует
+  operation scheduler, progress, completion, retry и recovery.
+- Публичные queue, retry, cancel и snapshot methods вызываются существующим
+  `RuntimeBridge`. Сигналы `operationChanged` и `operationRemoved` напрямую
+  публикуются через текущий Manager2 API 8 boundary.
+- `OperationRecord`, `operations_`, `operationOrder_`, `activeOperationId_` и
+  `operationRevision_` находятся внутри `DeviceManager`. Тесты напрямую
+  используют часть этих private fixtures через `TRYX_PROTOCOL_TESTING`.
+- Старое описание четырёх completion workflow больше не покрывает текущий
+  код. После C4-C6 и C12 operation state меняют preparation, staging/artifact,
+  upload/finalization, FileList/catalog, Delete/Replace, Apply/Saved Layout,
+  metrics, cache cleanup, retry-cache validation, owner disconnect, session
+  loss и generation-change callbacks.
+- `DeviceWorker` остаётся единственным serialized USB executor в отдельном
+  thread. `PrinterMediaPreparer` выполняет cancellable local processing во
+  втором thread. Их queued work и direct thread-safe cancellation gates уже
+  разделены и не должны менять порядок.
+- A5 stores уже изолируют bounded atomic persistence. Однако их результаты,
+  in-memory snapshots и delete/replace/retry reconciliation сейчас
+  оркестрирует `DeviceManager`.
+
+#### Выбранная архитектура и ownership
+
+Выбрано поэтапное полное выделение, а не thin wrapper и не одномоментный
+big-bang move. Каждый компилируемый срез имеет только один authoritative
+operation ledger; временное копирование state между двумя владельцами
+запрещено.
+
+- Новый `PrinterOperationCoordinator` является `QObject`, живёт в том же
+  runtime thread, что и `DeviceManager`, и владеет `OperationRecord`, map,
+  order, revision, active ID, terminal-history pruning и всеми transient
+  operation latches.
+- Coordinator владеет operation-facing in-memory state retry cache,
+  delete/replace reconciliation, artifact holds, cache cleanup и deferred
+  catalog publication. Существующие store classes остаются единственными
+  владельцами своих persistent formats и вызываются через текущие typed APIs;
+  их on-disk paths, versions и atomic boundaries не меняются.
+- `DeviceManager` сохраняет public façade и прежние signatures. Его operation
+  methods становятся delegates, а worker/preparer callbacks передают
+  coordinator typed result вместе с текущим immutable operation context.
+- Внутренний context формируется только `DeviceManager` и содержит ровно
+  необходимые session facts: device path, trimmed identity, product ID и
+  capabilities, physical generation, readiness/recovery state и действующие
+  firmware/runtime gates. Coordinator не читает поля `DeviceManager` через
+  back-pointer и не кэширует context как новую session authority.
+- Discovery, generation increments, reconnect, keepalive, overlay restoration,
+  firmware quiesce и physical session recovery остаются в `DeviceManager` до
+  A7. При session event manager передаёт coordinator явное событие и context;
+  operation decision и terminal result принадлежат coordinator.
+- Coordinator публикует operation changes и request intents. `DeviceManager`
+  синхронно forwarding-ит public operation signals и связывает intents с
+  существующими worker/preparer signals. Обычный work остаётся queued в owning
+  thread, а уже thread-safe cancel/generation fences остаются direct.
+- `operationChanged` сохраняет synchronous reentrancy. После публикации
+  `Uploading` coordinator повторно находит record и сверяет cancel, identity,
+  generation, artifact и durable dispatch barrier до единственного USB emit.
+- Все перенесённые пользовательские строки используют существующий
+  `DeviceManagerMessages` translation context. Новая Qt translation context и
+  массовое изменение `.ts` не допускаются.
+- Shutdown остаётся упорядоченным: сначала останавливаются preparer и worker
+  threads, затем явный coordinator shutdown освобождает owned source paths и
+  transient artifacts. Destructor не инициирует новый cross-thread work.
+
+#### Этапы реализации
+
+1. RED structural checks требуют новый coordinator в runtime и test qmake
+   targets, запрещают operation ledger в `DeviceManager` и фиксируют
+   отсутствие новых D-Bus/wire contracts. Существующие critical operation
+   tests остаются обязательными.
+2. Добавляются `printeroperationcoordinator.h/.cpp`; ledger, snapshots,
+   publish/finish/reject и history pruning переносятся первыми. Public
+   `DeviceManager` getters и signals сохраняются как façade.
+3. Переносятся queue, idempotent deduplication, retry, cancel и immediate
+   worker/preparer cancellation fences. Busy, firmware, recovery и capability
+   решения используют переданный context.
+4. Completion families переносятся законченными вертикальными срезами:
+   preparation и staging; upload, FileList и retry finalization; Delete и
+   Replace; Apply, Saved Layout и metrics; cache cleanup. Внутри одной family
+   terminal/reconciliation branch не делится между двумя owners.
+5. Переносятся startup retry validation, persisted Delete/Replace recovery,
+   artifact owner disconnect, generation/session events и ordered shutdown.
+6. Удаляются прежние `OperationRecord`, containers, active ID, operation
+   helpers и большие completion lambdas из `DeviceManager`. Private test
+   fixtures переходят к coordinator только под `TRYX_PROTOCOL_TESTING`, без
+   production debug getters.
+
+#### Инварианты и acceptance
+
+- `TryxRuntimeOperationInfo`, `TryxRuntimeOperationsSnapshot`, API version `8`,
+  Manager1/Manager2 signatures, runtime adaptor behavior, protobuf и USB bytes
+  побитно не меняются.
+- String contracts `kind`, `state`, `stage`, `errorCategory`, `retryMode` и
+  `terminalOutcome`, revision order, parent/attempt linkage, progress counters
+  и history limit сохраняются без normalization либо typed migration.
+- Только coordinator может создать, изменить, завершить или удалить operation
+  record. В `DeviceManager` отсутствуют authoritative operation containers и
+  прямые terminal transitions.
+- Сохраняется ровно одна foreground operation. Duplicate operation ID имеет
+  прежнюю idempotency/collision семантику; concurrent request получает прежний
+  `Busy` result и не достигает worker.
+- Product, device identity и physical generation fences применяются перед
+  каждым dispatch и completion. Stale callback не публикует новый state и не
+  продолжает работу на другом endpoint.
+- Retry-cache shadow, upload barrier, delete intent и replace journal
+  сохраняются до соответствующей USB mutation. Ошибка persistence даёт ноль
+  USB requests.
+- `NotStarted`, `Rejected`, `Cancelled`, `VerificationFailed`,
+  `FinalizationUnknown` и `PartialOrUnknown` сохраняют текущие terminal либо
+  reconciliation outcomes. Неопределённый результат не становится success;
+  Apply, Delete или upload не replay-ятся автоматически.
+- Cancel во время hashing/conversion немедленно закрывает local preparation;
+  cancel во время USB использует существующий operation cancellation gate;
+  Delete reconciliation после возможного FileRemove остаётся non-cancellable.
+- Indexed thumbnails, retry/recovery records, journals, active artifact holds
+  и live leases не удаляются cache cleanup. Partial cleanup публикует прежние
+  counters и освобождает exclusive latch ровно один раз.
+- Existing local paths, owner-only permissions, artifact ownership, lease
+  expiry и D-Bus unique-owner cancellation остаются fail closed.
+- Runtime shutdown сохраняет prepared retry candidate и неизвестный upload
+  outcome; owned temporary source освобождается только после остановки его
+  consumers.
+
+#### Результат реализации
+
+- Добавлен `PrinterOperationCoordinator` в runtime и test qmake targets. Он
+  стал единственным владельцем operation ledger, revision/order/active ID,
+  retry-cache surface, Delete/Replace recovery, artifact holds, cache-cleanup
+  latch и deferred catalog publication. Копии authoritative state в
+  `DeviceManager` не осталось.
+- `DeviceManager` сохранил public API и session ownership, формирует свежий
+  `PrinterOperationContext`, синхронно forwarding-ит operation signals и
+  связывает coordinator intents с прежними worker/preparer entry points.
+  Единственная точка подготовленного USB upload dispatch теперь находится за
+  durable barrier внутри coordinator.
+- `src/devicemanager.cpp` уменьшен с 14 257 до 6 956 строк, header с 1 100 до
+  904 строк. Новый coordinator содержит 7 890 строк реализации и 747 строк
+  header; дальнейшее session/worker/protocol разбиение остаётся задачами
+  A7-A9.
+- Добавлен A6-specific test единого ledger и синхронного manager façade.
+  Canonical product-profile predicate сохранён для всех completion, retry и
+  recovery fences. API version 8, Manager1/Manager2 wire signatures,
+  persistence formats, translation context и USB bytes не менялись.
+- Чистые runtime и `printerprotocol-tests` сборки прошли; полный protocol suite
+  завершился результатом 875 passed, 0 failed. Полный `package-check`,
+  translation catalog, runtime-refactor baseline и `git diff --check` также
+  прошли на итоговом срезе.
+
+#### Проверки
+
+- В существующем `printerprotocol-tests` добавляются A6-specific ownership и
+  façade tests с текущим fake USB/store harness. Отдельный hardware-dependent
+  test binary не создаётся.
+- Обязательны уже существующие D-Bus round-trip, scheduler collision,
+  cancellation, reentrant pre-dispatch, generation change, finalization-only
+  reconciliation, retry-cache restart, artifact owner, Delete/Replace,
+  Saved Layout, metrics и cache-cleanup scenarios.
+- После каждого implementation slice выполняется соответствующий focused
+  test set. Финальные gates: fresh runtime/test build, полный
+  `make package-check`, translation catalog check, runtime-refactor baseline и
+  `git diff --check`.
+- Hardware smoke не требуется для software-only refactor и не объявляется
+  выполненным. Существующие hardware acceptance tasks остаются отдельными.
+
+#### Риски и rollback
+
+- Главный риск: изменение signal order или превращение synchronous publication
+  в queued boundary. Это может разрешить USB dispatch после reentrant cancel.
+  Mitigation: одинаковый thread affinity, explicit direct forwarding и
+  повторная validation после каждого внешнего signal.
+- Второй риск: stale operation context после session transition. Context не
+  хранится как session truth и передаётся заново на каждый command/callback;
+  record дополнительно проверяет captured generation, product и identity.
+- Перенос translation calls может незаметно изменить context и оставить
+  untranslated text. `DeviceManagerMessages` и translation gate являются
+  обязательными.
+- Большой механический diff повышает риск потерять редко используемый recovery
+  branch. Workflows переносятся целиком, а старый код удаляется только после
+  focused parity tests; dual execution path не добавляется.
+- Rollback удаляет coordinator и возвращает delegates/state в
+  `DeviceManager`. Persistent schema, paths, API и USB protocol не меняются,
+  поэтому data migration и compensation не требуются.
+
+**Out of scope:** A7 session ownership, A8 legacy/printer worker split, A9
+transport/framing/protocol decomposition, public API 9 или Manager3, typed
+operation enum/variant, изменение строковых outcomes, новая retry policy,
+автоматический replay, persistent schema migration, новый USB operation,
+firmware behavior, QML/Quick feature, hardware support statement и unrelated
+C/B/D workstreams.
 
 ### A7. Выделить PrinterSessionController
 

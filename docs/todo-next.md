@@ -143,7 +143,11 @@
 
 ## M5: Deep runtime decomposition
 
-- [ ] A6. `PrinterOperationCoordinator`.
+- [x] A6. `PrinterOperationCoordinator`: реализован 5 сентября 2026 года;
+  coordinator единолично владеет operation lifecycle, а `DeviceManager`
+  остался public/session façade. Чистые сборки, 875 protocol tests, полный
+  `package-check`, translation и structural baseline прошли; hardware smoke
+  для software-only refactor не выполнялся.
 - [ ] A7. `PrinterSessionController`.
 - [ ] A8. Разделить legacy и printer-class worker policy при одном I/O owner.
 - [ ] A9. Разделить transport, framing, discovery и model clients в

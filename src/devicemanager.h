@@ -5,6 +5,7 @@
 #include "gpuinventory.h"
 #include "mediacatalogstore.h"
 #include "printermediavalidator.h"
+#include "printeroperationcoordinator.h"
 #include "printerprotocol.h"
 #include "replacejournal.h"
 #include "retrycachestore.h"
@@ -750,8 +751,6 @@ signals:
         const QString &leaseId, quint64 generation);
 
 private:
-    struct OperationRecord;
-
 #ifdef TRYX_PROTOCOL_TESTING
     friend class PrinterProtocolTests;
 #endif
@@ -759,6 +758,7 @@ private:
                   bool startPrinterMonitor, QObject *parent);
     void setPrinterDisplaySessionActive(bool active);
     void clearDeviceSpecificationsCache();
+    PrinterOperationContext operationContext() const;
     void handlePrinterSnapshot(const PrinterProtocol::DiscoverySnapshot &snapshot);
     void attachPrinterClassDevice(const PrinterProtocol::UsbPrinterDevice &device);
     void detachPrinterClassDevice(bool notify);
@@ -767,8 +767,6 @@ private:
     bool currentPrinterSupportsMediaCatalog() const;
     bool currentPrinterSupportsDisplayConfiguration() const;
     bool currentPrinterSupportsOverlayMetrics() const;
-    bool operationMatchesCurrentPrinterProduct(
-        const OperationRecord &record) const;
     QString printerUnavailableStatusText() const;
     QString printerMutationUnavailableStatusText() const;
     QString firmwareExclusiveStatusText() const;
@@ -778,29 +776,8 @@ private:
         quint16 currentProductId);
     void requirePrinterRecovery(const QString &message);
     QString normalizedOperationId(const QString &requestedId) const;
-    bool operationIsTerminal(const QString &state) const;
-    QString mediaInboxDirectory() const;
-    QString mediaSpoolDirectory() const;
-    bool ensureMediaRuntimeDirectories(
-        QString *errorMessage = nullptr) const;
-    bool claimQuickStagedSource(
-        const QString &operationId, const QString &sourcePath,
-        QString *claimedPath, bool *owned,
-        QString *errorMessage = nullptr) const;
     void cleanupDeviceMediaOutbox();
     void sweepDeviceMediaArtifacts();
-    void continueCacheCleanup(const QString &operationId);
-    void finishCacheCleanupOperation(
-        const QString &operationId, const QString &state,
-        const QString &errorCategory, const QString &terminalOutcome,
-        const QString &message);
-    void releaseCacheCleanupLatch();
-    void rejectCacheCleanupOperation(
-        const QString &operationId, const QString &category,
-        const QString &message);
-    void releaseArtifactOperationHold(const QString &operationId);
-    const TryxRuntimeMediaEntry *findMediaById(
-        const QString &mediaId) const;
     bool watchArtifactOwner(const QString &ownerUniqueName);
     void handleArtifactOwnerUnregistered(const QString &ownerUniqueName);
     QString queueRecoveredOperation(
@@ -815,34 +792,19 @@ private:
         const TryxRuntimeApplyRequest &applyRequest,
         bool updateMetrics, bool ensureExisting,
         const TryxRuntimeMediaPreparationProfileV1 &profile);
-    void releaseOwnedSource(OperationRecord &record);
     void cleanupMediaRuntimeStaging();
-    void publishOperation(const QString &operationId);
     void publishMetricsState();
     void publishDisplayState();
     void updateDisplayState(
         const PrinterProtocol::PaseDisplayState &state,
         const PrinterProtocol::PaseOverlayConfig &overlay);
-    void finishOperation(const QString &operationId, const QString &state,
-                         const QString &errorCategory,
-                         const QString &retryMode,
-                         const QString &message,
-                         bool preserveReplaceJournal = false);
-    void pauseOperationForRetryCacheReconciliation(
-        const QString &operationId,
-        const QString &errorCategory,
-        const QString &message);
     void rejectOperation(const QString &operationId, const QString &kind,
                          const QString &subject, const QString &category,
                          const QString &message);
     void rejectSavedLayoutApplyOperation(
         const QString &operationId, const QString &subject,
         const QString &category, const QString &message);
-    void pruneOperationHistory();
     void cancelForegroundForGenerationChange(const QString &message);
-    void handlePreparedUploadFailure(const QString &operationId,
-                                     const QString &message,
-                                     PrinterProtocol::MutationOutcome outcome);
     QString mediaCatalogDirectory() const;
     void loadMediaCatalogStore();
     void loadSavedLayoutsStore();
@@ -855,22 +817,6 @@ private:
     void updateMediaCatalog(
         const QList<PrinterProtocol::MediaFile> &mediaFiles);
     void clearMediaCatalogView();
-    QString promoteThumbnailForOperation(
-        const QString &operationId,
-        const TryxRuntimeMediaEntry &verifiedEntry);
-    bool commitVerifiedMediaMetadata(
-        const QString &operationId,
-        const TryxRuntimeMediaEntry &verifiedEntry,
-        QString *errorCategory = nullptr,
-        QString *errorMessage = nullptr);
-    bool persistMediaOriginForOperation(
-        const QString &operationId,
-        const TryxRuntimeMediaEntry &verifiedEntry,
-        QString *errorMessage = nullptr);
-    QString findReusableMediaOrigin(
-        const QString &sourceContentSha256,
-        const QString &conversionProfile,
-        const QList<PrinterProtocol::MediaFile> &mediaFiles) const;
     void loadPaseMetricsConfig();
     void loadRuntimePresentationPreferences();
     bool persistPaseMetricsConfiguration(
@@ -878,140 +824,26 @@ private:
         QString *errorMessage = nullptr);
     PrinterProtocol::PaseOverlayConfig persistedPaseOverlayForDevice(
         const QString &deviceSerial) const;
-    QString retryCacheDirectory() const;
-    tryx::RetryCacheStore &retryCacheStore();
     void loadRetryCache();
     void handleRetryCacheArtifactValidation(
         const QString &validationToken, bool valid,
         bool cancelled, qint64 actualSize,
         const QString &actualSha256, quint64 actualDevice,
         quint64 actualInode, const QString &message);
-    void queueRetryCacheValidationRequests(
-        const QVector<tryx::RetryCacheStore::ValidationRequest> &requests);
-    bool adoptLoadedRetryCacheSnapshot(
-        const tryx::RetryCacheStore::Snapshot &snapshot,
-        QString *errorMessage = nullptr);
-    OperationRecord retryCacheOperationRecord(
-        const tryx::RetryCacheStore::StoredRetryCandidate &candidate) const;
-    OperationRecord retryCacheOperationRecord(
-        const tryx::RetryCacheStore::StoredDispatch &dispatch) const;
-    tryx::RetryCacheStore::ExpectedDispatch retryCacheExpectedDispatch(
-        const tryx::RetryCacheStore::StoredRetryCandidate &candidate) const;
-    tryx::RetryCacheStore::ExpectedDispatch retryCacheExpectedDispatch(
-        const tryx::RetryCacheStore::StoredDispatch &dispatch) const;
-    QString retryCacheArtifactPath(
-        const tryx::RetryCacheStore::StoredArtifact &artifact) const;
-    QString retryCacheVisibleOperationId() const;
     bool retryCacheStoreBlocksMutations() const;
     bool retryCacheStartupSessionGateActive() const;
     bool retryCacheRestrictedRecoveryActive() const;
-    void synchronizeRetryCacheSurface();
-    bool recordRetryCacheOutcome(
-        const QString &operationId,
-        tryx::RetryCacheStore::TerminalOutcome outcome,
-        qint64 confirmedBytes, const QString &errorCategory,
-        const QString &errorMessage, QString *storeError = nullptr);
-    bool beginRetryCacheLocalCommit(
-        const QString &operationId,
-        const TryxRuntimeMediaEntry &verifiedEntry,
-        QString *storeError = nullptr);
-    bool deferRetryCacheLocalCommit(
-        const QString &operationId,
-        const QString &errorCategory,
-        const QString &errorMessage,
-        QString *storeError = nullptr);
-    bool retireRetryCacheDispatch(
-        const QString &operationId,
-        tryx::RetryCacheStore::DispatchRetirement retirement,
-        QString *storeError = nullptr);
-    bool clearRetryCacheCandidate(const QString &expectedOperationId);
-    bool consumeRetryCacheCandidate(const QString &expectedOperationId);
-    bool dispatchPreparedUploadWithRetryBarrier(
-        const QString &devicePath, const QString &operationId,
-        quint64 generation);
     bool retryCacheMutationGateActive() const;
     void startRetryCacheReadOnlyReconciliationIfReady();
     void promoteRestrictedSessionAfterProof();
     bool releasePrinterPreparationPath(const QString &path);
-    void removePreparedFileForOperation(const QString &operationId);
-    QString deleteIntentPath() const;
-    QString replaceIntentPath() const;
-    bool writeReplaceJournal(const QString &operationId,
-                             const QString &stage,
-                             QString *errorMessage = nullptr);
-    bool clearReplaceJournal(QString *errorMessage = nullptr);
     void loadReplaceJournal();
     void resumePendingReplaceReconciliation();
-    bool writeDeleteIntent(const QString &operationId,
-                           const QString &stage,
-                           bool mayHaveStarted,
-                           int currentIndex,
-                           const QString &currentName,
-                           const QStringList &deletedNames,
-                           QString *errorMessage = nullptr);
-    bool clearDeleteIntent(const QString &expectedOperationId,
-                           QString *errorMessage = nullptr);
     void loadDeleteIntent();
     void resumePendingDeleteReconciliation();
 
 private:
-    struct OperationRecord {
-        TryxRuntimeOperationInfo info;
-        QString sourcePath;
-        QString preparedPath;
-        QString preparedSha256;
-        QString stagedThumbnailPath;
-        QString stagedThumbnailSha256;
-        QString sourceFingerprint;
-        QString sourceContentSha256;
-        qint64 sourceSize = 0;
-        QString conversionProfile;
-        QString mediaConversion;
-        quint16 printerProductId = 0;
-        QString remoteName;
-        QString originalRemoteName;
-        QString mediaFile;
-        QStringList deleteNames;
-        QStringList deletedNames;
-        TryxRuntimeApplyRequest applyRequest;
-        TryxRuntimeMediaTransform mediaTransform;
-        TryxRuntimeMediaPreparationProfileV1 mediaPreparationProfile;
-        TryxRuntimeMetricsConfigRequest metricsRequest;
-        bool updateMetrics = false;
-        bool ensureExisting = false;
-        bool originLookupPending = false;
-        bool deleteReconcileOnly = false;
-        bool cancelRequested = false;
-        bool deviceChangePending = false;
-        QString deviceChangeMessage;
-        bool retryPreflight = false;
-        bool requiresDeviceRecovery = false;
-        bool retryMustUseNewRemoteName = false;
-        bool ownsSourcePath = false;
-        QString uploadDeviceIdentity;
-        quint64 uploadDeviceGeneration = 0;
-        bool uploadDispatched = false;
-        bool uploadFinalizationReconciliationPending = false;
-        QString retryLineageId;
-        QString retryDispatchId;
-        QString artifactId;
-        QString originalMediaId;
-        QString originalRemoteNameForReplace;
-        QStringList replaceReferences;
-        QStringList replaceReferenceSlots;
-        QString artifactOwner;
-        QString artifactLeaseId;
-        QString requestedApplyFingerprint;
-        bool recoveredSource = false;
-        bool replaceOperation = false;
-        bool replaceJournalActive = false;
-        TryxReplaceJournalRecord replaceJournal;
-        tryx::MediaCatalogStore::CleanupPlan cacheCatalogPlan;
-        tryx::DeviceMediaArtifactStore::CleanupPlan cacheArtifactPlan;
-        qsizetype cacheCatalogIndex = 0;
-        qsizetype cacheArtifactIndex = 0;
-    };
-
+    PrinterOperationCoordinator operationCoordinator_;
     QThread workerThread_;
     DeviceWorker *worker_ = nullptr;
     QThread printerPreparationThread_;
@@ -1037,9 +869,6 @@ private:
     PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
         PrinterOverlayLeaseMode::PingAndOverlayLease;
     quint64 displayStateReadGeneration_ = 0;
-    quint64 operationRevision_ = 0;
-    TryxRuntimeMediaCatalogSnapshot mediaCatalog_;
-    std::unique_ptr<tryx::MediaCatalogStore> mediaCatalogStore_;
     std::unique_ptr<tryx::PaseMetricsConfigStore>
         paseMetricsConfigStore_;
     std::unique_ptr<tryx::RuntimePresentationPreferencesStore>
@@ -1047,26 +876,11 @@ private:
     std::unique_ptr<tryx::SavedLayoutStore> savedLayoutStore_;
     std::unique_ptr<tryx::RuntimeDowngradeStore>
         runtimeDowngradeStore_;
-    std::unique_ptr<tryx::DeviceMediaArtifactStore>
-        deviceMediaArtifactStore_;
-    std::unique_ptr<tryx::RetryCacheStore> retryCacheStore_;
-    tryx::RetryCacheStore::Snapshot retryCacheSnapshot_;
     TryxRuntimeMetricsState metricsState_;
     TryxRuntimeDisplayState displayState_;
     TryxRuntimePresentationPreferencesV1 presentationPreferences_;
     bool savedLayoutsStoreLoaded_ = false;
     QString savedLayoutsFailureDetail_;
-    QHash<QString, OperationRecord> operations_;
-    QStringList operationOrder_;
-    QString activeOperationId_;
-    QHash<QString, tryx::RetryCacheStore::ValidationRequest>
-        pendingRetryCacheValidations_;
-    bool retryCacheLoadComplete_ = false;
-    bool retryCacheStartupFailure_ = false;
-    QString retryCacheFailureDetail_;
-    QString pendingDeleteOperationId_;
-    std::optional<tryx::DeleteIntentRecord> pendingDeleteIntent_;
-    QString pendingReplaceJournalOperationId_;
     QString legacyProductId_;
     QString firmwareExclusiveLeaseId_;
     QString firmwareReleasePendingLeaseId_;
@@ -1086,15 +900,5 @@ private:
     bool firmwareRecoveryInterlockActive_ = false;
     bool runtimeDowngradeV10Prepared_ = false;
     QString runtimeDowngradeV10Mode_;
-    bool cacheCleanupExclusiveActive_ = false;
-    QString cacheCleanupOperationId_;
-    QList<PrinterProtocol::MediaFile> deferredMediaCatalogFiles_;
-    quint64 deferredMediaCatalogGeneration_ = 0;
-    QString deferredMediaCatalogDeviceIdentity_;
-    bool deferredMediaCatalogUpdatePending_ = false;
     bool automaticPrinterSessionStart_ = true;
-#ifdef TRYX_PROTOCOL_TESTING
-    QString retryCacheDirectoryOverride_;
-    QString mediaRuntimeRootOverride_;
-#endif
 };

@@ -43,6 +43,58 @@ reject_source_pattern \
     'PrinterMediaPreparer::PrinterMediaPreparer'
 
 require_source_pattern \
+    src/printeroperationcoordinator.h \
+    'class PrinterOperationCoordinator final : public QObject'
+require_source_pattern \
+    src/printeroperationcoordinator.cpp \
+    'PrinterOperationCoordinator::PrinterOperationCoordinator'
+require_source_pattern \
+    tryx-panorama.pro \
+    'src/printeroperationcoordinator.h'
+require_source_pattern \
+    tryx-panorama.pro \
+    'src/printeroperationcoordinator.cpp'
+require_source_pattern \
+    tests/printerprotocol_tests.pro \
+    '$$PWD/../src/printeroperationcoordinator.h'
+require_source_pattern \
+    tests/printerprotocol_tests.pro \
+    '$$PWD/../src/printeroperationcoordinator.cpp'
+reject_source_pattern \
+    src/devicemanager.h \
+    'struct OperationRecord'
+reject_source_pattern \
+    src/devicemanager.h \
+    'operations_'
+reject_source_pattern \
+    src/devicemanager.h \
+    'operationOrder_'
+reject_source_pattern \
+    src/devicemanager.h \
+    'activeOperationId_'
+reject_source_pattern \
+    src/devicemanager.h \
+    'operationRevision_'
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'operationCoordinator_.operations_'
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'operationCoordinator_.operationOrder_'
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'operationCoordinator_.activeOperationId_'
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'operationCoordinator_.retryCacheSnapshot_'
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'DeviceManager::finishOperation('
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'DeviceManager::publishOperation('
+
+require_source_pattern \
     src/turrismediaformat.h \
     'namespace tryx::turris_media'
 require_source_pattern \
@@ -173,6 +225,9 @@ reject_source_pattern \
     src/devicemanager.cpp \
     'writeJsonObjectAtomically('
 require_source_pattern \
+    src/printeroperationcoordinator.cpp \
+    'PrinterOperationCoordinator::dispatchPreparedUploadWithRetryBarrier('
+reject_source_pattern \
     src/devicemanager.cpp \
     'DeviceManager::dispatchPreparedUploadWithRetryBarrier('
 require_source_pattern \
@@ -291,8 +346,8 @@ case "$tray_quit_wiring" in
         ;;
 esac
 upload_dispatch_emit_count=$(
-    grep -Fc 'emit requestPrinterUploadPrepared' \
-        "$project_root/src/devicemanager.cpp"
+    grep -Fc 'emit requestUploadPrepared' \
+        "$project_root/src/printeroperationcoordinator.cpp" || true
 )
 if [ "$upload_dispatch_emit_count" -ne 1 ]; then
     printf '%s\n' \
@@ -996,6 +1051,7 @@ require_tests \
     printer-protocol \
     "$project_root/build/tests/printerprotocol-tests" <<'EOF'
 runtimeOperationDbusRoundTrip
+operationCoordinatorOwnsLedgerBehindSynchronousManagerFacade
 runtimeMetricsDbusRoundTrip
 runtimeMediaPreparationProfileDbusRoundTrip
 runtimeDeviceCapabilitiesDbusRoundTrip

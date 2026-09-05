@@ -77,6 +77,7 @@ HEADERS += \
     $$PWD/../src/printermediaidentity.h \
     $$PWD/../src/printermediapreparer.h \
     $$PWD/../src/printermediavalidator.h \
+    $$PWD/../src/printeroperationcoordinator.h \
     $$PWD/../src/replacejournal.h \
     $$PWD/../src/retrycachestore.h \
     $$PWD/../src/retrycachetransitionstore.h \
@@ -111,6 +112,7 @@ SOURCES += \
     $$PWD/../src/printermediaidentity.cpp \
     $$PWD/../src/printermediapreparer.cpp \
     $$PWD/../src/printermediavalidator.cpp \
+    $$PWD/../src/printeroperationcoordinator.cpp \
     $$PWD/../src/replacejournal.cpp \
     $$PWD/../src/retrycachestore.cpp \
     $$PWD/../src/retrycachetransitionstore.cpp \
