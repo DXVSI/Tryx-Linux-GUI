@@ -30,6 +30,44 @@ reject_source_pattern() {
 }
 
 require_source_pattern \
+    src/printersessioncontroller.h \
+    'class PrinterSessionController final : public QObject'
+require_source_pattern \
+    src/printersessioncontroller.h \
+    'const State &state() const'
+require_source_pattern \
+    src/devicemanager.h \
+    'PrinterSessionController sessionController_;'
+require_source_pattern \
+    tryx-panorama.pro \
+    'src/printersessioncontroller.h'
+require_source_pattern \
+    tryx-panorama.pro \
+    'src/printersessioncontroller.cpp'
+require_source_pattern \
+    tests/printerprotocol_tests.pro \
+    '$$PWD/../src/printersessioncontroller.cpp'
+require_source_pattern \
+    tests/printerprotocol_tests.pro \
+    '$$PWD/../src/printersessioncontroller.h'
+reject_source_pattern \
+    src/devicemanager.cpp \
+    'sessionController_.state_'
+for session_field in \
+    printerSnapshot_ printerGeneration_ printerClassConnected_ \
+    printerDisplaySessionActive_ printerDisplaySessionLost_ \
+    printerRecoveryRequired_ printerRecoveryRemovalObserved_ \
+    firmwareExclusiveLeaseId_ firmwareReleasePendingLeaseId_ \
+    firmwareQuiesceGeneration_ deviceSpecificationsCache_ \
+    metricsState_ displayState_; do
+    reject_source_pattern src/devicemanager.h "$session_field"
+    reject_source_pattern src/devicemanager.cpp "$session_field"
+done
+reject_source_pattern \
+    src/devicemanager.h \
+    'paseMetricsConfigStore_'
+
+require_source_pattern \
     src/printermediapreparer.h \
     'class PrinterMediaPreparer : public QObject'
 require_source_pattern \
@@ -1052,6 +1090,11 @@ require_tests \
     "$project_root/build/tests/printerprotocol-tests" <<'EOF'
 runtimeOperationDbusRoundTrip
 operationCoordinatorOwnsLedgerBehindSynchronousManagerFacade
+sessionGenerationTransitionsPreserveEventBoundaries
+sessionControllerPublishesThroughSynchronousManagerFacade
+sessionTransitionStopsAfterReentrantFence
+firmwareAcquireOrdersReentrantReleaseAfterQuiesce
+sessionTeardownPreservesReentrantReconnect
 runtimeMetricsDbusRoundTrip
 runtimeMediaPreparationProfileDbusRoundTrip
 runtimeDeviceCapabilitiesDbusRoundTrip

@@ -1,4 +1,5 @@
 #include "devicemanager.h"
+#include "printerlifecycle_p.h"
 #include "deleteintentstore.h"
 #include "devicemediaartifactstore.h"
 #include "devicemanagermessages.h"
@@ -56,6 +57,8 @@
 // --- DeviceWorker ---
 
 namespace {
+
+using namespace tryx::printer_lifecycle;
 
 using tryx::printer_media_file_integrity::isSha256Hex;
 using tryx::printer_media_file_integrity::sha256File;
@@ -154,96 +157,6 @@ constexpr int kDeviceMediaSweepIntervalMs = 5000;
 constexpr qint64 kRecoveredMediaFreeSpaceReserveBytes =
     16LL * 1024LL * 1024LL;
 constexpr quint16 kTurrisProductId = 0x2011;
-
-struct PrinterProcessClock {
-    PrinterProcessClock() {
-        timer.start();
-    }
-
-    QElapsedTimer timer;
-};
-
-qint64 printerMonotonicMilliseconds() {
-    static const PrinterProcessClock clock;
-    return clock.timer.elapsed();
-}
-
-QString printerStructuredValue(QString value) {
-    value.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
-    value.replace(QLatin1Char('"'), QStringLiteral("\\\""));
-    value.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
-    value.replace(QLatin1Char('\r'), QStringLiteral("\\r"));
-    return QStringLiteral("\"") + value + QStringLiteral("\"");
-}
-
-QString printerOverlayLeaseModeName(PrinterOverlayLeaseMode mode) {
-    switch (mode) {
-    case PrinterOverlayLeaseMode::PingAndOverlayLease:
-        return QStringLiteral("ping-and-overlay-lease");
-    case PrinterOverlayLeaseMode::PingOnly:
-        return QStringLiteral("ping-only");
-    }
-    return QStringLiteral("unknown");
-}
-
-QString printerKeepaliveOutcomeName(
-    PrinterProtocol::KeepaliveOutcome outcome) {
-    switch (outcome) {
-    case PrinterProtocol::KeepaliveOutcome::Sent:
-        return QStringLiteral("sent");
-    case PrinterProtocol::KeepaliveOutcome::RetryableFailure:
-        return QStringLiteral("retryable-failure");
-    case PrinterProtocol::KeepaliveOutcome::FatalFailure:
-        return QStringLiteral("fatal-failure");
-    }
-    return QStringLiteral("unknown");
-}
-
-QString printerDiscoveryStateName(
-    PrinterProtocol::DiscoveryState state) {
-    switch (state) {
-    case PrinterProtocol::DiscoveryState::Absent:
-        return QStringLiteral("absent");
-    case PrinterProtocol::DiscoveryState::RockchipGadget391a0006:
-        return QStringLiteral("rockchip-gadget-391a-0006");
-    case PrinterProtocol::DiscoveryState::EnumeratingPrinterClass:
-        return QStringLiteral("enumerating-printer-class");
-    case PrinterProtocol::DiscoveryState::Ready:
-        return QStringLiteral("ready");
-    case PrinterProtocol::DiscoveryState::PermissionDenied:
-        return QStringLiteral("permission-denied");
-    case PrinterProtocol::DiscoveryState::Ambiguous:
-        return QStringLiteral("ambiguous");
-    case PrinterProtocol::DiscoveryState::MonitoringUnavailable:
-        return QStringLiteral("monitoring-unavailable");
-    }
-    return QStringLiteral("unknown");
-}
-
-void logPrinterLifecycleEvent(
-    const QString &eventName, quint64 generation,
-    std::initializer_list<QPair<QString, QString>> fields = {}) {
-    QStringList parts{
-        QStringLiteral("tryx_lifecycle"),
-        QStringLiteral("event=") + printerStructuredValue(eventName),
-        QStringLiteral("utc=") +
-            printerStructuredValue(
-                QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)),
-        QStringLiteral("monotonic_ms=") +
-            QString::number(printerMonotonicMilliseconds()),
-        QStringLiteral("generation=") + QString::number(generation)
-    };
-    QList<QPair<QString, QString>> supportFields;
-    supportFields.reserve(static_cast<qsizetype>(fields.size()));
-    for (const auto &field : fields) {
-        parts.append(field.first + QLatin1Char('=') +
-                     printerStructuredValue(field.second));
-        supportFields.append(field);
-    }
-    tryx::appendSupportLifecycleEvent(
-        eventName, generation, supportFields);
-    qInfo().noquote() << parts.join(QLatin1Char(' '));
-}
 
 bool paseAreaRequestsGpuMetric(
     const PrinterProtocol::PaseOverlayAreaConfig &area) {
@@ -3109,7 +3022,7 @@ DeviceManager::DeviceManager(QObject *parent)
 
 void DeviceManager::setPrinterOverlayLeaseMode(
     PrinterOverlayLeaseMode mode) {
-    printerOverlayLeaseMode_ = mode;
+    sessionController_.setOverlayLeaseMode(mode);
     if (!worker_) {
         return;
     }
@@ -3231,13 +3144,15 @@ DeviceManager::savedLayoutsSnapshot() const {
     snapshot.revision = savedLayoutStore_
         ? savedLayoutStore_->revision()
         : 0;
-    if (!connected_ || !printerClassConnected_) {
+    if (!sessionController_.state().connected ||
+        !sessionController_.state().printerClassConnected) {
         snapshot.status = QStringLiteral("Disconnected");
         return snapshot;
     }
 
-    snapshot.deviceIdentity = printerDeviceSerial_;
-    snapshot.productId = printerProductIdString(printerProductId_);
+    snapshot.deviceIdentity = sessionController_.state().printerDeviceSerial;
+    snapshot.productId =
+        printerProductIdString(sessionController_.state().printerProductId);
     const auto profile = currentPrinterProductProfile();
     if (snapshot.deviceIdentity.isEmpty()) {
         snapshot.status = QStringLiteral("Disconnected");
@@ -3432,153 +3347,35 @@ bool DeviceManager::deleteSavedLayout(
 
 bool DeviceManager::acquireFirmwareExclusive(
     const QString &leaseId, QString *errorMessage) {
-    const auto fail = [errorMessage](const QString &message) {
-        if (errorMessage) {
-            *errorMessage = message;
-        }
-        return false;
-    };
-    if (QThread::currentThread() != thread()) {
-        return fail(tr(
-            "The firmware transport gate must be acquired on the runtime thread"));
-    }
-    if (!worker_ || !workerThread_.isRunning()) {
-        return fail(tr(
-            "The local device transport is unavailable for firmware flashing"));
-    }
-    QString productError;
-    if (!firmwareFlashAllowedForCurrentDevice(&productError)) {
-        return fail(productError);
-    }
-    const QString normalizedLease = leaseId.trimmed();
-    if (normalizedLease.isEmpty()) {
-        return fail(tr("The firmware transport lease is invalid"));
-    }
-    if (firmwareExclusiveActive()) {
-        return fail(tr(
-            "Another firmware operation already owns the device transport"));
-    }
-    if (!operationCoordinator_.activeOperationId().isEmpty()) {
-        return fail(
-            tr("Device operation %1 is still active")
-                .arg(operationCoordinator_.activeOperationId()));
-    }
-    if (retryCacheMutationGateActive()) {
-        return fail(tr(
-            "Stored retry media is still being validated or requires recovery"));
-    }
-    if (operationCoordinator_.hasUnresolvedRetryOutcomeForFirmware()) {
-        return fail(tr(
-            "A previous media transfer has an unresolved device outcome; cancel or reconcile it before firmware flashing"));
-    }
-    if (operationCoordinator_.hasPendingDeleteRecovery()) {
-        return fail(tr(
-            "A previous delete command still requires read-only reconciliation"));
-    }
-    if (operationCoordinator_.hasPendingReplaceRecovery()) {
-        return fail(tr(
-            "A previous replacement still requires read-only reconciliation"));
-    }
-    if (printerRecoveryRequired_) {
-        return fail(tr(
-            "The PASE requires physical reconnect recovery before firmware flashing"));
-    }
-    if (printerDisplaySessionLost_) {
-        return fail(tr(
-            "The PASE display session is lost; physically reconnect the device before firmware flashing"));
-    }
-
-    // All public device entry points run on this thread. Publishing the lease
-    // before closing the worker generation gate makes the active-operation
-    // check and mutation exclusion one indivisible event-loop transition.
-    firmwareExclusiveLeaseId_ = normalizedLease;
-    firmwareRecoveryReconnectRequested_ = false;
-    firmwareResumeAutoConnect_ = autoConnectMode_;
-    clearDeviceSpecificationsCache();
-    firmwareQuiesceGeneration_ = ++printerGeneration_;
-    setPrinterDisplaySessionActive(false);
-    printerSessionResumePending_ = false;
-    printerSessionResumeSerial_.clear();
-    printerSessionResumeProductId_ = 0;
-    stopKeepalive();
-    emit requestCancelPrinterPreparation(printerGeneration_);
-    worker_->updatePrinterGenerationGate(printerGeneration_, false);
-    emit requestFirmwareTransportQuiesce(
-        normalizedLease, firmwareQuiesceGeneration_);
-    emit uploadStatus(tr(
-        "Device transport is reserved for firmware flashing"));
-    return true;
+    return sessionController_.acquireFirmwareExclusive(leaseId, errorMessage);
 }
 
 void DeviceManager::releaseFirmwareExclusive(
     const QString &leaseId, bool resumeTransport) {
-    if (QThread::currentThread() != thread() ||
-        leaseId.trimmed().isEmpty() ||
-        leaseId.trimmed() != firmwareExclusiveLeaseId_) {
-        return;
-    }
-    if (!firmwareReleasePendingLeaseId_.isEmpty()) {
-        if (firmwareReleasePendingLeaseId_ ==
-            leaseId.trimmed()) {
-            // A later shutdown request may downgrade an already queued resume.
-            firmwareReleaseResumeTransport_ =
-                firmwareReleaseResumeTransport_ &&
-                resumeTransport;
-        }
-        return;
-    }
-    firmwareReleasePendingLeaseId_ =
-        leaseId.trimmed();
-    firmwareReleaseResumeTransport_ =
-        resumeTransport && firmwareResumeAutoConnect_;
-    emit requestFirmwareQuiesceReleaseFence(
-        firmwareReleasePendingLeaseId_,
-        firmwareQuiesceGeneration_);
+    sessionController_.releaseFirmwareExclusive(leaseId, resumeTransport);
 }
 
 void DeviceManager::
     setFirmwareRecoveryInterlockActive(
         bool active) {
-    firmwareRecoveryInterlockActive_ = active;
-    if (active) {
-        autoConnectMode_ = false;
-        stopKeepalive();
-    }
+    sessionController_.setFirmwareRecoveryInterlockActive(active);
 }
 
 void DeviceManager::
     resumeConnectionAfterFirmwareRecoveryAcknowledgement() {
-    if (firmwareRecoveryInterlockActive_) {
-        emit deviceError(tr(
-            "Device connection remains blocked by firmware recovery"));
-        return;
-    }
-    if (firmwareExclusiveActive()) {
-        // A firmware completion publishes its recovery state before the
-        // worker-thread release fence necessarily returns. Preserve this
-        // explicit user action and reconnect only after the old transport
-        // queue is proven empty.
-        firmwareRecoveryReconnectRequested_ = true;
-        return;
-    }
-    connectDevice();
+    sessionController_.resumeConnectionAfterFirmwareRecoveryAcknowledgement();
 }
 
 DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                              bool startPrinterMonitor, QObject *parent)
-    : QObject(parent),
+    : QObject(parent), sessionController_(sessionCallbacks()),
       worker_(new DeviceWorker),
       printerMediaPreparer_(new PrinterMediaPreparer),
-      keepaliveTimer_(new QTimer(this)),
       printerMonitor_(printerMonitor),
-      paseMetricsConfigStore_(
-          std::make_unique<tryx::PaseMetricsConfigStore>()),
       runtimePresentationPreferencesStore_(
           std::make_unique<tryx::RuntimePresentationPreferencesStore>()),
-      savedLayoutStore_(
-          std::make_unique<tryx::SavedLayoutStore>()),
-      runtimeDowngradeStore_(
-          std::make_unique<tryx::RuntimeDowngradeStore>()) {
+      savedLayoutStore_(std::make_unique<tryx::SavedLayoutStore>()),
+      runtimeDowngradeStore_(std::make_unique<tryx::RuntimeDowngradeStore>()) {
     automaticPrinterSessionStart_ = startPrinterMonitor;
     printerMonitor_->setParent(this);
     qRegisterMetaType<PrinterProtocol::UsbPrinterDevice>();
@@ -3597,6 +3394,98 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
     qRegisterMetaType<TryxRuntimePresentationPreferencesV1>();
     qRegisterMetaType<QList<TryxRuntimeSavedMediaRefV1>>();
     qRegisterMetaType<RecoveredH264ProbeMetadata>();
+
+    connect(&sessionController_,
+            &PrinterSessionController::printerDisplaySessionChanged, this,
+            &DeviceManager::printerDisplaySessionChanged, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::requestCancelPrinterPreparation, this,
+            &DeviceManager::requestCancelPrinterPreparation,
+            Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::printerOperationsCancelled, this,
+            &DeviceManager::printerOperationsCancelled, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::mediaListUpdated,
+            this, &DeviceManager::mediaListUpdated, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::deviceDisconnected,
+            this, &DeviceManager::deviceDisconnected, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::printerPresenceChanged, this,
+            &DeviceManager::printerPresenceChanged, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::printerDeviceVersionsReady, this,
+            &DeviceManager::printerDeviceVersionsReady, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::requestConfigurePrinter, this,
+            &DeviceManager::requestConfigurePrinter, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::requestRestorePrinterOverlay, this,
+            &DeviceManager::requestRestorePrinterOverlay, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::uploadStatus, this,
+            &DeviceManager::uploadStatus, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::requestStartPrinterSession, this,
+            &DeviceManager::requestStartPrinterSession, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::requestClearPrinter,
+            this, &DeviceManager::requestClearPrinter, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::requestDisconnect,
+            this, &DeviceManager::requestDisconnect, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::deviceError, this,
+            &DeviceManager::deviceError, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::requestConnect,
+            this, &DeviceManager::requestConnect, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::printerDeviceInfoFailed, this,
+            &DeviceManager::printerDeviceInfoFailed, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::requestPrinterDeviceInfo, this,
+            &DeviceManager::requestPrinterDeviceInfo, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::deviceConnected,
+            this, &DeviceManager::deviceConnected, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::requestFirmwareTransportQuiesce, this,
+            &DeviceManager::requestFirmwareTransportQuiesce,
+            Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::requestFirmwareQuiesceReleaseFence, this,
+            &DeviceManager::requestFirmwareQuiesceReleaseFence,
+            Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::metricsStateUpdated,
+            this, &DeviceManager::metricsStateUpdated, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::displayStateUpdated,
+            this, &DeviceManager::displayStateUpdated, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::brightnessChanged,
+            this, &DeviceManager::brightnessChanged, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::screenConfigChanged,
+            this, &DeviceManager::screenConfigChanged, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::mediaUploaded, this,
+            &DeviceManager::mediaUploaded, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::mediaDeleted, this,
+            &DeviceManager::mediaDeleted, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::requestPrinterDisplayState, this,
+            &DeviceManager::requestPrinterDisplayState, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::firmwareTransportQuiesced, this,
+            &DeviceManager::firmwareTransportQuiesced, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::printerDeviceInfoReady, this,
+            &DeviceManager::printerDeviceInfoReady, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::sysinfoSent, this,
+            &DeviceManager::sysinfoSent, Qt::DirectConnection);
+    connect(&sessionController_,
+            &PrinterSessionController::printerTransportReady, this,
+            &DeviceManager::printerTransportReady, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::requestKeepalive,
+            this, &DeviceManager::requestKeepalive, Qt::DirectConnection);
+    connect(
+        &sessionController_, &PrinterSessionController::requestGenerationGate,
+        this,
+        [this](quint64 generation, bool open) {
+            if (worker_)
+                worker_->updatePrinterGenerationGate(generation, open);
+        },
+        Qt::DirectConnection);
 
     connect(
         &operationCoordinator_,
@@ -3645,12 +3534,12 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
         Qt::DirectConnection);
     connect(
         &operationCoordinator_,
-        &PrinterOperationCoordinator::requestApplyDeferredMediaCatalog,
-        this,
+        &PrinterOperationCoordinator::requestApplyDeferredMediaCatalog, this,
         [this](const QList<PrinterProtocol::MediaFile> &mediaFiles,
                quint64 generation, const QString &deviceIdentity) {
-            if (printerGeneration_ == generation &&
-                printerDeviceSerial_.trimmed() == deviceIdentity) {
+            if (sessionController_.state().printerGeneration == generation &&
+                sessionController_.state().printerDeviceSerial.trimmed() ==
+                    deviceIdentity) {
                 updateMediaCatalog(mediaFiles);
             }
         },
@@ -3824,11 +3713,7 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
         &PrinterOperationCoordinator::requestPrepareRestrictedReadOnlySession,
         this,
         [this](quint64 generation) {
-            setPrinterDisplaySessionActive(false);
-            stopKeepalive();
-            if (worker_) {
-                worker_->updatePrinterGenerationGate(generation, true);
-            }
+            sessionController_.prepareRestrictedReadOnlySession(generation);
         },
         Qt::DirectConnection);
     connect(
@@ -3878,6 +3763,8 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
         artifactSweepTimer_, &QTimer::timeout,
         this, &DeviceManager::sweepDeviceMediaArtifacts);
 
+    PrinterOverlayLeaseMode selectedOverlayLeaseMode =
+        PrinterOverlayLeaseMode::PingAndOverlayLease;
     QString overlayLeaseConfigStatus =
         QStringLiteral("test-default");
     if (startPrinterMonitor) {
@@ -3897,14 +3784,14 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 << "for the PASE overlay lease mode";
         } else if (config->pase_overlay_lease_mode ==
                    "ping-only") {
-            printerOverlayLeaseMode_ =
+            selectedOverlayLeaseMode =
                 PrinterOverlayLeaseMode::PingOnly;
             overlayLeaseConfigStatus =
                 configFileExists && !configPathError
                     ? QStringLiteral("loaded")
                     : QStringLiteral("default-no-config");
         } else {
-            printerOverlayLeaseMode_ =
+            selectedOverlayLeaseMode =
                 PrinterOverlayLeaseMode::PingAndOverlayLease;
             overlayLeaseConfigStatus =
                 configFileExists && !configPathError
@@ -3912,21 +3799,18 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     : QStringLiteral("default-no-config");
         }
     }
-    setPrinterOverlayLeaseMode(printerOverlayLeaseMode_);
+    setPrinterOverlayLeaseMode(selectedOverlayLeaseMode);
     if (startPrinterMonitor) {
         loadRuntimePresentationPreferences();
     }
     if (startPrinterMonitor) {
         logPrinterLifecycleEvent(
             QStringLiteral("overlay_lease_mode_selected"),
-            printerGeneration_,
-            {
-                {QStringLiteral("lease_mode"),
-                 printerOverlayLeaseModeName(
-                     printerOverlayLeaseMode_)},
-                {QStringLiteral("config_status"),
-                 overlayLeaseConfigStatus}
-            });
+            sessionController_.state().printerGeneration,
+            {{QStringLiteral("lease_mode"),
+              printerOverlayLeaseModeName(
+                  sessionController_.state().printerOverlayLeaseMode)},
+             {QStringLiteral("config_status"), overlayLeaseConfigStatus}});
     }
 
     worker_->moveToThread(&workerThread_);
@@ -3936,265 +3820,71 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
             printerMediaPreparer_, &QObject::deleteLater);
 
     connect(worker_, &DeviceWorker::connected, this,
-            [this](const QString &pid, const QString &serial,
-                   const QString &fw, const QString &app) {
-                if (runtimeDowngradeV10Prepared_ ||
-                    firmwareExclusiveActive() ||
-                    firmwareRecoveryInterlockActive_) {
-                    return;
-                }
-                if (printerSnapshot_.blocksLegacyTransport()) {
-                    emit requestDisconnect();
-                    return;
-                }
-                legacyProductId_ = pid.trimmed();
-                connected_ = true;
-                printerClassConnected_ = false;
-                emit deviceConnected(pid, serial, fw, app);
+            [this](const QString &pid, const QString &serial, const QString &fw,
+                   const QString &app) {
+                sessionController_.handleWorkerConnected(pid, serial, fw, app);
             });
-    connect(worker_, &DeviceWorker::disconnected, this, [this]() {
-        if (runtimeDowngradeV10Prepared_ ||
-            printerClassConnected_ || firmwareExclusiveActive()) {
-            return;
-        }
-        legacyProductId_.clear();
-        connected_ = false;
-        emit deviceDisconnected();
-    });
-    const auto legacyResultIsCurrent = [this]() {
-        return !runtimeDowngradeV10Prepared_ &&
-               !firmwareExclusiveActive() &&
-               !firmwareRecoveryInterlockActive_ &&
-               connected_ && !printerClassConnected_ &&
-               !printerSnapshot_.blocksLegacyTransport();
-    };
-    connect(worker_, &DeviceWorker::error, this, [this](const QString &message) {
-        if (!runtimeDowngradeV10Prepared_ &&
-            !firmwareExclusiveActive() &&
-            !firmwareRecoveryInterlockActive_ &&
-            !printerSnapshot_.blocksLegacyTransport()) {
-            emit deviceError(message);
-        }
-    });
-    connect(worker_, &DeviceWorker::brightnessSet, this,
-            [this, legacyResultIsCurrent](int value) {
-                if (legacyResultIsCurrent()) {
-                    emit brightnessChanged(value);
-                }
+    connect(worker_, &DeviceWorker::disconnected, this,
+            [this]() { sessionController_.handleWorkerDisconnected(); });
+
+    connect(worker_, &DeviceWorker::error, this,
+            [this](const QString &message) {
+                sessionController_.handleWorkerError(message);
             });
+    connect(worker_, &DeviceWorker::brightnessSet, this, [this](int value) {
+        sessionController_.handleWorkerBrightnessSet(value);
+    });
     connect(worker_, &DeviceWorker::screenConfigSet, this,
-            [this, legacyResultIsCurrent]() {
-                if (legacyResultIsCurrent()) {
-                    emit screenConfigChanged();
-                }
-            });
+            [this]() { sessionController_.handleWorkerScreenConfigSet(); });
     connect(worker_, &DeviceWorker::mediaUploaded, this,
-            [this, legacyResultIsCurrent](const QString &fileName) {
-                if (legacyResultIsCurrent()) {
-                    emit mediaUploaded(fileName);
-                }
+            [this](const QString &fileName) {
+                sessionController_.handleWorkerMediaUploaded(fileName);
             });
     connect(worker_, &DeviceWorker::mediaDeleted, this,
-            [this, legacyResultIsCurrent]() {
-                if (legacyResultIsCurrent()) {
-                    emit mediaDeleted();
-                }
-            });
+            [this]() { sessionController_.handleWorkerMediaDeleted(); });
     connect(worker_, &DeviceWorker::mediaListReady, this,
-            [this, legacyResultIsCurrent](const QStringList &files) {
-                if (legacyResultIsCurrent()) {
-                    emit mediaListUpdated(files);
-                }
+            [this](const QStringList &files) {
+                sessionController_.handleWorkerMediaListReady(files);
             });
     connect(worker_, &DeviceWorker::uploadProgress, this,
-            [this, legacyResultIsCurrent](const QString &status) {
-                if (legacyResultIsCurrent()) {
-                    emit uploadStatus(status);
-                }
+            [this](const QString &status) {
+                sessionController_.handleWorkerUploadProgress(status);
             });
 
-    const auto printerResultIsCurrent = [this](quint64 generation) {
-        return !runtimeDowngradeV10Prepared_ &&
-               !firmwareExclusiveActive() &&
-               !firmwareRecoveryInterlockActive_ &&
-               generation == printerGeneration_ && printerClassConnected_ &&
-               printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready;
-    };
     connect(worker_, &DeviceWorker::printerOperationError, this,
-            [this, printerResultIsCurrent](const QString &message, quint64 generation) {
-                if (printerResultIsCurrent(generation)) {
-                    emit deviceError(message);
-                }
+            [this](const QString &message, quint64 generation) {
+                sessionController_.handleWorkerPrinterOperationError(
+                    message, generation);
             });
     connect(worker_, &DeviceWorker::printerUploadProgress, this,
-            [this, printerResultIsCurrent](const QString &status, quint64 generation) {
-                if (printerResultIsCurrent(generation)) {
-                    emit uploadStatus(status);
-                }
+            [this](const QString &status, quint64 generation) {
+                sessionController_.handleWorkerPrinterUploadProgress(
+                    status, generation);
             });
     connect(worker_, &DeviceWorker::printerSessionStarted, this,
-            [this, printerResultIsCurrent](quint64 generation) {
-                if (!printerResultIsCurrent(generation)) {
-                    return;
-                }
-                if (retryCacheRestrictedRecoveryActive()) {
-                    setPrinterDisplaySessionActive(false);
-                    startRetryCacheReadOnlyReconciliationIfReady();
-                    emit uploadStatus(printerMutationUnavailableStatusText());
-                    return;
-                }
-                if (printerRecoveryRequired_ ||
-                    retryCacheStartupSessionGateActive()) {
-                    setPrinterDisplaySessionActive(false);
-                    emit uploadStatus(printerMutationUnavailableStatusText());
-                    return;
-                }
-                const QString sysfsPath =
-                    printerSnapshot_.devices.size() == 1
-                        ? printerSnapshot_.devices.first().sysfsPath
-                        : QString();
-                logPrinterLifecycleEvent(
-                    QStringLiteral("recovery_completed"), generation,
-                    {
-                        {QStringLiteral("sysfs_path"), sysfsPath},
-                        {QStringLiteral("serial"),
-                         printerDeviceSerial_.trimmed()},
-                        {QStringLiteral("disconnect_count"),
-                         QString::number(printerDisconnectCount_)},
-                        {QStringLiteral("elapsed_ms"),
-                         printerGenerationElapsedTimer_.isValid()
-                             ? QString::number(
-                                   printerGenerationElapsedTimer_
-                                       .elapsed())
-                             : QStringLiteral("-1")},
-                        {QStringLiteral("lease_mode"),
-                         printerOverlayLeaseModeName(
-                             printerOverlayLeaseMode_)}
-                    });
-                printerDisplaySessionLost_ = false;
-                printerSessionLossRemovalObserved_ = false;
-                setPrinterDisplaySessionActive(true);
-                printerSessionResumePending_ = false;
-                printerSessionResumeSerial_.clear();
-                printerSessionResumeProductId_ = 0;
-                if (currentPrinterSupportsDisplayConfiguration() &&
-                    (!displayState_.valid ||
-                     displayState_.deviceSerial !=
-                         printerDeviceSerial_.trimmed()) &&
-                    displayStateReadGeneration_ != generation) {
-                    displayStateReadGeneration_ = generation;
-                    emit requestPrinterDisplayState(
-                        currentPrinterPath(), printerGeneration_);
-                }
-
-                if (!operationCoordinator_.handleSessionStarted(
-                        operationContext())) {
-                    return;
-                }
-                const bool samplingActive =
-                    currentPrinterSupportsOverlayMetrics() &&
-                    metricsState_.enabled &&
-                    !metricsState_.metrics.isEmpty();
-                if (metricsState_.samplingActive != samplingActive) {
-                    metricsState_.samplingActive = samplingActive;
-                    publishMetricsState();
-                }
-                if (currentPrinterSupportsMediaCatalog()) {
-                    resumePendingDeleteReconciliation();
-                    resumePendingReplaceReconciliation();
-                }
+            [this](quint64 generation) {
+                sessionController_.handleWorkerPrinterSessionStarted(
+                    generation);
             });
     connect(worker_, &DeviceWorker::printerSessionStopped, this,
             [this](quint64 generation) {
-                if (generation == printerGeneration_) {
-                    setPrinterDisplaySessionActive(false);
-                    printerSessionResumePending_ = false;
-                    printerSessionResumeSerial_.clear();
-                    printerSessionResumeProductId_ = 0;
-                    if (metricsState_.samplingActive) {
-                        metricsState_.samplingActive = false;
-                        publishMetricsState();
-                    }
-                }
+                sessionController_.handleWorkerPrinterSessionStopped(
+                    generation);
             });
     connect(worker_, &DeviceWorker::firmwareTransportQuiesced, this,
             [this](const QString &leaseId, quint64 generation) {
-                if (leaseId != firmwareExclusiveLeaseId_ ||
-                    generation != firmwareQuiesceGeneration_) {
-                    return;
-                }
-                const bool wasConnected = connected_;
-                detachPrinterClassDevice(false);
-                legacyProductId_.clear();
-                connected_ = false;
-                setPrinterDisplaySessionActive(false);
-                printerSessionResumePending_ = false;
-                printerSessionResumeSerial_.clear();
-                printerSessionResumeProductId_ = 0;
-                emit mediaListUpdated({});
-                if (wasConnected) {
-                    emit deviceDisconnected();
-                }
-                emit firmwareTransportQuiesced(
-                    leaseId, true,
-                    tr("Device transports are closed for firmware flashing"));
+                sessionController_.handleWorkerFirmwareTransportQuiesced(
+                    leaseId, generation);
             });
     connect(
-        worker_,
-        &DeviceWorker::firmwareQuiesceReleaseFenceReached,
-        this,
+        worker_, &DeviceWorker::firmwareQuiesceReleaseFenceReached, this,
         [this](const QString &leaseId, quint64 generation) {
-            if (leaseId != firmwareExclusiveLeaseId_ ||
-                leaseId != firmwareReleasePendingLeaseId_ ||
-                generation != firmwareQuiesceGeneration_) {
-                return;
-            }
-            const bool reconnect =
-                firmwareReleaseResumeTransport_ ||
-                firmwareRecoveryReconnectRequested_;
-            firmwareExclusiveLeaseId_.clear();
-            firmwareReleasePendingLeaseId_.clear();
-            firmwareQuiesceGeneration_ = 0;
-            firmwareResumeAutoConnect_ = false;
-            firmwareReleaseResumeTransport_ = false;
-            firmwareRecoveryReconnectRequested_ = false;
-            if (reconnect) {
-                connectDevice();
-            } else {
-                // A non-resuming release is a fail-closed recovery boundary,
-                // not merely "do not reconnect right now". Disable passive
-                // monitor-triggered reconnects until the user explicitly
-                // starts a new connection after inspecting the device.
-                autoConnectMode_ = false;
-            }
+            sessionController_.handleWorkerFirmwareQuiesceReleaseFenceReached(
+                leaseId, generation);
         });
     connect(worker_, &DeviceWorker::printerSessionLost, this,
-            [this, printerResultIsCurrent](quint64 generation) {
-                if (!printerResultIsCurrent(generation)) {
-                    return;
-                }
-                clearDeviceSpecificationsCache();
-                if (!operationCoordinator_.handleSessionLostBeforeStateChange(
-                        operationContext())) {
-                    return;
-                }
-                if (!printerDisplaySessionLost_) {
-                    printerSessionLossRemovalObserved_ = false;
-                }
-                printerDisplaySessionLost_ = true;
-                setPrinterDisplaySessionActive(false);
-                printerSessionResumePending_ = false;
-                printerSessionResumeSerial_.clear();
-                printerSessionResumeProductId_ = 0;
-                if (metricsState_.samplingActive) {
-                    metricsState_.samplingActive = false;
-                    publishMetricsState();
-                }
-                cancelForegroundForGenerationChange(
-                    tr("PASE display session was lost"));
-                emit printerOperationsCancelled();
-                emit uploadStatus(
-                    tr("PASE display session is lost; waiting for a new USB endpoint generation"));
+            [this](quint64 generation) {
+                sessionController_.handleWorkerPrinterSessionLost(generation);
             });
     connect(worker_, &DeviceWorker::printerForegroundProgress, this,
             [this](const QString &operationId, const QString &stage,
@@ -4295,11 +3985,10 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     errorMessage, generation);
             });
     connect(worker_, &DeviceWorker::printerApplyFinished, this,
-            [this](
-                const QString &operationId, const QString &mediaFile,
-                bool success, bool metricsUpdated,
-                PrinterProtocol::MutationOutcome outcome,
-                const QString &errorMessage, quint64 generation) {
+            [this](const QString &operationId, const QString &mediaFile,
+                   bool success, bool metricsUpdated,
+                   PrinterProtocol::MutationOutcome outcome,
+                   const QString &errorMessage, quint64 generation) {
                 operationCoordinator_.handleApplyFinished(
                     operationContext(), operationId, mediaFile, success,
                     metricsUpdated, outcome, errorMessage, generation,
@@ -4307,198 +3996,84 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                         return persistedPaseOverlayForDevice(
                             deviceIdentity);
                     },
-                    [this](
-                        const PrinterProtocol::PaseOverlayConfig &overlay,
-                        bool enabled, QString *persistenceError) {
+                    [this](const PrinterProtocol::PaseOverlayConfig &overlay,
+                           bool enabled, QString *persistenceError) {
                         return persistPaseMetricsConfiguration(
                             overlay, enabled, persistenceError);
                     },
-                    [this](
-                        const PrinterProtocol::PaseOverlayConfig &overlay,
-                        bool enabled, const QString &diagnostic,
-                        bool updateDisplay) {
-                        metricsState_.deviceSerial =
-                            printerDeviceSerial_.trimmed();
-                        metricsState_.enabled = enabled;
-                        metricsState_.samplingActive = enabled;
-                        metricsState_.metrics = overlay.left.metrics;
-                        metricsState_.alignment = overlay.left.alignment;
-                        metricsState_.textColor = overlay.left.textColor;
-                        metricsState_.diagnostic = diagnostic;
-                        publishMetricsState();
-                        if (!updateDisplay || !displayState_.valid) {
-                            return;
-                        }
-                        PrinterProtocol::PaseDisplayState state;
-                        state.backlightEnabled =
-                            displayState_.backlightEnabled;
-                        state.brightness = displayState_.brightness;
-                        state.standbyEnabled =
-                            displayState_.standbyEnabled;
-                        state.standbyMedia = displayState_.standbyMedia;
-                        state.mirrorMode = displayState_.mirrorMode;
-                        state.waterfallMode = displayState_.waterfallMode;
-                        state.screenMode = displayState_.screenMode;
-                        state.playMode = displayState_.playMode;
-                        state.media = displayState_.media;
-                        updateDisplayState(state, overlay);
+                    [this](const PrinterProtocol::PaseOverlayConfig &overlay,
+                           bool enabled, const QString &diagnostic,
+                           bool updateDisplay) {
+                        sessionController_.publishOperationMetrics(
+                            overlay, enabled, diagnostic, updateDisplay);
                     },
                     [this]() { emit screenConfigChanged(); });
             });
     connect(worker_, &DeviceWorker::printerMetricsConfigured, this,
-            [this](
-                const QString &operationId, bool success,
-                PrinterProtocol::MutationOutcome outcome,
-                const QString &errorMessage, quint64 generation) {
+            [this](const QString &operationId, bool success,
+                   PrinterProtocol::MutationOutcome outcome,
+                   const QString &errorMessage, quint64 generation) {
                 operationCoordinator_.handleMetricsConfigured(
                     operationContext(), operationId, success, outcome,
                     errorMessage, generation,
-                    [this](
-                        const PrinterProtocol::PaseOverlayConfig &overlay,
-                        bool enabled, QString *persistenceError) {
+                    [this](const PrinterProtocol::PaseOverlayConfig &overlay,
+                           bool enabled, QString *persistenceError) {
                         return persistPaseMetricsConfiguration(
                             overlay, enabled, persistenceError);
                     },
-                    [this](
-                        const PrinterProtocol::PaseOverlayConfig &overlay,
-                        bool enabled, const QString &diagnostic,
-                        bool updateDisplay) {
-                        metricsState_.deviceSerial =
-                            printerDeviceSerial_.trimmed();
-                        metricsState_.enabled = enabled;
-                        metricsState_.samplingActive = enabled;
-                        metricsState_.metrics = overlay.left.metrics;
-                        metricsState_.alignment = overlay.left.alignment;
-                        metricsState_.textColor = overlay.left.textColor;
-                        metricsState_.diagnostic = diagnostic;
-                        publishMetricsState();
-                        if (!updateDisplay || !displayState_.valid) {
-                            return;
-                        }
-                        PrinterProtocol::PaseDisplayState state;
-                        state.backlightEnabled =
-                            displayState_.backlightEnabled;
-                        state.brightness = displayState_.brightness;
-                        state.standbyEnabled =
-                            displayState_.standbyEnabled;
-                        state.standbyMedia = displayState_.standbyMedia;
-                        state.mirrorMode = displayState_.mirrorMode;
-                        state.waterfallMode = displayState_.waterfallMode;
-                        state.screenMode = displayState_.screenMode;
-                        state.playMode = displayState_.playMode;
-                        state.media = displayState_.media;
-                        updateDisplayState(state, overlay);
+                    [this](const PrinterProtocol::PaseOverlayConfig &overlay,
+                           bool enabled, const QString &diagnostic,
+                           bool updateDisplay) {
+                        sessionController_.publishOperationMetrics(
+                            overlay, enabled, diagnostic, updateDisplay);
                     });
             });
-    connect(worker_, &DeviceWorker::printerMetricsAvailabilityChanged, this,
-            [this, printerResultIsCurrent](
-                const QStringList &availableMetrics, quint64 generation) {
-                if (!printerResultIsCurrent(generation) ||
-                    metricsState_.availableMetrics == availableMetrics) {
-                    return;
-                }
-                metricsState_.availableMetrics = availableMetrics;
-                publishMetricsState();
-            });
+    connect(
+        worker_, &DeviceWorker::printerMetricsAvailabilityChanged, this,
+        [this](const QStringList &availableMetrics, quint64 generation) {
+            sessionController_.handleWorkerPrinterMetricsAvailabilityChanged(
+                availableMetrics, generation);
+        });
     connect(worker_, &DeviceWorker::printerScreenConfigSet, this,
-            [this, printerResultIsCurrent](quint64 generation) {
-                if (printerResultIsCurrent(generation)) {
-                    emit screenConfigChanged();
-                }
+            [this](quint64 generation) {
+                sessionController_.handleWorkerPrinterScreenConfigSet(
+                    generation);
             });
     connect(worker_, &DeviceWorker::printerDeviceVersionsReady, this,
-            [this, printerResultIsCurrent](const QString &firmware,
-                                           const QString &appVersion,
-                                           quint64 generation) {
-                if (printerResultIsCurrent(generation)) {
-                    emit printerDeviceVersionsReady(firmware, appVersion);
-                }
+            [this](const QString &firmware, const QString &appVersion,
+                   quint64 generation) {
+                sessionController_.handleWorkerPrinterDeviceVersionsReady(
+                    firmware, appVersion, generation);
+            });
+    connect(worker_, &DeviceWorker::printerDeviceSpecificationsReady, this,
+            [this](const PrinterProtocol::DeviceSpecifications &specifications,
+                   const QString &devicePath, const QString &deviceSerial,
+                   quint16 productId, quint64 generation) {
+                sessionController_.handleWorkerPrinterDeviceSpecificationsReady(
+                    specifications, devicePath, deviceSerial, productId,
+                    generation);
             });
     connect(
-        worker_, &DeviceWorker::printerDeviceSpecificationsReady,
-        this,
-        [this, printerResultIsCurrent](
-            const PrinterProtocol::DeviceSpecifications &specifications,
-            const QString &devicePath, const QString &deviceSerial,
-            quint16 productId, quint64 generation) {
-            const QString identity = deviceSerial.trimmed();
-            const bool exactDiscoveryContext =
-                printerSnapshot_.devices.size() == 1 &&
-                printerSnapshot_.devices.first().devicePath == devicePath &&
-                printerSnapshot_.devices.first().serial.trimmed() == identity &&
-                printerSnapshot_.devices.first().productId == productId;
-            if (!printerResultIsCurrent(generation) ||
-                generation == 0 ||
-                devicePath != printerDevicePath_ ||
-                identity.isEmpty() ||
-                identity != printerDeviceSerial_.trimmed() ||
-                productId != printerProductId_ ||
-                (productId != 0x1011 && productId != 0x1021) ||
-                !exactDiscoveryContext) {
-                return;
-            }
-
-            clearDeviceSpecificationsCache();
-            const bool complete =
-                specifications.valid &&
-                !specifications.reportedProductName.isEmpty() &&
-                specifications.reportedProductName.size() <= 128 &&
-                specifications.videoOutputWidth >= 1 &&
-                specifications.videoOutputWidth <= 16384 &&
-                specifications.videoOutputHeight >= 1 &&
-                specifications.videoOutputHeight <= 16384 &&
-                (specifications.screenType == QStringLiteral("LCD") ||
-                 specifications.screenType == QStringLiteral("OLED"));
-            if (!complete) {
-                return;
-            }
-
-            deviceSpecificationsCache_ = specifications;
-            deviceSpecificationsDevicePath_ = devicePath;
-            deviceSpecificationsDeviceIdentity_ = identity;
-            deviceSpecificationsProductId_ = productId;
-            deviceSpecificationsGeneration_ = generation;
+        worker_, &DeviceWorker::printerDeviceInfoReady, this,
+        [this](const PrinterProtocol::DeviceInfo &info, quint64 generation) {
+            sessionController_.handleWorkerPrinterDeviceInfoReady(info,
+                                                                  generation);
         });
-    connect(worker_, &DeviceWorker::printerDeviceInfoReady, this,
-            [this, printerResultIsCurrent](const PrinterProtocol::DeviceInfo &info,
-                                           quint64 generation) {
-                if (printerResultIsCurrent(generation)) {
-                    emit printerDeviceVersionsReady(
-                        info.firmwareVersion, info.appVersion);
-                    emit printerDeviceInfoReady(info);
-                }
-            });
     connect(worker_, &DeviceWorker::printerDeviceInfoFailed, this,
-            [this, printerResultIsCurrent](const QString &message, quint64 generation) {
-                if (printerResultIsCurrent(generation)) {
-                    emit printerDeviceInfoFailed(message);
-                }
+            [this](const QString &message, quint64 generation) {
+                sessionController_.handleWorkerPrinterDeviceInfoFailed(
+                    message, generation);
             });
     connect(worker_, &DeviceWorker::printerDisplayStateReady, this,
-            [this, printerResultIsCurrent](
-                const PrinterProtocol::PaseDisplayState &state,
-                quint64 generation) {
-                if (!printerResultIsCurrent(generation)) {
-                    return;
-                }
-                updateDisplayState(
-                    state,
-                    persistedPaseOverlayForDevice(
-                        printerDeviceSerial_));
+            [this](const PrinterProtocol::PaseDisplayState &state,
+                   quint64 generation) {
+                sessionController_.handleWorkerPrinterDisplayStateReady(
+                    state, generation);
             });
     connect(worker_, &DeviceWorker::printerDisplayStateFailed, this,
-            [this, printerResultIsCurrent](
-                const QString &message, quint64 generation) {
-                if (!printerResultIsCurrent(generation)) {
-                    return;
-                }
-                displayState_.deviceSerial =
-                    printerDeviceSerial_.trimmed();
-                displayState_.valid = false;
-                displayState_.diagnostic =
-                    tr("Failed to read PASE display state: %1")
-                        .arg(message);
-                publishDisplayState();
+            [this](const QString &message, quint64 generation) {
+                sessionController_.handleWorkerPrinterDisplayStateFailed(
+                    message, generation);
             });
 #ifdef TRYX_PROTOCOL_TESTING
     connect(worker_, &DeviceWorker::printerDeviceInfoFailed, this,
@@ -4576,33 +4151,20 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 worker_, &DeviceWorker::startPrinterDisplaySession);
     }
     connect(worker_, &DeviceWorker::sysinfoSent, this,
-            [this, legacyResultIsCurrent]() {
-                if (legacyResultIsCurrent()) {
-                    emit sysinfoSent();
-                }
-            });
+            [this]() { sessionController_.handleWorkerSysinfoSent(); });
     connect(worker_, &DeviceWorker::printerSysinfoSent, this,
-            [this, printerResultIsCurrent](quint64 generation) {
-                if (printerResultIsCurrent(generation)) {
-                    emit sysinfoSent();
-                }
+            [this](quint64 generation) {
+                sessionController_.handleWorkerPrinterSysinfoSent(generation);
             });
     connect(worker_, &DeviceWorker::printerSysinfoFailed, this,
-            [this, printerResultIsCurrent](const QString &message,
-                                           quint64 generation) {
-                if (printerResultIsCurrent(generation)) {
-                    emit deviceError(
-                        tr("Failed to update PASE metrics: %1").arg(message));
-                }
+            [this](const QString &message, quint64 generation) {
+                sessionController_.handleWorkerPrinterSysinfoFailed(message,
+                                                                    generation);
             });
     connect(worker_, &DeviceWorker::printerTransportReady, this,
-            [this, printerResultIsCurrent](quint64 generation) {
-                if (printerResultIsCurrent(generation) &&
-                    printerDisplaySessionActive_ &&
-                    isPrinterClassDevicePresent() &&
-                    operationCoordinator_.activeOperationId().isEmpty()) {
-                    emit printerTransportReady();
-                }
+            [this](quint64 generation) {
+                sessionController_.handleWorkerPrinterTransportReady(
+                    generation);
             });
 
     connect(this, &DeviceManager::requestPreparePrinterMedia,
@@ -4691,49 +4253,12 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                     generation);
             });
 
-    connect(keepaliveTimer_, &QTimer::timeout, this, [this]() {
-        if (!runtimeDowngradeV10Prepared_ &&
-            !firmwareExclusiveActive() &&
-            !firmwareRecoveryInterlockActive_ &&
-            !printerClassConnected_) {
-            emit requestKeepalive();
-        }
-    });
 
     connect(printerMonitor_, &PrinterDeviceMonitor::snapshotChanged,
             this, &DeviceManager::handlePrinterSnapshot);
     connect(printerMonitor_, &PrinterDeviceMonitor::currentEndpointRemoved,
-            this, [this]() {
-                ++printerDisconnectCount_;
-                const QString sysfsPath =
-                    printerSnapshot_.devices.size() == 1
-                        ? printerSnapshot_.devices.first().sysfsPath
-                        : QString();
-                const QString serial =
-                    printerSnapshot_.devices.size() == 1
-                        ? printerSnapshot_.devices.first().serial.trimmed()
-                        : printerDeviceSerial_.trimmed();
-                logPrinterLifecycleEvent(
-                    QStringLiteral("endpoint_removed"),
-                    printerGeneration_,
-                    {
-                        {QStringLiteral("sysfs_path"), sysfsPath},
-                        {QStringLiteral("serial"), serial},
-                        {QStringLiteral("disconnect_count"),
-                         QString::number(printerDisconnectCount_)},
-                        {QStringLiteral("lease_mode"),
-                         printerOverlayLeaseModeName(
-                             printerOverlayLeaseMode_)}
-                    });
-                if (printerRecoveryRequired_ &&
-                    isPrinterClassDevicePresent()) {
-                    printerRecoveryRemovalObserved_ = true;
-                }
-                if (printerDisplaySessionLost_ &&
-                    isPrinterClassDevicePresent()) {
-                    printerSessionLossRemovalObserved_ = true;
-                }
-            });
+            this,
+            [this]() { sessionController_.handleCurrentEndpointRemoved(); });
     connect(printerMonitor_, &PrinterDeviceMonitor::monitorError,
             this, &DeviceManager::deviceError);
 
@@ -4770,7 +4295,7 @@ DeviceManager *DeviceManager::createForTesting(
         std::make_unique<tryx::MediaCatalogStore>(
             QDir(QFileInfo(sysfsRoot).absolutePath())
                 .filePath(QStringLiteral("media-catalog")));
-    manager->paseMetricsConfigStore_ =
+    manager->sessionController_.paseMetricsConfigStore_ =
         std::make_unique<tryx::PaseMetricsConfigStore>(
             QDir(QFileInfo(sysfsRoot).absolutePath())
                 .filePath(QStringLiteral("pase-config")));
@@ -4805,7 +4330,7 @@ DeviceManager *DeviceManager::createForTesting(
 }
 
 void DeviceManager::setAutoConnectModeForTesting(bool enabled) {
-    autoConnectMode_ = enabled;
+    sessionController_.setAutoConnectModeForTesting(enabled);
 }
 
 void DeviceManager::rescanPrinterForTesting() {
@@ -4819,11 +4344,11 @@ void DeviceManager::injectPrinterUdevEventForTesting(
 }
 
 quint64 DeviceManager::printerGenerationForTesting() const {
-    return printerGeneration_;
+    return sessionController_.state().printerGeneration;
 }
 
 bool DeviceManager::printerDisplaySessionActiveForTesting() const {
-    return printerDisplaySessionActive_;
+    return sessionController_.state().printerDisplaySessionActive;
 }
 
 bool DeviceManager::adoptPrinterFileDescriptorForTesting(
@@ -4834,14 +4359,15 @@ bool DeviceManager::adoptPrinterFileDescriptorForTesting(
             worker_->adoptPrinterFileDescriptorForTesting(fd, devicePath);
         },
         Qt::BlockingQueuedConnection);
-    if (adopted && printerClassConnected_ &&
-        devicePath == currentPrinterPath() &&
-        !retryCacheMutationGateActive()) {
-        emit requestStartPrinterSession(devicePath, printerGeneration_);
+    if (adopted && sessionController_.state().printerClassConnected &&
+        devicePath == currentPrinterPath() && !retryCacheMutationGateActive()) {
+        emit requestStartPrinterSession(
+            devicePath, sessionController_.state().printerGeneration);
         if (!automaticPrinterSessionStart_) {
             QMetaObject::invokeMethod(
                 worker_,
-                [this, devicePath, generation = printerGeneration_]() {
+                [this, devicePath,
+                 generation = sessionController_.state().printerGeneration]() {
                     worker_->startPrinterDisplaySession(devicePath, generation);
                 },
                 Qt::QueuedConnection);
@@ -4876,15 +4402,7 @@ DeviceManager::~DeviceManager() {
     }
     operationCoordinator_.cancelPendingRetryCacheValidations();
     disconnect(printerMonitor_, nullptr, this, nullptr);
-    stopKeepalive();
-    cancelForegroundForGenerationChange(
-        tr("TRYX runtime is stopping"));
-    clearDeviceSpecificationsCache();
-    ++printerGeneration_;
-    emit requestCancelPrinterPreparation(printerGeneration_);
-    worker_->updatePrinterGenerationGate(printerGeneration_, false);
-    emit requestClearPrinter(printerGeneration_);
-    emit requestDisconnect();
+    sessionController_.shutdownBeforeWorkersStopped();
     if (printerPreparationThread_.isRunning()) {
         QMetaObject::invokeMethod(printerMediaPreparer_, "shutdown",
                                   Qt::BlockingQueuedConnection);
@@ -4897,45 +4415,43 @@ DeviceManager::~DeviceManager() {
 }
 
 void DeviceManager::setPrinterDisplaySessionActive(bool active) {
-    if (printerDisplaySessionActive_ == active) {
-        return;
-    }
-    printerDisplaySessionActive_ = active;
-    emit printerDisplaySessionChanged(active);
+    sessionController_.setPrinterDisplaySessionActive(active);
 }
 
 void DeviceManager::clearDeviceSpecificationsCache() {
-    deviceSpecificationsCache_ = {};
-    deviceSpecificationsDevicePath_.clear();
-    deviceSpecificationsDeviceIdentity_.clear();
-    deviceSpecificationsProductId_ = 0;
-    deviceSpecificationsGeneration_ = 0;
+    sessionController_.clearDeviceSpecificationsCache();
 }
 
 PrinterOperationContext DeviceManager::operationContext() const {
     PrinterOperationContext context;
     context.devicePath = currentPrinterPath();
-    context.deviceIdentity = printerDeviceSerial_.trimmed();
+    context.deviceIdentity =
+        sessionController_.state().printerDeviceSerial.trimmed();
     context.unavailableStatusText = printerUnavailableStatusText();
     context.mutationUnavailableStatusText =
         printerMutationUnavailableStatusText();
     context.firmwareExclusiveStatusText =
         firmwareExclusiveStatusText();
-    context.productId = printerProductId_;
-    context.generation = printerGeneration_;
-    context.connected = connected_;
-    context.printerClassConnected = printerClassConnected_;
+    context.productId = sessionController_.state().printerProductId;
+    context.generation = sessionController_.state().printerGeneration;
+    context.connected = sessionController_.state().connected;
+    context.printerClassConnected =
+        sessionController_.state().printerClassConnected;
     context.printerEndpointReady =
-        printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready;
-    context.displaySessionActive = printerDisplaySessionActive_;
-    context.displaySessionLost = printerDisplaySessionLost_;
-    context.recoveryRequired = printerRecoveryRequired_;
+        sessionController_.state().printerSnapshot.state ==
+        PrinterProtocol::DiscoveryState::Ready;
+    context.displaySessionActive =
+        sessionController_.state().printerDisplaySessionActive;
+    context.displaySessionLost =
+        sessionController_.state().printerDisplaySessionLost;
+    context.recoveryRequired =
+        sessionController_.state().printerRecoveryRequired;
     context.runtimeDowngradePrepared = runtimeDowngradeV10Prepared_;
     context.firmwareExclusiveActive = firmwareExclusiveActive();
     context.firmwareReleasePending =
-        !firmwareReleasePendingLeaseId_.isEmpty();
+        !sessionController_.state().firmwareReleasePendingLeaseId.isEmpty();
     context.firmwareRecoveryInterlockActive =
-        firmwareRecoveryInterlockActive_;
+        sessionController_.state().firmwareRecoveryInterlockActive;
     const auto profile = currentPrinterProductProfile();
     if (profile) {
         context.supportsMediaCatalog =
@@ -4947,716 +4463,94 @@ PrinterOperationContext DeviceManager::operationContext() const {
         context.supportsSplitAreaMedia =
             profile->splitAreaMediaSupported;
     }
-    context.displayState = displayState_;
-    context.displayStateGeneration = displayStateReadGeneration_;
+    context.displayState = sessionController_.state().displayState;
+    context.displayStateGeneration =
+        sessionController_.state().displayStateReadGeneration;
     return context;
 }
 
 void DeviceManager::handlePrinterSnapshot(
     const PrinterProtocol::DiscoverySnapshot &snapshot) {
-    if (runtimeDowngradeV10Prepared_) {
-        return;
-    }
-    const bool oldPresence = isPrinterClassDevicePresent();
-    const bool wasConnected = connected_;
-    const bool wasPrinterConnected = printerClassConnected_;
-    const QString oldPath = printerDevicePath_;
-    const QString oldSerial = printerDeviceSerial_;
-    const quint16 oldProductId = printerProductId_;
-
-    if (printerRecoveryRequired_ &&
-        snapshot.state == PrinterProtocol::DiscoveryState::Absent) {
-        printerRecoveryRemovalObserved_ = true;
-    }
-    if (printerDisplaySessionLost_ &&
-        snapshot.state == PrinterProtocol::DiscoveryState::Absent) {
-        printerSessionLossRemovalObserved_ = true;
-    }
-
-    if (wasPrinterConnected && printerDisplaySessionActive_ &&
-        !oldSerial.isEmpty()) {
-        printerSessionResumePending_ = true;
-        printerSessionResumeSerial_ = oldSerial;
-        printerSessionResumeProductId_ = oldProductId;
-    }
-    setPrinterDisplaySessionActive(false);
-    clearDeviceSpecificationsCache();
-
-    cancelForegroundForGenerationChange(
-        tr("Printer-class operation stopped because the USB connection changed"));
-    printerSnapshot_ = snapshot;
-    ++printerGeneration_;
-    printerGenerationElapsedTimer_.start();
-    emit requestCancelPrinterPreparation(printerGeneration_);
-    if (wasPrinterConnected) {
-        emit printerOperationsCancelled();
-    }
-    if (firmwareExclusiveActive() ||
-        firmwareRecoveryInterlockActive_) {
-        worker_->updatePrinterGenerationGate(
-            printerGeneration_, false);
-        detachPrinterClassDevice(false);
-        legacyProductId_.clear();
-        connected_ = false;
-        printerSessionResumePending_ = false;
-        printerSessionResumeSerial_.clear();
-        printerSessionResumeProductId_ = 0;
-        emit mediaListUpdated({});
-        if (wasConnected) {
-            emit deviceDisconnected();
-        }
-        const bool newPresence =
-            isPrinterClassDevicePresent();
-        if (oldPresence != newPresence) {
-            emit printerPresenceChanged(newPresence);
-        }
-        return;
-    }
-    const bool ready = snapshot.state == PrinterProtocol::DiscoveryState::Ready &&
-                       snapshot.devices.size() == 1;
-    const bool endpointSelected = ready &&
-                                  (autoConnectMode_ || wasPrinterConnected);
-    const QString snapshotSysfsPath = snapshot.devices.size() == 1
-        ? snapshot.devices.first().sysfsPath
-        : QString();
-    const QString snapshotSerial = snapshot.devices.size() == 1
-        ? snapshot.devices.first().serial.trimmed()
-        : QString();
-    logPrinterLifecycleEvent(
-        QStringLiteral("physical_generation_changed"),
-        printerGeneration_,
-        {
-            {QStringLiteral("discovery_state"),
-             printerDiscoveryStateName(snapshot.state)},
-            {QStringLiteral("sysfs_path"), snapshotSysfsPath},
-            {QStringLiteral("serial"), snapshotSerial},
-            {QStringLiteral("endpoint_selected"),
-             endpointSelected ? QStringLiteral("true")
-                              : QStringLiteral("false")},
-            {QStringLiteral("disconnect_count"),
-             QString::number(printerDisconnectCount_)},
-            {QStringLiteral("lease_mode"),
-             printerOverlayLeaseModeName(
-                 printerOverlayLeaseMode_)}
-        });
-    if (ready) {
-        logPrinterLifecycleEvent(
-            QStringLiteral("endpoint_discovered"),
-            printerGeneration_,
-            {
-                {QStringLiteral("sysfs_path"),
-                 snapshotSysfsPath},
-                {QStringLiteral("serial"), snapshotSerial},
-                {QStringLiteral("endpoint_selected"),
-                 endpointSelected ? QStringLiteral("true")
-                                  : QStringLiteral("false")},
-                {QStringLiteral("disconnect_count"),
-                 QString::number(printerDisconnectCount_)}
-            });
-    }
-    const bool retryCacheValidationComplete =
-        !retryCacheStartupSessionGateActive();
-    const bool sessionLossAllowsSession =
-        !printerDisplaySessionLost_ ||
-        printerSessionLossRemovalObserved_;
-    const bool recoveryAllowsEndpoint =
-        retryCacheValidationComplete &&
-        sessionLossAllowsSession &&
-        (!printerRecoveryRequired_ ||
-         (endpointSelected &&
-          completePrinterRecoveryAfterRemoval(
-              snapshot.devices.first().serial,
-              snapshot.devices.first().productId)));
-    const bool restrictedRecoverySession =
-        recoveryAllowsEndpoint &&
-        retryCacheRestrictedRecoveryActive();
-    const bool recoveryAllowsSession =
-        recoveryAllowsEndpoint &&
-        !restrictedRecoverySession;
-    const bool resumeSelectedSession =
-        endpointSelected && printerSessionResumePending_ &&
-        !snapshot.devices.first().serial.isEmpty() &&
-        snapshot.devices.first().serial == printerSessionResumeSerial_ &&
-        snapshot.devices.first().productId ==
-            printerSessionResumeProductId_;
-    if (ready && printerSessionResumePending_ && !resumeSelectedSession) {
-        printerSessionResumePending_ = false;
-        printerSessionResumeSerial_.clear();
-        printerSessionResumeProductId_ = 0;
-    }
-    worker_->updatePrinterGenerationGate(
-        printerGeneration_, endpointSelected &&
-            (recoveryAllowsSession || restrictedRecoverySession));
-
-    if (endpointSelected) {
-        const QString newPath = snapshot.devices.first().devicePath;
-        const QString newSerial = snapshot.devices.first().serial;
-        const quint16 newProductId = snapshot.devices.first().productId;
-        if (wasPrinterConnected &&
-            (oldPath != newPath || oldSerial != newSerial ||
-             oldProductId != newProductId)) {
-            detachPrinterClassDevice(true);
-        } else if (wasPrinterConnected) {
-            emit printerDeviceVersionsReady(QString(), QString());
-        }
-        emit requestConfigurePrinter(
-            newPath, newSerial, newProductId, printerGeneration_);
-        const std::optional<PrinterProductProfile> productProfile =
-            printerProductProfileForId(newProductId);
-        const PrinterProtocol::PaseOverlayConfig restoredOverlay =
-            productProfile && productProfile->overlayMetricsSupported
-                ? persistedPaseOverlayForDevice(newSerial)
-                : PrinterProtocol::PaseOverlayConfig{};
-        metricsState_.deviceSerial = newSerial.trimmed();
-        metricsState_.enabled = paseOverlayHasMetrics(restoredOverlay);
-        metricsState_.samplingActive = false;
-        metricsState_.metrics = restoredOverlay.left.metrics;
-        metricsState_.alignment = restoredOverlay.left.alignment;
-        metricsState_.textColor = restoredOverlay.left.textColor;
-        metricsState_.availableMetrics.clear();
-        metricsState_.diagnostic.clear();
-        publishMetricsState();
-        if (recoveryAllowsSession &&
-            productProfile && productProfile->overlayMetricsSupported &&
-            paseOverlayHasContent(restoredOverlay)) {
-            emit requestRestorePrinterOverlay(
-                restoredOverlay, printerGeneration_);
-        }
-        if (resumeSelectedSession) {
-            emit uploadStatus(
-                tr("Restoring the active PASE display session after USB re-enumeration..."));
-        }
-        if (recoveryAllowsSession) {
-            printerDisplaySessionLost_ = false;
-            printerSessionLossRemovalObserved_ = false;
-            emit requestStartPrinterSession(newPath, printerGeneration_);
-        } else if (!retryCacheValidationComplete &&
-                   !printerDisplaySessionLost_) {
-            printerDisplaySessionLost_ = false;
-            emit uploadStatus(tr(
-                "Stored retry media is still being validated; the PASE display session will start only after validation finishes"));
-        } else {
-            printerDisplaySessionLost_ =
-                !restrictedRecoverySession;
-            emit uploadStatus(printerMutationUnavailableStatusText());
-        }
-    } else {
-        emit requestClearPrinter(printerGeneration_);
-        if (wasPrinterConnected) {
-            detachPrinterClassDevice(true);
-        }
-    }
-    if (wasPrinterConnected) {
-        emit mediaListUpdated({});
-    }
-
-    if (snapshot.blocksLegacyTransport() && connected_ &&
-        !printerClassConnected_) {
-        legacyProductId_.clear();
-        connected_ = false;
-        emit mediaListUpdated({});
-        emit requestDisconnect();
-    }
-
-    const bool newPresence = isPrinterClassDevicePresent();
-    if (oldPresence != newPresence) {
-        emit printerPresenceChanged(newPresence);
-    }
-
-    if (!autoConnectMode_) {
-        return;
-    }
-
-    switch (snapshot.state) {
-    case PrinterProtocol::DiscoveryState::Ready:
-        if (!printerClassConnected_ && snapshot.devices.size() == 1) {
-            attachPrinterClassDevice(snapshot.devices.first());
-        }
-        startRetryCacheReadOnlyReconciliationIfReady();
-        break;
-    case PrinterProtocol::DiscoveryState::RockchipGadget391a0006:
-    case PrinterProtocol::DiscoveryState::EnumeratingPrinterClass:
-        emit uploadStatus(snapshot.statusText());
-        break;
-    case PrinterProtocol::DiscoveryState::PermissionDenied:
-    case PrinterProtocol::DiscoveryState::Ambiguous:
-    case PrinterProtocol::DiscoveryState::MonitoringUnavailable:
-        emit deviceError(snapshot.statusText());
-        break;
-    case PrinterProtocol::DiscoveryState::Absent:
-        if (!connected_) {
-            const auto legacyPort = panorama::Device::find_device();
-            if (legacyPort) {
-                emit requestConnect(QString::fromStdString(*legacyPort));
-            } else {
-                emit uploadStatus(
-                    tr("Waiting for TRYX device. Reconnect USB or keep Auto connection selected."));
-            }
-        }
-        break;
-    }
-
+    sessionController_.handlePrinterSnapshot(snapshot);
 }
 
 void DeviceManager::connectDevice(const QString &port) {
-    if (runtimeDowngradeV10Prepared_) {
-        emit deviceError(printerMutationUnavailableStatusText());
-        return;
-    }
-    if (firmwareExclusiveActive()) {
-        emit deviceError(firmwareExclusiveStatusText());
-        return;
-    }
-    if (firmwareRecoveryInterlockActive_) {
-        emit deviceError(tr(
-            "Device connection is blocked until firmware recovery is explicitly acknowledged"));
-        return;
-    }
-    if (!port.isEmpty() && printerSnapshot_.blocksLegacyTransport()) {
-        emit deviceError(
-            tr("A TRYX printer-class or Rockchip gadget device is present; use Auto connection."));
-        return;
-    }
-    setPrinterDisplaySessionActive(false);
-    clearDeviceSpecificationsCache();
-    printerSessionResumePending_ = false;
-    printerSessionResumeSerial_.clear();
-    printerSessionResumeProductId_ = 0;
-    autoConnectMode_ = port.isEmpty();
-    const bool wasLegacyConnected =
-        connected_ && !printerClassConnected_;
-    legacyProductId_.clear();
-    if (wasLegacyConnected) {
-        connected_ = false;
-        emit mediaListUpdated({});
-        emit deviceDisconnected();
-    }
-
-    if (port.isEmpty()) {
-        if (printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready &&
-            printerSnapshot_.devices.size() == 1) {
-            cancelForegroundForGenerationChange(
-                tr("Printer-class connection was restarted"));
-            ++printerGeneration_;
-            printerGenerationElapsedTimer_.start();
-            emit requestCancelPrinterPreparation(printerGeneration_);
-            const bool retryCacheValidationComplete =
-                !retryCacheStartupSessionGateActive();
-            const bool sessionLossAllowsSession =
-                !printerDisplaySessionLost_ ||
-                printerSessionLossRemovalObserved_;
-            const bool recoveryAllowsEndpoint =
-                retryCacheValidationComplete &&
-                sessionLossAllowsSession &&
-                (!printerRecoveryRequired_ ||
-                 completePrinterRecoveryAfterRemoval(
-                     printerSnapshot_.devices.first().serial,
-                     printerSnapshot_.devices.first().productId));
-            const bool restrictedRecoverySession =
-                recoveryAllowsEndpoint &&
-                retryCacheRestrictedRecoveryActive();
-            const bool recoveryAllowsSession =
-                recoveryAllowsEndpoint &&
-                !restrictedRecoverySession;
-            worker_->updatePrinterGenerationGate(
-                printerGeneration_, recoveryAllowsSession ||
-                    restrictedRecoverySession);
-            emit requestConfigurePrinter(
-                printerSnapshot_.devices.first().devicePath,
-                printerSnapshot_.devices.first().serial,
-                printerSnapshot_.devices.first().productId,
-                printerGeneration_);
-            const std::optional<PrinterProductProfile> productProfile =
-                printerProductProfileForId(
-                    printerSnapshot_.devices.first().productId);
-            const PrinterProtocol::PaseOverlayConfig restoredOverlay =
-                productProfile && productProfile->overlayMetricsSupported
-                    ? persistedPaseOverlayForDevice(
-                          printerSnapshot_.devices.first().serial)
-                    : PrinterProtocol::PaseOverlayConfig{};
-            metricsState_.deviceSerial =
-                printerSnapshot_.devices.first().serial.trimmed();
-            metricsState_.enabled =
-                paseOverlayHasMetrics(restoredOverlay);
-            metricsState_.samplingActive = false;
-            metricsState_.metrics = restoredOverlay.left.metrics;
-            metricsState_.alignment =
-                restoredOverlay.left.alignment;
-            metricsState_.textColor =
-                restoredOverlay.left.textColor;
-            metricsState_.availableMetrics.clear();
-            metricsState_.diagnostic.clear();
-            publishMetricsState();
-            if (recoveryAllowsSession &&
-                productProfile &&
-                productProfile->overlayMetricsSupported &&
-                paseOverlayHasContent(restoredOverlay)) {
-                emit requestRestorePrinterOverlay(
-                    restoredOverlay, printerGeneration_);
-            }
-            attachPrinterClassDevice(printerSnapshot_.devices.first());
-            if (recoveryAllowsSession) {
-                printerDisplaySessionLost_ = false;
-                printerSessionLossRemovalObserved_ = false;
-                emit requestStartPrinterSession(
-                    printerSnapshot_.devices.first().devicePath,
-                    printerGeneration_);
-            } else if (!retryCacheValidationComplete &&
-                       !printerDisplaySessionLost_) {
-                printerDisplaySessionLost_ = false;
-                emit uploadStatus(tr(
-                    "Stored retry media is still being validated; the PASE display session will start only after validation finishes"));
-            } else {
-                printerDisplaySessionLost_ =
-                    !restrictedRecoverySession;
-                emit uploadStatus(printerMutationUnavailableStatusText());
-            }
-            startRetryCacheReadOnlyReconciliationIfReady();
-            return;
-        }
-        if (printerSnapshot_.blocksLegacyTransport()) {
-            legacyProductId_.clear();
-            connected_ = false;
-            printerClassConnected_ = false;
-            printerDevicePath_.clear();
-            const QString status = printerSnapshot_.statusText();
-            if (printerSnapshot_.state == PrinterProtocol::DiscoveryState::PermissionDenied ||
-                printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ambiguous ||
-                printerSnapshot_.state ==
-                    PrinterProtocol::DiscoveryState::MonitoringUnavailable) {
-                emit deviceError(status);
-            } else {
-                emit uploadStatus(status);
-            }
-            return;
-        }
-
-        const auto legacyPort = panorama::Device::find_device();
-        if (!legacyPort) {
-            legacyProductId_.clear();
-            connected_ = false;
-            printerClassConnected_ = false;
-            printerDevicePath_.clear();
-            emit uploadStatus(
-                tr("Waiting for TRYX device. Reconnect USB or keep Auto connection selected."));
-            return;
-        }
-        emit requestConnect(QString::fromStdString(*legacyPort));
-        return;
-    }
-
-    detachPrinterClassDevice(false);
-    emit requestConnect(port);
+    sessionController_.connectDevice(port);
 }
 
 void DeviceManager::disconnectDevice() {
-    if (runtimeDowngradeV10Prepared_) {
-        emit deviceError(printerMutationUnavailableStatusText());
-        return;
-    }
-    if (firmwareExclusiveActive()) {
-        emit deviceError(firmwareExclusiveStatusText());
-        return;
-    }
-    autoConnectMode_ = false;
-    setPrinterDisplaySessionActive(false);
-    clearDeviceSpecificationsCache();
-    printerSessionResumePending_ = false;
-    printerSessionResumeSerial_.clear();
-    printerSessionResumeProductId_ = 0;
-    stopKeepalive();
-    const bool notifyPrinterDisconnect = printerClassConnected_;
-    detachPrinterClassDevice(false);
-    cancelForegroundForGenerationChange(
-        tr("Printer-class operation stopped because the device was disconnected"));
-    ++printerGeneration_;
-    emit requestCancelPrinterPreparation(printerGeneration_);
-    if (notifyPrinterDisconnect) {
-        emit printerOperationsCancelled();
-    }
-    worker_->updatePrinterGenerationGate(printerGeneration_, false);
-    emit requestClearPrinter(printerGeneration_);
-    emit requestDisconnect();
-    connected_ = false;
-    legacyProductId_.clear();
-    emit mediaListUpdated({});
-    if (notifyPrinterDisconnect) {
-        emit deviceDisconnected();
-    }
+    sessionController_.disconnectDevice();
 }
 
 void DeviceManager::requestDeviceInfo() {
-    if (firmwareExclusiveActive()) {
-        emit printerDeviceInfoFailed(
-            firmwareExclusiveStatusText());
-        return;
-    }
-    const QString devicePath = currentPrinterPath();
-    if (!devicePath.isEmpty()) {
-        if (retryCacheMutationGateActive() ||
-            printerRecoveryRequired_ || printerDisplaySessionLost_) {
-            emit printerDeviceInfoFailed(
-                printerMutationUnavailableStatusText());
-            return;
-        }
-        emit requestPrinterDeviceInfo(devicePath, printerGeneration_);
-        return;
-    }
-    if (printerSnapshot_.blocksLegacyTransport()) {
-        emit printerDeviceInfoFailed(printerSnapshot_.statusText());
-        return;
-    }
-    if (connected_) {
-        emit uploadStatus(tr("Legacy device information is available from its connection handshake."));
-        return;
-    }
-    emit printerDeviceInfoFailed(tr("TRYX device is not connected"));
+    sessionController_.requestDeviceInfo();
 }
 
 bool DeviceManager::isPrinterClassDevicePresent() const {
-    return printerClassConnected_ || printerSnapshot_.blocksLegacyTransport();
+    return sessionController_.isPrinterClassDevicePresent();
 }
 
 void DeviceManager::attachPrinterClassDevice(
     const PrinterProtocol::UsbPrinterDevice &device) {
-    if (printerClassConnected_ && printerDevicePath_ == device.devicePath &&
-        printerProductId_ == device.productId) {
-        return;
-    }
-    stopKeepalive();
-    clearDeviceSpecificationsCache();
-    connected_ = true;
-    printerClassConnected_ = true;
-    legacyProductId_.clear();
-    setPrinterDisplaySessionActive(false);
-    printerDevicePath_ = device.devicePath;
-    printerDeviceSerial_ = device.serial;
-    printerProductId_ = device.productId;
-    clearMediaCatalogView();
-    emit mediaListUpdated({});
-    emit deviceConnected(printerProductIdString(device.productId),
-                         device.serial.isEmpty() ? device.devicePath : device.serial,
-                         QString(), QString());
+    sessionController_.attachPrinterClassDevice(device);
 }
 
 void DeviceManager::detachPrinterClassDevice(bool notify) {
-    const bool wasConnected = printerClassConnected_;
-    clearDeviceSpecificationsCache();
-    printerClassConnected_ = false;
-    printerDevicePath_.clear();
-    printerDeviceSerial_.clear();
-    printerProductId_ = 0;
-    if (wasConnected) {
-        displayStateReadGeneration_ = 0;
-        const quint64 metricsRevision = metricsState_.revision;
-        metricsState_ = TryxRuntimeMetricsState{};
-        metricsState_.revision = metricsRevision;
-        publishMetricsState();
-        const quint64 displayRevision = displayState_.revision;
-        displayState_ = TryxRuntimeDisplayState{};
-        displayState_.revision = displayRevision;
-        publishDisplayState();
-        connected_ = false;
-        clearMediaCatalogView();
-        emit mediaListUpdated({});
-        if (notify) {
-            emit deviceDisconnected();
-        }
-    }
+    sessionController_.detachPrinterClassDevice(notify);
 }
 
 QString DeviceManager::currentPrinterPath() const {
-    if (!printerClassConnected_ ||
-        printerSnapshot_.state != PrinterProtocol::DiscoveryState::Ready ||
-        printerSnapshot_.devices.size() != 1) {
-        return {};
-    }
-    return printerSnapshot_.devices.first().devicePath;
+    return sessionController_.currentPrinterPath();
 }
 
 std::optional<PrinterProductProfile>
 DeviceManager::currentPrinterProductProfile() const {
-    quint16 productId = printerProductId_;
-    if (productId == 0 &&
-        printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready &&
-        printerSnapshot_.devices.size() == 1) {
-        productId = printerSnapshot_.devices.first().productId;
-    }
-    return printerProductProfileForId(productId);
+    return sessionController_.currentPrinterProductProfile();
 }
 
 bool DeviceManager::currentPrinterSupportsMediaCatalog() const {
-    const auto profile = currentPrinterProductProfile();
-    return profile && profile->mediaCatalogSupported;
+    return sessionController_.currentPrinterSupportsMediaCatalog();
 }
 
 bool DeviceManager::currentPrinterSupportsDisplayConfiguration() const {
-    const auto profile = currentPrinterProductProfile();
-    return profile && profile->displayConfigurationSupported;
+    return sessionController_.currentPrinterSupportsDisplayConfiguration();
 }
 
 bool DeviceManager::currentPrinterSupportsOverlayMetrics() const {
-    const auto profile = currentPrinterProductProfile();
-    return profile && profile->overlayMetricsSupported;
+    return sessionController_.currentPrinterSupportsOverlayMetrics();
 }
 
 bool DeviceManager::firmwareFlashAllowedForCurrentDevice(
     QString *errorMessage) const {
-    const auto profile = currentPrinterProductProfile();
-    if (profile && profile->firmwareFlashSupported) {
-        return true;
-    }
-    const bool identifiedLegacyPanoramaSe =
-        !profile && connected_ && !printerClassConnected_ &&
-        !printerSnapshot_.blocksLegacyTransport() &&
-        legacyProductId_.compare(
-            QStringLiteral("cm01"), Qt::CaseInsensitive) == 0;
-    if (identifiedLegacyPanoramaSe) {
-        return true;
-    }
-    if (errorMessage) {
-        *errorMessage = profile
-            ? tr("Firmware flashing is not supported for USB product %1")
-                  .arg(printerProductIdString(profile->productId))
-            : tr("Firmware flashing requires a connected, identified firmware-capable TRYX device");
-    }
-    return false;
+    return sessionController_.firmwareFlashAllowedForCurrentDevice(
+        errorMessage);
 }
 
 QString DeviceManager::printerUnavailableStatusText() const {
-    if (printerSnapshot_.state == PrinterProtocol::DiscoveryState::Ready &&
-        printerSnapshot_.devices.size() == 1 && !printerClassConnected_) {
-        return tr(
-            "TRYX endpoint is present, but the display session stopped. Reconnect USB or select Auto connection again.");
-    }
-    return printerSnapshot_.statusText();
+    return sessionController_.printerUnavailableStatusText();
 }
 
 QString DeviceManager::printerMutationUnavailableStatusText() const {
-    if (runtimeDowngradeV10Prepared_) {
-        return tr(
-            "Device mutations are blocked because runtime downgrade preparation is committed");
-    }
-    if (firmwareExclusiveActive()) {
-        return firmwareExclusiveStatusText();
-    }
-    if (retryCacheStoreBlocksMutations()) {
-        return tr(
-            "Device mutations are blocked because the retry-cache transition is invalid or unsafe. Preserve the cache and inspect the runtime logs before retrying.");
-    }
-    if (operationCoordinator_.retryCacheValidationPending()) {
-        return tr(
-            "Stored retry media is still being validated; wait for validation to finish before using the PASE display session.");
-    }
-    if (retryCacheRestrictedRecoveryActive()) {
-        return tr(
-            "Device mutations are blocked while the stored upload is resolved through read-only FileList reconciliation or a proven physical reconnect.");
-    }
-    if (printerRecoveryRequired_) {
-        return tr(
-            "PASE must be power-cycled before another upload or display change. Disconnect its USB/power while the TRYX runtime is running, reconnect it, and wait for the display session to become active.");
-    }
-    if (printerDisplaySessionLost_) {
-        return tr(
-            "The PASE display session is lost. Reconnect the device and wait for a new display session before trying again.");
-    }
-    if (!printerDisplaySessionActive_) {
-        return tr(
-            "The PASE display session is not ready yet. Wait until the device finishes connecting before trying again.");
-    }
-    return printerUnavailableStatusText();
+    return sessionController_.printerMutationUnavailableStatusText();
 }
 
 QString DeviceManager::firmwareExclusiveStatusText() const {
-    return tr(
-        "Device controls are unavailable while firmware flashing owns the USB transport");
+    return sessionController_.firmwareExclusiveStatusText();
 }
 
 void DeviceManager::resumePrinterSessionAfterRetryCacheValidation() {
-    if (!worker_ ||
-        firmwareExclusiveActive() ||
-        firmwareRecoveryInterlockActive_ ||
-        retryCacheMutationGateActive() ||
-        printerRecoveryRequired_) {
-        return;
-    }
-    if (printerDisplaySessionLost_ &&
-        !printerSessionLossRemovalObserved_) {
-        emit uploadStatus(printerMutationUnavailableStatusText());
-        return;
-    }
-    const QString devicePath = currentPrinterPath();
-    if (devicePath.isEmpty()) {
-        return;
-    }
-
-    worker_->updatePrinterGenerationGate(printerGeneration_, true);
-    const PrinterProtocol::PaseOverlayConfig restoredOverlay =
-        currentPrinterSupportsOverlayMetrics()
-            ? persistedPaseOverlayForDevice(printerDeviceSerial_)
-            : PrinterProtocol::PaseOverlayConfig{};
-    if (currentPrinterSupportsOverlayMetrics() &&
-        paseOverlayHasContent(restoredOverlay)) {
-        emit requestRestorePrinterOverlay(
-            restoredOverlay, printerGeneration_);
-    }
-    printerDisplaySessionLost_ = false;
-    printerSessionLossRemovalObserved_ = false;
-    emit requestStartPrinterSession(devicePath, printerGeneration_);
+    sessionController_.resumePrinterSessionAfterRetryCacheValidation();
 }
 
 void DeviceManager::requirePrinterRecovery(const QString &message) {
-    const bool enteringRecovery = !printerRecoveryRequired_;
-    printerRecoveryRequired_ = true;
-    if (enteringRecovery) {
-        printerRecoveryRemovalObserved_ =
-            printerSnapshot_.state ==
-                PrinterProtocol::DiscoveryState::Absent;
-    }
-    printerDisplaySessionLost_ = true;
-    clearDeviceSpecificationsCache();
-    printerSessionLossRemovalObserved_ = false;
-    setPrinterDisplaySessionActive(false);
-    printerSessionResumePending_ = false;
-    printerSessionResumeSerial_.clear();
-    printerSessionResumeProductId_ = 0;
-    if (worker_) {
-        if (enteringRecovery) {
-            ++printerGeneration_;
-            emit requestCancelPrinterPreparation(printerGeneration_);
-        }
-        worker_->updatePrinterGenerationGate(printerGeneration_, false);
-        emit requestClearPrinter(printerGeneration_);
-    }
-    if (!message.isEmpty()) {
-        emit uploadStatus(message);
-    }
+    sessionController_.requirePrinterRecovery(message);
 }
 
 bool DeviceManager::completePrinterRecoveryAfterRemoval(
     const QString &currentDeviceIdentity,
     quint16 currentProductId) {
-    if (!printerRecoveryRequired_) {
-        return true;
-    }
-    if (!printerRecoveryRemovalObserved_) {
-        return false;
-    }
-    PrinterOperationContext recoveryContext = operationContext();
-    recoveryContext.deviceIdentity = currentDeviceIdentity.trimmed();
-    recoveryContext.productId = currentProductId;
-    if (!operationCoordinator_.completeRetryRecoveryAfterRemoval(
-            recoveryContext)) {
-        return false;
-    }
-
-    printerRecoveryRequired_ = false;
-    printerRecoveryRemovalObserved_ = false;
-    printerDisplaySessionLost_ = false;
-    printerSessionLossRemovalObserved_ = false;
-    emit uploadStatus(
-        tr("PASE power-cycle was observed; starting a clean display session"));
-    return true;
+    return sessionController_.completePrinterRecoveryAfterRemoval(
+        currentDeviceIdentity, currentProductId);
 }
 
 QString DeviceManager::normalizedOperationId(const QString &requestedId) const {
@@ -5756,8 +4650,8 @@ bool DeviceManager::prepareRuntimeDowngradeV10(
     };
 
     if (firmwareExclusiveActive() ||
-        !firmwareReleasePendingLeaseId_.isEmpty() ||
-        firmwareRecoveryInterlockActive_) {
+        !sessionController_.state().firmwareReleasePendingLeaseId.isEmpty() ||
+        sessionController_.state().firmwareRecoveryInterlockActive) {
         return fail(tr(
             "Firmware activity or recovery must finish before preparing a runtime downgrade"));
     }
@@ -5828,18 +4722,16 @@ bool DeviceManager::prepareRuntimeDowngradeV10(
     if (artifactSweepTimer_) {
         artifactSweepTimer_->stop();
     }
-    ++printerGeneration_;
-    emit requestCancelPrinterPreparation(printerGeneration_);
-    worker_->updatePrinterGenerationGate(
-        printerGeneration_, false);
+    sessionController_.invalidateForRuntimeDowngrade();
     bool workerQuiesced = true;
     if (worker_->thread() == QThread::currentThread()) {
         worker_->quiesceForRuntimeDowngrade(
-            printerGeneration_);
+            sessionController_.state().printerGeneration);
     } else {
         workerQuiesced = QMetaObject::invokeMethod(
             worker_,
-            [worker = worker_, generation = printerGeneration_]() {
+            [worker = worker_,
+             generation = sessionController_.state().printerGeneration]() {
                 worker->quiesceForRuntimeDowngrade(generation);
             },
             Qt::BlockingQueuedConnection);
@@ -5922,10 +4814,11 @@ QString DeviceManager::supportSnapshotV1(
     }
     source.runtimeApiVersion = tryxRuntimeApiVersion();
     source.connection = connection;
-    source.physicalGeneration = printerGeneration_;
-    source.recoveryRequired = printerRecoveryRequired_;
+    source.physicalGeneration = sessionController_.state().printerGeneration;
+    source.recoveryRequired =
+        sessionController_.state().printerRecoveryRequired;
     source.firmwareRecoveryInterlockActive =
-        firmwareRecoveryInterlockActive_;
+        sessionController_.state().firmwareRecoveryInterlockActive;
     source.mediaCatalogEntryCount = operationState.mediaCatalogEntryCount;
     source.artifactCount = operationState.artifactCount;
     source.operationCount = operationState.operationCount;
@@ -5953,60 +4846,17 @@ QStringList DeviceManager::metricsCapabilities() const {
 }
 
 void DeviceManager::publishMetricsState() {
-    ++metricsState_.revision;
-    emit metricsStateUpdated(metricsState_);
+    sessionController_.publishMetricsState();
 }
 
 void DeviceManager::publishDisplayState() {
-    ++displayState_.revision;
-    emit displayStateUpdated(displayState_);
+    sessionController_.publishDisplayState();
 }
 
 void DeviceManager::updateDisplayState(
     const PrinterProtocol::PaseDisplayState &state,
     const PrinterProtocol::PaseOverlayConfig &overlay) {
-    const int previousBrightness = displayState_.brightness;
-    const bool hadValidState = displayState_.valid;
-    displayState_.deviceSerial = printerDeviceSerial_.trimmed();
-    displayState_.valid = true;
-    displayState_.backlightEnabled = state.backlightEnabled;
-    displayState_.brightness = state.brightness;
-    displayState_.standbyEnabled = state.standbyEnabled;
-    displayState_.standbyMedia = state.standbyMedia;
-    displayState_.mirrorMode = state.mirrorMode;
-    displayState_.waterfallMode = state.waterfallMode;
-    displayState_.screenMode = state.screenMode;
-    displayState_.playMode = state.playMode;
-    displayState_.media = state.media;
-    displayState_.sysinfoLabels = overlay.left.metrics;
-    displayState_.settingsBadges = overlay.left.badges;
-    displayState_.settingsPosition =
-        overlay.left.verticalPlacement;
-    displayState_.settingsColor =
-        paseTextColorName(overlay.left.textColor);
-    displayState_.settingsAlign = overlay.left.alignment;
-    if (overlay.dualMode) {
-        displayState_.sysinfoLabels2 = overlay.right.metrics;
-        displayState_.settingsBadges2 = overlay.right.badges;
-        displayState_.settingsPosition2 =
-            overlay.right.verticalPlacement;
-        displayState_.settingsColor2 =
-            paseTextColorName(overlay.right.textColor);
-        displayState_.settingsAlign2 =
-            overlay.right.alignment;
-    } else {
-        displayState_.sysinfoLabels2.clear();
-        displayState_.settingsBadges2.clear();
-        displayState_.settingsPosition2.clear();
-        displayState_.settingsColor2.clear();
-        displayState_.settingsAlign2.clear();
-    }
-    displayState_.diagnostic.clear();
-    publishDisplayState();
-    if (!hadValidState ||
-        previousBrightness != displayState_.brightness) {
-        emit brightnessChanged(displayState_.brightness);
-    }
+    sessionController_.updateDisplayState(state, overlay);
 }
 
 TryxRuntimeMediaCatalogSnapshot DeviceManager::mediaCatalogSnapshot() const {
@@ -6015,103 +4865,12 @@ TryxRuntimeMediaCatalogSnapshot DeviceManager::mediaCatalogSnapshot() const {
 
 TryxRuntimeDeviceCapabilitiesV1 DeviceManager::deviceCapabilitiesV1(
     quint64 connectionRevision) const {
-    TryxRuntimeDeviceCapabilitiesV1 snapshot;
-    snapshot.connectionRevision = connectionRevision;
-    snapshot.physicalGeneration = printerGeneration_;
-    if (!connected_ || !printerClassConnected_) {
-        return snapshot;
-    }
-
-    snapshot.deviceIdentity = printerDeviceSerial_.trimmed();
-    const std::optional<PrinterProductProfile> profile =
-        currentPrinterProductProfile();
-    if (snapshot.deviceIdentity.isEmpty() || !profile) {
-        snapshot.deviceIdentity.clear();
-        return snapshot;
-    }
-
-    if (profile->mediaUploadSupported) {
-        snapshot.capabilities.append(
-            tryxDeviceMediaUploadV1Token());
-    }
-    if (profile->mediaCatalogSupported) {
-        snapshot.capabilities.append(
-            tryxDeviceMediaCatalogV1Token());
-    }
-    if (profile->displayConfigurationSupported) {
-        snapshot.capabilities.append(
-            tryxDeviceDisplayConfigurationV1Token());
-    }
-    if (profile->splitAreaMediaSupported) {
-        snapshot.capabilities.append(
-            tryxDeviceMediaSplitAreaV1Token());
-    }
-    if (profile->overlayMetricsSupported) {
-        snapshot.capabilities.append(
-            tryxDeviceOverlayMetricsV1Token());
-    }
-    if (profile->firmwareFlashSupported) {
-        snapshot.capabilities.append(
-            tryxDeviceFirmwareFlashV1Token());
-    }
-    return snapshot;
+    return sessionController_.deviceCapabilitiesV1(connectionRevision);
 }
 
 TryxRuntimeDeviceSpecificationsV1 DeviceManager::deviceSpecificationsV1(
     const TryxRuntimeSnapshot &connection) const {
-    TryxRuntimeDeviceSpecificationsV1 snapshot;
-    snapshot.connectionRevision = connection.revision;
-    if (!connection.connected) {
-        return snapshot;
-    }
-
-    snapshot.deviceIdentity = connection.serial.trimmed();
-    if (!connection.printerClassConnected) {
-        snapshot.status = QStringLiteral("Unsupported");
-        return snapshot;
-    }
-
-    const QString currentIdentity = printerDeviceSerial_.trimmed();
-    const bool exactConnectionContext =
-        connected_ && printerClassConnected_ &&
-        printerGeneration_ != 0 &&
-        !currentIdentity.isEmpty() &&
-        snapshot.deviceIdentity == currentIdentity &&
-        connection.productId == printerProductIdString(printerProductId_);
-    if (!exactConnectionContext) {
-        snapshot.deviceIdentity.clear();
-        snapshot.physicalGeneration = 0;
-        return snapshot;
-    }
-
-    snapshot.physicalGeneration = printerGeneration_;
-    if (printerProductId_ != 0x1011 && printerProductId_ != 0x1021) {
-        snapshot.status = QStringLiteral("Unsupported");
-        return snapshot;
-    }
-
-    snapshot.status = QStringLiteral("Unavailable");
-    const bool exactCache =
-        deviceSpecificationsCache_.valid &&
-        deviceSpecificationsDevicePath_ == printerDevicePath_ &&
-        deviceSpecificationsDeviceIdentity_ == currentIdentity &&
-        deviceSpecificationsProductId_ == printerProductId_ &&
-        deviceSpecificationsGeneration_ == printerGeneration_;
-    if (!exactCache) {
-        return snapshot;
-    }
-
-    snapshot.status = QStringLiteral("Ready");
-    snapshot.reportedProductName =
-        deviceSpecificationsCache_.reportedProductName;
-    snapshot.videoOutputWidth =
-        deviceSpecificationsCache_.videoOutputWidth;
-    snapshot.videoOutputHeight =
-        deviceSpecificationsCache_.videoOutputHeight;
-    snapshot.screenType = deviceSpecificationsCache_.screenType;
-    snapshot.usbAutoKeepalive =
-        deviceSpecificationsCache_.usbAutoKeepalive;
-    return snapshot;
+    return sessionController_.deviceSpecificationsV1(connection);
 }
 
 QString DeviceManager::mediaCatalogDirectory() const {
@@ -6148,12 +4907,15 @@ bool DeviceManager::currentSavedLayoutsContext(
     if (productId) {
         productId->clear();
     }
-    if (!connected_ || !printerClassConnected_ ||
-        printerGeneration_ == 0 || currentPrinterPath().isEmpty()) {
+    if (!sessionController_.state().connected ||
+        !sessionController_.state().printerClassConnected ||
+        sessionController_.state().printerGeneration == 0 ||
+        currentPrinterPath().isEmpty()) {
         return false;
     }
-    const QString identity = printerDeviceSerial_;
-    const QString product = printerProductIdString(printerProductId_);
+    const QString identity = sessionController_.state().printerDeviceSerial;
+    const QString product =
+        printerProductIdString(sessionController_.state().printerProductId);
     const auto profile = currentPrinterProductProfile();
     const bool valid =
         tryxSavedLayoutDeviceIdentityIsCanonical(identity) &&
@@ -6284,38 +5046,20 @@ void DeviceManager::loadRuntimePresentationPreferences() {
 }
 
 void DeviceManager::loadPaseMetricsConfig() {
-    const auto result = paseMetricsConfigStore_->load();
-    for (const QString &warning : result.warnings) {
-        qWarning().noquote() << warning;
-    }
+    sessionController_.loadPaseMetricsConfig();
 }
 
 bool DeviceManager::persistPaseMetricsConfiguration(
     const PrinterProtocol::PaseOverlayConfig &overlay, bool enabled,
     QString *errorMessage) {
-    const QString serial = printerDeviceSerial_.trimmed();
-    if (serial.isEmpty()) {
-        if (errorMessage) {
-            *errorMessage = tr(
-                "Cannot persist PASE metrics without a device serial");
-        }
-        return false;
-    }
-    const auto result = enabled
-        ? paseMetricsConfigStore_->persist(serial, overlay)
-        : paseMetricsConfigStore_->clearForDevice(serial);
-    if (!result.ok() && errorMessage) {
-        *errorMessage = result.detail;
-    }
-    return result.ok();
+    return sessionController_.persistPaseMetricsConfiguration(overlay, enabled,
+                                                              errorMessage);
 }
 
 PrinterProtocol::PaseOverlayConfig
 DeviceManager::persistedPaseOverlayForDevice(
     const QString &deviceSerial) const {
-    const auto overlay =
-        paseMetricsConfigStore_->overlayForDevice(deviceSerial);
-    return overlay.value_or(PrinterProtocol::PaseOverlayConfig{});
+    return sessionController_.persistedPaseOverlayForDevice(deviceSerial);
 }
 
 void DeviceManager::rejectOperation(const QString &operationId,
@@ -6325,15 +5069,15 @@ void DeviceManager::rejectOperation(const QString &operationId,
                                     const QString &message) {
     operationCoordinator_.rejectOperation(
         operationId, kind, subject, category, message,
-        printerGeneration_);
+        sessionController_.state().printerGeneration);
 }
 
 void DeviceManager::rejectSavedLayoutApplyOperation(
     const QString &operationId, const QString &subject,
     const QString &category, const QString &message) {
     operationCoordinator_.rejectOperation(
-        operationId, QStringLiteral("SavedLayoutApply"),
-        subject, category, message, printerGeneration_,
+        operationId, QStringLiteral("SavedLayoutApply"), subject, category,
+        message, sessionController_.state().printerGeneration,
         QStringLiteral("NotStarted"));
 }
 
@@ -6689,29 +5433,7 @@ void DeviceManager::startRetryCacheReadOnlyReconciliationIfReady() {
 }
 
 void DeviceManager::promoteRestrictedSessionAfterProof() {
-    if (retryCacheMutationGateActive() ||
-        currentPrinterPath().isEmpty() ||
-        printerRecoveryRequired_) {
-        return;
-    }
-    printerDisplaySessionLost_ = false;
-    printerSessionLossRemovalObserved_ = false;
-    printerSessionResumePending_ = false;
-    printerSessionResumeSerial_.clear();
-    printerSessionResumeProductId_ = 0;
-    setPrinterDisplaySessionActive(true);
-    const bool samplingActive =
-        currentPrinterSupportsOverlayMetrics() &&
-        metricsState_.enabled &&
-        !metricsState_.metrics.isEmpty();
-    if (metricsState_.samplingActive != samplingActive) {
-        metricsState_.samplingActive = samplingActive;
-        publishMetricsState();
-    }
-    if (currentPrinterSupportsMediaCatalog()) {
-        resumePendingDeleteReconciliation();
-        resumePendingReplaceReconciliation();
-    }
+    sessionController_.promoteRestrictedSessionAfterProof();
 }
 
 
@@ -6777,7 +5499,7 @@ void DeviceManager::setScreenConfig(
         return;
     }
 
-    if (!connected_) {
+    if (!sessionController_.state().connected) {
         emit uploadStatus(
             tr("Device not connected. Use Auto connection or reconnect USB."));
         return;
@@ -6797,21 +5519,24 @@ void DeviceManager::sendSysinfo(const QStringList &labels,
     }
     if (isPrinterClassDevicePresent()) {
         if (!currentPrinterSupportsOverlayMetrics()) {
-            emit deviceError(tr(
-                "Overlay metrics are not supported for USB product %1")
-                                 .arg(printerProductIdString(
-                                     printerProductId_)));
+            emit deviceError(
+                tr("Overlay metrics are not supported for USB product %1")
+                    .arg(printerProductIdString(
+                        sessionController_.state().printerProductId)));
             return;
         }
         const QString devicePath = currentPrinterPath();
-        if (devicePath.isEmpty() || !printerDisplaySessionActive_ ||
+        if (devicePath.isEmpty() ||
+            !sessionController_.state().printerDisplaySessionActive ||
             retryCacheMutationGateActive() ||
-            printerRecoveryRequired_ || printerDisplaySessionLost_ ||
+            sessionController_.state().printerRecoveryRequired ||
+            sessionController_.state().printerDisplaySessionLost ||
             !operationCoordinator_.activeOperationId().isEmpty()) {
             return;
         }
-        emit requestPrinterSysinfo(devicePath, labels, values, units,
-                                   printerGeneration_);
+        emit requestPrinterSysinfo(
+            devicePath, labels, values, units,
+            sessionController_.state().printerGeneration);
         return;
     }
     if (retryCacheMutationGateActive()) {
@@ -6885,7 +5610,7 @@ void DeviceManager::uploadMedia(const QString &localPath) {
         emit deviceError(printerMutationUnavailableStatusText());
         return;
     }
-    if (!connected_) {
+    if (!sessionController_.state().connected) {
         emit uploadStatus(
             tr("Device not connected. Use Auto connection or reconnect USB."));
         return;
@@ -6904,10 +5629,10 @@ void DeviceManager::refreshMediaList() {
     }
     if (isPrinterClassDevicePresent()) {
         if (!currentPrinterSupportsMediaCatalog()) {
-            emit deviceError(tr(
-                "Media catalog refresh is not supported for USB product %1")
-                                 .arg(printerProductIdString(
-                                     printerProductId_)));
+            emit deviceError(
+                tr("Media catalog refresh is not supported for USB product %1")
+                    .arg(printerProductIdString(
+                        sessionController_.state().printerProductId)));
             return;
         }
         const QString devicePath = currentPrinterPath();
@@ -6916,7 +5641,8 @@ void DeviceManager::refreshMediaList() {
             return;
         }
         if (retryCacheMutationGateActive() ||
-            printerRecoveryRequired_ || printerDisplaySessionLost_) {
+            sessionController_.state().printerRecoveryRequired ||
+            sessionController_.state().printerDisplaySessionLost) {
             emit deviceError(printerMutationUnavailableStatusText());
             return;
         }
@@ -6926,11 +5652,12 @@ void DeviceManager::refreshMediaList() {
                     .arg(operationCoordinator_.activeOperationId()));
             return;
         }
-        emit requestPrinterRefreshMedia(devicePath, QString(),
-                                        printerGeneration_);
+        emit requestPrinterRefreshMedia(
+            devicePath, QString(),
+            sessionController_.state().printerGeneration);
         return;
     }
-    if (!connected_) {
+    if (!sessionController_.state().connected) {
         emit mediaListUpdated({});
         emit uploadStatus(
             tr("Device not connected. Use Auto connection or reconnect USB."));
@@ -6940,17 +5667,77 @@ void DeviceManager::refreshMediaList() {
 }
 
 void DeviceManager::startKeepalive(int intervalSec) {
-    if (runtimeDowngradeV10Prepared_ ||
-        firmwareExclusiveActive()) {
-        return;
-    }
-    if (printerClassConnected_) {
-        keepaliveTimer_->stop();
-        return;
-    }
-    keepaliveTimer_->start(qMax(1, intervalSec) * 1000);
+    sessionController_.startKeepalive(intervalSec);
 }
 
 void DeviceManager::stopKeepalive() {
-    keepaliveTimer_->stop();
+    sessionController_.stopKeepalive();
+}
+
+PrinterSessionController::Callbacks DeviceManager::sessionCallbacks() {
+    PrinterSessionController::Callbacks callbacks;
+    callbacks.runtimeDowngradePrepared = [this]() {
+        return runtimeDowngradeV10Prepared_;
+    };
+    callbacks.workerAvailable = [this]() {
+        return worker_ != nullptr;
+    };
+    callbacks.workerRunning = [this]() {
+        return worker_ && workerThread_.isRunning();
+    };
+    callbacks.activeOperationId = [this]() {
+        return operationCoordinator_.activeOperationId();
+    };
+    callbacks.retryCacheStoreBlocksMutations = [this]() {
+        return retryCacheStoreBlocksMutations();
+    };
+    callbacks.retryCacheStartupSessionGateActive = [this]() {
+        return retryCacheStartupSessionGateActive();
+    };
+    callbacks.retryCacheRestrictedRecoveryActive = [this]() {
+        return retryCacheRestrictedRecoveryActive();
+    };
+    callbacks.retryCacheMutationGateActive = [this]() {
+        return retryCacheMutationGateActive();
+    };
+    callbacks.retryCacheValidationPending = [this]() {
+        return operationCoordinator_.retryCacheValidationPending();
+    };
+    callbacks.hasUnresolvedRetryOutcomeForFirmware = [this]() {
+        return operationCoordinator_.hasUnresolvedRetryOutcomeForFirmware();
+    };
+    callbacks.hasPendingDeleteRecovery = [this]() {
+        return operationCoordinator_.hasPendingDeleteRecovery();
+    };
+    callbacks.hasPendingReplaceRecovery = [this]() {
+        return operationCoordinator_.hasPendingReplaceRecovery();
+    };
+    callbacks.sessionStarted = [this]() {
+        return operationCoordinator_.handleSessionStarted(operationContext());
+    };
+    callbacks.sessionLostBeforeStateChange = [this]() {
+        return operationCoordinator_.handleSessionLostBeforeStateChange(operationContext());
+    };
+    callbacks.clearMediaCatalogView = [this]() {
+        clearMediaCatalogView();
+    };
+    callbacks.startRetryCacheReadOnlyReconciliationIfReady = [this]() {
+        startRetryCacheReadOnlyReconciliationIfReady();
+    };
+    callbacks.resumePendingDeleteReconciliation = [this]() {
+        resumePendingDeleteReconciliation();
+    };
+    callbacks.resumePendingReplaceReconciliation = [this]() {
+        resumePendingReplaceReconciliation();
+    };
+    callbacks.cancelForegroundForGenerationChange = [this](const QString &message) {
+        cancelForegroundForGenerationChange(message);
+    };
+    callbacks.completeRetryRecoveryAfterRemoval = [this](const QString &identity, quint16 productId) {
+        PrinterOperationContext context = operationContext();
+        context.deviceIdentity = identity.trimmed();
+        context.productId = productId;
+        return operationCoordinator_.completeRetryRecoveryAfterRemoval(context);
+    };
+    return callbacks;
 }

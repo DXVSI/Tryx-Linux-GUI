@@ -117,6 +117,8 @@ HEADERS += \
     src/printermediapreparer.h \
     src/printermediavalidator.h \
     src/printeroperationcoordinator.h \
+    src/printersessioncontroller.h \
+    src/printerlifecycle_p.h \
     src/printerprotocol.h \
     src/replacejournal.h \
     src/retrycachestore.h \
@@ -153,6 +155,7 @@ SOURCES += \
     src/printermediapreparer.cpp \
     src/printermediavalidator.cpp \
     src/printeroperationcoordinator.cpp \
+    src/printersessioncontroller.cpp \
     src/printerprotocol.cpp \
     src/replacejournal.cpp \
     src/retrycachestore.cpp \

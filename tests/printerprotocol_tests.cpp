@@ -2165,6 +2165,14 @@ private slots:
     void malformedAndOversizedFrames();
     void runtimeOperationDbusRoundTrip();
     void operationCoordinatorOwnsLedgerBehindSynchronousManagerFacade();
+    void sessionGenerationTransitionsPreserveEventBoundaries();
+    void sessionControllerPublishesThroughSynchronousManagerFacade();
+    void sessionTransitionStopsAfterReentrantFence_data();
+    void sessionTransitionStopsAfterReentrantFence();
+    void firmwareAcquireOrdersReentrantReleaseAfterQuiesce_data();
+    void firmwareAcquireOrdersReentrantReleaseAfterQuiesce();
+    void sessionTeardownPreservesReentrantReconnect_data();
+    void sessionTeardownPreservesReentrantReconnect();
     void runtimeMediaCatalogDbusRoundTrip();
     void runtimeDeviceMediaArtifactDbusRoundTrip();
     void runtimeDeviceMediaMetadataDbusRoundTrip();
@@ -2658,8 +2666,8 @@ TryxRuntimeSavedLayoutV1 PrinterProtocolTests::savedLayoutForTesting(
         return layout;
     }
 
-    layout.deviceIdentity = manager->printerDeviceSerial_.trimmed();
-    layout.productId = printerProductIdString(manager->printerProductId_);
+    layout.deviceIdentity = manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    layout.productId = printerProductIdString(manager->sessionController_.state_.printerProductId);
     layout.name = name;
     const int mediaCount = split ? 2 : 1;
     for (int index = 0; index < mediaCount; ++index) {
@@ -2728,7 +2736,7 @@ bool PrinterProtocolTests::armRetryCacheDispatchForTesting(
     if (!manager->operationCoordinator_.dispatchPreparedUploadWithRetryBarrier(
             manager->operationContext(),
             manager->currentPrinterPath(), operationId,
-            manager->printerGeneration_)) {
+            manager->sessionController_.state_.printerGeneration)) {
         return false;
     }
     const auto found = manager->operationCoordinator_.operations_.constFind(operationId);
@@ -3551,8 +3559,8 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
-    manager->printerDeviceSerial_ = deviceIdentity;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    manager->sessionController_.state_.printerDeviceSerial = deviceIdentity;
 
     const TryxRuntimeSavedLayoutsSnapshotV1 snapshot =
         manager->savedLayoutsSnapshot();
@@ -3634,7 +3642,7 @@ void PrinterProtocolTests::savedLayoutsCrudIsDeviceScopedAndDispatchFree() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     PrinterProtocol::MediaFile media;
     media.name = QStringLiteral("layout.mp4.h264_2240x1080");
@@ -3710,23 +3718,23 @@ void PrinterProtocolTests::savedLayoutsCrudIsDeviceScopedAndDispatchFree() {
             "org.tryx.Panorama.Error.InvalidSavedLayout"));
     QCOMPARE(confirmed.revision, quint64{1});
 
-    manager->printerProductId_ = 0x2011;
+    manager->sessionController_.state_.printerProductId = 0x2011;
     QVERIFY(!manager->putSavedLayout(
         1, staleCreate, &confirmed, &errorName, &errorMessage));
     QCOMPARE(
         errorName,
         QStringLiteral(
             "org.tryx.Panorama.Error.UnsupportedProduct"));
-    manager->printerProductId_ = 0x1021;
+    manager->sessionController_.state_.printerProductId = 0x1021;
 
-    manager->connected_ = false;
+    manager->sessionController_.state_.connected = false;
     QVERIFY(!manager->putSavedLayout(
         1, staleCreate, &confirmed, &errorName, &errorMessage));
     QCOMPARE(
         errorName,
         QStringLiteral(
             "org.tryx.Panorama.Error.SavedLayoutsUnavailable"));
-    manager->connected_ = true;
+    manager->sessionController_.state_.connected = true;
 
     TryxRuntimeSavedLayoutV1 update = created;
     update.request.display.brightness = 73;
@@ -3741,19 +3749,19 @@ void PrinterProtocolTests::savedLayoutsCrudIsDeviceScopedAndDispatchFree() {
     QCOMPARE(updated.revision, quint64{2});
     QCOMPARE(updated.request.display.brightness, 73);
 
-    manager->connected_ = false;
+    manager->sessionController_.state_.connected = false;
     const TryxRuntimeSavedLayoutsSnapshotV1 disconnected =
         manager->savedLayoutsSnapshot();
     QCOMPARE(disconnected.status, QStringLiteral("Disconnected"));
     QCOMPARE(disconnected.revision, quint64{2});
-    manager->connected_ = true;
+    manager->sessionController_.state_.connected = true;
 
-    manager->printerProductId_ = 0x2011;
+    manager->sessionController_.state_.printerProductId = 0x2011;
     const TryxRuntimeSavedLayoutsSnapshotV1 unsupported =
         manager->savedLayoutsSnapshot();
     QCOMPARE(unsupported.status, QStringLiteral("Unsupported"));
     QCOMPARE(unsupported.revision, quint64{2});
-    manager->printerProductId_ = 0x1021;
+    manager->sessionController_.state_.printerProductId = 0x1021;
 
     manager->savedLayoutsStoreLoaded_ = false;
     const TryxRuntimeSavedLayoutsSnapshotV1 unavailable =
@@ -3762,7 +3770,7 @@ void PrinterProtocolTests::savedLayoutsCrudIsDeviceScopedAndDispatchFree() {
     QCOMPARE(unavailable.revision, quint64{2});
     manager->savedLayoutsStoreLoaded_ = true;
 
-    manager->printerDeviceSerial_ = QStringLiteral("other-device");
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("other-device");
     const TryxRuntimeSavedLayoutsSnapshotV1 otherDevice =
         manager->savedLayoutsSnapshot();
     QCOMPARE(otherDevice.status, QStringLiteral("Ready"));
@@ -3775,7 +3783,7 @@ void PrinterProtocolTests::savedLayoutsCrudIsDeviceScopedAndDispatchFree() {
         QStringLiteral(
             "org.tryx.Panorama.Error.InvalidSavedLayout"));
 
-    manager->printerDeviceSerial_ = QStringLiteral("bad\u202Edevice");
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("bad\u202Edevice");
     const TryxRuntimeSavedLayoutsSnapshotV1 invalidIdentity =
         manager->savedLayoutsSnapshot();
     QCOMPARE(invalidIdentity.status, QStringLiteral("Unavailable"));
@@ -3783,7 +3791,7 @@ void PrinterProtocolTests::savedLayoutsCrudIsDeviceScopedAndDispatchFree() {
     QVERIFY(!invalidIdentity.diagnostic.isEmpty());
     QVERIFY(invalidIdentity.layouts.isEmpty());
 
-    manager->printerDeviceSerial_ = QStringLiteral("1-1");
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("1-1");
     QCOMPARE(manager->savedLayoutsSnapshot().layouts.size(), 1);
     QVERIFY(!manager->deleteSavedLayout(
         1, updated.layoutId, &confirmed, &errorName, &errorMessage));
@@ -3825,7 +3833,7 @@ void PrinterProtocolTests::
         manager->worker_, &DeviceWorker::beginPrinterForegroundOperation);
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     PrinterProtocol::MediaFile media;
     media.name = QStringLiteral("layout.mp4.h264_2240x1080");
     media.size = 4096;
@@ -3893,7 +3901,7 @@ void PrinterProtocolTests::savedLayoutQueueRejectsBeforeWorkerDispatch() {
         manager->worker_, &DeviceWorker::beginPrinterForegroundOperation);
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     PrinterProtocol::MediaFile media;
     media.name = QStringLiteral("layout.mp4.h264_2240x1080");
     media.size = 4096;
@@ -3951,11 +3959,11 @@ void PrinterProtocolTests::savedLayoutQueueRejectsBeforeWorkerDispatch() {
         saved.layoutId, saved.revision + 1, saved.request,
         QStringLiteral("SavedLayoutRevisionConflict"));
 
-    manager->printerDeviceSerial_ = QStringLiteral("other-device");
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("other-device");
     expectRejected(
         saved.layoutId, saved.revision, saved.request,
         QStringLiteral("DeviceIdentityChanged"));
-    manager->printerDeviceSerial_ = QStringLiteral("1-1");
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("1-1");
 
     const QList<TryxRuntimeMediaEntry> authoritativeEntries =
         manager->operationCoordinator_.mediaCatalog_.entries;
@@ -3971,29 +3979,29 @@ void PrinterProtocolTests::savedLayoutQueueRejectsBeforeWorkerDispatch() {
         saved.layoutId, saved.revision, incomplete,
         QStringLiteral("UnsupportedConfiguration"));
 
-    manager->printerProductId_ = 0x2011;
+    manager->sessionController_.state_.printerProductId = 0x2011;
     expectRejected(
         saved.layoutId, saved.revision, saved.request,
         QStringLiteral("UnsupportedProduct"));
-    manager->printerProductId_ = 0x1021;
+    manager->sessionController_.state_.printerProductId = 0x1021;
 
-    manager->connected_ = false;
+    manager->sessionController_.state_.connected = false;
     expectRejected(
         saved.layoutId, saved.revision, saved.request,
         QStringLiteral("SavedLayoutsUnavailable"));
-    manager->connected_ = true;
+    manager->sessionController_.state_.connected = true;
 
-    manager->printerRecoveryRequired_ = true;
+    manager->sessionController_.state_.printerRecoveryRequired = true;
     expectRejected(
         saved.layoutId, saved.revision, saved.request,
         QStringLiteral("DeviceRecoveryRequired"));
-    manager->printerRecoveryRequired_ = false;
+    manager->sessionController_.state_.printerRecoveryRequired = false;
 
-    manager->printerDisplaySessionActive_ = false;
+    manager->sessionController_.state_.printerDisplaySessionActive = false;
     expectRejected(
         saved.layoutId, saved.revision, saved.request,
         QStringLiteral("SessionLost"));
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     manager->operationCoordinator_.retryCacheLoadComplete_ = false;
     expectRejected(
@@ -4031,7 +4039,7 @@ void PrinterProtocolTests::
         manager->worker_, &DeviceWorker::beginPrinterForegroundOperation);
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     PrinterProtocol::MediaFile media;
     media.name = QStringLiteral("layout.mp4.h264_2240x1080");
     media.size = 4096;
@@ -4080,7 +4088,7 @@ void PrinterProtocolTests::
         saved.media);
     QCOMPARE(dispatch.at(6).toString(), operationId);
     QCOMPARE(dispatch.at(7).toULongLong(),
-             manager->printerGeneration_);
+             manager->sessionController_.state_.printerGeneration);
     const TryxRuntimeOperationInfo info =
         manager->operationInfo(operationId);
     QCOMPARE(info.kind, QStringLiteral("SavedLayoutApply"));
@@ -4956,18 +4964,18 @@ void PrinterProtocolTests::runtimeCapabilitiesAreProfileBounded() {
         QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(sysRoot, devRoot));
-    manager->connected_ = true;
-    manager->printerClassConnected_ = true;
-    manager->printerDevicePath_ = QStringLiteral("/dev/tryx-test");
-    manager->printerDeviceSerial_ = QStringLiteral("PASE-CAPS-001");
-    manager->printerProductId_ = 0x1021;
-    manager->printerGeneration_ = 42;
+    manager->sessionController_.state_.connected = true;
+    manager->sessionController_.state_.printerClassConnected = true;
+    manager->sessionController_.state_.printerDevicePath = QStringLiteral("/dev/tryx-test");
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("PASE-CAPS-001");
+    manager->sessionController_.state_.printerProductId = 0x1021;
+    manager->sessionController_.state_.printerGeneration = 42;
 
     TryxRuntimeExportedObject exportedObject;
     TryxRuntimeManagerAdaptor managerAdaptor(
         &exportedObject, manager.get());
     emit manager->deviceConnected(
-        QStringLiteral("391a:1021"), manager->printerDeviceSerial_,
+        QStringLiteral("391a:1021"), manager->sessionController_.state_.printerDeviceSerial,
         QString(), QString());
     TryxRuntimeOperationsAdaptor operationsAdaptor(
         &exportedObject, manager.get(), &managerAdaptor);
@@ -5006,7 +5014,7 @@ void PrinterProtocolTests::runtimeCapabilitiesAreProfileBounded() {
             QStringLiteral("device.overlay-metrics.v1"),
             QStringLiteral("device.firmware-flash.v1")}));
 
-    manager->printerProductId_ = 0x1011;
+    manager->sessionController_.state_.printerProductId = 0x1011;
     capabilities = operationsAdaptor.GetDeviceCapabilitiesV1();
     QVERIFY(capabilities.capabilities.contains(
         QStringLiteral("device.media-upload.v1")));
@@ -5021,25 +5029,25 @@ void PrinterProtocolTests::runtimeCapabilitiesAreProfileBounded() {
     QVERIFY(!capabilities.capabilities.contains(
         QStringLiteral("device.firmware-flash.v1")));
 
-    manager->printerProductId_ = 0x2011;
+    manager->sessionController_.state_.printerProductId = 0x2011;
     capabilities = operationsAdaptor.GetDeviceCapabilitiesV1();
     QCOMPARE(
         capabilities.capabilities,
         QStringList{QStringLiteral("device.media-upload.v1")});
 
-    manager->printerProductId_ = 0x1021;
-    manager->printerDeviceSerial_.clear();
-    manager->printerDevicePath_ = QStringLiteral("/dev/reused-path");
+    manager->sessionController_.state_.printerProductId = 0x1021;
+    manager->sessionController_.state_.printerDeviceSerial.clear();
+    manager->sessionController_.state_.printerDevicePath = QStringLiteral("/dev/reused-path");
     capabilities = operationsAdaptor.GetDeviceCapabilitiesV1();
     QVERIFY(capabilities.deviceIdentity.isEmpty());
     QVERIFY(capabilities.capabilities.isEmpty());
 
-    manager->connected_ = false;
-    manager->printerClassConnected_ = false;
-    manager->printerDevicePath_.clear();
-    manager->printerDeviceSerial_.clear();
-    manager->printerProductId_ = 0;
-    ++manager->printerGeneration_;
+    manager->sessionController_.state_.connected = false;
+    manager->sessionController_.state_.printerClassConnected = false;
+    manager->sessionController_.state_.printerDevicePath.clear();
+    manager->sessionController_.state_.printerDeviceSerial.clear();
+    manager->sessionController_.state_.printerProductId = 0;
+    ++manager->sessionController_.state_.printerGeneration;
     capabilities = operationsAdaptor.GetDeviceCapabilitiesV1();
     QVERIFY(capabilities.deviceIdentity.isEmpty());
     QVERIFY(capabilities.capabilities.isEmpty());
@@ -5073,8 +5081,8 @@ runtimeDeviceSpecificationsCacheIsGenerationBounded() {
     QVERIFY(reply.screenType.isEmpty());
     QCOMPARE(reply.usbAutoKeepalive, false);
 
-    manager->connected_ = true;
-    manager->printerClassConnected_ = false;
+    manager->sessionController_.state_.connected = true;
+    manager->sessionController_.state_.printerClassConnected = false;
     emit manager->deviceConnected(
         QStringLiteral("1b1c:1b7c"), QStringLiteral("legacy-test"),
         QString(), QString());
@@ -5087,19 +5095,19 @@ runtimeDeviceSpecificationsCacheIsGenerationBounded() {
     constexpr quint64 generation = 42;
     const QString endpoint = QStringLiteral("/dev/tryx-specifications");
     const QString identity = QStringLiteral("PASE-SPECIFICATIONS-001");
-    manager->connected_ = true;
-    manager->printerClassConnected_ = true;
-    manager->printerDevicePath_ = endpoint;
-    manager->printerDeviceSerial_ = identity;
-    manager->printerProductId_ = 0x1021;
-    manager->printerGeneration_ = generation;
-    manager->printerSnapshot_.state =
+    manager->sessionController_.state_.connected = true;
+    manager->sessionController_.state_.printerClassConnected = true;
+    manager->sessionController_.state_.printerDevicePath = endpoint;
+    manager->sessionController_.state_.printerDeviceSerial = identity;
+    manager->sessionController_.state_.printerProductId = 0x1021;
+    manager->sessionController_.state_.printerGeneration = generation;
+    manager->sessionController_.state_.printerSnapshot.state =
         PrinterProtocol::DiscoveryState::Ready;
     PrinterProtocol::UsbPrinterDevice device;
     device.devicePath = endpoint;
     device.serial = identity;
     device.productId = 0x1021;
-    manager->printerSnapshot_.devices = {device};
+    manager->sessionController_.state_.printerSnapshot.devices = {device};
     emit manager->deviceConnected(
         QStringLiteral("391a:1021"), identity, QString(), QString());
 
@@ -5149,9 +5157,9 @@ runtimeDeviceSpecificationsCacheIsGenerationBounded() {
              QStringLiteral("PASE"));
 
     PrinterProtocol::DiscoverySnapshot nextSnapshot =
-        manager->printerSnapshot_;
+        manager->sessionController_.state_.printerSnapshot;
     manager->handlePrinterSnapshot(nextSnapshot);
-    const quint64 nextGeneration = manager->printerGeneration_;
+    const quint64 nextGeneration = manager->sessionController_.state_.printerGeneration;
     QCOMPARE(nextGeneration, generation + 1);
     QCOMPARE(operationsAdaptor.GetDeviceSpecificationsV1().status,
              QStringLiteral("Unavailable"));
@@ -5478,12 +5486,12 @@ void PrinterProtocolTests::
         .filePath(QStringLiteral("dev"));
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(sysRoot, devRoot));
-    manager->connected_ = true;
-    manager->printerClassConnected_ = true;
-    manager->printerDisplaySessionActive_ = true;
-    manager->printerGeneration_ = 91;
-    manager->printerRecoveryRequired_ = true;
-    manager->firmwareRecoveryInterlockActive_ = true;
+    manager->sessionController_.state_.connected = true;
+    manager->sessionController_.state_.printerClassConnected = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    manager->sessionController_.state_.printerGeneration = 91;
+    manager->sessionController_.state_.printerRecoveryRequired = true;
+    manager->sessionController_.state_.firmwareRecoveryInterlockActive = true;
 
     PrinterOperationCoordinator::OperationRecord record;
     record.info.id = QStringLiteral("SECRET-OPERATION-ID");
@@ -5934,22 +5942,22 @@ void PrinterProtocolTests::
     rejected(QStringLiteral("DowngradePrepared"));
     manager->runtimeDowngradeV10Prepared_ = false;
 
-    manager->firmwareExclusiveLeaseId_ = QStringLiteral("firmware");
+    manager->sessionController_.state_.firmwareExclusiveLeaseId = QStringLiteral("firmware");
     rejected(QStringLiteral("FirmwareUpdateActive"));
-    manager->firmwareExclusiveLeaseId_.clear();
+    manager->sessionController_.state_.firmwareExclusiveLeaseId.clear();
 
     manager->operationCoordinator_.activeOperationId_ =
         QStringLiteral("56565656-5656-4656-8656-565656565656");
     rejected(QStringLiteral("Busy"));
     manager->operationCoordinator_.activeOperationId_.clear();
 
-    manager->printerRecoveryRequired_ = true;
+    manager->sessionController_.state_.printerRecoveryRequired = true;
     rejected(QStringLiteral("DeviceRecoveryRequired"));
-    manager->printerRecoveryRequired_ = false;
+    manager->sessionController_.state_.printerRecoveryRequired = false;
 
-    manager->printerDisplaySessionLost_ = true;
+    manager->sessionController_.state_.printerDisplaySessionLost = true;
     rejected(QStringLiteral("SessionLost"));
-    manager->printerDisplaySessionLost_ = false;
+    manager->sessionController_.state_.printerDisplaySessionLost = false;
 
     manager->operationCoordinator_.retryCacheLoadComplete_ = false;
     rejected(QStringLiteral("RetryCacheValidationPending"));
@@ -6126,8 +6134,8 @@ void PrinterProtocolTests::
     {
         std::unique_ptr<DeviceManager> manager = createManager();
         QVERIFY(manager);
-        manager->printerGeneration_ = 7;
-        manager->printerDeviceSerial_ =
+        manager->sessionController_.state_.printerGeneration = 7;
+        manager->sessionController_.state_.printerDeviceSerial =
             QStringLiteral("PASE-CACHE-LATCH");
         const quint64 catalogRevisionBefore =
             manager->operationCoordinator_.mediaCatalog_.revision;
@@ -6325,7 +6333,7 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
         manager->handlePrinterSnapshot(absentSnapshot);
         manager->startKeepalive(1);
         QVERIFY(QMetaObject::invokeMethod(
-            manager->keepaliveTimer_, "timeout",
+            manager->sessionController_.keepaliveTimer_, "timeout",
             Qt::DirectConnection));
         QCOMPARE(configureSpy.count(), 0);
         QCOMPARE(restoreOverlaySpy.count(), 0);
@@ -6512,7 +6520,7 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
                      split, &setupDetail),
                  qPrintable(setupDetail));
         manager->operationCoordinator_.synchronizeRetryCacheSurface(
-            manager->printerGeneration_);
+            manager->sessionController_.state_.printerGeneration);
         QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
         const auto candidateBefore =
             *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
@@ -7233,7 +7241,7 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QObject::disconnect(
         manager.get(), &DeviceManager::requestPrinterStageMedia,
         manager->worker_, &DeviceWorker::stagePrinterMedia);
@@ -7257,7 +7265,7 @@ void PrinterProtocolTests::
     QVERIFY(tryx::printer_media_file_integrity::isSha256Hex(mediaId));
 
     tryx::MediaCatalogStore::OriginInput origin;
-    origin.deviceIdentity = manager->printerDeviceSerial_.trimmed();
+    origin.deviceIdentity = manager->sessionController_.state_.printerDeviceSerial.trimmed();
     origin.remote.name = remote.name;
     origin.remote.size = remote.size;
     origin.remote.source = 1U;
@@ -7313,7 +7321,7 @@ void PrinterProtocolTests::
         readyOperationId, remote.name,
         readyReserved.artifact.canonicalPath, true, false,
         payload.size(), 1, digest, digest, probeMetadata,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(readyOperationId).state,
              QStringLiteral("Succeeded"));
 
@@ -7363,7 +7371,7 @@ void PrinterProtocolTests::
         mismatchedOperationId, remote.name,
         mismatchedReserved.artifact.canonicalPath, true, false,
         payload.size(), 1, digest, digest, probeMetadata,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(mismatchedOperationId).state,
              QStringLiteral("Succeeded"));
 
@@ -8028,7 +8036,7 @@ void PrinterProtocolTests::
     operation.info.kind = QStringLiteral("StageDeviceMedia");
     operation.info.state = QStringLiteral("Pulling");
     operation.info.stage = QStringLiteral("PullingDeviceMedia");
-    operation.info.deviceGeneration = manager->printerGeneration_;
+    operation.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     operation.artifactId = artifactId;
     operation.artifactOwner = owner;
     operation.deviceChangePending = true;
@@ -8058,7 +8066,7 @@ void PrinterProtocolTests::
         payload.size(), 1, digest, digest,
         tryx::printer_media_validator::RecoveredH264ProbeMetadata{},
         QString(),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Cancelled"));
@@ -8989,10 +8997,10 @@ void PrinterProtocolTests::
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
-    QCOMPARE(manager->printerProductId_, journalProductId);
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId, journalProductId);
     const QString deviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
     QVERIFY(!deviceIdentity.isEmpty());
 
     TryxReplaceJournalRecord record;
@@ -9000,7 +9008,7 @@ void PrinterProtocolTests::
     record.operationId =
         QStringLiteral("31313131-3131-4131-8131-313131313131");
     record.deviceIdentity = deviceIdentity;
-    record.deviceGeneration = manager->printerGeneration_;
+    record.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.originalMediaId = QString(64, QLatin1Char('a'));
     record.originalRemoteName =
         splitGeometry
@@ -9082,12 +9090,12 @@ void PrinterProtocolTests::
     manager->operationCoordinator_.operations_[record.operationId]
         .replaceJournal.productId = journalProductId;
 
-    manager->printerProductId_ = otherProductId;
+    manager->sessionController_.state_.printerProductId = otherProductId;
     manager->operationCoordinator_.resumePendingReplaceReconciliation(
         manager->operationContext());
     QCOMPARE(reconcileSpy.count(), 0);
 
-    manager->printerProductId_ = journalProductId;
+    manager->sessionController_.state_.printerProductId = journalProductId;
     manager->operationCoordinator_.resumePendingReplaceReconciliation(
         manager->operationContext());
     QCOMPARE(reconcileSpy.count(), 1);
@@ -9166,8 +9174,8 @@ void PrinterProtocolTests::
             DeviceManager::createForTesting(sysRoot, devRoot));
         manager->setAutoConnectModeForTesting(true);
         manager->rescanPrinterForTesting();
-        QCOMPARE(manager->printerProductId_, deviceProductId);
-        deviceIdentity = manager->printerDeviceSerial_.trimmed();
+        QCOMPARE(manager->sessionController_.state_.printerProductId, deviceProductId);
+        deviceIdentity = manager->sessionController_.state_.printerDeviceSerial.trimmed();
         QVERIFY(!deviceIdentity.isEmpty());
         replacePath = manager->operationCoordinator_.replaceIntentPath();
         deletePath = manager->operationCoordinator_.deleteIntentPath();
@@ -9244,8 +9252,8 @@ void PrinterProtocolTests::
     recovered->loadDeleteIntent();
     recovered->setAutoConnectModeForTesting(true);
     recovered->rescanPrinterForTesting();
-    recovered->printerDisplaySessionActive_ = true;
-    QCOMPARE(recovered->printerProductId_, deviceProductId);
+    recovered->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(recovered->sessionController_.state_.printerProductId, deviceProductId);
     QCOMPARE(recovered->operationCoordinator_.pendingReplaceJournalOperationId_,
              replaceOperationId);
     QCOMPARE(recovered->operationCoordinator_.pendingDeleteOperationId_,
@@ -9296,8 +9304,8 @@ void PrinterProtocolTests::
     manager->loadMediaCatalogStore();
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
-    QCOMPARE(manager->printerProductId_, quint16{0x1011});
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId, quint16{0x1011});
 
     PrinterProtocol::MediaFile original;
     original.name =
@@ -9327,7 +9335,7 @@ void PrinterProtocolTests::
     reservation.operationId = stageOperationId;
     reservation.mediaId = originalEntry.mediaId;
     reservation.deviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
     reservation.remoteName = original.name;
     reservation.expectedSize = static_cast<quint64>(payload.size());
     reservation.logicalType = QStringLiteral("Video");
@@ -9385,13 +9393,13 @@ void PrinterProtocolTests::
         QStringLiteral("Full Screen");
     applyRequest.playMode = QStringLiteral("Single");
     applyRequest.replaceOverlay = true;
-    manager->displayState_.valid = true;
-    manager->displayState_.deviceSerial =
-        manager->printerDeviceSerial_.trimmed();
-    manager->displayState_.screenMode = applyRequest.screenMode;
-    manager->displayState_.media = applyRequest.media;
-    manager->displayStateReadGeneration_ =
-        manager->printerGeneration_;
+    manager->sessionController_.state_.displayState.valid = true;
+    manager->sessionController_.state_.displayState.deviceSerial =
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    manager->sessionController_.state_.displayState.screenMode = applyRequest.screenMode;
+    manager->sessionController_.state_.displayState.media = applyRequest.media;
+    manager->sessionController_.state_.displayStateReadGeneration =
+        manager->sessionController_.state_.printerGeneration;
     const TryxRuntimeMediaTransform transform;
     TryxRuntimeApplyRequest invalidApplyRequest = applyRequest;
     invalidApplyRequest.settingsAlign = QStringLiteral("Diagonal");
@@ -9438,8 +9446,8 @@ void PrinterProtocolTests::
     QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
     QVERIFY(!QFileInfo::exists(manager->operationCoordinator_.replaceIntentPath()));
 
-    manager->displayStateReadGeneration_ =
-        manager->printerGeneration_ - 1;
+    manager->sessionController_.state_.displayStateReadGeneration =
+        manager->sessionController_.state_.printerGeneration - 1;
     const QString staleLayoutOperationId =
         QStringLiteral("18181818-1818-4818-8818-181818181818");
     QCOMPARE(
@@ -9456,8 +9464,8 @@ void PrinterProtocolTests::
     QCOMPARE(profilePrepareSpy.count(), 0);
     QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
     QVERIFY(!QFileInfo::exists(manager->operationCoordinator_.replaceIntentPath()));
-    manager->displayStateReadGeneration_ =
-        manager->printerGeneration_;
+    manager->sessionController_.state_.displayStateReadGeneration =
+        manager->sessionController_.state_.printerGeneration;
 
     const auto freshLayoutMismatch = [
         &manager, &artifactId, &leaseId, &originalEntry,
@@ -9472,13 +9480,13 @@ void PrinterProtocolTests::
         const QString &freshScreenMode,
         const QString &freshPlayMode,
         const QStringList &freshMedia) {
-        manager->displayState_.screenMode =
+        manager->sessionController_.state_.displayState.screenMode =
             requestedLayout.screenMode;
-        manager->displayState_.playMode =
+        manager->sessionController_.state_.displayState.playMode =
             requestedLayout.playMode;
-        manager->displayState_.media = requestedLayout.media;
-        manager->displayStateReadGeneration_ =
-            manager->printerGeneration_;
+        manager->sessionController_.state_.displayState.media = requestedLayout.media;
+        manager->sessionController_.state_.displayStateReadGeneration =
+            manager->sessionController_.state_.printerGeneration;
         const int preflightBefore = replacePreflightSpy.count();
         const int foregroundBefore = foregroundSpy.count();
         const int foregroundEndBefore = foregroundEndSpy.count();
@@ -9499,7 +9507,7 @@ void PrinterProtocolTests::
             references, referencingSlots,
             freshScreenMode, freshPlayMode, freshMedia,
             true, false, true, QString(),
-            manager->printerGeneration_);
+            manager->sessionController_.state_.printerGeneration);
         const TryxRuntimeOperationInfo info =
             manager->operationInfo(operationId);
         if (info.state != QStringLiteral("Failed") ||
@@ -9576,9 +9584,9 @@ void PrinterProtocolTests::
     QVERIFY2(splitSideChangedError.isEmpty(),
              qPrintable(splitSideChangedError));
 
-    manager->displayState_.screenMode = applyRequest.screenMode;
-    manager->displayState_.playMode = applyRequest.playMode;
-    manager->displayState_.media = applyRequest.media;
+    manager->sessionController_.state_.displayState.screenMode = applyRequest.screenMode;
+    manager->sessionController_.state_.displayState.playMode = applyRequest.playMode;
+    manager->sessionController_.state_.displayState.media = applyRequest.media;
 
     const int acceptedPreflightBefore = replacePreflightSpy.count();
     const QString replaceOperationId =
@@ -9624,7 +9632,7 @@ void PrinterProtocolTests::
         canonicalApplyRequest.screenMode,
         canonicalApplyRequest.playMode,
         canonicalApplyRequest.media,
-        true, false, true, QString(), manager->printerGeneration_);
+        true, false, true, QString(), manager->sessionController_.state_.printerGeneration);
     const auto journalRecord =
         manager->operationCoordinator_.operations_.value(replaceOperationId).replaceJournal;
     QCOMPARE(journalRecord.productId, quint16{0x1011});
@@ -9696,7 +9704,7 @@ void PrinterProtocolTests::
         QStringLiteral("Cancelled"),
         QStringLiteral("TestBoundary"), QString(),
         QStringLiteral("test cleanup"));
-    manager->printerDisplaySessionActive_ = false;
+    manager->sessionController_.state_.printerDisplaySessionActive = false;
     const QString rejectedOperationId =
         QStringLiteral(
             "26262626-2626-4626-8626-262626262626");
@@ -9744,7 +9752,7 @@ void PrinterProtocolTests::
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QObject::disconnect(
         manager.get(),
         &DeviceManager::requestPrepareRecoveredPrinterMedia,
@@ -9759,7 +9767,7 @@ void PrinterProtocolTests::
     const QString original =
         QStringLiteral("stale.mp4.h264_2240x1080");
     const quint64 staleGeneration =
-        manager->printerGeneration_;
+        manager->sessionController_.state_.printerGeneration;
     PrinterOperationCoordinator::OperationRecord record;
     record.info.id = operationId;
     record.info.kind =
@@ -9771,7 +9779,7 @@ void PrinterProtocolTests::
     record.replaceOperation = true;
     record.originalRemoteNameForReplace = original;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration = staleGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
@@ -9781,7 +9789,7 @@ void PrinterProtocolTests::
     manager->operationCoordinator_.operations_[operationId]
         .deviceChangeMessage =
         QStringLiteral("simulated generation change");
-    ++manager->printerGeneration_;
+    ++manager->sessionController_.state_.printerGeneration;
 
     emit manager->worker_->
         printerReplacePreflightFinished(
@@ -9823,7 +9831,7 @@ void PrinterProtocolTests::
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QObject::disconnect(
         manager.get(),
         &DeviceManager::requestPrinterDeleteMedia,
@@ -9849,7 +9857,7 @@ void PrinterProtocolTests::
             record.info.stage =
                 QStringLiteral("ReconcileOnly");
             record.info.deviceGeneration =
-                manager->printerGeneration_;
+                manager->sessionController_.state_.printerGeneration;
             record.info.retryMode =
                 QStringLiteral("ReconcileOnly");
             record.info.terminalOutcome =
@@ -9860,9 +9868,9 @@ void PrinterProtocolTests::
                 original;
             record.remoteName = replacement;
             record.uploadDeviceIdentity =
-                manager->printerDeviceSerial_.trimmed();
+                manager->sessionController_.state_.printerDeviceSerial.trimmed();
             record.uploadDeviceGeneration =
-                manager->printerGeneration_;
+                manager->sessionController_.state_.printerGeneration;
             record.replaceOperation = true;
             record.replaceJournalActive = true;
             record.replaceJournal.operationId =
@@ -9956,7 +9964,7 @@ void PrinterProtocolTests::
             deletedReplacementMedia},
         true,
         PrinterProtocol::MutationOutcome::Succeeded,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
     QCOMPARE(
         manager->operationInfo(
             deletedOperationId).terminalOutcome,
@@ -9998,7 +10006,7 @@ void PrinterProtocolTests::
         false,
         PrinterProtocol::MutationOutcome::PartialOrUnknown,
         QStringLiteral("still present"),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(
         manager->operationInfo(
             retainedOperationId).state,
@@ -10034,7 +10042,7 @@ void PrinterProtocolTests::
         QStringList{missingOriginal},
         QStringList{missingOriginal}, {}, true,
         PrinterProtocol::MutationOutcome::Succeeded,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
     QCOMPARE(
         manager->operationInfo(missingOperationId).state,
         QStringLiteral("RetryAvailable"));
@@ -10086,7 +10094,7 @@ void PrinterProtocolTests::
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QObject::disconnect(
         manager.get(),
         &DeviceManager::requestPrinterReplacePreflight,
@@ -10113,16 +10121,16 @@ void PrinterProtocolTests::
     record.info.stage =
         QStringLiteral("ReconcileOnly");
     record.info.deviceGeneration =
-        manager->printerGeneration_;
+        manager->sessionController_.state_.printerGeneration;
     record.originalMediaId =
         QString(64, QLatin1Char('a'));
     record.originalRemoteNameForReplace = original;
     record.remoteName =
         QStringLiteral("apply-new.mp4.h264_2240x1080");
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration =
-        manager->printerGeneration_;
+        manager->sessionController_.state_.printerGeneration;
     record.replaceOperation = true;
     record.replaceJournalActive = true;
     record.replaceJournal.operationId = operationId;
@@ -10190,7 +10198,7 @@ void PrinterProtocolTests::
             QStringList{QStringLiteral("Single")},
             QString(), QString(), {},
             true, true, true, QString(),
-            manager->printerGeneration_);
+            manager->sessionController_.state_.printerGeneration);
 
     const TryxRuntimeOperationInfo info =
         manager->operationInfo(operationId);
@@ -10251,7 +10259,7 @@ void PrinterProtocolTests::
             true, false, false,
             QStringLiteral(
                 "replacement missing from fresh FileList"),
-            manager->printerGeneration_);
+            manager->sessionController_.state_.printerGeneration);
 
     const TryxRuntimeOperationInfo unresolvedInfo =
         manager->operationInfo(unresolvedOperationId);
@@ -11801,7 +11809,7 @@ void PrinterProtocolTests::runtimeUploadAdaptorsPreserveMediaTransform() {
             DeviceManager::createForTesting(sysRoot, devRoot));
         manager->setAutoConnectModeForTesting(true);
         manager->rescanPrinterForTesting();
-        manager->printerDisplaySessionActive_ = true;
+        manager->sessionController_.state_.printerDisplaySessionActive = true;
 
         const QString sourcePath =
             QDir(temporaryDirectory.path()).filePath(
@@ -11907,7 +11915,7 @@ runtimePreparationProfileAdaptorPreservesSplitTarget() {
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     const QString sourcePath =
         QDir(temporaryDirectory.path()).filePath(
@@ -11971,8 +11979,8 @@ splitPreparationTargetRejectsTurrisBeforePreparation() {
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
-    QCOMPARE(manager->printerProductId_, quint16{0x2011});
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId, quint16{0x2011});
 
     const QString sourcePath =
         QDir(temporaryDirectory.path()).filePath(
@@ -12107,14 +12115,14 @@ void PrinterProtocolTests::mediaTransformProfilePreventsOriginReuse() {
         QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(sysRoot, devRoot));
-    manager->printerDeviceSerial_ = QStringLiteral("PASE-ORIGIN");
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("PASE-ORIGIN");
     PrinterProtocol::MediaFile remote;
     remote.name = QStringLiteral("origin.png.h264_2240x1080");
     remote.size = 321;
     remote.source = PrinterProtocol::MediaSource::User;
     remote.readOnly = false;
     tryx::MediaCatalogStore::OriginInput origin;
-    origin.deviceIdentity = manager->printerDeviceSerial_;
+    origin.deviceIdentity = manager->sessionController_.state_.printerDeviceSerial;
     origin.remote.name = remote.name;
     origin.remote.size = remote.size;
     origin.remote.source = 1;
@@ -12156,7 +12164,7 @@ void PrinterProtocolTests::quickStagedSourceIsClaimedBeforeAcceptance() {
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     manager->cleanupMediaRuntimeStaging();
 
     QObject::disconnect(
@@ -12219,7 +12227,7 @@ void PrinterProtocolTests::
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     manager->cleanupMediaRuntimeStaging();
 
     const QString stagedName =
@@ -12267,7 +12275,7 @@ void PrinterProtocolTests::
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     manager->cleanupMediaRuntimeStaging();
 
     QObject::disconnect(
@@ -16053,8 +16061,8 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
-    QCOMPARE(manager->printerDeviceSerial_, QStringLiteral("1-1"));
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerDeviceSerial, QStringLiteral("1-1"));
     QCOMPARE(manager->metricsCapabilities().size(), 11);
     QVERIFY(manager->metricsCapabilities().contains(
         QStringLiteral("CPU Power")));
@@ -16101,7 +16109,7 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
              QStringLiteral("Preflight"));
     manager->worker_->printerMetricsConfigured(
         enableId, true, PrinterProtocol::MutationOutcome::Succeeded,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(enabledMetricsSpy.count(), 1);
     QCOMPARE(enabledOperationSpy.count(), 2);
@@ -16125,7 +16133,7 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
     QCOMPARE(enabledState.textColor, enableRequest.textColor);
     QVERIFY(enabledState.diagnostic.isEmpty());
     QVERIFY(QFileInfo::exists(
-        manager->paseMetricsConfigStore_->configPath()));
+        manager->sessionController_.paseMetricsConfigStore_->configPath()));
 
     std::unique_ptr<DeviceManager> restored(
         DeviceManager::createForTesting(sysRoot, devRoot));
@@ -16168,7 +16176,7 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
                  dualOverlay, true, &dualPersistError),
              qPrintable(dualPersistError));
     QFile dualConfigFile(
-        manager->paseMetricsConfigStore_->configPath());
+        manager->sessionController_.paseMetricsConfigStore_->configPath());
     QVERIFY(dualConfigFile.open(QIODevice::ReadOnly));
     const QJsonObject dualRoot =
         QJsonDocument::fromJson(
@@ -16240,14 +16248,14 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
              disableId);
     manager->worker_->printerMetricsConfigured(
         disableId, true, PrinterProtocol::MutationOutcome::Succeeded,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(disableId).state,
              QStringLiteral("Succeeded"));
     QVERIFY(!manager->metricsState().enabled);
     QVERIFY(!manager->metricsState().samplingActive);
     QVERIFY(manager->metricsState().metrics.isEmpty());
     QVERIFY(!QFileInfo::exists(
-        manager->paseMetricsConfigStore_->configPath()));
+        manager->sessionController_.paseMetricsConfigStore_->configPath()));
     QVERIFY(manager->persistedPaseOverlayForDevice(QStringLiteral("1-1"))
                 .left.metrics
                 .isEmpty());
@@ -16269,7 +16277,7 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
     manager->worker_->printerApplyFinished(
         preserveId, preserveRequest.media.first(), true, false,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(preserveId).state,
              QStringLiteral("Succeeded"));
     QVERIFY(!manager->metricsState().enabled);
@@ -16289,10 +16297,10 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
 
     const QByteArray rejectedPersistentState("{");
     QVERIFY(writeTextFile(
-        manager->paseMetricsConfigStore_->configPath(),
+        manager->sessionController_.paseMetricsConfigStore_->configPath(),
         rejectedPersistentState));
     manager->loadPaseMetricsConfig();
-    QVERIFY(!manager->paseMetricsConfigStore_->writesEnabled());
+    QVERIFY(!manager->sessionController_.paseMetricsConfigStore_->writesEnabled());
 
     QSignalSpy failedMetricsSpy(
         manager.get(), &DeviceManager::metricsStateUpdated);
@@ -16314,7 +16322,7 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
     manager->worker_->printerMetricsConfigured(
         persistenceFailureId, true,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(failedMetricsSpy.count(), 1);
     QCOMPARE(failedOperationSpy.count(), 2);
@@ -16339,7 +16347,7 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
              persistenceFailureRequest.metrics);
     QVERIFY(!failedState.diagnostic.isEmpty());
     QFile rejectedFile(
-        manager->paseMetricsConfigStore_->configPath());
+        manager->sessionController_.paseMetricsConfigStore_->configPath());
     QVERIFY(rejectedFile.open(QIODevice::ReadOnly));
     QCOMPARE(rejectedFile.readAll(), rejectedPersistentState);
 }
@@ -16426,7 +16434,7 @@ void PrinterProtocolTests::paseSchedulerAcceptsSplitAndDisplayOnly() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     QSignalSpy applySpy(
         manager.get(), &DeviceManager::requestPrinterApplyMedia);
@@ -16481,7 +16489,7 @@ void PrinterProtocolTests::paseSchedulerAcceptsSplitAndDisplayOnly() {
     manager->worker_->printerApplyFinished(
         splitId, split.media.constFirst(), true, true,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(splitId).state,
              QStringLiteral("Succeeded"));
 
@@ -16674,7 +16682,7 @@ void PrinterProtocolTests::paseSchedulerAcceptsSplitAndDisplayOnly() {
         emptyFullStyleId, emptyFullStyle.media.constFirst(),
         true, true,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     applySpy.clear();
     TryxRuntimeApplyRequest emptySplitStyle;
@@ -16712,7 +16720,7 @@ void PrinterProtocolTests::paseSchedulerAcceptsSplitAndDisplayOnly() {
         emptySplitStyleId,
         emptySplitStyle.media.constFirst(), true, true,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     TryxRuntimeApplyRequest invalidBrightness;
     invalidBrightness.display.brightnessPresent = true;
@@ -16762,7 +16770,7 @@ void PrinterProtocolTests::paseSchedulerAcceptsSplitAndDisplayOnly() {
     manager->worker_->printerApplyFinished(
         displayOnlyId, QString(), true, false,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(displayOnlyId).state,
              QStringLiteral("Succeeded"));
 }
@@ -16779,7 +16787,7 @@ void PrinterProtocolTests::mediaCatalogPersistsThumbnailAndPrunesAuthoritatively
 
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(sysRoot, devRoot));
-    manager->printerDeviceSerial_ = QStringLiteral("PASE-CATALOG-1");
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("PASE-CATALOG-1");
 
     const QString stagedDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(stagedDirectory));
@@ -17686,8 +17694,8 @@ void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
-    QVERIFY(!manager->printerDeviceSerial_.trimmed().isEmpty());
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QVERIFY(!manager->sessionController_.state_.printerDeviceSerial.trimmed().isEmpty());
 
     const QString sourcePath =
         QDir(temporaryDirectory.path()).filePath(QStringLiteral("source.mp4"));
@@ -17703,7 +17711,7 @@ void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation() {
     remote.source = PrinterProtocol::MediaSource::User;
     remote.readOnly = false;
     tryx::MediaCatalogStore::OriginInput origin;
-    origin.deviceIdentity = manager->printerDeviceSerial_;
+    origin.deviceIdentity = manager->sessionController_.state_.printerDeviceSerial;
     origin.remote.name = remote.name;
     origin.remote.size = remote.size;
     origin.remote.source = 1;
@@ -17752,11 +17760,11 @@ void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation() {
     QCOMPARE(analyzeSpy.count(), 1);
     emit manager->printerMediaPreparer_->sourceAnalyzed(
         operationId, sourcePath, sourceSha, sourceBytes.size(), profile,
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(refreshSpy.count(), 1);
     emit manager->worker_->printerMediaListReady(
         operationId, QList<PrinterProtocol::MediaFile>{remote},
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(prepareSpy.count(), 0);
     QCOMPARE(uploadSpy.count(), 0);
     QCOMPARE(applySpy.count(), 1);
@@ -17764,7 +17772,7 @@ void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation() {
     emit manager->worker_->printerApplyFinished(
         operationId, remote.name, true, false,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
 }
@@ -17783,7 +17791,7 @@ void PrinterProtocolTests::ensureOriginMissReleasesForegroundBeforePreparation()
         DeviceManager::createForTesting(sysRoot, devRoot));
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     const QString sourcePath =
         QDir(temporaryDirectory.path()).filePath(QStringLiteral("miss.mp4"));
@@ -17832,9 +17840,9 @@ void PrinterProtocolTests::ensureOriginMissReleasesForegroundBeforePreparation()
             sourcePath, request);
     emit manager->printerMediaPreparer_->sourceAnalyzed(
         operationId, sourcePath, sourceSha, sourceBytes.size(), profile,
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     emit manager->worker_->printerMediaListReady(
-        operationId, {}, manager->printerGeneration_);
+        operationId, {}, manager->sessionController_.state_.printerGeneration);
     QCOMPARE(transitions.count(QStringLiteral("begin")), 1);
     QCOMPARE(transitions.count(QStringLiteral("end")), 1);
     QCOMPARE(transitions.count(QStringLiteral("prepare")), 1);
@@ -17876,7 +17884,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QVERIFY(manager->operationCoordinator_.retryCacheLoadComplete_);
 
     const QString preparedStagingPath =
@@ -17909,7 +17917,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     record.info.stage = QStringLiteral("EnsuringSession");
     record.info.subject = QStringLiteral("preview-source.mp4");
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedStagingPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
@@ -17923,8 +17931,8 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -17958,7 +17966,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
         blockerRemote.readOnly = false;
         const QString blockerKey =
             manager->operationCoordinator_.mediaCatalogStore_->mediaId(
-                manager->printerDeviceSerial_.trimmed(),
+                manager->sessionController_.state_.printerDeviceSerial.trimmed(),
                 blockerRemote);
         QVERIFY(!blockerKey.isEmpty());
         thumbnailBlockerPath =
@@ -17976,12 +17984,12 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
             operationId, canonicalPreparedPath, remoteName, false,
             PrinterProtocol::MutationOutcome::FinalizationUnknown,
             QStringLiteral("FileTransmitEnd status timed out"),
-            manager->printerGeneration_);
+            manager->sessionController_.state_.printerGeneration);
     } else {
         manager->worker_->printerUploadFinished(
             operationId, canonicalPreparedPath, remoteName, true,
             PrinterProtocol::MutationOutcome::Succeeded, QString(),
-            manager->printerGeneration_);
+            manager->sessionController_.state_.printerGeneration);
     }
     QCOMPARE(refreshSpy.count(), 1);
 
@@ -17991,7 +17999,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     uploaded.source = PrinterProtocol::MediaSource::User;
     uploaded.readOnly = false;
     manager->worker_->printerMediaListReady(
-        operationId, {uploaded}, manager->printerGeneration_);
+        operationId, {uploaded}, manager->sessionController_.state_.printerGeneration);
 
     const TryxRuntimeOperationInfo failedCommit =
         manager->operationInfo(operationId);
@@ -18041,7 +18049,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
     restarted->setAutoConnectModeForTesting(true);
     restarted->rescanPrinterForTesting();
     QVERIFY(restarted->isPrinterClassConnected());
-    restarted->printerDisplaySessionActive_ = true;
+    restarted->sessionController_.state_.printerDisplaySessionActive = true;
 
     QObject::disconnect(
         restarted.get(),
@@ -18063,7 +18071,7 @@ void PrinterProtocolTests::previewCommitFailureRemainsRetryable() {
             .setStopAfterRetirementTombstoneForTesting(true);
     }
     restarted->worker_->printerMediaListReady(
-        retryId, {uploaded}, restarted->printerGeneration_);
+        retryId, {uploaded}, restarted->sessionController_.state_.printerGeneration);
 
     QCOMPARE(retryUploadSpy.count(), 0);
     QCOMPARE(restarted->operationInfo(retryId).state,
@@ -18118,7 +18126,7 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QVERIFY(manager->operationCoordinator_.retryCacheLoadComplete_);
 
     const QString preparedStagingPath =
@@ -18162,7 +18170,7 @@ void PrinterProtocolTests::
     record.info.stage = QStringLiteral("EnsuringSession");
     record.info.subject = QStringLiteral("origin-reuse.mp4");
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedStagingPath;
     record.preparedSha256 = preparedSha256;
     record.stagedThumbnailPath = thumbnailStagingPath;
@@ -18176,8 +18184,8 @@ void PrinterProtocolTests::
     record.sourceSize = sourceBytes.size();
     record.conversionProfile = paseTestConversionProfile();
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -18227,7 +18235,7 @@ void PrinterProtocolTests::
     reusable.source = PrinterProtocol::MediaSource::User;
     reusable.readOnly = false;
     tryx::MediaCatalogStore::OriginInput origin;
-    origin.deviceIdentity = manager->printerDeviceSerial_.trimmed();
+    origin.deviceIdentity = manager->sessionController_.state_.printerDeviceSerial.trimmed();
     origin.remote.name = reusable.name;
     origin.remote.size = reusable.size;
     origin.remote.source = 1U;
@@ -18246,7 +18254,7 @@ void PrinterProtocolTests::
 
     const QString reusableMediaId =
         manager->operationCoordinator_.mediaCatalogStore_->mediaId(
-            manager->printerDeviceSerial_.trimmed(), origin.remote);
+            manager->sessionController_.state_.printerDeviceSerial.trimmed(), origin.remote);
     QVERIFY(!reusableMediaId.isEmpty());
     const QString thumbnailBlockerPath =
         QDir(manager->operationCoordinator_.mediaCatalogStore_->thumbnailDirectory())
@@ -18263,7 +18271,7 @@ void PrinterProtocolTests::
              failedRetryId);
     QCOMPARE(refreshSpy.count(), 1);
     manager->worker_->printerMediaListReady(
-        failedRetryId, {reusable}, manager->printerGeneration_);
+        failedRetryId, {reusable}, manager->sessionController_.state_.printerGeneration);
 
     const TryxRuntimeOperationInfo failed =
         manager->operationInfo(failedRetryId);
@@ -18288,7 +18296,7 @@ void PrinterProtocolTests::
     manager->operationCoordinator_.retryCacheStore()
         .setStopAfterRetirementTombstoneForTesting(true);
     manager->worker_->printerMediaListReady(
-        successfulRetryId, {reusable}, manager->printerGeneration_);
+        successfulRetryId, {reusable}, manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(manager->operationInfo(successfulRetryId).state,
              QStringLiteral("Succeeded"));
@@ -18366,8 +18374,8 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
         candidateStaging, candidateBytes,
         QStringLiteral("preserved-a"));
     candidateInput.deviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    candidateInput.deviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    candidateInput.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     const auto candidatePrepared =
         manager->operationCoordinator_.retryCacheStore().persistPrepared(
             manager->operationCoordinator_.retryCacheSnapshot_, candidateInput);
@@ -18410,7 +18418,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     QVERIFY(candidateRecovered.snapshot.has_value());
     manager->operationCoordinator_.retryCacheSnapshot_ = *candidateRecovered.snapshot;
     manager->operationCoordinator_.synchronizeRetryCacheSurface(
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     const auto candidateBefore =
         *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
@@ -18434,7 +18442,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     dispatchRecord.info.stage = QStringLiteral("EnsuringSession");
     dispatchRecord.info.subject = QStringLiteral("independent-b.mp4");
     dispatchRecord.info.deviceGeneration =
-        manager->printerGeneration_;
+        manager->sessionController_.state_.printerGeneration;
     dispatchRecord.printerProductId = 0x1021;
     dispatchRecord.conversionProfile =
         paseTestConversionProfile();
@@ -18447,9 +18455,9 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
     dispatchRecord.originalRemoteName =
         dispatchRecord.remoteName;
     dispatchRecord.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
     dispatchRecord.uploadDeviceGeneration =
-        manager->printerGeneration_;
+        manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(
         dispatchOperationId, dispatchRecord);
     manager->operationCoordinator_.operationOrder_.append(dispatchOperationId);
@@ -18474,7 +18482,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
         dispatchOperationId, dispatchCanonicalPath,
         dispatchRecord.remoteName, true,
         PrinterProtocol::MutationOutcome::Succeeded,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
     QCOMPARE(refreshSpy.count(), 1);
 
     PrinterProtocol::MediaFile uploaded;
@@ -18486,7 +18494,7 @@ void PrinterProtocolTests::successfulUploadDoesNotDeleteUnrelatedRetryCandidate(
         .setStopAfterRetirementTombstoneForTesting(cleanupFailure);
     manager->worker_->printerMediaListReady(
         dispatchOperationId, {uploaded},
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(manager->operationInfo(dispatchOperationId).state,
              QStringLiteral("Succeeded"));
@@ -18595,7 +18603,7 @@ void PrinterProtocolTests::schedulerRejectsConcurrentOperationAndKeepsExactIdent
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QSignalSpy changedSpy(manager.get(), &DeviceManager::operationChanged);
 
     const QString firstId =
@@ -18660,8 +18668,8 @@ void PrinterProtocolTests::uploadWithoutDeviceIdentityIsRejected() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
-    QVERIFY(manager->printerDeviceSerial_.isEmpty());
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QVERIFY(manager->sessionController_.state_.printerDeviceSerial.isEmpty());
 
     const QString operationId =
         QStringLiteral("12121212-1212-4212-8212-121212121212");
@@ -18692,7 +18700,7 @@ void PrinterProtocolTests::queuedApplyCancellationIsNotDrainedOrExecuted() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QSignalSpy changedSpy(manager.get(), &DeviceManager::operationChanged);
 
     TryxRuntimeApplyRequest request;
@@ -31298,7 +31306,7 @@ void PrinterProtocolTests::uploadDispatchBarrierPersistsBeforeUsb() {
     record.info.state = QStringLiteral("Converting");
     record.info.stage = QStringLiteral("Converting");
     record.info.subject = QStringLiteral("dispatch-source.mp4");
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.printerProductId = 0x1021;
     record.conversionProfile = paseTestConversionProfile();
     record.mediaConversion =
@@ -31312,8 +31320,8 @@ void PrinterProtocolTests::uploadDispatchBarrierPersistsBeforeUsb() {
     record.sourceSize = sourceBytes.size();
     record.sourceFingerprint =
         tryx::printer_media_file_integrity::sourceFingerprint(sourcePath);
-    record.uploadDeviceIdentity = manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+    record.uploadDeviceIdentity = manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -31366,7 +31374,7 @@ void PrinterProtocolTests::uploadDispatchBarrierPersistsBeforeUsb() {
             QCryptographicHash::hash(preparedBytes,
                                      QCryptographicHash::Sha256)
                 .toHex()),
-        QString(), QString(), manager->printerGeneration_);
+        QString(), QString(), manager->sessionController_.state_.printerGeneration);
 
     QVERIFY2(uploadSpy.count() == 1,
              qPrintable(manager->operationInfo(operationId).message));
@@ -31432,7 +31440,7 @@ void PrinterProtocolTests::uploadDispatchBarrierFailureStopsBeforeUsb() {
     record.info.state = QStringLiteral("Preflight");
     record.info.stage = QStringLiteral("EnsuringSession");
     record.info.subject = QStringLiteral("blocked-dispatch.mp4");
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.printerProductId = 0x1021;
     record.conversionProfile = paseTestConversionProfile();
     record.mediaConversion =
@@ -31448,8 +31456,8 @@ void PrinterProtocolTests::uploadDispatchBarrierFailureStopsBeforeUsb() {
         QStringLiteral("blocked.mp4.h264_2240x1080");
     record.originalRemoteName = record.remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -31466,7 +31474,7 @@ void PrinterProtocolTests::uploadDispatchBarrierFailureStopsBeforeUsb() {
     QVERIFY(!manager->operationCoordinator_.dispatchPreparedUploadWithRetryBarrier(
         manager->operationContext(),
         manager->currentPrinterPath(), operationId,
-        manager->printerGeneration_));
+        manager->sessionController_.state_.printerGeneration));
     if (stopAfterShadowCommit) {
         manager->operationCoordinator_.retryCacheStore()
             .setStopAfterShadowCommitForTesting(false);
@@ -31548,7 +31556,7 @@ void PrinterProtocolTests::
     record.info.state = QStringLiteral("Preflight");
     record.info.stage = QStringLiteral("EnsuringSession");
     record.info.subject = QStringLiteral("sync-failure.mp4");
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.printerProductId = 0x1021;
     record.conversionProfile = paseTestConversionProfile();
     record.mediaConversion =
@@ -31563,8 +31571,8 @@ void PrinterProtocolTests::
         "sync-failure.mp4.h264_2240x1080");
     record.originalRemoteName = record.remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -31576,7 +31584,7 @@ void PrinterProtocolTests::
     QVERIFY(!manager->operationCoordinator_.dispatchPreparedUploadWithRetryBarrier(
         manager->operationContext(),
         manager->currentPrinterPath(), operationId,
-        manager->printerGeneration_));
+        manager->sessionController_.state_.printerGeneration));
     manager->operationCoordinator_.retryCacheStore()
         .setPreparedArtifactDirectorySyncFailureForTesting(false);
 
@@ -31700,7 +31708,7 @@ void PrinterProtocolTests::
     record.info.state = QStringLiteral("Preflight");
     record.info.stage = QStringLiteral("EnsuringSession");
     record.info.subject = QStringLiteral("reentrant.mp4");
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.printerProductId = 0x1021;
     record.conversionProfile = paseTestConversionProfile();
     record.mediaConversion =
@@ -31715,8 +31723,8 @@ void PrinterProtocolTests::
         "reentrant.mp4.h264_2240x1080");
     record.originalRemoteName = record.remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -31747,7 +31755,7 @@ void PrinterProtocolTests::
     QVERIFY(!manager->operationCoordinator_.dispatchPreparedUploadWithRetryBarrier(
         manager->operationContext(),
         manager->currentPrinterPath(), operationId,
-        manager->printerGeneration_));
+        manager->sessionController_.state_.printerGeneration));
 
     QVERIFY(invalidated);
     QCOMPARE(uploadSpy.count(), 0);
@@ -31807,7 +31815,7 @@ void PrinterProtocolTests::
         record.info.state = QStringLiteral("Preflight");
         record.info.stage = QStringLiteral("EnsuringSession");
         record.info.subject = QStringLiteral("shutdown.mp4");
-        record.info.deviceGeneration = manager->printerGeneration_;
+        record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
         record.printerProductId = 0x1021;
         record.conversionProfile = paseTestConversionProfile();
         record.preparedPath = preparedPath;
@@ -31818,8 +31826,8 @@ void PrinterProtocolTests::
             "shutdown.mp4.h264_2240x1080");
         record.originalRemoteName = record.remoteName;
         record.uploadDeviceIdentity =
-            manager->printerDeviceSerial_.trimmed();
-        record.uploadDeviceGeneration = manager->printerGeneration_;
+            manager->sessionController_.state_.printerDeviceSerial.trimmed();
+        record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
         manager->operationCoordinator_.operations_.insert(operationId, record);
         manager->operationCoordinator_.operationOrder_.append(operationId);
         manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -32262,7 +32270,7 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     const QString preparedPath = QDir(temporaryDirectory.path())
         .filePath(QStringLiteral("retained.h264"));
@@ -32279,7 +32287,7 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
     record.info.stage = QStringLiteral("EnsuringSession");
     record.info.subject = QStringLiteral("retained.mp4");
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
@@ -32289,8 +32297,8 @@ void PrinterProtocolTests::retryCancellationRetainsOwnershipOnManifestRemovalFai
         QStringLiteral("retained.mp4.h264_2240x1080");
     record.originalRemoteName = record.remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -32436,7 +32444,7 @@ void PrinterProtocolTests::
         manager->worker_, &DeviceWorker::startPrinterDisplaySession);
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    QCOMPARE(manager->printerProductId_, quint16{0x2011});
+    QCOMPARE(manager->sessionController_.state_.printerProductId, quint16{0x2011});
 
     const QString preparedPath =
         QDir(temporaryDirectory.path()).filePath(
@@ -32453,7 +32461,7 @@ void PrinterProtocolTests::
     record.info.state = QStringLiteral("Ending");
     record.info.stage = QStringLiteral("Ending");
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
@@ -32463,8 +32471,8 @@ void PrinterProtocolTests::
         QStringLiteral("turris.mp4.h264_1280x720");
     record.originalRemoteName = record.remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.conversionProfile = QStringLiteral(
         "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
     record.sourceContentSha256 = record.preparedSha256;
@@ -32494,7 +32502,7 @@ void PrinterProtocolTests::
     manager->worker_->printerUploadFinished(
         operationId, canonicalPreparedPath, record.remoteName, true,
         PrinterProtocol::MutationOutcome::Succeeded,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
 
     const TryxRuntimeOperationInfo acknowledged =
         manager->operationInfo(operationId);
@@ -32825,7 +32833,7 @@ void PrinterProtocolTests::postUploadRefreshFailureRemainsUnknownAndRetryable() 
     record.info.stage = QStringLiteral("RefreshingMedia");
     record.info.subject = QStringLiteral("refresh-failure.mp4");
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes, QCryptographicHash::Sha256)
@@ -32834,9 +32842,9 @@ void PrinterProtocolTests::postUploadRefreshFailureRemainsUnknownAndRetryable() 
         QStringLiteral("verified-later.mp4.h264_2240x1080");
     record.originalRemoteName = record.remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration =
-        manager->printerGeneration_;
+        manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -32847,7 +32855,7 @@ void PrinterProtocolTests::postUploadRefreshFailureRemainsUnknownAndRetryable() 
 
     manager->worker_->printerMediaListFailed(
         operationId, QStringLiteral("refresh transport failed"),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("RetryAvailable"));
     QCOMPARE(manager->operationInfo(operationId).errorCategory,
@@ -32903,7 +32911,7 @@ void PrinterProtocolTests::
     record.info.subject = QStringLiteral("finalized.mp4");
     record.info.resultName = remoteName;
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
@@ -32912,8 +32920,8 @@ void PrinterProtocolTests::
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -32931,17 +32939,17 @@ void PrinterProtocolTests::
         operationId, durablePreparedPath, remoteName, false,
         PrinterProtocol::MutationOutcome::FinalizationUnknown,
         QStringLiteral("FileTransmitEnd status timed out"),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Refreshing"));
     QCOMPARE(manager->operationInfo(operationId).stage,
              QStringLiteral("RecoveringFinalization"));
     QCOMPARE(retransmitSpy.count(), 0);
     QCOMPARE(refreshSpy.count(), 1);
-    QVERIFY(!manager->printerDisplaySessionActive_);
+    QVERIFY(!manager->sessionController_.state_.printerDisplaySessionActive);
 
     manager->worker_->printerSessionStarted(
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(refreshSpy.count(), 1);
     QCOMPARE(manager->operationInfo(operationId).stage,
              QStringLiteral("RecoveringFinalization"));
@@ -32953,11 +32961,11 @@ void PrinterProtocolTests::
     exact.readOnly = false;
     exact.source = PrinterProtocol::MediaSource::User;
     manager->worker_->printerMediaListReady(
-        operationId, {exact}, manager->printerGeneration_);
+        operationId, {exact}, manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
-    QVERIFY(manager->printerDisplaySessionActive_);
+    QVERIFY(manager->sessionController_.state_.printerDisplaySessionActive);
     QCOMPARE(retransmitSpy.count(), 0);
     QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
@@ -33002,7 +33010,7 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     QObject::disconnect(
         manager.get(), &DeviceManager::requestPrinterApplyMedia,
@@ -33043,7 +33051,7 @@ void PrinterProtocolTests::
     record.info.resultName = remoteName;
     record.info.total = preparedBytes.size();
     record.info.applyAfterUpload = true;
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(
@@ -33051,8 +33059,8 @@ void PrinterProtocolTests::
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.applyRequest.media = {
         replaceOperation ? originalName : remoteName};
     record.applyRequest.ratio = QStringLiteral("2:1");
@@ -33112,7 +33120,7 @@ void PrinterProtocolTests::
         operationId, durablePreparedPath, remoteName, false,
         PrinterProtocol::MutationOutcome::FinalizationUnknown,
         QStringLiteral("FileTransmitEnd status timed out"),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Refreshing"));
     QCOMPARE(manager->operationInfo(operationId).stage,
@@ -33142,7 +33150,7 @@ void PrinterProtocolTests::
     exact.source = PrinterProtocol::MediaSource::User;
     exact.readOnly = false;
     manager->worker_->printerMediaListReady(
-        operationId, {exact}, manager->printerGeneration_);
+        operationId, {exact}, manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(retransmitSpy.count(), 0);
     if (cleanupFailure) {
@@ -33206,7 +33214,7 @@ void PrinterProtocolTests::
     manager->worker_->printerApplyFinished(
         operationId, remoteName, true, false,
         PrinterProtocol::MutationOutcome::Succeeded,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
 }
@@ -33249,7 +33257,7 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    manager->printerDisplaySessionActive_ = true;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     const QByteArray preparedBytes(8192, '\x73');
     const QString preparedPath =
@@ -33270,7 +33278,7 @@ void PrinterProtocolTests::
     record.info.subject = QStringLiteral("ambiguous.mp4");
     record.info.resultName = remoteName;
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(
@@ -33278,8 +33286,8 @@ void PrinterProtocolTests::
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(sourceOperationId, record);
     manager->operationCoordinator_.operationOrder_.append(sourceOperationId);
     manager->operationCoordinator_.activeOperationId_ = sourceOperationId;
@@ -33335,7 +33343,7 @@ void PrinterProtocolTests::
         manager->worker_->printerUploadFinished(
             sourceOperationId, durablePreparedPath, remoteName, true,
             PrinterProtocol::MutationOutcome::Succeeded,
-            QString(), manager->printerGeneration_);
+            QString(), manager->sessionController_.state_.printerGeneration);
         QCOMPARE(refreshSpy.count(), 1);
     }
 
@@ -33351,7 +33359,7 @@ void PrinterProtocolTests::
     }
     manager->worker_->printerMediaListReady(
         operationId, {exact, conflict},
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     if (retryPreflight) {
         QCOMPARE(uploadSpy.count(), 1);
@@ -33449,7 +33457,7 @@ void PrinterProtocolTests::
         record.info.resultName = remoteName;
         record.info.total = preparedBytes.size();
         record.info.deviceGeneration =
-            manager->printerGeneration_;
+            manager->sessionController_.state_.printerGeneration;
         record.preparedPath = preparedPath;
         record.preparedSha256 = QString::fromLatin1(
             QCryptographicHash::hash(
@@ -33464,9 +33472,9 @@ void PrinterProtocolTests::
                 .toHex());
         record.sourceSize = preparedBytes.size();
         record.uploadDeviceIdentity =
-            manager->printerDeviceSerial_.trimmed();
+            manager->sessionController_.state_.printerDeviceSerial.trimmed();
         record.uploadDeviceGeneration =
-            manager->printerGeneration_;
+            manager->sessionController_.state_.printerGeneration;
         manager->operationCoordinator_.operations_.insert(operationId, record);
         manager->operationCoordinator_.operationOrder_.append(operationId);
         manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -33480,7 +33488,7 @@ void PrinterProtocolTests::
             operationId, durablePreparedPath, remoteName, false,
             PrinterProtocol::MutationOutcome::FinalizationUnknown,
             QStringLiteral("FileTransmitEnd status timed out"),
-            manager->printerGeneration_);
+            manager->sessionController_.state_.printerGeneration);
         QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_
                     .retryCandidate.has_value());
         QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->outcome,
@@ -33549,7 +33557,7 @@ void PrinterProtocolTests::
         .setStopAfterRetirementTombstoneForTesting(cleanupFailure);
     restarted->worker_->printerMediaListReady(
         operationId, observedMedia,
-        restarted->printerGeneration_);
+        restarted->sessionController_.state_.printerGeneration);
     QCOMPARE(uploadSpy.count(), 0);
 
     if (exactFilePresent) {
@@ -33575,7 +33583,7 @@ void PrinterProtocolTests::
              QStringLiteral("RetryAvailable"));
     QCOMPARE(restarted->operationInfo(operationId).terminalOutcome,
              QStringLiteral("PartialOrUnknown"));
-    QVERIFY(restarted->printerRecoveryRequired_);
+    QVERIFY(restarted->sessionController_.state_.printerRecoveryRequired);
     QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_
                 .retryCandidate.has_value());
     QVERIFY(restarted->operationCoordinator_.retryCacheSnapshot_.retryCandidate
@@ -33596,14 +33604,14 @@ void PrinterProtocolTests::
         QDir(devRoot).filePath(
             QStringLiteral("usb/") + lpName)));
     restarted->rescanPrinterForTesting();
-    QVERIFY(restarted->printerRecoveryRemovalObserved_);
+    QVERIFY(restarted->sessionController_.state_.printerRecoveryRemovalObserved);
 
     QVERIFY(createUsbDevice(sysRoot, usbName, "1021"));
     QVERIFY(createPrinterEndpoint(
         sysRoot, devRoot, usbName, lpName));
     restarted->rescanPrinterForTesting();
-    QVERIFY(!restarted->printerRecoveryRequired_);
-    restarted->printerDisplaySessionActive_ = true;
+    QVERIFY(!restarted->sessionController_.state_.printerRecoveryRequired);
+    restarted->sessionController_.state_.printerDisplaySessionActive = true;
 
     const QString retryId =
         QStringLiteral("70707070-7070-4070-8070-707070707070");
@@ -33612,7 +33620,7 @@ void PrinterProtocolTests::
              retryId);
     QCOMPARE(refreshSpy.count(), refreshBeforeRetry + 1);
     restarted->worker_->printerMediaListReady(
-        retryId, {}, restarted->printerGeneration_);
+        retryId, {}, restarted->sessionController_.state_.printerGeneration);
 
     QCOMPARE(uploadSpy.count(), 1);
     const QString replacementRemoteName =
@@ -33667,7 +33675,7 @@ void PrinterProtocolTests::
     record.info.subject = QStringLiteral("generation.mp4");
     record.info.resultName = remoteName;
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
@@ -33676,8 +33684,8 @@ void PrinterProtocolTests::
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -33691,7 +33699,7 @@ void PrinterProtocolTests::
     QSignalSpy retransmitSpy(
         manager.get(), &DeviceManager::requestPrinterUploadPrepared);
 
-    const quint64 uploadGeneration = manager->printerGeneration_;
+    const quint64 uploadGeneration = manager->sessionController_.state_.printerGeneration;
     manager->worker_->printerUploadFinished(
         operationId, durablePreparedPath, remoteName, false,
         PrinterProtocol::MutationOutcome::FinalizationUnknown,
@@ -33702,8 +33710,8 @@ void PrinterProtocolTests::
 
     manager->cancelForegroundForGenerationChange(
         QStringLiteral("USB generation changed"));
-    ++manager->printerGeneration_;
-    const quint64 recoveryGeneration = manager->printerGeneration_;
+    ++manager->sessionController_.state_.printerGeneration;
+    const quint64 recoveryGeneration = manager->sessionController_.state_.printerGeneration;
     manager->worker_->printerSessionStarted(recoveryGeneration);
 
     QCOMPARE(refreshSpy.count(), 2);
@@ -33750,7 +33758,7 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
 
-    const QString originalIdentity = manager->printerDeviceSerial_;
+    const QString originalIdentity = manager->sessionController_.state_.printerDeviceSerial;
     QVERIFY(!originalIdentity.isEmpty());
     const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
@@ -33773,7 +33781,7 @@ void PrinterProtocolTests::
     record.info.subject = QStringLiteral("replacement.mp4");
     record.info.resultName = remoteName;
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
@@ -33782,7 +33790,7 @@ void PrinterProtocolTests::
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.uploadDeviceIdentity = originalIdentity;
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -33796,11 +33804,11 @@ void PrinterProtocolTests::
     QSignalSpy retransmitSpy(
         manager.get(), &DeviceManager::requestPrinterUploadPrepared);
 
-    const quint64 uploadGeneration = manager->printerGeneration_;
+    const quint64 uploadGeneration = manager->sessionController_.state_.printerGeneration;
     manager->cancelForegroundForGenerationChange(
         QStringLiteral("USB device was replaced"));
-    ++manager->printerGeneration_;
-    manager->printerDeviceSerial_ = QStringLiteral("replacement-device");
+    ++manager->sessionController_.state_.printerGeneration;
+    manager->sessionController_.state_.printerDeviceSerial = QStringLiteral("replacement-device");
 
     manager->worker_->printerUploadFinished(
         operationId, durablePreparedPath, remoteName, false,
@@ -33812,7 +33820,7 @@ void PrinterProtocolTests::
              originalIdentity);
 
     manager->worker_->printerSessionStarted(
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(refreshSpy.count(), 0);
     QCOMPARE(retransmitSpy.count(), 0);
     QCOMPARE(manager->operationInfo(operationId).state,
@@ -33869,8 +33877,8 @@ applyPreflightTimeoutPreservesNotStartedBeforeSessionLoss() {
                 DeviceWorker::PrinterSessionState::Active;
         },
         Qt::BlockingQueuedConnection));
-    manager->printerDisplaySessionActive_ = true;
-    manager->printerDisplaySessionLost_ = false;
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    manager->sessionController_.state_.printerDisplaySessionLost = false;
 
     int queryCount = 0;
     quint64 firstTrackId = 0;
@@ -33945,7 +33953,7 @@ applyPreflightTimeoutPreservesNotStartedBeforeSessionLoss() {
     terminalTimer.start();
     while ((manager->operationInfo(operationId).state !=
                 QStringLiteral("Failed") ||
-            !manager->printerDisplaySessionLost_) &&
+            !manager->sessionController_.state_.printerDisplaySessionLost) &&
            terminalTimer.elapsed() < kPeerTimeoutMs * 2) {
         QCoreApplication::processEvents(
             QEventLoop::AllEvents, 10);
@@ -33969,7 +33977,7 @@ applyPreflightTimeoutPreservesNotStartedBeforeSessionLoss() {
     QVERIFY(manager->activeOperationInfo().id.isEmpty());
     QVERIFY(!manager->operationCoordinator_.operations_.value(operationId)
                  .deviceChangePending);
-    QVERIFY(manager->printerDisplaySessionLost_);
+    QVERIFY(manager->sessionController_.state_.printerDisplaySessionLost);
 }
 
 void PrinterProtocolTests::generationChangeWaitsForStructuredApplyOutcome() {
@@ -33988,7 +33996,7 @@ void PrinterProtocolTests::generationChangeWaitsForStructuredApplyOutcome() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
 
-    const quint64 oldGeneration = manager->printerGeneration_;
+    const quint64 oldGeneration = manager->sessionController_.state_.printerGeneration;
     const QString operationId =
         QStringLiteral("77777777-7777-4777-8777-777777777777");
     const QString mediaName =
@@ -34011,7 +34019,7 @@ void PrinterProtocolTests::generationChangeWaitsForStructuredApplyOutcome() {
     QCOMPARE(manager->activeOperationInfo().id, operationId);
     QVERIFY(manager->operationCoordinator_.operations_.value(operationId).deviceChangePending);
 
-    ++manager->printerGeneration_;
+    ++manager->sessionController_.state_.printerGeneration;
     manager->worker_->printerApplyFinished(
         operationId, mediaName, false, false,
         PrinterProtocol::MutationOutcome::PartialOrUnknown,
@@ -34462,6 +34470,347 @@ void PrinterProtocolTests::paseUdevReadinessUsesUsbDeviceEvents() {
     QCOMPARE(transitionAdd, qMakePair(true, false));
 }
 
+void PrinterProtocolTests::sessionControllerPublishesThroughSynchronousManagerFacade() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot,
+                                 QStringLiteral("1-1"), QStringLiteral("lp0")));
+    bool connectedWasPublished = false;
+    int activePublications = 0;
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QCOMPARE(manager->sessionController_.thread(), manager->thread());
+    connect(manager.get(), &DeviceManager::deviceConnected, manager.get(),
+            [&](const QString &product, const QString &identity,
+                const QString &, const QString &) {
+                connectedWasPublished = true;
+                QVERIFY(manager->isConnected());
+                QVERIFY(manager->isPrinterClassConnected());
+                QCOMPARE(product, QStringLiteral("391a:1021"));
+                const auto &state = manager->sessionController_.state();
+                QCOMPARE(identity, state.printerDeviceSerial);
+                QCOMPARE(manager->operationContext().generation,
+                         state.printerGeneration);
+            });
+    connect(manager.get(), &DeviceManager::printerDisplaySessionChanged,
+            manager.get(), [&](bool active) {
+                ++activePublications;
+                QCOMPARE(manager->isPrinterDisplaySessionActive(), active);
+                QCOMPARE(manager->operationContext().displaySessionActive,
+                         active);
+            });
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(connectedWasPublished);
+    const quint64 generation = manager->printerGenerationForTesting();
+    manager->sessionController_.setPrinterDisplaySessionActive(true);
+    QCOMPARE(activePublications, 1);
+    manager->sessionController_.setPrinterDisplaySessionActive(true);
+    QCOMPARE(activePublications, 1);
+    manager->disconnectDevice();
+    QCOMPARE(activePublications, 2);
+    QVERIFY(!manager->isConnected());
+    manager->sessionController_.handleWorkerPrinterSessionStarted(generation);
+    QCOMPARE(activePublications, 2);
+    QVERIFY(!manager->isPrinterDisplaySessionActive());
+}
+
+void PrinterProtocolTests::sessionTransitionStopsAfterReentrantFence_data() {
+    QTest::addColumn<QString>("phase");
+    QTest::addColumn<bool>("firmware");
+    for (const QString &phase : {QStringLiteral("discovery-metrics"),
+                                 QStringLiteral("connect-metrics"),
+                                 QStringLiteral("connect-attached"),
+                                 QStringLiteral("session-ready"),
+                                 QStringLiteral("snapshot-inactive")}) {
+        for (bool firmware : {false, true}) {
+            const QByteArray row = phase.toUtf8() +
+                (firmware ? "-quiesce" : "-disconnect");
+            QTest::newRow(row.constData()) << phase << firmware;
+        }
+    }
+}
+
+void PrinterProtocolTests::sessionTransitionStopsAfterReentrantFence() {
+    QFETCH(QString, phase);
+    QFETCH(bool, firmware);
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot,
+                                 QStringLiteral("1-1"), QStringLiteral("lp0")));
+    bool interrupted = false;
+    bool leaseAcquired = false;
+    QString acquisitionError;
+    int staleRequests = 0;
+    int reopenedGates = 0;
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    if (phase == QStringLiteral("connect-attached")) {
+        manager->disconnectDevice();
+    } else if (phase == QStringLiteral("snapshot-inactive")) {
+        manager->setPrinterDisplaySessionActive(true);
+    }
+    const auto interrupt = [&]() {
+        if (interrupted) return;
+        interrupted = true;
+        if (firmware) {
+            leaseAcquired = manager->acquireFirmwareExclusive(
+                QStringLiteral("reentrant-session-fence"), &acquisitionError);
+        } else {
+            manager->disconnectDevice();
+        }
+    };
+    if (phase.endsWith(QStringLiteral("metrics"))) {
+        connect(manager.get(), &DeviceManager::metricsStateUpdated,
+                manager.get(), interrupt);
+    } else if (phase == QStringLiteral("connect-attached")) {
+        connect(manager.get(), &DeviceManager::deviceConnected,
+                manager.get(), interrupt);
+    } else {
+        connect(manager.get(), &DeviceManager::printerDisplaySessionChanged,
+                manager.get(), [interrupt, phase](bool active) {
+                    if (active == (phase == QStringLiteral("session-ready")))
+                        interrupt();
+                });
+    }
+    const auto countRequest = [&]() { if (interrupted) ++staleRequests; };
+    connect(manager.get(), &DeviceManager::requestConfigurePrinter,
+            manager.get(), countRequest);
+    connect(manager.get(), &DeviceManager::requestRestorePrinterOverlay,
+            manager.get(), countRequest);
+    connect(manager.get(), &DeviceManager::requestStartPrinterSession,
+            manager.get(), countRequest);
+    connect(manager.get(), &DeviceManager::requestPrinterDisplayState,
+            manager.get(), countRequest);
+    connect(&manager->sessionController_,
+            &PrinterSessionController::requestGenerationGate, manager.get(),
+            [&](quint64, bool open) { if (interrupted && open) ++reopenedGates; });
+
+    if (phase.startsWith(QStringLiteral("connect"))) {
+        manager->connectDevice();
+    } else if (phase == QStringLiteral("session-ready")) {
+        manager->sessionController_.handleWorkerPrinterSessionStarted(
+            manager->printerGenerationForTesting());
+    } else {
+        const auto snapshot = manager->sessionController_.state().printerSnapshot;
+        manager->handlePrinterSnapshot(snapshot);
+    }
+    QVERIFY(interrupted);
+    if (firmware) QVERIFY2(leaseAcquired, qPrintable(acquisitionError));
+    QCOMPARE(staleRequests, 0);
+    QCOMPARE(reopenedGates, 0);
+    QVERIFY(!manager->isPrinterDisplaySessionActive());
+}
+
+void PrinterProtocolTests::sessionTeardownPreservesReentrantReconnect_data() {
+    QTest::addColumn<bool>("duringMetricsReset");
+    QTest::newRow("metrics-reset") << true;
+    QTest::newRow("display-reset") << false;
+}
+
+void PrinterProtocolTests::sessionTeardownPreservesReentrantReconnect() {
+    QFETCH(bool, duringMetricsReset);
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot,
+                                 QStringLiteral("1-1"), QStringLiteral("lp0")));
+    bool reconnectRequested = false;
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    const quint64 generation = manager->printerGenerationForTesting();
+    const auto reconnect = [&]() {
+        if (reconnectRequested) return;
+        reconnectRequested = true;
+        manager->connectDevice();
+    };
+    if (duringMetricsReset) {
+        connect(manager.get(), &DeviceManager::metricsStateUpdated,
+                manager.get(), reconnect);
+    } else {
+        connect(manager.get(), &DeviceManager::displayStateUpdated,
+                manager.get(), reconnect);
+    }
+    manager->disconnectDevice();
+    QVERIFY(reconnectRequested);
+    QVERIFY(manager->isConnected());
+    QVERIFY(manager->isPrinterClassConnected());
+    QCOMPARE(manager->printerGenerationForTesting(), generation + 1);
+    QVERIFY(manager->worker_->printerGenerationIsCurrent(generation + 1));
+}
+
+void PrinterProtocolTests::firmwareAcquireOrdersReentrantReleaseAfterQuiesce_data() {
+    QTest::addColumn<QString>("phase");
+    QTest::newRow("inactive") << QStringLiteral("inactive");
+    QTest::newRow("preparation-cancel") << QStringLiteral("preparation-cancel");
+    QTest::newRow("closed-gate") << QStringLiteral("closed-gate");
+    QTest::newRow("quiesce") << QStringLiteral("quiesce");
+}
+
+void PrinterProtocolTests::firmwareAcquireOrdersReentrantReleaseAfterQuiesce() {
+    QFETCH(QString, phase);
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot,
+                                 QStringLiteral("1-1"), QStringLiteral("lp0")));
+    const QString lease = QStringLiteral("reentrant-release");
+    QStringList dispatches;
+    bool released = false;
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->setPrinterDisplaySessionActive(true);
+    const quint64 generation = manager->printerGenerationForTesting();
+    const auto release = [&]() {
+        if (released) return;
+        released = true;
+        QVERIFY(manager->firmwareExclusiveActive());
+        manager->releaseFirmwareExclusive(lease, false);
+        QVERIFY(manager->firmwareExclusiveActive());
+    };
+    // Record actual request order on the synchronous facade. The worker uses
+    // the same connection order and queue, with no USB device in this fixture.
+    connect(manager.get(), &DeviceManager::requestFirmwareTransportQuiesce,
+            manager.get(), [&](const QString &id, quint64 requestGeneration) {
+                QCOMPARE(id, lease);
+                QCOMPARE(requestGeneration, generation + 1);
+                dispatches.append(QStringLiteral("quiesce"));
+            });
+    connect(manager.get(), &DeviceManager::requestFirmwareQuiesceReleaseFence,
+            manager.get(), [&](const QString &id, quint64 requestGeneration) {
+                QCOMPARE(id, lease);
+                QCOMPARE(requestGeneration, generation + 1);
+                dispatches.append(QStringLiteral("release"));
+            });
+    if (phase == QStringLiteral("inactive")) {
+        connect(manager.get(), &DeviceManager::printerDisplaySessionChanged,
+                manager.get(), release);
+    } else if (phase == QStringLiteral("preparation-cancel")) {
+        connect(manager.get(), &DeviceManager::requestCancelPrinterPreparation,
+                manager.get(), release);
+    } else if (phase == QStringLiteral("closed-gate")) {
+        connect(&manager->sessionController_,
+                &PrinterSessionController::requestGenerationGate,
+                manager.get(), [release](quint64, bool open) {
+                    if (!open) release();
+                });
+    } else {
+        connect(manager.get(), &DeviceManager::requestFirmwareTransportQuiesce,
+                manager.get(), release);
+    }
+    QSignalSpy quiesced(manager.get(), &DeviceManager::firmwareTransportQuiesced);
+    QString error;
+    QVERIFY2(manager->acquireFirmwareExclusive(lease, &error), qPrintable(error));
+    QVERIFY(released);
+    QCOMPARE(dispatches, QStringList({QStringLiteral("quiesce"),
+                                     QStringLiteral("release")}));
+    QTRY_VERIFY_WITH_TIMEOUT(!manager->firmwareExclusiveActive(), 2000);
+    QCOMPARE(quiesced.count(), 1);
+    QVERIFY(!manager->isConnected());
+    QVERIFY(!manager->sessionController_.state().autoConnectMode);
+}
+
+void PrinterProtocolTests::sessionGenerationTransitionsPreserveEventBoundaries() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(temporaryDirectory.path())
+        .filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot,
+                                 QStringLiteral("1-1"), QStringLiteral("lp0")));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(manager.get(), &DeviceManager::requestConnect,
+                        manager->worker_, &DeviceWorker::connectDevice);
+    QSignalSpy startSpy(manager.get(), &DeviceManager::requestStartPrinterSession);
+    QSignalSpy cancellationSpy(manager.get(),
+                              &DeviceManager::requestCancelPrinterPreparation);
+    quint64 generation = manager->printerGenerationForTesting();
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QCOMPARE(startSpy.count(), 1);
+    QCOMPARE(cancellationSpy.count(), 1);
+    manager->rescanPrinterForTesting();
+    QCOMPARE(manager->printerGenerationForTesting(), generation);
+    QCOMPARE(startSpy.count(), 1);
+    QCOMPARE(cancellationSpy.count(), 1);
+
+    manager->injectPrinterUdevEventForTesting(
+        QByteArrayLiteral("usb"),
+        QDir(sysRoot).filePath(QStringLiteral("bus/usb/devices/1-1")),
+        QStringLiteral("1-1"));
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QCOMPARE(startSpy.count(), 2);
+    QCOMPARE(cancellationSpy.count(), 2);
+
+    const auto readySnapshot = manager->sessionController_.state_.printerSnapshot;
+    PrinterProtocol::DiscoverySnapshot absentSnapshot;
+    absentSnapshot.state = PrinterProtocol::DiscoveryState::Absent;
+    manager->handlePrinterSnapshot(absentSnapshot);
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QVERIFY(!manager->isPrinterClassConnected());
+    QCOMPARE(startSpy.count(), 2);
+    manager->handlePrinterSnapshot(readySnapshot);
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QVERIFY(manager->isPrinterClassConnected());
+    QCOMPARE(startSpy.count(), 3);
+
+    manager->connectDevice();
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QCOMPARE(startSpy.count(), 4);
+    manager->requirePrinterRecovery(QString());
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    manager->requirePrinterRecovery(QString());
+    QCOMPARE(manager->printerGenerationForTesting(), generation);
+    manager->connectDevice();
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QCOMPARE(startSpy.count(), 4);
+    manager->handlePrinterSnapshot(absentSnapshot);
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    manager->handlePrinterSnapshot(readySnapshot);
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QCOMPARE(startSpy.count(), 5);
+    QVERIFY(!manager->sessionController_.state_.printerRecoveryRequired);
+
+    manager->disconnectDevice();
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QVERIFY(!manager->isConnected());
+    manager->connectDevice();
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    manager->setFirmwareRecoveryInterlockActive(true);
+    manager->disconnectDevice();
+    QCOMPARE(manager->printerGenerationForTesting(), ++generation);
+    QVERIFY(!manager->isConnected());
+    QCOMPARE(cancellationSpy.count(), static_cast<int>(generation));
+}
+
 void PrinterProtocolTests::unrelatedUsbRemoveDoesNotRestartPaseSession() {
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
@@ -34776,7 +35125,7 @@ void PrinterProtocolTests::lostPrinterSessionRejectsMutationsBeforeDispatch() {
     manager->rescanPrinterForTesting();
     const quint64 generation = manager->printerGenerationForTesting();
     manager->emitPrinterSessionLostForTesting(generation);
-    QTRY_VERIFY(manager->printerDisplaySessionLost_);
+    QTRY_VERIFY(manager->sessionController_.state_.printerDisplaySessionLost);
 
     QTemporaryFile source;
     QVERIFY(source.open());
@@ -34845,13 +35194,13 @@ void PrinterProtocolTests::
 
     manager->emitPrinterSessionLostForTesting(
         manager->printerGenerationForTesting());
-    QTRY_VERIFY(manager->printerDisplaySessionLost_);
-    QVERIFY(!manager->printerSessionLossRemovalObserved_);
+    QTRY_VERIFY(manager->sessionController_.state_.printerDisplaySessionLost);
+    QVERIFY(!manager->sessionController_.state_.printerSessionLossRemovalObserved);
 
     manager->connectDevice();
     QCOMPARE(startSpy.count(), 0);
-    QVERIFY(manager->printerDisplaySessionLost_);
-    QVERIFY(!manager->printerSessionLossRemovalObserved_);
+    QVERIFY(manager->sessionController_.state_.printerDisplaySessionLost);
+    QVERIFY(!manager->sessionController_.state_.printerSessionLossRemovalObserved);
 
     const QString usbDevicePath =
         QDir(sysRoot).filePath(
@@ -34865,8 +35214,8 @@ void PrinterProtocolTests::
         QDir(devRoot).filePath(
             QStringLiteral("usb/") + lpName)));
     manager->rescanPrinterForTesting();
-    QVERIFY(manager->printerDisplaySessionLost_);
-    QVERIFY(manager->printerSessionLossRemovalObserved_);
+    QVERIFY(manager->sessionController_.state_.printerDisplaySessionLost);
+    QVERIFY(manager->sessionController_.state_.printerSessionLossRemovalObserved);
     QCOMPARE(startSpy.count(), 0);
 
     QVERIFY(createUsbDevice(sysRoot, usbName, "1021"));
@@ -34874,8 +35223,8 @@ void PrinterProtocolTests::
         sysRoot, devRoot, usbName, lpName));
     manager->rescanPrinterForTesting();
     QCOMPARE(startSpy.count(), 1);
-    QVERIFY(!manager->printerDisplaySessionLost_);
-    QVERIFY(!manager->printerSessionLossRemovalObserved_);
+    QVERIFY(!manager->sessionController_.state_.printerDisplaySessionLost);
+    QVERIFY(!manager->sessionController_.state_.printerSessionLossRemovalObserved);
 }
 
 void PrinterProtocolTests::
@@ -34899,8 +35248,8 @@ void PrinterProtocolTests::
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    QVERIFY(!manager->printerDisplaySessionActive_);
-    QVERIFY(!manager->printerDisplaySessionLost_);
+    QVERIFY(!manager->sessionController_.state_.printerDisplaySessionActive);
+    QVERIFY(!manager->sessionController_.state_.printerDisplaySessionLost);
 
     QSignalSpy preparationSpy(
         manager.get(), &DeviceManager::requestPreparePrinterMedia);
@@ -35010,8 +35359,8 @@ void PrinterProtocolTests::productChangeDoesNotReuseSessionOrRecovery() {
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
     QVERIFY(manager->isPrinterClassConnected());
-    QCOMPARE(manager->printerProductId_, quint16{0x1021});
-    manager->printerDisplaySessionActive_ = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId, quint16{0x1021});
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
 
     QSignalSpy sessionStartSpy(
         manager.get(), &DeviceManager::requestStartPrinterSession);
@@ -35020,10 +35369,10 @@ void PrinterProtocolTests::productChangeDoesNotReuseSessionOrRecovery() {
     QVERIFY(writeTextFile(productPath, "2011\n"));
     manager->rescanPrinterForTesting();
 
-    QCOMPARE(manager->printerProductId_, quint16{0x2011});
-    QVERIFY(!manager->printerSessionResumePending_);
-    QVERIFY(manager->printerSessionResumeSerial_.isEmpty());
-    QCOMPARE(manager->printerSessionResumeProductId_, quint16{0});
+    QCOMPARE(manager->sessionController_.state_.printerProductId, quint16{0x2011});
+    QVERIFY(!manager->sessionController_.state_.printerSessionResumePending);
+    QVERIFY(manager->sessionController_.state_.printerSessionResumeSerial.isEmpty());
+    QCOMPARE(manager->sessionController_.state_.printerSessionResumeProductId, quint16{0});
     QCOMPARE(sessionStartSpy.count(), 1);
 
     const QString operationId =
@@ -35036,12 +35385,12 @@ void PrinterProtocolTests::productChangeDoesNotReuseSessionOrRecovery() {
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.emplace();
     manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->operationId = operationId;
-    manager->printerRecoveryRequired_ = true;
-    manager->printerRecoveryRemovalObserved_ = true;
+    manager->sessionController_.state_.printerRecoveryRequired = true;
+    manager->sessionController_.state_.printerRecoveryRemovalObserved = true;
 
     QVERIFY(!manager->completePrinterRecoveryAfterRemoval(
         usbName, 0x2011));
-    QVERIFY(manager->printerRecoveryRequired_);
+    QVERIFY(manager->sessionController_.state_.printerRecoveryRequired);
     QVERIFY(manager->operationCoordinator_.operations_.value(operationId).info.message.contains(
         QStringLiteral("391a:1021")));
     QVERIFY(manager->operationCoordinator_.operations_.value(operationId).info.message.contains(
@@ -35067,7 +35416,7 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
         manager->worker_, &DeviceWorker::startPrinterDisplaySession);
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    QCOMPARE(manager->printerProductId_, quint16{0x2011});
+    QCOMPARE(manager->sessionController_.state_.printerProductId, quint16{0x2011});
 
     const QString preparedPath =
         QDir(temporaryDirectory.path()).filePath(
@@ -35086,7 +35435,7 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
     record.info.stage = QStringLiteral("Ending");
     record.info.subject = QStringLiteral("turris.mp4");
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
@@ -35095,8 +35444,8 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.conversionProfile = QStringLiteral(
         "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
     record.sourceContentSha256 = QString::fromLatin1(
@@ -35118,7 +35467,7 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
     manager->worker_->printerUploadFinished(
         operationId, durablePreparedPath, remoteName, true,
         PrinterProtocol::MutationOutcome::Succeeded,
-        QString(), manager->printerGeneration_);
+        QString(), manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
@@ -35149,7 +35498,7 @@ void PrinterProtocolTests::
         manager->worker_, &DeviceWorker::startPrinterDisplaySession);
     manager->setAutoConnectModeForTesting(true);
     manager->rescanPrinterForTesting();
-    QCOMPARE(manager->printerProductId_, quint16{0x2011});
+    QCOMPARE(manager->sessionController_.state_.printerProductId, quint16{0x2011});
 
     const QString cacheDirectory = manager->operationCoordinator_.retryCacheDirectory();
     QVERIFY(QDir().mkpath(cacheDirectory));
@@ -35168,10 +35517,10 @@ void PrinterProtocolTests::
     record.info.state = QStringLiteral("Ending");
     record.info.stage = QStringLiteral("Ending");
     record.info.total = preparedBytes.size();
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
-    record.uploadDeviceGeneration = manager->printerGeneration_;
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
+    record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
@@ -35202,7 +35551,7 @@ void PrinterProtocolTests::
         operationId, durablePreparedPath, remoteName, false,
         PrinterProtocol::MutationOutcome::FinalizationUnknown,
         QStringLiteral("FileTransmitEnd status timed out"),
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     const TryxRuntimeOperationInfo failed =
         manager->operationInfo(operationId);
@@ -35217,7 +35566,7 @@ void PrinterProtocolTests::
                 .retryMustUseNewRemoteName);
     QVERIFY(!manager->operationCoordinator_.operations_.value(operationId)
                  .uploadFinalizationReconciliationPending);
-    QVERIFY(manager->printerRecoveryRequired_);
+    QVERIFY(manager->sessionController_.state_.printerRecoveryRequired);
     QCOMPARE(refreshSpy.count(), 0);
     QCOMPARE(retransmitSpy.count(), 0);
     QVERIFY(QFileInfo::exists(durablePreparedPath));
@@ -35251,18 +35600,18 @@ void PrinterProtocolTests::
             DeviceManager::createForTesting(sysRoot, devRoot));
         manager->setAutoConnectModeForTesting(true);
         manager->rescanPrinterForTesting();
-        QCOMPARE(manager->printerProductId_, productId);
+        QCOMPARE(manager->sessionController_.state_.printerProductId, productId);
         QSignalSpy quiesceSpy(
             manager.get(),
             &DeviceManager::requestFirmwareTransportQuiesce);
-        const quint64 generation = manager->printerGeneration_;
+        const quint64 generation = manager->sessionController_.state_.printerGeneration;
         QString error;
         QVERIFY(!manager->acquireFirmwareExclusive(
             QStringLiteral("unsupported-product-firmware"), &error));
         QVERIFY(error.contains(printerProductIdString(productId)));
-        QCOMPARE(manager->printerGeneration_, generation);
+        QCOMPARE(manager->sessionController_.state_.printerGeneration, generation);
         QCOMPARE(quiesceSpy.count(), 0);
-        QVERIFY(manager->firmwareExclusiveLeaseId_.isEmpty());
+        QVERIFY(manager->sessionController_.state_.firmwareExclusiveLeaseId.isEmpty());
     }
 }
 
@@ -35276,8 +35625,8 @@ void PrinterProtocolTests::
         QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
     std::unique_ptr<DeviceManager> manager(
         DeviceManager::createForTesting(sysRoot, devRoot));
-    manager->connected_ = true;
-    manager->printerClassConnected_ = false;
+    manager->sessionController_.state_.connected = true;
+    manager->sessionController_.state_.printerClassConnected = false;
     QSignalSpy quiesceSpy(
         manager.get(),
         &DeviceManager::requestFirmwareTransportQuiesce);
@@ -35305,8 +35654,8 @@ void PrinterProtocolTests::
         QStringLiteral("cm01"), QStringLiteral("legacy-serial"),
         QStringLiteral("legacy-firmware"),
         QStringLiteral("legacy-app"));
-    QVERIFY(manager->connected_);
-    QVERIFY(!manager->printerClassConnected_);
+    QVERIFY(manager->sessionController_.state_.connected);
+    QVERIFY(!manager->sessionController_.state_.printerClassConnected);
 
     QObject::disconnect(
         manager.get(), &DeviceManager::requestConnect,
@@ -35319,8 +35668,8 @@ void PrinterProtocolTests::
         QStringLiteral("/dev/tty-new-target"));
     QCOMPARE(reconnectSpy.count(), 1);
     QCOMPARE(disconnectedSpy.count(), 1);
-    QVERIFY(!manager->connected_);
-    QVERIFY(manager->legacyProductId_.isEmpty());
+    QVERIFY(!manager->sessionController_.state_.connected);
+    QVERIFY(manager->sessionController_.state_.legacyProductId.isEmpty());
     QString staleIdentityError;
     QVERIFY(!manager->acquireFirmwareExclusive(
         QStringLiteral("stale-legacy-firmware"),
@@ -35330,7 +35679,7 @@ void PrinterProtocolTests::
         QStringLiteral("cm01"), QStringLiteral("legacy-serial"),
         QStringLiteral("legacy-firmware"),
         QStringLiteral("legacy-app"));
-    QVERIFY(manager->connected_);
+    QVERIFY(manager->sessionController_.state_.connected);
 
     QSignalSpy quiesceSpy(
         manager.get(),
@@ -35483,7 +35832,7 @@ void PrinterProtocolTests::
     manager->connectDevice(
         QStringLiteral("/dev/tty-test"));
     manager->startKeepalive(1);
-    manager->connected_ = true;
+    manager->sessionController_.state_.connected = true;
     manager->disconnectDevice();
     manager->setBrightness(50);
     manager->setScreenConfig(
@@ -35499,7 +35848,7 @@ void PrinterProtocolTests::
         {QStringLiteral("CPU Temperature")},
         {QStringLiteral("42")},
         {QStringLiteral("C")});
-    manager->connected_ = false;
+    manager->sessionController_.state_.connected = false;
     QCOMPARE(connectSpy.count(), 0);
     QCOMPARE(keepaliveSpy.count(), 0);
     QCOMPARE(disconnectSpy.count(), 0);
@@ -35597,7 +35946,7 @@ void PrinterProtocolTests::
     QTRY_VERIFY(
         !manager->firmwareExclusiveActive());
 
-    manager->connected_ = true;
+    manager->sessionController_.state_.connected = true;
     manager->operationCoordinator_.activeOperationId_ =
         QStringLiteral("active-operation");
     QString activeError;
@@ -35719,17 +36068,17 @@ void PrinterProtocolTests::
         QStringLiteral("replacement"));
     manager->operationCoordinator_.pendingReplaceJournalOperationId_.clear();
 
-    manager->printerRecoveryRequired_ = true;
+    manager->sessionController_.state_.printerRecoveryRequired = true;
     expectRejected(
         QStringLiteral("firmware-recovery-lease"),
         QStringLiteral("recovery"));
-    manager->printerRecoveryRequired_ = false;
+    manager->sessionController_.state_.printerRecoveryRequired = false;
 
-    manager->printerDisplaySessionLost_ = true;
+    manager->sessionController_.state_.printerDisplaySessionLost = true;
     expectRejected(
         QStringLiteral("firmware-session-lease"),
         QStringLiteral("session"));
-    manager->printerDisplaySessionLost_ = false;
+    manager->sessionController_.state_.printerDisplaySessionLost = false;
 
     const QString retryOperationId =
         QStringLiteral(
@@ -36412,7 +36761,7 @@ void PrinterProtocolTests::
 
     QTRY_VERIFY(
         !manager->firmwareExclusiveActive());
-    QVERIFY(!manager->autoConnectMode_);
+    QVERIFY(!manager->sessionController_.state_.autoConnectMode);
     QVERIFY(
         !manager->isPrinterClassConnected());
     QCOMPARE(configureSpy.count(), 0);
@@ -37004,7 +37353,7 @@ void PrinterProtocolTests::
     QVERIFY(target.open(QIODevice::ReadOnly));
     QCOMPARE(target.readAll(), targetContents);
     target.close();
-    QVERIFY(manager->autoConnectMode_);
+    QVERIFY(manager->sessionController_.state_.autoConnectMode);
 
     const QString hardLinkTargetPath =
         QDir(temporaryDirectory.path())
@@ -37094,7 +37443,7 @@ void PrinterProtocolTests::
         !bridge.requestRecoveryAcknowledgement(
             QStringLiteral(":1.29")));
     QVERIFY(QFileInfo(journalPath).isDir());
-    QVERIFY(!manager->autoConnectMode_);
+    QVERIFY(!manager->sessionController_.state_.autoConnectMode);
 
     const QString unsafeDirectory =
         QDir(temporaryDirectory.path())
@@ -37240,7 +37589,7 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     record.info.subject = QStringLiteral("partial.mp4");
     record.info.resultName =
         QStringLiteral("partial.mp4.h264_2240x1080");
-    record.info.deviceGeneration = manager->printerGeneration_;
+    record.info.deviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.preparedPath = preparedPath;
     record.preparedSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes, QCryptographicHash::Sha256)
@@ -37250,9 +37599,9 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     record.requiresDeviceRecovery = true;
     record.retryMustUseNewRemoteName = true;
     record.uploadDeviceIdentity =
-        manager->printerDeviceSerial_.trimmed();
+        manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration =
-        manager->printerGeneration_;
+        manager->sessionController_.state_.printerGeneration;
     manager->operationCoordinator_.operations_.insert(operationId, record);
     manager->operationCoordinator_.operationOrder_.append(operationId);
     manager->operationCoordinator_.activeOperationId_ = operationId;
@@ -37260,9 +37609,9 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     QVERIFY2(armRetryCacheDispatchForTesting(
                  manager.get(), operationId, &durablePreparedPath),
              qPrintable(manager->operationInfo(operationId).message));
-    const quint64 generationBeforeRecovery = manager->printerGeneration_;
+    const quint64 generationBeforeRecovery = manager->sessionController_.state_.printerGeneration;
     manager->requirePrinterRecovery(QString());
-    QCOMPARE(manager->printerGeneration_, generationBeforeRecovery + 1);
+    QCOMPARE(manager->sessionController_.state_.printerGeneration, generationBeforeRecovery + 1);
     QVERIFY(!manager->worker_->printerEndpointReady_.load(
         std::memory_order_acquire));
     manager->operationCoordinator_.handlePreparedUploadFailure(
@@ -37274,7 +37623,7 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
              QStringLiteral("RetryAvailable"));
     QCOMPARE(manager->operationInfo(operationId).errorCategory,
              QStringLiteral("PartialOrUnknown"));
-    QVERIFY(manager->printerRecoveryRequired_);
+    QVERIFY(manager->sessionController_.state_.printerRecoveryRequired);
     QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     const auto &candidate =
         *manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate;
@@ -37303,15 +37652,15 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     QVERIFY(QFile::remove(
         QDir(devRoot).filePath(QStringLiteral("usb/") + lpName)));
     manager->rescanPrinterForTesting();
-    QVERIFY(manager->printerRecoveryRemovalObserved_);
-    QVERIFY(manager->printerRecoveryRequired_);
+    QVERIFY(manager->sessionController_.state_.printerRecoveryRemovalObserved);
+    QVERIFY(manager->sessionController_.state_.printerRecoveryRequired);
 
     QVERIFY(createUsbDevice(sysRoot, usbName, "1021"));
     QVERIFY(createPrinterEndpoint(sysRoot, devRoot, usbName, lpName));
     manager->rescanPrinterForTesting();
-    QVERIFY(!manager->printerRecoveryRequired_);
-    QVERIFY(!manager->printerRecoveryRemovalObserved_);
-    manager->printerDisplaySessionActive_ = true;
+    QVERIFY(!manager->sessionController_.state_.printerRecoveryRequired);
+    QVERIFY(!manager->sessionController_.state_.printerRecoveryRemovalObserved);
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
     QCOMPARE(manager->operationInfo(operationId).errorCategory,
              QStringLiteral("PartialOrUnknown"));
     QCOMPARE(manager->operationInfo(operationId).terminalOutcome,
@@ -37340,7 +37689,7 @@ void PrinterProtocolTests::partialUploadRequiresObservedDeviceRemovalBeforeRetry
     uncertainRemote.readOnly = false;
     manager->worker_->printerMediaListReady(
         acceptedRetryId, {uncertainRemote},
-        manager->printerGeneration_);
+        manager->sessionController_.state_.printerGeneration);
 
     QCOMPARE(uploadSpy.count(), 1);
     const QString replacementRemoteName =
@@ -40218,9 +40567,9 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
             DeviceManager::createForTesting(sysRoot, devRoot));
         manager->setAutoConnectModeForTesting(true);
         manager->rescanPrinterForTesting();
-        manager->printerDisplaySessionActive_ = true;
-        QCOMPARE(manager->printerProductId_, quint16(0x1011));
-        deviceIdentity = manager->printerDeviceSerial_;
+        manager->sessionController_.state_.printerDisplaySessionActive = true;
+        QCOMPARE(manager->sessionController_.state_.printerProductId, quint16(0x1011));
+        deviceIdentity = manager->sessionController_.state_.printerDeviceSerial;
         QVERIFY(!deviceIdentity.isEmpty());
         PrinterProtocol::MediaFile media;
         media.name = target;
@@ -40266,7 +40615,7 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
             operationId, QStringList{target}, {}, {}, false,
             PrinterProtocol::MutationOutcome::PartialOrUnknown,
             QStringLiteral("simulated lost reconciliation"),
-            manager->printerGeneration_);
+            manager->sessionController_.state_.printerGeneration);
         const TryxRuntimeOperationInfo pending =
             manager->operationInfo(operationId);
         QCOMPARE(pending.state, QStringLiteral("RetryAvailable"));
@@ -40282,7 +40631,7 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
         DeviceManager::createForTesting(sysRoot, devRoot));
     recovered->setAutoConnectModeForTesting(true);
     recovered->rescanPrinterForTesting();
-    recovered->printerDisplaySessionActive_ = true;
+    recovered->sessionController_.state_.printerDisplaySessionActive = true;
     recovered->loadDeleteIntent();
     QCOMPARE(recovered->operationCoordinator_.pendingDeleteOperationId_, operationId);
     QCOMPARE(recovered->operationInfo(operationId).retryMode,
@@ -40295,18 +40644,18 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
                         &DeviceWorker::deletePrinterMedia);
     QSignalSpy reconciliationSpy(
         recovered.get(), &DeviceManager::requestPrinterDeleteMedia);
-    recovered->printerDeviceSerial_ = QStringLiteral("different-device");
+    recovered->sessionController_.state_.printerDeviceSerial = QStringLiteral("different-device");
     recovered->resumePendingDeleteReconciliation();
     QCOMPARE(reconciliationSpy.count(), 0);
     QVERIFY(QFileInfo::exists(
         recovered->operationCoordinator_.deleteIntentPath()));
 
-    recovered->printerDeviceSerial_ = deviceIdentity;
-    recovered->printerProductId_ = 0x1021;
+    recovered->sessionController_.state_.printerDeviceSerial = deviceIdentity;
+    recovered->sessionController_.state_.printerProductId = 0x1021;
     recovered->resumePendingDeleteReconciliation();
     QCOMPARE(reconciliationSpy.count(), 0);
 
-    recovered->printerProductId_ = 0x1011;
+    recovered->sessionController_.state_.printerProductId = 0x1011;
     recovered->resumePendingDeleteReconciliation();
     QCOMPARE(reconciliationSpy.count(), 1);
     QCOMPARE(reconciliationSpy.first().at(1).toStringList(),
@@ -40315,7 +40664,7 @@ void PrinterProtocolTests::deleteIntentSurvivesRestartAndOnlyReconcilesSameDevic
     emit recovered->worker_->printerDeleteFinished(
         operationId, QStringList{target}, QStringList{target}, {}, true,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
-        recovered->printerGeneration_);
+        recovered->sessionController_.state_.printerGeneration);
     QCOMPARE(recovered->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
     QVERIFY(!QFileInfo::exists(

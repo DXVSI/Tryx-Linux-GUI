@@ -6,6 +6,7 @@
 #include "mediacatalogstore.h"
 #include "printermediavalidator.h"
 #include "printeroperationcoordinator.h"
+#include "printersessioncontroller.h"
 #include "printerprotocol.h"
 #include "replacejournal.h"
 #include "retrycachestore.h"
@@ -45,11 +46,6 @@ class RuntimeDowngradeStore;
 class RuntimePresentationPreferencesStore;
 class SavedLayoutStore;
 }
-
-enum class PrinterOverlayLeaseMode {
-    PingAndOverlayLease,
-    PingOnly
-};
 
 class DeviceWorker : public QObject {
     Q_OBJECT
@@ -379,11 +375,13 @@ public:
     explicit DeviceManager(QObject *parent = nullptr);
     ~DeviceManager() override;
 
-    bool isConnected() const { return connected_; }
-    bool isPrinterClassConnected() const { return printerClassConnected_; }
+    bool isConnected() const { return sessionController_.state().connected; }
+    bool isPrinterClassConnected() const {
+        return sessionController_.state().printerClassConnected;
+    }
     bool isPrinterClassDevicePresent() const;
     bool isPrinterDisplaySessionActive() const {
-        return printerDisplaySessionActive_;
+        return sessionController_.state().printerDisplaySessionActive;
     }
     void setPrinterOverlayLeaseMode(PrinterOverlayLeaseMode mode);
     bool firmwareFlashAllowedForCurrentDevice(
@@ -520,8 +518,12 @@ public:
     TryxRuntimeOperationInfo operationInfo(const QString &operationId) const;
     TryxRuntimeOperationInfo activeOperationInfo() const;
     QStringList metricsCapabilities() const;
-    TryxRuntimeMetricsState metricsState() const { return metricsState_; }
-    TryxRuntimeDisplayState displayState() const { return displayState_; }
+    TryxRuntimeMetricsState metricsState() const {
+        return sessionController_.state().metricsState;
+    }
+    TryxRuntimeDisplayState displayState() const {
+        return sessionController_.state().displayState;
+    }
     TryxRuntimeMediaCatalogSnapshot mediaCatalogSnapshot() const;
     TryxRuntimeDeviceCapabilitiesV1 deviceCapabilitiesV1(
         quint64 connectionRevision) const;
@@ -556,10 +558,10 @@ public:
     void setFirmwareRecoveryInterlockActive(bool active);
     void resumeConnectionAfterFirmwareRecoveryAcknowledgement();
     bool firmwareExclusiveActive() const {
-        return !firmwareExclusiveLeaseId_.isEmpty();
+        return !sessionController_.state().firmwareExclusiveLeaseId.isEmpty();
     }
     bool firmwareRecoveryInterlockActive() const {
-        return firmwareRecoveryInterlockActive_;
+        return sessionController_.state().firmwareRecoveryInterlockActive;
     }
     bool prepareRuntimeDowngradeV10(
         QString *mode = nullptr,
@@ -759,6 +761,7 @@ private:
     void setPrinterDisplaySessionActive(bool active);
     void clearDeviceSpecificationsCache();
     PrinterOperationContext operationContext() const;
+    PrinterSessionController::Callbacks sessionCallbacks();
     void handlePrinterSnapshot(const PrinterProtocol::DiscoverySnapshot &snapshot);
     void attachPrinterClassDevice(const PrinterProtocol::UsbPrinterDevice &device);
     void detachPrinterClassDevice(bool notify);
@@ -844,60 +847,22 @@ private:
 
 private:
     PrinterOperationCoordinator operationCoordinator_;
+    PrinterSessionController sessionController_;
     QThread workerThread_;
     DeviceWorker *worker_ = nullptr;
     QThread printerPreparationThread_;
     PrinterMediaPreparer *printerMediaPreparer_ = nullptr;
-    QTimer *keepaliveTimer_ = nullptr;
     PrinterDeviceMonitor *printerMonitor_ = nullptr;
     QDBusServiceWatcher *artifactOwnerWatcher_ = nullptr;
     QTimer *artifactSweepTimer_ = nullptr;
-    PrinterProtocol::DiscoverySnapshot printerSnapshot_;
-    QString printerDevicePath_;
-    QString printerDeviceSerial_;
-    quint16 printerProductId_ = 0;
-    QString printerSessionResumeSerial_;
-    quint16 printerSessionResumeProductId_ = 0;
-    quint64 printerGeneration_ = 0;
-    PrinterProtocol::DeviceSpecifications deviceSpecificationsCache_;
-    QString deviceSpecificationsDevicePath_;
-    QString deviceSpecificationsDeviceIdentity_;
-    quint16 deviceSpecificationsProductId_ = 0;
-    quint64 deviceSpecificationsGeneration_ = 0;
-    QElapsedTimer printerGenerationElapsedTimer_;
-    quint64 printerDisconnectCount_ = 0;
-    PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
-        PrinterOverlayLeaseMode::PingAndOverlayLease;
-    quint64 displayStateReadGeneration_ = 0;
-    std::unique_ptr<tryx::PaseMetricsConfigStore>
-        paseMetricsConfigStore_;
     std::unique_ptr<tryx::RuntimePresentationPreferencesStore>
         runtimePresentationPreferencesStore_;
     std::unique_ptr<tryx::SavedLayoutStore> savedLayoutStore_;
     std::unique_ptr<tryx::RuntimeDowngradeStore>
         runtimeDowngradeStore_;
-    TryxRuntimeMetricsState metricsState_;
-    TryxRuntimeDisplayState displayState_;
     TryxRuntimePresentationPreferencesV1 presentationPreferences_;
     bool savedLayoutsStoreLoaded_ = false;
     QString savedLayoutsFailureDetail_;
-    QString legacyProductId_;
-    QString firmwareExclusiveLeaseId_;
-    QString firmwareReleasePendingLeaseId_;
-    quint64 firmwareQuiesceGeneration_ = 0;
-    bool connected_ = false;
-    bool printerClassConnected_ = false;
-    bool printerDisplaySessionActive_ = false;
-    bool printerDisplaySessionLost_ = false;
-    bool printerSessionLossRemovalObserved_ = false;
-    bool printerRecoveryRequired_ = false;
-    bool printerRecoveryRemovalObserved_ = false;
-    bool printerSessionResumePending_ = false;
-    bool autoConnectMode_ = false;
-    bool firmwareResumeAutoConnect_ = false;
-    bool firmwareReleaseResumeTransport_ = false;
-    bool firmwareRecoveryReconnectRequested_ = false;
-    bool firmwareRecoveryInterlockActive_ = false;
     bool runtimeDowngradeV10Prepared_ = false;
     QString runtimeDowngradeV10Mode_;
     bool automaticPrinterSessionStart_ = true;

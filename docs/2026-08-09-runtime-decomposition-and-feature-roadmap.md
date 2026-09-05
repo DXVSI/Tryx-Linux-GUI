@@ -1009,18 +1009,247 @@ C/B/D workstreams.
 
 ### A7. Выделить PrinterSessionController
 
+**Статус:** реализовано 5 сентября 2026 года по подтверждённой пользователем
+спецификации. Чистые runtime/test builds, 893 protocol tests, полный
+`package-check`, translation catalog и structural baseline прошли.
+Hardware smoke для software-only refactor не выполнялся.
+
 **Зависимости:** A6.
 
-**Scope:** передать controller состояние discovery snapshot, product identity,
-generation, reconnect, keepalive, overlay restoration, recovery и firmware
-quiesce.
+**Цель:** выделить одного владельца runtime-состояния подключения и управления
+сессией, сохранив текущий порядок команд, защиту операций и поведение
+публичного API. `DeviceManager` продолжает связывать компоненты runtime.
 
-**Acceptance:**
+#### Подтверждённое состояние перед реализацией
 
-- один physical remove/add создаёт ровно одну новую generation;
-- stale operation не может продолжиться на новом endpoint;
-- session recovery не повторяет mutation;
-- firmware fence сериализован с USB worker queue.
+- После A6 `devicemanager.cpp` содержит 6 956 строк, header 904 строки.
+  Operation ledger и retry/delete/replace recovery принадлежат
+  `PrinterOperationCoordinator`, но session state остаётся в manager.
+- `handlePrinterSnapshot`, `connectDevice`, `disconnectDevice`,
+  `requirePrinterRecovery` и обработчики worker-сигналов совместно меняют
+  selected endpoint, identity, product, generation, active/lost flags и
+  признаки наблюдавшегося physical removal.
+- `PrinterDeviceMonitor` подавляет одинаковый обычный discovery snapshot,
+  но принудительно публикует snapshot при removal текущего endpoint, даже
+  если устройство вернулось по тому же sysfs path. `currentEndpointRemoved`
+  приходит перед соответствующим `snapshotChanged`.
+- `printerGeneration_` является существующим счётчиком отмены и смены
+  контекста. Он увеличивается при принятом snapshot, явном restart/disconnect,
+  первом входе в recovery, firmware acquire, runtime downgrade и shutdown.
+  Публичное имя `physicalGeneration` уже использует этот счётчик.
+- Поэтому исходная формулировка «один physical remove/add создаёт ровно одну
+  новую generation» неточна для полной последовательности событий.
+  Раздельные snapshots `Absent` и `Ready` дают по одному increment каждый;
+  coalesced same-path removal даёт один forced snapshot. A7 сохраняет эту
+  семантику и запрещает дополнительные increments из-за forwarding между
+  manager и controller. Смена схемы нумерации потребовала бы отдельного
+  изменения поведения.
+- Есть два разных keepalive-механизма: manager-таймер для legacy и
+  `DeviceWorker`-таймер printer session. Printer bootstrap, обязательный
+  post-bootstrap keepalive, overlay activation, foreground pause и USB
+  cancellation выполняются в одном worker thread.
+- Firmware acquire сначала публикует lease, закрывает generation gate,
+  затем ставит quiesce в worker queue. Release сохраняет lease до ответа
+  отдельного release fence. Запоздалый quiesce не должен закрыть уже
+  возобновлённый transport.
+- Device Specifications cache привязан к exact path, identity, product и
+  generation. Display/metrics state и overlay restoration также используют
+  текущую session identity; их invalidation входит в session transition.
+
+#### Выбранная архитектура и границы владения
+
+`PrinterSessionController` реализован как `QObject` в том же runtime thread,
+что manager и operation coordinator. Перенос выполнен законченными
+компилируемыми срезами, с одним владельцем каждого поля на любом срезе.
+
+| Компонент | Ответственность после A7 |
+|---|---|
+| `PrinterSessionController` | Принятый discovery snapshot, selected path/raw identity/product, generation, connection/auto-connect flags, session active/lost и removal/resume state, firmware lease/release/interlock, legacy keepalive timer, session-scoped specifications/display/metrics state и overlay restoration policy |
+| `DeviceManager` | Прежние public methods/signals, создание компонентов и threads, wiring, построение свежего operation context, process-wide downgrade/presentation/saved-layout orchestration |
+| `PrinterOperationCoordinator` | Единственный operation ledger, operation decisions и outcomes, retry validation/reconciliation, Delete/Replace journals, artifacts и cleanup |
+| `DeviceWorker` | Единственная очередь обычного USB/legacy I/O, рабочая transport session и cancellation gates, printer keepalive/overlay execution, quiesce и release fence |
+| `PrinterDeviceMonitor` | Udev observation, batching, discovery fingerprint и forced same-path removal event |
+| Существующие stores | Прежние persistent formats, paths, ownership checks и atomic commit boundaries |
+
+- Manager getters становятся delegates. Production-код manager не меняет
+  private session fields controller; тестовые fixtures доступны только под
+  `TRYX_PROTOCOL_TESTING`.
+- Controller принимает конкретные команды и события, публикует snapshots и
+  intents. Он не получает back-pointer к manager, не владеет worker thread
+  и не вызывает `PrinterProtocol` для I/O.
+- Для operation blockers и результатов reconciliation используются узкие
+  синхронные callbacks через manager, по существующему A6-паттерну.
+  Controller не читает operation ledger и не хранит копию retry truth.
+  Вход в physical recovery принадлежит controller; решение о достаточности
+  доказательства для stored upload по-прежнему принимает coordinator.
+- Свежий `PrinterOperationContext` формируется из controller state и текущих
+  process-wide gates на каждый command/callback. Он не становится вторым
+  владельцем session state. Raw identity для exact saved-layout и cache
+  checks сохраняется; прежняя trim-семантика отдельных consumers не меняется.
+- Firmware acquisition получает актуальную assessment operation blockers
+  до публикации lease, в том же runtime event-loop transition. Только
+  controller меняет lease, release-pending и reconnect flags.
+- Downgrade marker и его fail-closed process latch остаются в manager.
+  Controller выполняет session invalidation для downgrade/shutdown;
+  manager сохраняет существующий blocking worker fence перед записью marker.
+  Отдельный generation counter для этих путей не создаётся.
+- Session-scoped metrics/display projections переносятся вместе с их
+  publish/reset logic. `PaseMetricsConfigStore` остаётся владельцем
+  сохранённого overlay; controller использует его текущие typed методы.
+  Presentation preferences и Saved Layout store не переносятся в controller.
+- Сигналы runtime-компонентов forwarding-ятся синхронно. USB/preparation
+  work остаётся queued; уже thread-safe generation/cancel gates закрываются
+  direct. Перед продолжением после внешнего синхронного callback повторно
+  проверяются актуальные generation, selection и gates.
+- Перенесённые пользовательские строки сохраняют `DeviceManagerMessages`
+  translation context; новые `.ts` entries из-за имени класса не появляются.
+
+Альтернатива с переносом transport session FSM и printer keepalive в runtime
+thread смешала бы policy с I/O и изменила порядок USB. Она не выбрана.
+Выделение worker policy остаётся A8, protocol layers остаются A9.
+
+#### Порядок событий и acceptance
+
+1. На каждый принятый для обработки `snapshotChanged` controller выполняет
+   ровно один increment, принадлежащий обработке snapshot. После prepared
+   downgrade snapshot по-прежнему игнорируется. `currentEndpointRemoved`
+   фиксирует removal evidence/count, но сам дополнительно не увеличивает
+   generation. Повторный обычный rescan и чужое USB removal не перезапускают
+   session; отдельные recovery/quiesce transitions сохраняют свои gates.
+2. Forced same-path snapshot нельзя отбросить сравнением значений внутри
+   controller: он обозначает новый endpoint даже при одинаковых path,
+   identity и product. Старые queued callbacks и preparation results не
+   активируют новую session и не продолжают старую operation.
+3. Предварительное завершение/отмена operation на session event сохраняет
+   A6-порядок. Structured Apply outcome публикуется до session-loss handling;
+   `NotStarted`, `FinalizationUnknown` и `PartialOrUnknown` не меняют смысл.
+4. Lost/recovery state разрешает восстановление только после текущего
+   доказательства removal и проверки identity/product. Выбор Auto сам по
+   себе не является доказательством physical reconnect.
+5. Retry validation, restricted read-only session и promotion after proof
+   сохраняют текущие ограничения. Controller не повторяет Upload, Apply,
+   Delete либо Replace после неопределённого результата. Существующий
+   подтверждённый overlay restoration остаётся отдельным session workflow.
+6. Порядок `configure`, restore-overlay intent, start/bootstrap, mandatory
+   keepalive и session-ready сохраняется. Foreground operation приостанавливает
+   printer keepalive/metrics как прежде; Turris не получает PASE traffic.
+7. Firmware lease видим до закрытия gate и queued quiesce. Подтверждение
+   quiesce принимается только для exact lease/generation. Lease снимается
+   после соответствующего release fence; stale result не снимает новую
+   блокировку. Non-resuming release запрещает passive reconnect, explicit
+   recovery acknowledgement дожидается fence.
+8. Specifications/display/metrics инвалидируются при смене session и
+   firmware/downgrade boundary с сохранением revision order и текущих
+   unavailable/unsupported состояний. Новый SysConfig query не добавляется.
+9. API version 8, Manager1/Manager2/Firmware1 signatures, capability tokens,
+   operation string contracts, wire bytes и persistent schemas неизменны.
+10. Shutdown прекращает session timers и закрывает generation gate до остановки
+    consumers. Operation-owned paths освобождаются по A6-порядку после
+    остановки preparer/worker; destructor controller не запускает новый work.
+
+#### Этапы реализации и проверки
+
+1. Зафиксировать точную event matrix до переноса: unchanged rescan, forced
+   same-path event, отдельные Absent/Ready, Auto restart, disconnect,
+   repeated recovery и firmware acquire/release. Дополнить существующий
+   fake-monitor/USB harness проверками числа transitions и порядка сигналов.
+2. Добавить `printersessioncontroller.h/.cpp` в runtime и существующий
+   protocol-test qmake target. Перенести session state и getters; manager
+   делегирует, authoritative копии состояния не остаётся.
+3. Перенести discovery/attach/detach/connect/disconnect и generation/cancel
+   boundary целиком. Сохранить monitor batching и legacy fallback policy.
+4. Перенести worker result/session callbacks, specifications/display/metrics
+   projections, overlay restoration и retry-gated session recovery.
+5. Перенести firmware acquire/quiesced/release/acknowledgement и legacy
+   keepalive. Подключить controller к downgrade и ordered shutdown.
+6. Добавить structural baseline: controller включён в оба target, session
+   authority удалена из manager, direct forwarding сохранён. Переадресовать
+   private fixtures без удаления или ослабления существующих assertions.
+7. После срезов запускать относящиеся к ним focused tests. Финальные gates:
+   свежие runtime/test builds, полный `make package-check`, translation
+   catalog, runtime-refactor baseline и `git diff --check`.
+
+Обязательные существующие сценарии включают
+`unrelatedUsbRemoveDoesNotRestartPaseSession`,
+`samePathReenumerationCancelsOldGeneration`,
+`lostPrinterSessionRequiresObservedRemovalBeforeReconnect`,
+`productChangeDoesNotReuseSessionOrRecovery`,
+`generationChangeWaitsForStructuredApplyOutcome`,
+`runtimeDeviceSpecificationsCacheIsGenerationBounded`,
+`restoredOverlayWaitsForKeepaliveBeforeSessionReady`,
+`restoredOverlayFailureBecomesLostWithoutReplay`,
+`foregroundOperationPausesMetricsAndKeepalive`,
+`turrisWorkerSessionSendsNoPaseTraffic`,
+`firmwareExclusiveGateRejectsUnresolvedDeviceState`,
+`firmwareReleaseFenceWaitsForLateQuiesce` и
+`firmwareRecoveryAcknowledgementWaitsForReleaseFence`.
+Новые A7 tests должны проверять single ownership и синхронный manager façade,
+точные generation deltas и reentrant disconnect/quiesce перед dispatch.
+
+Hardware smoke для software-only extraction не требуется и не объявляется
+выполненным. Физические queries/writes не входят в эту проверку.
+
+#### Реализация и проверенный результат
+
+- Добавлены `printersessioncontroller.h/.cpp` в runtime и protocol-test target.
+  Controller единолично хранит session state, firmware lease/fence state,
+  metrics/display/specifications projections и legacy keepalive timer.
+  Manager читает const state view и делегирует session commands/events.
+  Operation ledger и recovery decisions остаются в A6 coordinator.
+- Общие lifecycle logging helpers вынесены в `printerlifecycle_p.h` без
+  изменения формата сообщений и общего monotonic clock. Worker остаётся
+  единственным исполнителем обычного transport I/O.
+- `devicemanager.cpp` уменьшился с 6 956 до 5 743 строк, header с 904 до 869.
+  Public declarations manager неизменны. Отдельная token-level сверка
+  подтвердила неизменность тел 65 worker methods и 482 прежних test methods
+  после нормализации перенесённых private fixtures.
+- Characterization test сохраняет generation deltas для unchanged rescan,
+  forced same-path event, отдельных Absent/Ready, Auto restart, disconnect
+  и повторного recovery. Disconnect по-прежнему разрешён при firmware
+  recovery interlock, который запрещает именно подключение.
+- Новые reentrancy tests сначала воспроизвели stale dispatch после
+  синхронного disconnect/quiesce. После внешних сигналов и callbacks
+  controller повторно проверяет generation/gates. Вытесненный обработчик
+  прекращает старый переход; teardown не перезаписывает новое подключение.
+- Отдельная матрица воспроизвела release fence перед quiesce при синхронной
+  отмене firmware acquire. Такой release теперь сохраняет pending lease,
+  а его fence отправляется только после постановки quiesce в worker queue.
+  Existing late-quiesce и recovery-acknowledgement tests также прошли.
+- Чистые сборки runtime и protocol tests выполнены отдельно. Полный protocol
+  suite: **893 passed, 0 failed, 0 skipped**. Итоговый `make -j4 package-check`
+  завершился с exit 0; translation completeness, именованные QML/runtime
+  suites, structural baseline и `git diff --check` прошли.
+- Первый package gate и отдельный полный QML повтор выявили timing-sensitive
+  сбой `MetricSelector::test_escapeCancelsAndRestoresOriginFocus` на клике.
+  Изолированный test и весь его файл проходили. В тест добавлен bounded
+  `waitForRendering` перед mouse input; существующие проверки открытия,
+  Escape, неизменности выбора и возврата фокуса сохранены. После правки
+  прошли два полных QML повтора и итоговый package gate. Production QML
+  не менялся; существующие RU-only skips в запуске без перевода покрываются
+  отдельными локализованными baseline checks.
+
+Реализация A6 сохранена. На момент acceptance A7 commit/push не выполнялись;
+по последующему запросу пользователя A6 и A7 фиксируются отдельными коммитами.
+Push требует отдельного запроса.
+Следующий архитектурный этап: A8; он не входит в завершённую реализацию A7.
+
+#### Риски, откат и границы
+
+Основной риск связан с signal order, reentrancy и stale context при переходе
+через новый объект. Защита: один runtime thread, прямой forwarding, свежие
+callbacks/contexts и проверяемая event matrix. Второй риск: потерять forced
+same-path generation или ошибочно снять firmware lease до release fence.
+Соответствующие focused tests обязательны до финального package gate.
+
+Откат возвращает session methods/state в manager и удаляет controller wiring.
+On-disk migration не нужна. Уже выполненный A6 сохраняется; его изменения
+не должны быть потеряны или откатаны вместе с A7. Commit/push выполняются
+только по отдельному запросу пользователя.
+
+**Out of scope:** перенумерация публичного generation, автоматический USB reset
+или mutation replay, новый reconnect/keepalive policy, worker/protocol split
+A8/A9, дополнительные USB writers, новые hardware capabilities, firmware
+download/flash features, schema/API migration, QML redesign, GIPHY и recorder.
 
 ### A8. Разделить legacy и printer-class worker policy
 

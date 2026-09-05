@@ -148,7 +148,14 @@
   остался public/session façade. Чистые сборки, 875 protocol tests, полный
   `package-check`, translation и structural baseline прошли; hardware smoke
   для software-only refactor не выполнялся.
-- [ ] A7. `PrinterSessionController`.
+- [x] A7. `PrinterSessionController`: реализован 5 сентября 2026 года;
+  session state, recovery/firmware gates и projections вынесены из manager.
+  Сохранены generation/event contract и единственный worker I/O owner;
+  закрыты reentrant dispatch/teardown и firmware release-order сценарии.
+  Чистые сборки, 893 protocol tests, итоговый `package-check`, translation и
+  structural baseline прошли. В QML-тесте стабилизирована готовность к клику
+  через bounded render check; production UI не менялся. Hardware smoke
+  не выполнялся.
 - [ ] A8. Разделить legacy и printer-class worker policy при одном I/O owner.
 - [ ] A9. Разделить transport, framing, discovery и model clients в
   `PrinterProtocol`.
