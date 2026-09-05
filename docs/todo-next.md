@@ -111,16 +111,22 @@
   previews. Indexed thumbnails, весь retry/recovery state, journals, leases и
   active operations остаются protected. Fresh build, полный `package-check`,
   translation/baseline gates и три раздельных read-only review-прохода прошли.
-  Открытых задач внутри C6 нет; C7 остаётся следующим, но не начат.
+  Открытых задач внутри C6 нет. C7 затем исключён из scope, C8 отложен, после
+  чего выбран и завершён архитектурный этап A6.
 
 ## M3: Network и portals
 
 - [ ] B5. GitHub release notification без self-update.
 - [ ] B6. Только research официального firmware source, signatures,
   compatibility и rollback, без remote update до отдельного proposal.
-- [ ] C7. Clean public-API GIPHY integration.
-- [ ] C8. Wayland screen recorder через XDG Portal и PipeWire.
-- [ ] C9. Global shortcuts через portal.
+- [x] C7. Исключено из scope 5 сентября 2026 года: GIPHY API, встроенный search
+  и внешний browser handoff не реализуются; существующий local media import
+  сохраняется.
+- [ ] C8. Отложено 5 сентября 2026 года: перед возвратом нужна явная матрица
+  поддержки XDG ScreenCast Portal, PipeWire и desktop backends, включая
+  честный unavailable fallback для сред без рабочего capture stack.
+- [ ] C9. Отложено вместе с C8: текущий scope горячих клавиш зависит от
+  recorder и не реализуется отдельно.
 
 ## M4: Hardware tracks
 

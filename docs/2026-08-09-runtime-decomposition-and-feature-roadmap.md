@@ -2838,9 +2838,9 @@ mutation, service enablement/linger и обход desktop/user-session permissio
 | C4 | Split-aware crop | B0, C3 | отдельный versioned transform profile и честный area canvas; full origin не переиспользуется как split transform |
 | C5 | Saved layouts | B0, C1, C2, C3 | versioned, device-scoped layouts; fresh catalog validation; только explicit Apply; никакого replay после reconnect |
 | C6 | Safe cache management | A5 | очищаются только inactive Quick previews, unindexed thumbnail orphans и expired/revoked idle artifacts; indexed thumbnails и весь recovery state сохраняются, а active operation, retry, journal или действующая lease блокируют cleanup |
-| C7 | GIPHY integration | C3 | только публичный API, project credentials, opt-in network, privacy/TOS attribution, bounded download и существующий media validation pipeline |
-| C8 | Wayland screen recorder | C3 | XDG ScreenCast Portal, PipeWire, системный permission dialog, bounded owner-only temp file и передача результата в Media Editor |
-| C9 | Global shortcuts | C8 | XDG GlobalShortcuts portal при наличии; отсутствие portal не ломает GUI; shortcut не обходит recorder permission |
+| C7 | GIPHY integration (отменено) | нет | Не планируется: ни встроенный API/search, ни внешний browser handoff не входят в scope; существующий импорт локальных media-файлов сохраняется |
+| C8 | Wayland screen recorder (отложено) | C3 | Не входит в активный scope: перед возвратом нужна отдельная матрица поддержки XDG ScreenCast Portal, PipeWire и desktop backends с честным unavailable fallback |
+| C9 | Global shortcuts (ожидает C8) | C8 | Не планируется отдельно от recorder; отсутствие portal не должно ломать GUI, а shortcut не должен обходить системное разрешение |
 | C10 | Device-side fonts | B0, D2 или D4 | allowlisted enum и exact readback только на модели, где selector и protocol подтверждены; для PANORAMA/PASE не включать по данным KANALI 2.4.0 |
 | C11 | Passive `play_finished` diagnostics | D1 | сначала read-only trace; событие не запускает automatic Apply или replay |
 | C12 | Extended media metadata contract | B0, C3 | Dimensions, duration и FPS подготовленной device-копии получают bounded local `ffprobe` после explicit FilePull и публикуются artifact-scoped методом `GetDeviceMediaMetadataV1`; старый API 8 tuple не меняется |
@@ -4277,6 +4277,21 @@ automatic scheduled cleanup сверх существующих scheduled/startu
 disk-capacity/free-space API, очистка Qt/QML caches, CLI command, SSH/remote
 operation, FilePull, device mutation, firmware, API 9, Manager3 и C7.
 
+### C7. GIPHY integration (отменено)
+
+**Статус:** отменено по решению пользователя 5 сентября 2026 года.
+Реализация не начиналась; код, тесты, конфигурация, зависимости и runtime не
+изменялись.
+
+Ни встроенный GIPHY API/search, ни внешний browser handoff не входят в
+планируемый scope. Существующий импорт локальных media-файлов остаётся
+единственным таким пользовательским потоком. Причина решения: ожидаемая
+пользовательская ценность мала, а стандартный API flow не соответствует
+обязательной для Tryx цепочке local download, validation, transcoding и device
+copy без отдельного разрешения сервиса. Возврат к C7 возможен только по новому
+явному запросу и через новое предложение с повторной проверкой актуальных
+условий сервиса.
+
 ### C12. Extended media metadata contract
 
 **Статус:** реализовано 31 августа 2026 года. Software acceptance, fresh
@@ -4790,8 +4805,11 @@ detection, multi-screen modes и fonts не объединяются с PASE bac
 
 ### M3. Network и desktop portals
 
-- B5, B6 research и C7-C9.
-- GIPHY, recorder и shortcuts разными feature changes.
+- В активном scope остаются B5 и B6 research.
+- C7 исключён из scope 5 сентября 2026 года.
+- C8 отложен 5 сентября 2026 года из-за неоднородной доступности PipeWire и
+  portal backends в поддерживаемых Linux-средах. C9 ожидает отдельного
+  возврата к C8 и не реализуется самостоятельно.
 
 ### M4. Hardware expansion
 
@@ -4883,10 +4901,8 @@ recovery boundary.
 
 ## Открытые решения перед реализацией
 
-1. Решить, нужен ли GIPHY непосредственно в приложении или достаточно
-   безопасного browser-assisted import без API credentials.
-2. Определить project Privacy URL до включения сетевых функций и recorder.
-3. Определить владельца hardware testing для TURRIS и V2.
+1. Определить project Privacy URL до включения сетевых функций.
+2. Определить владельца hardware testing для TURRIS и V2.
 Источник B9 больше не является открытым решением: 31 августа 2026 года выбран
 optional bounded `nvidia-smi` subprocess provider. NVML допустим только как
 будущий private helper process после отдельного review. Владелец и среда real
