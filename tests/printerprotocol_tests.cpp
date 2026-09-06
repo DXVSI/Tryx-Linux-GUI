@@ -5455,6 +5455,8 @@ void PrinterProtocolTests::supportSnapshotUsesExactAllowlistAndBounds() {
     const QJsonObject root =
         QJsonDocument::fromJson(json.toUtf8()).object();
     QCOMPARE(root.value(QStringLiteral("schema_version")).toInt(), 1);
+    QCOMPARE(root.value(QStringLiteral("generated_at_utc")).toString(),
+             QStringLiteral("2026-08-30T12:00:00.000Z"));
     QCOMPARE(root.value(QStringLiteral("runtime")).toObject()
                  .value(QStringLiteral("api_version")).toInt(), 8);
     const QJsonObject device =
@@ -5569,6 +5571,12 @@ void PrinterProtocolTests::
                                   .value(QStringLiteral("events"))
                                   .toArray();
     QCOMPARE(events.size(), 256);
+    QCOMPARE(events.first().toObject()
+                 .value(QStringLiteral("utc")).toString(),
+             QStringLiteral("2026-08-30T11:55:45.000Z"));
+    QCOMPARE(events.last().toObject()
+                 .value(QStringLiteral("utc")).toString(),
+             QStringLiteral("2026-08-30T12:00:00.000Z"));
     QCOMPARE(events.first().toObject()
                  .value(QStringLiteral("generation")).toInteger(),
              44);

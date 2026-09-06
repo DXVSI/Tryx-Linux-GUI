@@ -10,7 +10,6 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QSet>
-#include <QTimeZone>
 
 #include <algorithm>
 #include <limits>
@@ -462,7 +461,7 @@ QJsonArray supportEvents(qint64 nowUtcMs) {
         object.insert(QStringLiteral("event"), event.eventName);
         object.insert(
             QStringLiteral("utc"),
-            QDateTime::fromMSecsSinceEpoch(event.utcMs, QTimeZone::UTC)
+            QDateTime::fromMSecsSinceEpoch(event.utcMs).toUTC()
                 .toString(Qt::ISODateWithMs));
         object.insert(QStringLiteral("monotonic_ms"), event.monotonicMs);
         object.insert(QStringLiteral("generation"),
@@ -559,7 +558,7 @@ QJsonObject buildRoot(const SupportSnapshotSourceV1 &source,
     root.insert(QStringLiteral("schema_version"), 1);
     root.insert(
         QStringLiteral("generated_at_utc"),
-        QDateTime::fromMSecsSinceEpoch(generatedAt, QTimeZone::UTC)
+        QDateTime::fromMSecsSinceEpoch(generatedAt).toUTC()
             .toString(Qt::ISODateWithMs));
     root.insert(QStringLiteral("runtime"), runtime);
     root.insert(QStringLiteral("device"), device);
