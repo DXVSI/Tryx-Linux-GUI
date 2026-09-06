@@ -114,8 +114,11 @@ ScrollView {
                             font.bold: true
                         }
                         Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             text: qsTr("Changes are applied immediately.")
                             color: "#9ca4ac"
+                            wrapMode: Text.WordWrap
                         }
                     }
 
@@ -961,7 +964,7 @@ ScrollView {
                             "Stop tracking the unknown result. A new cleanup will use a new operation identity.")
                         onClicked: {
                             root.cacheManagement.acknowledgeUnresolved()
-                            Qt.callLater(function() {
+                            Qt.callLater.call(Qt, function() {
                                 if (temporaryFilesStartButton.enabled)
                                     temporaryFilesStartButton.forceActiveFocus()
                                 else
@@ -1216,7 +1219,7 @@ ScrollView {
         }
         onClosed: {
             if (!dispatchAccepted) {
-                Qt.callLater(function() {
+                Qt.callLater.call(Qt, function() {
                     temporaryFilesStartButton.forceActiveFocus()
                 })
             }

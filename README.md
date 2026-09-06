@@ -257,6 +257,8 @@ window is shown. This switch never changes the background runtime service.
 - Runtime/session/protocol ownership refactoring with the existing API 8
   contracts and model gates preserved. The GUI now recovers when connection
   revisions advance between cached reads instead of leaving controls disabled.
+- Qt 6.4-compatible deferred UI actions and layout hints that wrap within their
+  panels even with unusually wide font metrics.
 
 Back up the user profile before upgrading. New overlay, saved-layout, and retry
 formats are not a general round-trip to older packages; switching badges back

@@ -75,6 +75,18 @@ TestCase {
         }
     }
 
+    Component {
+        id: savedLayoutRowComponent
+
+        QtObject {
+            required property string layoutId
+            required property string layoutRevision
+            required property string layoutName
+            required property string screenMode
+            required property var mediaNames
+        }
+    }
+
     QtObject {
         id: runtimeMock
 
@@ -142,7 +154,7 @@ TestCase {
         property string savedLayoutsStatus: "Ready"
         property string savedLayoutsDiagnostic: ""
         property string savedLayoutsDeviceIdentity: "device-a"
-        property var savedLayoutRows: []
+        property list<QtObject> savedLayoutRows: []
         property var savedLayoutModel: savedLayoutRows
         property var savedLayoutDrafts: ({})
         property int savedLayoutDraftCount: 0
@@ -401,6 +413,19 @@ TestCase {
         }
     }
 
+    function cleanup() {
+        // Detach delegates before QtTest destroys the temporary model objects.
+        runtimeMock.savedLayoutRows = []
+        wait(0)
+    }
+
+    function savedLayoutRow(properties) {
+        const row = createTemporaryObject(
+            savedLayoutRowComponent, testCase, properties)
+        verify(row !== null)
+        return row
+    }
+
     function init() {
         runtimeMock.mediaModel = mediaModel
         mediaModel.setProperty(0, "mediaName",
@@ -458,7 +483,7 @@ TestCase {
         runtimeMock.savedLayoutsDiagnostic = ""
         runtimeMock.savedLayoutsDeviceIdentity = "device-a"
         runtimeMock.savedLayoutRows = [
-            {
+            savedLayoutRow({
                 "layoutId": "layout-full",
                 "layoutRevision": "11",
                 "layoutName": "Full desk",
@@ -466,8 +491,8 @@ TestCase {
                 "mediaNames": [
                     "two.mp4.h264_2240x1080"
                 ]
-            },
-            {
+            }),
+            savedLayoutRow({
                 "layoutId": "layout-split",
                 "layoutRevision": "19",
                 "layoutName": "Split desk",
@@ -476,7 +501,7 @@ TestCase {
                     "two.mp4.h264_2240x1080",
                     "one.mp4.h264_2240x1080"
                 ]
-            }
+            })
         ]
         runtimeMock.savedLayoutDrafts = ({
             "layout-full": fullSavedLayoutDraft(),
@@ -837,9 +862,9 @@ TestCase {
              "expected": "Unknown size"},
             {"tag": "negative", "bytes": -1,
              "expected": "Unknown size"},
-            {"tag": "not-a-number", "bytes": Number.NaN,
+            {"tag": "not-a-number", "bytes": NaN,
              "expected": "Unknown size"},
-            {"tag": "infinite", "bytes": Number.POSITIVE_INFINITY,
+            {"tag": "infinite", "bytes": Infinity,
              "expected": "Unknown size"},
             {"tag": "one-byte", "bytes": 1,
              "expected": "1 B"},
@@ -1963,6 +1988,7 @@ TestCase {
             "CPU Temperature", "CPU Frequency", "GPU Temperature"
         ])
         compare(runtimeMock.lastFullDraftSubmit[7], true)
+        tryVerify(() => !selector.replacementVisible)
     }
 
     function test_metricDraftOverLimitIsBlockedInQml() {

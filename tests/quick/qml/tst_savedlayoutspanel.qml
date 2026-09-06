@@ -23,7 +23,19 @@ TestCase {
     QtObject {
         id: layoutState
 
-        property var rows: []
+        property list<QtObject> rows: []
+    }
+
+    Component {
+        id: layoutRowComponent
+
+        QtObject {
+            required property string layoutId
+            required property string layoutRevision
+            required property string layoutName
+            required property string screenMode
+            required property var mediaNames
+        }
     }
 
     QtObject {
@@ -71,8 +83,7 @@ TestCase {
     }
 
     function addLayout(layoutId, name, split) {
-        const next = layoutState.rows.slice(0)
-        next.push({
+        const row = createTemporaryObject(layoutRowComponent, testCase, {
             "layoutId": layoutId,
             "layoutRevision": "7",
             "layoutName": name,
@@ -83,6 +94,9 @@ TestCase {
                              "right.mp4.h264_1120x1080"]
                           : ["full.mp4.h264_2240x1080"]
         })
+        verify(row !== null)
+        const next = Array.from(layoutState.rows)
+        next.push(row)
         layoutState.rows = next
     }
 
@@ -123,6 +137,12 @@ TestCase {
         hostWindow.height = 700
         hostWindow.requestActivate()
         tryVerify(() => hostWindow.active)
+        wait(0)
+    }
+
+    function cleanup() {
+        // Detach delegates before QtTest destroys the temporary model objects.
+        layoutState.rows = []
         wait(0)
     }
 

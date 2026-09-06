@@ -87,7 +87,7 @@ ApplicationWindow {
         case DirtyDraftGuard.HideToTrayIntent:
             if (!windowChrome.hideWindowToTray()) {
                 approvedCloseBypass = true
-                Qt.callLater(function() {
+                Qt.callLater.call(Qt, function() {
                     windowChrome.closeWindow()
                 })
             }

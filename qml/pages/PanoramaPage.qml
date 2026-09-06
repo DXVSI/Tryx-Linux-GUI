@@ -1532,10 +1532,13 @@ ScrollView {
                 }
 
                 Label {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     text: root.splitMode
                           ? qsTr("Select up to three metrics per side")
                           : qsTr("Select up to three overlay metrics")
                     font.bold: true
+                    wrapMode: Text.WordWrap
                 }
 
                 MetricSelector {
