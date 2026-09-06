@@ -89,6 +89,7 @@ struct PinnedDirectory {
 };
 
 struct PreparedFile {
+    ScopedFileDescriptor descriptor;
     QByteArray leafName;
     FileIdentity identity;
 };
@@ -353,12 +354,13 @@ bool prepareFile(const PinnedDirectory &directory,
                          QStringLiteral("Cannot prepare the support report"));
         return false;
     }
+    // Retain the inode through publication and every rollback identity check.
+    prepared->descriptor = ScopedFileDescriptor(descriptor);
 
     struct stat status {};
     if (::fstat(descriptor, &status) != 0 ||
         !S_ISREG(status.st_mode) ||
         status.st_uid != ::getuid() || status.st_nlink != 1) {
-        ::close(descriptor);
         *error = failure(WriteStatus::IoError,
                          QStringLiteral("Cannot prepare the support report"));
         return false;
@@ -366,7 +368,6 @@ bool prepareFile(const PinnedDirectory &directory,
     prepared->identity.device = status.st_dev;
     prepared->identity.inode = status.st_ino;
     const auto discard = [&]() {
-        ::close(descriptor);
         unlinkIfMatches(directory.descriptor.get(), prepared->leafName,
                         prepared->identity);
     };
@@ -387,7 +388,6 @@ bool prepareFile(const PinnedDirectory &directory,
                          QStringLiteral("Cannot write the support report"));
         return false;
     }
-    ::close(descriptor);
     return true;
 }
 

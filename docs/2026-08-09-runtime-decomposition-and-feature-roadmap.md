@@ -2023,6 +2023,11 @@ prepared hardlink, target race, замену выбранного каталог
 race. Keyboard path использует настоящие Return/Space/Escape события, а
 terminal success/error объявляются accessibility alert без раскрытия report.
 
+При подготовке релиза 2.3.0 writer дополнительно удерживает descriptor самого
+подготовленного файла до завершения publication и всех rollback checks.
+Это исключает повторное использование inode после unlink/recreate; replacement
+не удаляется ошибочно. Descriptor освобождается на каждом terminal path.
+
 Полный software `package-check` на свежесобранных binaries прошёл: 794 printer
 protocol cases, 17 replace journal, 92 Material QML, 100 Quick client/model,
 37 runtime bootstrap, 30 capability/handshake и 20 tray. Translation gate

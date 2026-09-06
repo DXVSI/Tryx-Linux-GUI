@@ -49,6 +49,24 @@
 
 namespace {
 
+QList<int> descriptorsForIdentity(const struct stat &identity) {
+    QList<int> descriptors;
+    const auto names = QDir(QStringLiteral("/proc/self/fd"))
+                           .entryList(QDir::AllEntries | QDir::System |
+                                      QDir::NoDotAndDotDot);
+    for (const QString &name : names) {
+        bool numeric = false;
+        const int descriptor = name.toInt(&numeric);
+        struct stat status {};
+        if (numeric && ::fstat(descriptor, &status) == 0 &&
+            status.st_dev == identity.st_dev &&
+            status.st_ino == identity.st_ino) {
+            descriptors.append(descriptor);
+        }
+    }
+    return descriptors;
+}
+
 class ScopedEnvironmentVariable final {
 public:
     explicit ScopedEnvironmentVariable(const char *name)
@@ -590,6 +608,8 @@ private slots:
     void supportBundleWriterCreatesPrivateFileWithoutClobbering();
     void supportBundleWriterRejectsBeforePublishGuardFails();
     void supportBundleWriterRollsBackAfterPublishGuardFails();
+    void supportBundleWriterPinsIdentityThroughPublication_data();
+    void supportBundleWriterPinsIdentityThroughPublication();
     void supportBundleWriterPreservesReplacedRollbackTarget();
     void supportBundleWriterRejectsUnsafeTargets();
     void supportBundleWriterRejectsPreparedTargetAndDirectoryRaces();
@@ -2921,6 +2941,70 @@ void QuickClientTests::
                 QDir::Files | QDir::Hidden)
             .size(),
         0);
+}
+
+void QuickClientTests::
+    supportBundleWriterPinsIdentityThroughPublication_data() {
+    QTest::addColumn<int>("rejectOnCall");
+    QTest::newRow("success") << 0;
+    QTest::newRow("reject-before-publication") << 1;
+    QTest::newRow("reject-after-publication") << 2;
+}
+
+void QuickClientTests::
+    supportBundleWriterPinsIdentityThroughPublication() {
+    QFETCH(int, rejectOnCall);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QByteArray payload("{\"schema_version\":1}\n");
+    const QString fileName = QStringLiteral(
+        "tryx-panorama-support-20260830-120000-000-e1e2f3a4.json");
+    const QString targetPath = QDir(directory.path()).filePath(fileName);
+    const QStringList temporaryPattern{
+        QStringLiteral(".tryx-panorama-support-*.tmp")};
+    int guardCalls = 0;
+    bool pinsHeld = true;
+    struct stat identity {};
+    const auto result = tryx::support_bundle::writeNewReport(
+        QUrl::fromLocalFile(directory.path()), fileName, payload,
+        [&]() {
+            ++guardCalls;
+            QString currentPath = targetPath;
+            if (guardCalls == 1) {
+                const auto names = QDir(directory.path()).entryList(
+                    temporaryPattern, QDir::Files | QDir::Hidden);
+                pinsHeld &= names.size() == 1;
+                currentPath = QDir(directory.path()).filePath(names.value(0));
+            }
+            struct stat status {};
+            if (::lstat(QFile::encodeName(currentPath).constData(), &status) != 0) {
+                pinsHeld = false;
+            } else {
+                identity = status;
+                const auto pins = descriptorsForIdentity(identity);
+                pinsHeld &= pins.size() == 1;
+                if (pins.size() == 1) {
+                    pinsHeld &= (::fcntl(pins.first(), F_GETFD) & FD_CLOEXEC) != 0;
+                    pinsHeld &= (::fcntl(pins.first(), F_GETFL) & O_ACCMODE) == O_WRONLY;
+                }
+            }
+            return guardCalls != rejectOnCall;
+        });
+    QVERIFY(pinsHeld);
+    QCOMPARE(guardCalls, rejectOnCall == 1 ? 1 : 2);
+    QCOMPARE(result.status, rejectOnCall == 0
+                 ? tryx::support_bundle::WriteStatus::Success
+                 : tryx::support_bundle::WriteStatus::PublishRejected);
+    QVERIFY(descriptorsForIdentity(identity).isEmpty());
+    if (rejectOnCall == 0) {
+        QFile file(targetPath);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), payload);
+    } else {
+        QVERIFY(!QFileInfo::exists(targetPath));
+    }
+    QVERIFY(QDir(directory.path()).entryList(
+                temporaryPattern, QDir::Files | QDir::Hidden).isEmpty());
 }
 
 void QuickClientTests::
