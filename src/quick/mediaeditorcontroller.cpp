@@ -149,6 +149,7 @@ bool MediaEditorController::replaceAllowed() const {
     if (!recoveredDeviceCopy() ||
         recoveredArtifact_.mediaId.isEmpty() ||
         !runtime_->displayStateValid() ||
+        !runtime_->displayMediaReplacementBlockReason().isEmpty() ||
         runtime_->displayDeviceIdentity() !=
             recoveredArtifact_.deviceIdentity ||
         !runtime_->displayedMedia().contains(
@@ -170,6 +171,8 @@ QString MediaEditorController::replaceBlockReason() const {
     if (recoveredArtifact_.mediaId.isEmpty()) {
         return tr("The original media identity is unavailable");
     }
+    const QString badgeBlock = runtime_->displayMediaReplacementBlockReason();
+    if (!badgeBlock.isEmpty()) return badgeBlock;
     if (!runtime_->displayStateValid() ||
         runtime_->displayDeviceIdentity() !=
             recoveredArtifact_.deviceIdentity ||

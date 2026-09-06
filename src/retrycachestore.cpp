@@ -1,4 +1,5 @@
 #include "retrycachestore.h"
+#include "configurationformatbackup.h"
 
 #include "printermediafileintegrity.h"
 #include "printermediaidentity.h"
@@ -1187,6 +1188,17 @@ ConditionalWriteStatus replacePrivateFileIfCurrent(
             expectedIdentity, detail)) {
         return ConditionalWriteStatus::Conflict;
     }
+    const int targetVersion = QJsonDocument::fromJson(payload).object().value(QStringLiteral("version")).toInt(-1);
+    const int previousVersion = QJsonDocument::fromJson(expectedBytes).object().value(QStringLiteral("version")).toInt(-1);
+    if (targetVersion == 12 && previousVersion != 12) {
+        if (!tryx::preserveConfigurationBeforeUpgradeAt(parentDescriptor, QString::fromUtf8(name),
+                kMaximumManifestBytes, 12, {6, 10, 11}, detail)) {
+            return ConditionalWriteStatus::IoError;
+        }
+        if (!manifestEntryMatchesAt(parentDescriptor, name, expectedBytes, expectedIdentity, detail)) {
+            return ConditionalWriteStatus::Conflict;
+        }
+    }
     if (!file.commit()) {
         if (detail) {
             *detail = file.errorString();
@@ -1714,7 +1726,26 @@ struct ParsedDispatch {
     bool requiresNewRemoteName = false;
     bool finalizationOnlyReconciliation = false;
     std::optional<tryx::RetryCacheStore::OriginIdentity> origin;
+    std::optional<TryxRuntimeApplyWithBadgesV1> applyWithBadges;
 };
+
+bool badgeContinuationIsValid(const TryxRuntimeApplyWithBadgesV1 &envelope,
+                              quint16 productId) {
+    return tryx::pase_overlay_config::paseBadgeUploadContinuationIsValid(envelope, productId);
+}
+
+bool canonicalBadgeVersionIsValid(const QJsonObject &manifest) {
+    const QJsonValue version = manifest.value(QStringLiteral("version"));
+    if (version == QJsonValue(tryx::RetryCacheStore::FormatVersion)) return true;
+    if (version != QJsonValue(11)) return false;
+    // Format 11 never carried this intent. Reject a disguised future payload.
+    for (const auto &key : {QStringLiteral("retryCandidate"), QStringLiteral("inFlightDispatch")}) {
+        const auto record = manifest.value(key).toObject();
+        if (record.contains(QStringLiteral("applyWithBadges"))
+            || record.contains(QStringLiteral("applyWithBadgesFingerprint"))) return false;
+    }
+    return true;
+}
 
 template <typename Dispatch>
 tryx::RetryCacheTransitionStore::CandidateIdentity
@@ -2495,6 +2526,12 @@ QJsonObject retryRecordObject(const ParsedDispatch &record,
                   record.primaryErrorCategory);
     object.insert(QStringLiteral("primaryErrorMessage"),
                   record.primaryErrorMessage);
+    if (record.applyWithBadges) {
+        object.insert(QStringLiteral("applyWithBadges"),
+            tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1ToJson(*record.applyWithBadges));
+        object.insert(QStringLiteral("applyWithBadgesFingerprint"),
+            tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1Fingerprint(*record.applyWithBadges));
+    }
     if (record.origin.has_value()) {
         QJsonObject origin;
         origin.insert(
@@ -2921,6 +2958,17 @@ OrphanCleanupStatus cleanupUncommittedCanonicalArtifacts(
             continue;
         }
         const QString name = QString::fromUtf8(encodedName);
+        const QByteArray backupPrefix("retry-manifest.json.pre-c16-");
+        if (encodedName.startsWith(backupPrefix)) {
+            QByteArray bytes;
+            const QByteArray hash = encodedName.mid(backupPrefix.size());
+            const bool validBackup = hash.size() == 64
+                && readManifestAt(directoryDescriptor, encodedName.constData(), &bytes, nullptr, detail) == SecureReadStatus::Success
+                && QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex() == hash
+                && QJsonDocument::fromJson(bytes).object().value(QStringLiteral("version")) == QJsonValue(11);
+            if (!validBackup) return OrphanCleanupStatus::Conflict;
+            continue; // A verified pre-upgrade snapshot is never an orphan to delete.
+        }
         if (name.toUtf8() != encodedName ||
             !generatedCanonicalArtifactNameIsValid(name)) {
             if (detail) {
@@ -3128,6 +3176,8 @@ bool parseStoredDispatch(const QJsonValue &value,
             object, required,
             {QStringLiteral("retriesLineageId"),
              QStringLiteral("origin"),
+             QStringLiteral("applyWithBadges"),
+             QStringLiteral("applyWithBadgesFingerprint"),
              QStringLiteral("thumbnail")})) {
         if (detail) {
             *detail = QStringLiteral(
@@ -3219,6 +3269,20 @@ bool parseStoredDispatch(const QJsonValue &value,
         return false;
     }
 
+    std::optional<TryxRuntimeApplyWithBadgesV1> applyWithBadges;
+    const auto envelopeValue = object.value(QStringLiteral("applyWithBadges"));
+    const auto fingerprintValue = object.value(QStringLiteral("applyWithBadgesFingerprint"));
+    if (!envelopeValue.isUndefined() || !fingerprintValue.isUndefined()) {
+        TryxRuntimeApplyWithBadgesV1 envelope;
+        if (!envelopeValue.isObject() || !fingerprintValue.isString()
+            || !tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1FromJson(envelopeValue.toObject(), &envelope)
+            || !badgeContinuationIsValid(envelope, static_cast<quint16>(productNumber))
+            || fingerprintValue.toString() != tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1Fingerprint(envelope)) {
+            if (detail) *detail = QStringLiteral("Canonical retry badge continuation is invalid");
+            return false;
+        }
+        applyWithBadges = envelope;
+    }
     std::optional<tryx::RetryCacheStore::OriginIdentity> origin;
     const QJsonValue originValue =
         object.value(QStringLiteral("origin"));
@@ -3499,6 +3563,7 @@ bool parseStoredDispatch(const QJsonValue &value,
         parsed->finalizationOnlyReconciliation =
             finalizationOnlyReconciliation;
         parsed->origin = origin;
+        parsed->applyWithBadges = applyWithBadges;
     }
     return true;
 }
@@ -3513,6 +3578,7 @@ tryx::RetryCacheStore::StoredDispatch storedDispatchFromParsed(
     stored.prepared = parsed.prepared;
     stored.thumbnail = parsed.thumbnail;
     stored.origin = parsed.origin;
+    stored.applyWithBadges = parsed.applyWithBadges;
     stored.retriesLineageId = parsed.retriesLineageId;
     stored.kind = tryx::RetryCacheStore::OperationKind::Upload;
     stored.attempt = parsed.attempt;
@@ -3550,6 +3616,7 @@ storedRetryCandidateFromParsed(const ParsedDispatch &parsed) {
     stored.prepared = parsed.prepared;
     stored.thumbnail = parsed.thumbnail;
     stored.origin = parsed.origin;
+    stored.applyWithBadges = parsed.applyWithBadges;
     stored.retriesLineageId = parsed.retriesLineageId;
     stored.kind = tryx::RetryCacheStore::OperationKind::Upload;
     stored.attempt = parsed.attempt;
@@ -3621,6 +3688,7 @@ ParsedDispatch parsedFromStoredDispatch(
     parsed.finalizationOnlyReconciliation =
         stored.finalizationOnlyReconciliation;
     parsed.origin = stored.origin;
+    parsed.applyWithBadges = stored.applyWithBadges;
     return parsed;
 }
 
@@ -3651,6 +3719,7 @@ ParsedDispatch parsedFromStoredRetryCandidate(
     parsed.finalizationOnlyReconciliation =
         stored.finalizationOnlyReconciliation;
     parsed.origin = stored.origin;
+    parsed.applyWithBadges = stored.applyWithBadges;
     return parsed;
 }
 
@@ -3783,6 +3852,7 @@ bool commonRecordsEqual(
         left.subject == right.subject &&
         left.primaryErrorCategory == right.primaryErrorCategory &&
         left.primaryErrorMessage == right.primaryErrorMessage &&
+        left.applyWithBadges == right.applyWithBadges &&
         originsEqual(left.origin, right.origin);
 }
 
@@ -4090,8 +4160,7 @@ bool parseOrdinaryCanonicalManifest(
     }
     quint64 revision = 0;
     if (!hasExactKeys(manifest, required) ||
-        manifest.value(QStringLiteral("version")).toInt(-1) !=
-            tryx::RetryCacheStore::FormatVersion ||
+        !canonicalBadgeVersionIsValid(manifest) ||
         !parseCanonicalUnsigned(
             manifest.value(QStringLiteral("storeRevision")), 1,
             std::numeric_limits<quint64>::max(), &revision)) {
@@ -4278,6 +4347,7 @@ bool parseOrdinaryCanonicalManifest(
                                    parsedCandidate.thumbnail) &&
             originsEqual(parsedDispatch.origin,
                          parsedCandidate.origin) &&
+            parsedDispatch.applyWithBadges == parsedCandidate.applyWithBadges &&
             parsedDispatch.productId == parsedCandidate.productId &&
             parsedDispatch.conversion == parsedCandidate.conversion &&
             parsedDispatch.originalRemoteName ==
@@ -4463,7 +4533,14 @@ QJsonObject conservativeShadowManifest(
                    : QString())
         : dispatch.primaryErrorMessage;
     QJsonObject shadow;
-    shadow.insert(QStringLiteral("version"), 10);
+    shadow.insert(QStringLiteral("version"), dispatch.applyWithBadges ? 12 : 10);
+    if (dispatch.applyWithBadges) {
+        // A future-version fence, not a lossy v10 compatibility shadow.
+        shadow.insert(QStringLiteral("applyWithBadges"),
+            tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1ToJson(*dispatch.applyWithBadges));
+        shadow.insert(QStringLiteral("applyWithBadgesFingerprint"),
+            tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1Fingerprint(*dispatch.applyWithBadges));
+    }
     shadow.insert(QStringLiteral("createdUtc"),
                   QStringLiteral("1970-01-01T00:00:00.000Z"));
     shadow.insert(QStringLiteral("operationId"),
@@ -4856,6 +4933,9 @@ RetryCacheStore::releasedV10DowngradeSafety(
     const bool hasDispatch = snapshot_.inFlightDispatch.has_value();
     if (hasDispatch) {
         return blocked(QStringLiteral("BlockedInFlightDispatch"));
+    }
+    if (hasCandidate && snapshot_.retryCandidate->applyWithBadges) {
+        return blocked(QStringLiteral("BlockedBadgeContinuation"));
     }
 
     const auto recordIsReleasedV10Representable = [](const auto &record) {
@@ -5437,7 +5517,7 @@ RetryCacheStore::LoadResult RetryCacheStore::load() {
             QStringLiteral(
                 "Canonical retry manifest was written by a newer version"));
     }
-    if (version != static_cast<quint64>(FormatVersion)) {
+    if (!canonicalBadgeVersionIsValid(manifest)) {
         return blocked(
             LoadStatus::Invalid,
             QStringLiteral(
@@ -9579,6 +9659,15 @@ RetryCacheStore::completeLegacyValidation(
     bool sourcesStillCurrent = manifestEntryMatchesAt(
         rootDescriptor.get(), "retry-manifest.json", manifestBytes,
         manifestIdentity, &detail);
+    if (sourcesStillCurrent && !tryx::preserveConfigurationBeforeUpgradeAt(rootDescriptor.get(),
+            QStringLiteral("retry-manifest.json"), kMaximumManifestBytes, 12,
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, &detail)) {
+        writesBlocked_ = true;
+        return failure(ErrorCode::SyncError, detail);
+    }
+    sourcesStillCurrent = sourcesStillCurrent && manifestEntryMatchesAt(
+        rootDescriptor.get(), "retry-manifest.json", manifestBytes,
+        manifestIdentity, &detail);
     for (const ValidatedLegacyArtifact &validated :
          validatedArtifacts) {
         sourcesStillCurrent = sourcesStillCurrent &&
@@ -10082,6 +10171,7 @@ RetryCacheStore::MutationResult RetryCacheStore::persistPrepared(
          printer_media_file_integrity::isSha256Hex(
              input.thumbnail->expectedSha256));
     if (!idsValid || !metadataValid || !originValid ||
+        (input.applyWithBadges && !badgeContinuationIsValid(*input.applyWithBadges, input.productId)) ||
         !preparedInputValid || !thumbnailInputValid) {
         return failure(ErrorCode::InvalidInput,
                        QStringLiteral(
@@ -10451,6 +10541,7 @@ RetryCacheStore::MutationResult RetryCacheStore::persistPrepared(
             input.thumbnail->expectedSha256};
     }
     dispatch.origin = input.origin;
+    dispatch.applyWithBadges = input.applyWithBadges;
     dispatch.retriesLineageId = input.retriesLineageId;
     dispatch.kind = input.kind;
     dispatch.attempt = input.attempt;
@@ -10805,6 +10896,7 @@ RetryCacheStore::MutationResult RetryCacheStore::beginRetry(
     dispatch.prepared = candidate.prepared;
     dispatch.thumbnail = candidate.thumbnail;
     dispatch.origin = candidate.origin;
+    dispatch.applyWithBadges = candidate.applyWithBadges;
     dispatch.retriesLineageId = candidate.lineageId;
     dispatch.kind = candidate.kind;
     dispatch.attempt = candidate.attempt + 1;
@@ -11155,6 +11247,19 @@ RetryCacheStore::MutationResult RetryCacheStore::armDispatch(
 
     RetryCacheTransitionStore transitionStore(retryDirectory_);
     if (hasCandidate) {
+        // Protect creates a second hard link. Preserve an upgraded root shadow
+        // before that transition, while the original is still single-link.
+        if (dispatch.applyWithBadges && !parsedCandidate.applyWithBadges) {
+            if (!manifestEntryMatchesAt(rootDescriptor.get(), "retry-manifest.json",
+                    previousShadowBytes, previousShadowIdentity, &detail)
+                || !tryx::preserveConfigurationBeforeUpgradeAt(rootDescriptor.get(), QStringLiteral("retry-manifest.json"),
+                    kMaximumManifestBytes, 12, {6, 10}, &detail)
+                || !manifestEntryMatchesAt(rootDescriptor.get(), "retry-manifest.json",
+                    previousShadowBytes, previousShadowIdentity, &detail)) {
+                writesBlocked_ = true;
+                return failure(ErrorCode::Conflict, QStringLiteral("Cannot preserve the previous retry shadow before upgrade"));
+            }
+        }
         const auto transitionLoad = transitionStore.load();
         if (transitionLoad.code !=
             RetryCacheTransitionStore::Code::NoTransition) {

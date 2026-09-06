@@ -22,6 +22,7 @@ OBJECTS_DIR = $$PWD/../../build/cli-tests/obj
 MOC_DIR = $$PWD/../../build/cli-tests/moc
 
 SOURCES += \
+    ../../src/runtimebadgetext.cpp \
     ../../src/runtimecontract.cpp \
     ../../src/runtimedowngradestore.cpp \
     ../../src/supportsnapshot.cpp \

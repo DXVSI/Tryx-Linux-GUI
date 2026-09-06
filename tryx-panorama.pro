@@ -65,6 +65,10 @@ protocol_tests.target = check
 protocol_tests.commands = \
     sh $$shell_path($$PWD/tests/check_no_bundled_video.sh) && \
     cd $$shell_path($$PWD/tests) && \
+        $$QMAKE_QMAKE badgetext_tests.pro && $(MAKE) && \
+        dbus-run-session -- $$shell_path($$PWD/build/badgetext-tests/badgetext-tests) && \
+        $$QMAKE_QMAKE pasebadgestore_tests.pro && $(MAKE) && \
+        $$shell_path($$PWD/build/pasebadgestore-tests/pasebadgestore-tests) && \
         $$QMAKE_QMAKE nvidiasmiprovider_tests.pro && $(MAKE) && \
         $$shell_path($$PWD/build/nvidiasmiprovider-tests/nvidiasmiprovider-tests) && \
         $$QMAKE_QMAKE runtime_downgradestore_tests.pro && $(MAKE) && \
@@ -100,6 +104,10 @@ HEADERS += \
     src/devicemanagermessages.h \
     src/devicemanager.h \
     src/deviceworker.h \
+    src/legacydevicesession.h \
+    src/printerclasssession.h \
+    src/deviceworkersessioncontext_p.h \
+    src/deviceworkermetrics_p.h \
     src/firmwarebridge.h \
     src/firmwarerecoveryjournal.h \
     src/gpuinventory.h \
@@ -121,6 +129,19 @@ HEADERS += \
     src/printersessioncontroller.h \
     src/printerlifecycle_p.h \
     src/printerprotocol.h \
+    src/printermediaupload.h \
+    src/turrismediaclient.h \
+    src/paseconfigurationclient.h \
+    src/pasemediaclient.h \
+    src/printertransactionchannel.h \
+    src/printermediahelpers_p.h \
+    src/usbprintertransport.h \
+    src/printeroperation_p.h \
+    src/printerprotocolconstants_p.h \
+    src/printerproductprofile.h \
+    src/printerframecodec.h \
+    src/printerframecodec_p.h \
+    src/printerdiscovery_p.h \
     src/replacejournal.h \
     src/retrycachestore.h \
     src/retrycachetransitionstore.h \
@@ -130,6 +151,8 @@ HEADERS += \
     src/savedlayoutstore.h \
     src/supportsnapshot.h \
     src/runtimecontract.h \
+    src/runtimebadgetext.h \
+    src/configurationformatbackup.h \
     src/runtimebridge.h \
     src/turrismediaformat.h
 
@@ -139,6 +162,9 @@ SOURCES += \
     src/devicemediaartifactstore.cpp \
     src/devicemanager.cpp \
     src/deviceworker.cpp \
+    src/legacydevicesession.cpp \
+    src/printerclasssession.cpp \
+    src/deviceworkermetrics.cpp \
     src/firmwarebridge.cpp \
     src/firmwarerecoveryjournal.cpp \
     src/gpuinventory.cpp \
@@ -151,6 +177,7 @@ SOURCES += \
     src/mediatransform.cpp \
     src/paseoverlayconfig.cpp \
     src/pasemetricsconfigstore.cpp \
+    src/configurationformatbackup.cpp \
     src/privateruntimepaths.cpp \
     src/printermediafileintegrity.cpp \
     src/printermediaidentity.cpp \
@@ -159,6 +186,17 @@ SOURCES += \
     src/printeroperationcoordinator.cpp \
     src/printersessioncontroller.cpp \
     src/printerprotocol.cpp \
+    src/printermediaupload.cpp \
+    src/turrismediaclient.cpp \
+    src/paseconfigurationclient.cpp \
+    src/pasemediaclient.cpp \
+    src/printeroperation.cpp \
+    src/printertransactionchannel.cpp \
+    src/printermediahelpers.cpp \
+    src/usbprintertransport.cpp \
+    src/printerproductprofile.cpp \
+    src/printerframecodec.cpp \
+    src/printerdiscovery.cpp \
     src/replacejournal.cpp \
     src/retrycachestore.cpp \
     src/retrycachetransitionstore.cpp \
@@ -167,11 +205,16 @@ SOURCES += \
     src/runtimepresentationpreferencesstore.cpp \
     src/savedlayoutstore.cpp \
     src/supportsnapshot.cpp \
+    src/runtimebadgetext.cpp \
     src/runtimecontract.cpp \
     src/runtimebridge.cpp \
     src/turrismediaformat.cpp
 
 DISTFILES += \
+    tests/badgetext_tests.pro \
+    tests/badgetext_tests.cpp \
+    tests/pasebadgestore_tests.pro \
+    tests/pasebadgestore_tests.cpp \
     VERSION \
     LICENSE \
     LICENSES/picojson-BSD-2-Clause.txt \

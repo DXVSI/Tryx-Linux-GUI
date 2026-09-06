@@ -88,6 +88,15 @@ public:
                                       QObject *parent = nullptr);
     ~PrinterSessionController() override;
     const State &state() const { return state_; }
+    TryxRuntimeDisplaySnapshotV1 displaySnapshotV1(quint64 connectionRevision) const;
+    void beginDisplayMutation(const QString &operationId, quint64 generation, bool replacesOverlay);
+    bool displayMutationCanPersistOverlay(const QString &operationId, quint64 generation) const;
+    void finishDisplayMutation(const QString &operationId, quint64 generation, bool provenNoMutation);
+    void commitDisplayMutation(const QString &operationId, quint64 generation,
+        const QString &identity, quint16 productId, const PrinterProtocol::PaseDisplayStateResult &readback,
+        const PrinterProtocol::PaseOverlayConfig &overlay);
+    void commitMetricsDisplayMutation(const QString &operationId, quint64 generation,
+        const QString &identity, quint16 productId, const PrinterProtocol::PaseOverlayConfig &overlay);
 #ifdef TRYX_PROTOCOL_TESTING
     void setAutoConnectModeForTesting(bool enabled) {
         state_.autoConnectMode = enabled;
@@ -137,6 +146,7 @@ public:
     TryxRuntimeDeviceSpecificationsV1 deviceSpecificationsV1(
         const TryxRuntimeSnapshot &connection) const;
     void loadPaseMetricsConfig();
+    bool overlayConfigurationSupportsDowngradeV10() const;
     bool persistPaseMetricsConfiguration(
         const PrinterProtocol::PaseOverlayConfig &overlay, bool enabled,
         QString *errorMessage);
@@ -232,6 +242,7 @@ signals:
                                             quint64 generation);
     void metricsStateUpdated(const TryxRuntimeMetricsState &state);
     void displayStateUpdated(const TryxRuntimeDisplayState &state);
+    void displaySnapshotChangedV1(quint64 revision);
     void brightnessChanged(int value);
     void screenConfigChanged();
     void mediaUploaded(const QString &filename);
@@ -250,6 +261,17 @@ private:
     // session. Never continue a captured transition under the replacement gate.
     bool sessionTransitionIsCurrent(quint64 generation) const;
     State state_;
+    TryxRuntimeDisplaySnapshotV1 displaySnapshot_;
+    TryxRuntimeDisplaySnapshotV1 beforeDisplayMutation_;
+    QString displaySnapshotIdentity_;
+    QString pendingDisplayOperationId_;
+    bool pendingDisplayReplacesOverlay_ = false;
+    std::optional<PrinterProtocol::PaseDisplayState> bootstrapDisplay_;
+    bool bootstrapDisplayAllowed_ = true;
+    void invalidateDisplaySnapshot(bool newGeneration = false);
+    void publishDisplaySnapshot(TryxRuntimeDisplaySnapshotV1 snapshot);
+    void tryAcceptBootstrapDisplay();
+    bool coherentDisplayContextIsCurrent(quint64 generation, const QString &identity, quint16 productId) const;
     Callbacks callbacks_;
     bool firmwareQuiesceDispatchPending_ = false;
     QTimer *keepaliveTimer_ = nullptr;

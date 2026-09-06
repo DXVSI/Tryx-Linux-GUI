@@ -53,6 +53,8 @@ class RuntimeClient final : public QObject, protected QDBusContext {
                    NOTIFY capabilitiesChanged)
     Q_PROPERTY(QStringList deviceCapabilities READ deviceCapabilities
                    NOTIFY capabilitiesChanged)
+    Q_PROPERTY(bool customBadgeTextSupported READ customBadgeTextSupported NOTIFY capabilitiesChanged)
+    Q_PROPERTY(QVariantMap displayBadgeChoices READ displayBadgeChoices NOTIFY displayChanged)
     Q_PROPERTY(bool deviceSpecificationsSupported
                    READ deviceSpecificationsSupported
                    NOTIFY deviceSpecificationsChanged)
@@ -199,6 +201,9 @@ public:
     bool supportSnapshotBusy() const;
     bool deviceCapabilitiesReady() const;
     QStringList deviceCapabilities() const;
+    bool customBadgeTextSupported() const;
+    QVariantMap displayBadgeChoices() const;
+    Q_INVOKABLE QString badgeTextError(const QString &mode, const QString &text) const;
     bool deviceSpecificationsSupported() const;
     QString deviceSpecificationsStatus() const;
     bool deviceSpecificationsReady() const;
@@ -314,6 +319,7 @@ public:
         const TryxRuntimeApplyRequest &request,
         const TryxRuntimeMediaPreparationProfileV1 &profile);
     TryxRuntimeApplyRequest currentDisplayApplyRequest() const;
+    QString displayMediaReplacementBlockReason() const;
     QString queueCacheCleanup();
     bool cancelCacheCleanup(const QString &operationId);
     bool refreshCacheCleanup(const QString &operationId);
@@ -351,7 +357,8 @@ public:
         const QString &position, const QString &color,
         const QString &alignment, bool layoutPresent,
         bool brightnessPresent, int brightness,
-        bool orientationPresent, bool mirror, bool waterfall);
+        bool orientationPresent, bool mirror, bool waterfall,
+        const QVariantMap &badgeChoices = QVariantMap());
     Q_INVOKABLE QString submitSplitDisplayDraft(
         const QString &leftMedia, const QString &rightMedia,
         const QString &playMode, const QStringList &leftMetrics,
@@ -366,7 +373,7 @@ public:
         const QString &rightAlignment,
         bool layoutPresent, bool brightnessPresent,
         int brightness, bool orientationPresent,
-        bool mirror, bool waterfall);
+        bool mirror, bool waterfall, const QVariantMap &badgeChoices = QVariantMap());
     Q_INVOKABLE void abandonDisplaySubmission(
         const QString &submissionId);
     Q_INVOKABLE void deleteMedia(const QStringList &media);
@@ -454,6 +461,7 @@ private slots:
         TryxRuntimeMediaCatalogSnapshot snapshot);
     void onMetricsStateUpdated(TryxRuntimeMetricsState state);
     void onDisplayStateUpdated(TryxRuntimeDisplayState state);
+    void onDisplaySnapshotChangedV1(quint64 revision);
     void onDeviceConnected(
         QString productId, QString serial, QString firmware,
         QString appVersion, bool printerClassConnected,
@@ -520,6 +528,13 @@ private:
     struct DisplaySubmissionState {
         QString id;
         TryxRuntimeApplyRequest request;
+        bool coherentSnapshot = false;
+        TryxRuntimeOverlayBadgesV1 expectedBadges;
+        quint64 physicalGeneration = 0;
+        quint64 serviceEpoch = 0;
+        quint64 handshakeAttempt = 0;
+        QString owner;
+        QString productId;
         QString deviceIdentity;
         quint64 startingDisplayRevision = 0;
         bool layoutPresent = false;
@@ -551,6 +566,8 @@ private:
     void requestDeviceCapabilities(
         quint64 epoch, quint64 handshakeAttempt,
         const QString &owner);
+    bool reconcileConnectionRevision(quint64 observedRevision);
+    void completeConnectionRevisionReconciliation();
     void requestDeviceSpecifications(
         quint64 epoch, quint64 handshakeAttempt,
         const QString &owner);
@@ -570,8 +587,10 @@ private:
     void setSavedLayoutsUnavailable(const QString &diagnostic);
     QString savedLayoutConnectionIdentity() const;
     bool applySavedLayoutsSnapshot(
-        const TryxRuntimeSavedLayoutsSnapshotV1 &snapshot,
+        const TryxRuntimeSavedLayoutsSnapshotV2 &snapshot,
         QString *errorMessage = nullptr);
+    bool applySavedLayoutsSnapshot(const TryxRuntimeSavedLayoutsSnapshotV1 &snapshot, QString *errorMessage = nullptr);
+    bool savedLayoutsV2Supported() const;
     bool fullSavedLayoutDraftToRequest(
         const QVariantMap &fullDraft,
         TryxRuntimeApplyRequest *request,
@@ -579,8 +598,10 @@ private:
     bool savedLayoutFromDraft(
         const QString &name, const QString &overwriteLayoutId,
         const QVariantMap &fullDraft,
-        TryxRuntimeSavedLayoutV1 *layout,
+        TryxRuntimeSavedLayoutV2 *layout,
         QString *errorMessage) const;
+    bool savedLayoutFromDraft(const QString &name, const QString &overwriteLayoutId, const QVariantMap &fullDraft,
+                             TryxRuntimeSavedLayoutV1 *layout, QString *errorMessage) const;
     static bool parseSavedLayoutRevision(
         const QString &revisionDecimal,
         quint64 *revision);
@@ -604,6 +625,13 @@ private:
     void refreshOperations();
     void refreshMetrics();
     void refreshDisplay();
+    void refreshDisplaySnapshotV1();
+    bool usesDisplaySnapshotV1() const;
+    bool displaySnapshotContextIsCurrent(const TryxRuntimeDisplaySnapshotV1 &snapshot) const;
+    bool applyDisplaySnapshotV1(const TryxRuntimeDisplaySnapshotV1 &snapshot);
+    bool displaySubmissionContextIsCurrent() const;
+    bool normalizeBadgeDraft(const QVariantMap &draft, const TryxRuntimeApplyRequest &request,
+                             TryxRuntimeOverlayBadgesV1 *badges) const;
     void setDiagnostic(const QString &message);
     bool mutationReady(const QString &action);
     bool manager1Ready(const QString &action,
@@ -699,7 +727,7 @@ private:
         bool orientationPresent, bool legacyScreenConfig,
         bool legacyBrightness, const QString &method,
         const QString &savedLayoutId = QString(),
-        quint64 savedLayoutRevision = 0);
+        quint64 savedLayoutRevision = 0, const QVariantMap &badgeChoices = QVariantMap());
     bool displaySubmissionMatches(
         const TryxRuntimeDisplayState &state) const;
     void observeDisplaySubmissionState(
@@ -741,6 +769,8 @@ private:
     quint64 deviceMediaMetadataAttempt_ = 0;
     QString pendingDeviceMediaMetadataArtifactId_;
     quint64 deviceCapabilitiesAttempt_ = 0;
+    int connectionRevisionRefreshes_ = 0;
+    QString connectionRevisionDiagnostic_;
     bool deviceCapabilitiesReady_ = false;
     TryxRuntimeDeviceCapabilitiesV1 deviceCapabilitiesSnapshot_;
     QStringList deviceCapabilities_;
@@ -757,14 +787,20 @@ private:
     quint64 presentationPreferencesMutationAttempt_ = 0;
     QString presentationPreferencesSignalOwner_;
     SavedLayoutListModel savedLayoutModel_;
-    TryxRuntimeSavedLayoutsSnapshotV1 savedLayouts_;
-    TryxRuntimeSavedLayoutsSnapshotV1 lastConfirmedSavedLayouts_;
+    TryxRuntimeSavedLayoutsSnapshotV2 savedLayouts_;
+    TryxRuntimeSavedLayoutsSnapshotV2 lastConfirmedSavedLayouts_;
     bool lastConfirmedSavedLayoutsReady_ = false;
     bool savedLayoutsBusy_ = false;
     quint64 savedLayoutsAttempt_ = 0;
     TryxRuntimeSnapshot connection_;
     TryxRuntimeMetricsState metrics_;
     TryxRuntimeDisplayState display_;
+    TryxRuntimeDisplaySnapshotV1 displaySnapshot_;
+    bool displaySnapshotRequired_ = false;
+    quint64 displaySnapshotReadAttempt_ = 0;
+    bool displaySnapshotReadPending_ = false;
+    bool displaySnapshotReadAgain_ = false;
+    bool displaySnapshotReadFailed_ = false;
     bool displayRevisionReceived_ = false;
     QString legacyDisplayStateIdentity_;
     bool legacyLayoutConfirmed_ = false;

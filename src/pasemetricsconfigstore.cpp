@@ -1,6 +1,7 @@
 #include "pasemetricsconfigstore.h"
 
 #include "applicationpaths.h"
+#include "configurationformatbackup.h"
 #include "devicemanagermessages.h"
 #include "paseoverlayconfig.h"
 
@@ -26,7 +27,7 @@ using tryx::pase_overlay_config::isSupportedPaseBadge;
 using tryx::pase_overlay_config::isSupportedPaseMetricLabel;
 using tryx::pase_overlay_config::paseOverlayHasContent;
 
-constexpr int kFormatVersion = 2;
+constexpr int kFormatVersion = 3;
 constexpr qint64 kMaximumConfigBytes = 64LL * 1024LL;
 constexpr qsizetype kMaximumDeviceSerialLength = 256;
 
@@ -216,6 +217,7 @@ QByteArray serializedPayload(
     root.insert(QStringLiteral("waterfallMode"), overlay.waterfallMode);
     root.insert(QStringLiteral("left"), areaToJson(overlay.left));
     root.insert(QStringLiteral("right"), areaToJson(overlay.right));
+    root.insert(QStringLiteral("badgeChoices"), tryxOverlayBadgesV1ToJson(overlay.badgeChoices));
     return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
@@ -425,7 +427,7 @@ PaseMetricsConfigStore::LoadResult PaseMetricsConfigStore::load() {
             tryx::DeviceManagerMessages::tr("Ignoring malformed PASE metrics configuration"));
     }
     const qint64 version = versionValue.toInteger(-1);
-    if (version != 1 && version != kFormatVersion) {
+    if (version != 1 && version != 2 && version != kFormatVersion) {
         return reject(
             LoadStatus::UnsupportedVersion,
             tryx::DeviceManagerMessages::tr("Ignoring unsupported PASE metrics configuration"));
@@ -484,6 +486,22 @@ PaseMetricsConfigStore::LoadResult PaseMetricsConfigStore::load() {
         }
     }
 
+    if (version == kFormatVersion) {
+        TryxRuntimeOverlayBadgesV1 normalized;
+        if (root.size() != 8 || !root.value(QStringLiteral("badgeChoices")).isObject()
+            || !tryxOverlayBadgesV1FromJson(root.value(QStringLiteral("badgeChoices")).toObject(), &overlay.badgeChoices)
+            || !tryxNormalizeOverlayBadgesV1(overlay.badgeChoices, overlay.left.badges,
+                                             overlay.right.badges, overlay.dualMode, &normalized)
+            || normalized != overlay.badgeChoices
+            || areaToJson(overlay.left) != root.value(QStringLiteral("left")).toObject()
+            || areaToJson(overlay.right) != root.value(QStringLiteral("right")).toObject()) {
+            return reject(LoadStatus::IgnoredMalformed,
+                          tryx::DeviceManagerMessages::tr("Ignoring invalid PASE overlay configuration"));
+        }
+    } else if (root.contains(QStringLiteral("badgeChoices"))) {
+        return reject(LoadStatus::IgnoredMalformed,
+                      tryx::DeviceManagerMessages::tr("Ignoring invalid PASE overlay configuration"));
+    }
     deviceSerial_ = normalizedDeviceSerial(serialValue.toString());
     overlay_ = canonicalOverlay(overlay);
     result.status = LoadStatus::Loaded;
@@ -506,9 +524,11 @@ PaseMetricsConfigStore::persist(
             ErrorCode::InvalidInput,
             tryx::DeviceManagerMessages::tr("Cannot persist PASE metrics without a valid device serial"));
     }
-    const PrinterProtocol::PaseOverlayConfig overlay =
+    PrinterProtocol::PaseOverlayConfig overlay =
         canonicalOverlay(sourceOverlay);
-    if (!overlayIsValid(overlay)) {
+    if (!tryxNormalizeOverlayBadgesV1(sourceOverlay.badgeChoices, overlay.left.badges,
+                                      overlay.right.badges, overlay.dualMode, &overlay.badgeChoices)
+        || !overlayIsValid(overlay)) {
         return failureResult(
             ErrorCode::InvalidInput,
             tryx::DeviceManagerMessages::tr("Cannot persist an invalid PASE overlay configuration"));
@@ -530,10 +550,18 @@ PaseMetricsConfigStore::persist(
             tryx::DeviceManagerMessages::tr("The PASE metrics configuration exceeds its size limit"));
     }
 
+    if (!preserveConfigurationBeforeUpgrade(configPath(), kMaximumConfigBytes,
+                                             kFormatVersion, {1, 2}, &pathError)) {
+        return failureResult(ErrorCode::WriteFailed, pathError);
+    }
     QSaveFile file(configPath());
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly)) {
         return failureResult(ErrorCode::WriteFailed, file.errorString());
+    }
+    if (!file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        file.cancelWriting();
+        return failureResult(ErrorCode::WriteFailed, QStringLiteral("Cannot protect the PASE configuration file."));
     }
     if (file.write(payload) != payload.size()) {
         const QString detail = file.errorString().isEmpty()

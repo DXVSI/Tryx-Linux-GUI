@@ -273,6 +273,8 @@ TryxRuntimeOperationsAdaptor::TryxRuntimeOperationsAdaptor(
             &TryxRuntimeOperationsAdaptor::MetricsStateUpdated);
     connect(manager_, &DeviceManager::displayStateUpdated, this,
             &TryxRuntimeOperationsAdaptor::DisplayStateUpdated);
+    connect(manager_, &DeviceManager::displaySnapshotChangedV1, this,
+            &TryxRuntimeOperationsAdaptor::DisplaySnapshotChangedV1);
     connect(
         manager_, &DeviceManager::presentationPreferencesChanged,
         this,
@@ -291,6 +293,10 @@ quint32 TryxRuntimeOperationsAdaptor::GetRuntimeApiVersion() const {
 
 QStringList TryxRuntimeOperationsAdaptor::GetRuntimeCapabilities() const {
     return tryxRuntimeCapabilities();
+}
+
+TryxRuntimeDisplaySnapshotV1 TryxRuntimeOperationsAdaptor::GetDisplaySnapshotV1() const {
+    return manager_->displaySnapshotV1(GetConnectionSnapshot().revision);
 }
 
 QString TryxRuntimeOperationsAdaptor::PrepareRuntimeDowngradeV10() {
@@ -353,6 +359,50 @@ TryxRuntimeOperationsAdaptor::SetPresentationPreferencesV1(
 TryxRuntimeSavedLayoutsSnapshotV1
 TryxRuntimeOperationsAdaptor::GetSavedLayoutsV1() const {
     return manager_->savedLayoutsSnapshot();
+}
+
+TryxRuntimeSavedLayoutsSnapshotV2 TryxRuntimeOperationsAdaptor::GetSavedLayoutsV2() const {
+    return manager_->savedLayoutsSnapshotV2();
+}
+
+TryxRuntimeSavedLayoutsSnapshotV2 TryxRuntimeOperationsAdaptor::PutSavedLayoutV2(
+    quint64 expectedSnapshotRevision, const TryxRuntimeSavedLayoutV2 &layout) {
+    TryxRuntimeSavedLayoutsSnapshotV2 confirmed;
+    QString errorName;
+    QString errorMessage;
+    if (!manager_->putSavedLayoutV2(expectedSnapshotRevision, layout, &confirmed, &errorName, &errorMessage))
+        exportedObject_->sendCurrentCallError(errorName, errorMessage);
+    return confirmed;
+}
+
+TryxRuntimeSavedLayoutsSnapshotV2 TryxRuntimeOperationsAdaptor::DeleteSavedLayoutV2(
+    quint64 expectedSnapshotRevision, const QString &layoutId) {
+    TryxRuntimeSavedLayoutsSnapshotV2 confirmed;
+    QString errorName;
+    QString errorMessage;
+    if (!manager_->deleteSavedLayoutV2(expectedSnapshotRevision, layoutId, &confirmed, &errorName, &errorMessage))
+        exportedObject_->sendCurrentCallError(errorName, errorMessage);
+    return confirmed;
+}
+
+QString TryxRuntimeOperationsAdaptor::QueueApplyWithBadgesV1(
+    const QString &operationId, const TryxRuntimeApplyWithBadgesV1 &request) {
+    return manager_->queueApplyWithBadgesOperation(operationId, request);
+}
+
+QString TryxRuntimeOperationsAdaptor::QueueUploadWithApplyAndBadgesV1(const QString &operationId, const QString &localPath,
+    const TryxRuntimeApplyWithBadgesV1 &request, const TryxRuntimeMediaTransform &transform) {
+    return manager_->queueUploadWithBadgesOperation(operationId, localPath, request, false, transform);
+}
+
+QString TryxRuntimeOperationsAdaptor::QueueEnsureMediaAndApplyWithBadgesV1(const QString &operationId, const QString &localPath,
+    const TryxRuntimeApplyWithBadgesV1 &request, const TryxRuntimeMediaTransform &transform) {
+    return manager_->queueUploadWithBadgesOperation(operationId, localPath, request, true, transform);
+}
+
+QString TryxRuntimeOperationsAdaptor::QueueSavedLayoutApplyV2(const QString &operationId, const QString &layoutId,
+    quint64 expectedLayoutRevision, const TryxRuntimeApplyWithBadgesV1 &currentDraft) {
+    return manager_->queueSavedLayoutApplyWithBadgesOperation(operationId, layoutId, expectedLayoutRevision, currentDraft);
 }
 
 TryxRuntimeSavedLayoutsSnapshotV1

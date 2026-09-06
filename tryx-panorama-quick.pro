@@ -1,4 +1,4 @@
-QT += concurrent core dbus gui qml quick quickcontrols2
+QT += concurrent core dbus gui network qml quick quickcontrols2
 
 CONFIG += c++17 lrelease embed_translations
 TARGET = tryx-panorama-manager
@@ -46,6 +46,8 @@ HEADERS += \
     src/quick/mediaeditorcontroller.h \
     src/quick/mediapreviewcontroller.h \
     src/quick/operationlistmodel.h \
+    src/quick/releaseinfo.h \
+    src/quick/releaseupdatecontroller.h \
     src/quick/runtimebootstrap.h \
     src/quick/runtimeclient.h \
     src/quick/savedlayoutlistmodel.h \
@@ -59,6 +61,7 @@ SOURCES += \
     src/nvidiasmiparser.cpp \
     src/nvidiasmiprovider.cpp \
     src/systemmonitor.cpp \
+    src/runtimebadgetext.cpp \
     src/runtimecontract.cpp \
     src/supportsnapshot.cpp \
     src/quick/supportbundle.cpp \
@@ -76,6 +79,8 @@ SOURCES += \
     src/quick/mediaeditorcontroller.cpp \
     src/quick/mediapreviewcontroller.cpp \
     src/quick/operationlistmodel.cpp \
+    src/quick/releaseinfo.cpp \
+    src/quick/releaseupdatecontroller.cpp \
     src/quick/runtimebootstrap.cpp \
     src/quick/runtimeclient.cpp \
     src/quick/savedlayoutlistmodel.cpp \
@@ -87,6 +92,7 @@ RESOURCES += resources/quick.qrc
 
 QML_FILES = \
     qml/Main.qml \
+    qml/components/BadgeTextEditor.qml \
     qml/components/DirtyDraftGuard.qml \
     qml/components/MediaEditor.qml \
     qml/components/MediaExportPicker.qml \
@@ -136,6 +142,8 @@ DISTFILES += \
     tests/quick/runtimeclient_handshake_tests.cpp \
     tests/quick/linuxtraycontroller_tests.pro \
     tests/quick/linuxtraycontroller_tests.cpp \
+    tests/quick/releaseupdatecontroller_tests.pro \
+    tests/quick/releaseupdatecontroller_tests.cpp \
     tests/quick/tst_quickmodels.cpp \
     $$QML_TEST_FILES
 
@@ -170,6 +178,10 @@ quick_tests.commands = \
         TRYX_QML_ROOT=$$shell_path($$PWD/qml) \
         TRYX_QML_IMPORT_PATH=$$shell_path($$[QT_INSTALL_QML]) \
             $$shell_path($$PWD/build/quick-tests/tryx-quick-tests) && \
+        $$QMAKE_QMAKE releaseupdatecontroller_tests.pro && $(MAKE) && \
+        TRYX_RELEASE_UPDATE_TEST_ISOLATED=1 dbus-run-session -- \
+            $$shell_path($$PWD/build/releaseupdate-tests/releaseupdatecontroller-tests) \
+                -txt && \
         $$QMAKE_QMAKE runtimebootstrap_tests.pro && $(MAKE) && \
         TRYX_RUNTIMEBOOTSTRAP_TEST_ISOLATED=1 dbus-run-session -- \
             $$shell_path($$PWD/build/runtimebootstrap-tests/quick/tryx-runtimebootstrap-tests) \

@@ -1,4 +1,5 @@
 #include "paseoverlayconfig.h"
+#include "runtimeapplyrequestcodec.h"
 
 #include <QColor>
 #include <QFileInfo>
@@ -53,6 +54,19 @@ QString normalizedVerticalPlacement(const QString &position) {
 }  // namespace
 
 namespace tryx::pase_overlay_config {
+
+bool paseBadgeChoicesAreValid(const PrinterProtocol::PaseOverlayConfig &overlay,
+                              quint16 productId, QString *error) {
+    TryxRuntimeOverlayBadgesV1 normalized;
+    if (!tryxNormalizeOverlayBadgesV1(overlay.badgeChoices, overlay.left.badges,
+            overlay.right.badges, overlay.dualMode, &normalized, error)) return false;
+    if (normalized != overlay.badgeChoices
+        || (tryxOverlayBadgesHaveCustomText(normalized) && productId != 0x1021)) {
+        if (error) *error = QStringLiteral("Custom badge text is invalid or unsupported by this device profile.");
+        return false;
+    }
+    return true;
+}
 
 QString printerPresetMediaFile(const QString &presetId) {
     if (presetId == QStringLiteral("Pre-set 1: Cooling delivery")) {
@@ -295,6 +309,25 @@ bool paseUploadApplyRequestIsValid(
            (!normalized.display.brightnessPresent ||
             (normalized.display.brightness >= 0 &&
              normalized.display.brightness <= 100));
+}
+
+bool paseBadgeUploadContinuationIsValid(const TryxRuntimeApplyWithBadgesV1 &envelope,
+                                       quint16 productId) {
+    using namespace tryx::runtime_apply_request_codec;
+    TryxRuntimeApplyWithBadgesV1 decoded;
+    TryxRuntimeOverlayBadgesV1 normalized;
+    auto request = envelope.request;
+    return (productId == 0x1021 || productId == 0x1011)
+        && (productId == 0x1021 || !tryxOverlayBadgesHaveCustomText(envelope.badges))
+        && runtimeApplyWithBadgesV1FromJson(runtimeApplyWithBadgesV1ToJson(envelope), &decoded)
+        && decoded == envelope
+        && (envelope.request.replaceOverlay || !tryxOverlayBadgesHaveCustomText(envelope.badges))
+        && paseUploadApplyRequestIsValid(request)
+        && normalizeAndValidatePaseApplyOverlayStyles(&request)
+        && request == envelope.request
+        && tryxNormalizeOverlayBadgesV1(envelope.badges, request.settingsBadges,
+            request.settingsBadges2, false, &normalized)
+        && normalized == envelope.badges;
 }
 
 bool paseOverlayRequestsBadge(

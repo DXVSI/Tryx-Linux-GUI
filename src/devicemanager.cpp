@@ -1,4 +1,5 @@
 #include "devicemanager.h"
+#include "configurationformatbackup.h"
 #include "printerlifecycle_p.h"
 #include "deleteintentstore.h"
 #include "devicemediaartifactstore.h"
@@ -260,7 +261,18 @@ bool DeviceManager::setPresentationPreferences(
 
 TryxRuntimeSavedLayoutsSnapshotV1
 DeviceManager::savedLayoutsSnapshot() const {
-    TryxRuntimeSavedLayoutsSnapshotV1 snapshot;
+    const auto current = savedLayoutsSnapshotV2();
+    TryxRuntimeSavedLayoutsSnapshotV1 snapshot{1, current.revision, current.status,
+        current.diagnostic, current.deviceIdentity, current.productId, {}};
+    for (const auto &layout : current.layouts) {
+        TryxRuntimeSavedLayoutV1 legacy;
+        if (tryxSavedLayoutV2ToV1(layout, &legacy)) snapshot.layouts.append(legacy);
+    }
+    return snapshot;
+}
+
+TryxRuntimeSavedLayoutsSnapshotV2 DeviceManager::savedLayoutsSnapshotV2() const {
+    TryxRuntimeSavedLayoutsSnapshotV2 snapshot;
     snapshot.revision = savedLayoutStore_
         ? savedLayoutStore_->revision()
         : 0;
@@ -312,7 +324,7 @@ DeviceManager::savedLayoutsSnapshot() const {
             "Saved layouts are waiting for the current device handshake");
         return snapshot;
     }
-    return savedLayoutStore_->snapshot(exactIdentity, exactProduct);
+    return savedLayoutStore_->snapshotV2(exactIdentity, exactProduct);
 }
 
 bool DeviceManager::putSavedLayout(
@@ -320,6 +332,19 @@ bool DeviceManager::putSavedLayout(
     const TryxRuntimeSavedLayoutV1 &layout,
     TryxRuntimeSavedLayoutsSnapshotV1 *confirmed,
     QString *errorName, QString *errorMessage) {
+    const bool ok = putSavedLayoutInternal(expectedSnapshotRevision, tryxSavedLayoutV2FromV1(layout),
+        true, nullptr, errorName, errorMessage);
+    if (confirmed) *confirmed = savedLayoutsSnapshot();
+    return ok;
+}
+
+bool DeviceManager::putSavedLayoutV2(quint64 expectedSnapshotRevision, const TryxRuntimeSavedLayoutV2 &layout,
+    TryxRuntimeSavedLayoutsSnapshotV2 *confirmed, QString *errorName, QString *errorMessage) {
+    return putSavedLayoutInternal(expectedSnapshotRevision, layout, false, confirmed, errorName, errorMessage);
+}
+
+bool DeviceManager::putSavedLayoutInternal(quint64 expectedSnapshotRevision, const TryxRuntimeSavedLayoutV2 &layout,
+    bool legacyInterface, TryxRuntimeSavedLayoutsSnapshotV2 *confirmed, QString *errorName, QString *errorMessage) {
     if (errorName) {
         errorName->clear();
     }
@@ -330,7 +355,7 @@ bool DeviceManager::putSavedLayout(
         [this, confirmed, errorName, errorMessage](
             const QString &name, const QString &message) {
             if (confirmed) {
-                *confirmed = savedLayoutsSnapshot();
+                *confirmed = savedLayoutsSnapshotV2();
             }
             if (errorName) {
                 *errorName = name;
@@ -347,8 +372,7 @@ bool DeviceManager::putSavedLayout(
                 "org.tryx.Panorama.Error.DowngradePrepared"),
             tr("Saved layouts are locked after runtime downgrade preparation"));
     }
-    const TryxRuntimeSavedLayoutsSnapshotV1 current =
-        savedLayoutsSnapshot();
+    const TryxRuntimeSavedLayoutsSnapshotV2 current = savedLayoutsSnapshotV2();
     if (current.status != QStringLiteral("Ready")) {
         return fail(
             current.status == QStringLiteral("Unsupported")
@@ -380,8 +404,12 @@ bool DeviceManager::putSavedLayout(
                 : validationError);
     }
 
-    const tryx::SavedLayoutStore::MutationResult result =
-        savedLayoutStore_->put(expectedSnapshotRevision, layout);
+    TryxRuntimeSavedLayoutV1 legacy;
+    if (legacyInterface && !tryxSavedLayoutV2ToV1(layout, &legacy))
+        return fail(QStringLiteral("org.tryx.Panorama.Error.InvalidSavedLayout"), tr("The saved layout is invalid"));
+    const tryx::SavedLayoutStore::MutationResult result = legacyInterface
+        ? savedLayoutStore_->put(expectedSnapshotRevision, legacy)
+        : savedLayoutStore_->putV2(expectedSnapshotRevision, layout);
     if (!result.ok()) {
         if (result.commitMayExist ||
             result.code ==
@@ -395,7 +423,7 @@ bool DeviceManager::putSavedLayout(
                 : result.detail);
     }
     if (confirmed) {
-        *confirmed = savedLayoutsSnapshot();
+        *confirmed = savedLayoutsSnapshotV2();
     }
     return true;
 }
@@ -404,6 +432,18 @@ bool DeviceManager::deleteSavedLayout(
     quint64 expectedSnapshotRevision, const QString &layoutId,
     TryxRuntimeSavedLayoutsSnapshotV1 *confirmed,
     QString *errorName, QString *errorMessage) {
+    const bool ok = deleteSavedLayoutInternal(expectedSnapshotRevision, layoutId, true, nullptr, errorName, errorMessage);
+    if (confirmed) *confirmed = savedLayoutsSnapshot();
+    return ok;
+}
+
+bool DeviceManager::deleteSavedLayoutV2(quint64 expectedSnapshotRevision, const QString &layoutId,
+    TryxRuntimeSavedLayoutsSnapshotV2 *confirmed, QString *errorName, QString *errorMessage) {
+    return deleteSavedLayoutInternal(expectedSnapshotRevision, layoutId, false, confirmed, errorName, errorMessage);
+}
+
+bool DeviceManager::deleteSavedLayoutInternal(quint64 expectedSnapshotRevision, const QString &layoutId,
+    bool legacyInterface, TryxRuntimeSavedLayoutsSnapshotV2 *confirmed, QString *errorName, QString *errorMessage) {
     if (errorName) {
         errorName->clear();
     }
@@ -414,7 +454,7 @@ bool DeviceManager::deleteSavedLayout(
         [this, confirmed, errorName, errorMessage](
             const QString &name, const QString &message) {
             if (confirmed) {
-                *confirmed = savedLayoutsSnapshot();
+                *confirmed = savedLayoutsSnapshotV2();
             }
             if (errorName) {
                 *errorName = name;
@@ -430,8 +470,7 @@ bool DeviceManager::deleteSavedLayout(
                 "org.tryx.Panorama.Error.DowngradePrepared"),
             tr("Saved layouts are locked after runtime downgrade preparation"));
     }
-    const TryxRuntimeSavedLayoutsSnapshotV1 current =
-        savedLayoutsSnapshot();
+    const TryxRuntimeSavedLayoutsSnapshotV2 current = savedLayoutsSnapshotV2();
     if (current.status != QStringLiteral("Ready")) {
         return fail(
             current.status == QStringLiteral("Unsupported")
@@ -443,10 +482,9 @@ bool DeviceManager::deleteSavedLayout(
                 ? tr("Saved layouts are unavailable for this device")
                 : current.diagnostic);
     }
-    const tryx::SavedLayoutStore::MutationResult result =
-        savedLayoutStore_->remove(
-            expectedSnapshotRevision, current.deviceIdentity,
-            current.productId, layoutId);
+    const tryx::SavedLayoutStore::MutationResult result = legacyInterface
+        ? savedLayoutStore_->remove(expectedSnapshotRevision, current.deviceIdentity, current.productId, layoutId)
+        : savedLayoutStore_->removeV2(expectedSnapshotRevision, current.deviceIdentity, current.productId, layoutId);
     if (!result.ok()) {
         if (result.commitMayExist ||
             result.code ==
@@ -460,7 +498,7 @@ bool DeviceManager::deleteSavedLayout(
                 : result.detail);
     }
     if (confirmed) {
-        *confirmed = savedLayoutsSnapshot();
+        *confirmed = savedLayoutsSnapshotV2();
     }
     return true;
 }
@@ -507,6 +545,7 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
     qRegisterMetaType<PrinterProtocol::MutationOutcome>();
     qRegisterMetaType<PrinterProtocol::PaseOverlayConfig>();
     qRegisterMetaType<PrinterProtocol::PaseDisplayState>();
+    qRegisterMetaType<PrinterProtocol::PaseDisplayStateResult>();
     qRegisterMetaType<TryxRuntimeOperationInfo>();
     qRegisterMetaType<TryxRuntimeMediaCatalogSnapshot>();
     qRegisterMetaType<TryxRuntimeDisplayState>();
@@ -574,6 +613,10 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
             this, &DeviceManager::metricsStateUpdated, Qt::DirectConnection);
     connect(&sessionController_, &PrinterSessionController::displayStateUpdated,
             this, &DeviceManager::displayStateUpdated, Qt::DirectConnection);
+    connect(&sessionController_, &PrinterSessionController::displaySnapshotChangedV1,
+            this, &DeviceManager::displaySnapshotChangedV1, Qt::DirectConnection);
+    connect(&operationCoordinator_, &PrinterOperationCoordinator::displayMutationStarted,
+            &sessionController_, &PrinterSessionController::beginDisplayMutation, Qt::DirectConnection);
     connect(&sessionController_, &PrinterSessionController::brightnessChanged,
             this, &DeviceManager::brightnessChanged, Qt::DirectConnection);
     connect(&sessionController_, &PrinterSessionController::screenConfigChanged,
@@ -754,6 +797,8 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
         &PrinterOperationCoordinator::requestApplyMedia,
         this, &DeviceManager::requestPrinterApplyMedia,
         Qt::DirectConnection);
+    connect(&operationCoordinator_, &PrinterOperationCoordinator::requestApplyMediaWithBadgesV1,
+            this, &DeviceManager::requestPrinterApplyMediaWithBadgesV1, Qt::DirectConnection);
     connect(
         &operationCoordinator_,
         &PrinterOperationCoordinator::requestConfigureMetrics,
@@ -1103,21 +1148,28 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 operationCoordinator_.handleSavedLayoutProofFailed(
                     operationContext(), operationId, errorCategory,
                     errorMessage, generation);
+                sessionController_.finishDisplayMutation(operationId, generation, true);
             });
     connect(worker_, &DeviceWorker::printerApplyFinished, this,
             [this](const QString &operationId, const QString &mediaFile,
                    bool success, bool metricsUpdated,
                    PrinterProtocol::MutationOutcome outcome,
-                   const QString &errorMessage, quint64 generation) {
+                   const QString &errorMessage, quint64 generation,
+                   const PrinterProtocol::PaseDisplayStateResult &readback) {
+                const auto completedContext = operationContext();
                 operationCoordinator_.handleApplyFinished(
-                    operationContext(), operationId, mediaFile, success,
+                    completedContext, operationId, mediaFile, success,
                     metricsUpdated, outcome, errorMessage, generation,
                     [this](const QString &deviceIdentity) {
                         return persistedPaseOverlayForDevice(
                             deviceIdentity);
                     },
-                    [this](const PrinterProtocol::PaseOverlayConfig &overlay,
+                    [this, &operationId, generation](const PrinterProtocol::PaseOverlayConfig &overlay,
                            bool enabled, QString *persistenceError) {
+                        if (!sessionController_.displayMutationCanPersistOverlay(operationId, generation)) {
+                            if (persistenceError) *persistenceError = tr("The previous overlay is not confirmed; apply a complete layout to resolve it");
+                            return false;
+                        }
                         return persistPaseMetricsConfiguration(
                             overlay, enabled, persistenceError);
                     },
@@ -1127,14 +1179,23 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                         sessionController_.publishOperationMetrics(
                             overlay, enabled, diagnostic, updateDisplay);
                     },
-                    [this]() { emit screenConfigChanged(); });
+                    [this]() { emit screenConfigChanged(); },
+                    [this, &operationId, generation, &completedContext, &readback, outcome](const PrinterProtocol::PaseOverlayConfig &overlay) {
+                        if (outcome == PrinterProtocol::MutationOutcome::Succeeded)
+                            sessionController_.commitDisplayMutation(operationId, generation,
+                                completedContext.deviceIdentity, completedContext.productId, readback, overlay);
+                    });
+                const bool noMutation = !success && (outcome == PrinterProtocol::MutationOutcome::NotStarted
+                    || outcome == PrinterProtocol::MutationOutcome::Rejected || outcome == PrinterProtocol::MutationOutcome::Cancelled);
+                sessionController_.finishDisplayMutation(operationId, generation, noMutation);
             });
     connect(worker_, &DeviceWorker::printerMetricsConfigured, this,
             [this](const QString &operationId, bool success,
                    PrinterProtocol::MutationOutcome outcome,
                    const QString &errorMessage, quint64 generation) {
+                const auto completedContext = operationContext();
                 operationCoordinator_.handleMetricsConfigured(
-                    operationContext(), operationId, success, outcome,
+                    completedContext, operationId, success, outcome,
                     errorMessage, generation,
                     [this](const PrinterProtocol::PaseOverlayConfig &overlay,
                            bool enabled, QString *persistenceError) {
@@ -1146,7 +1207,15 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                            bool updateDisplay) {
                         sessionController_.publishOperationMetrics(
                             overlay, enabled, diagnostic, updateDisplay);
+                    },
+                    [this, &operationId, generation, &completedContext, outcome](const PrinterProtocol::PaseOverlayConfig &overlay) {
+                        if (outcome == PrinterProtocol::MutationOutcome::Succeeded)
+                            sessionController_.commitMetricsDisplayMutation(operationId, generation,
+                                completedContext.deviceIdentity, completedContext.productId, overlay);
                     });
+                const bool noMutation = !success && (outcome == PrinterProtocol::MutationOutcome::NotStarted
+                    || outcome == PrinterProtocol::MutationOutcome::Rejected || outcome == PrinterProtocol::MutationOutcome::Cancelled);
+                sessionController_.finishDisplayMutation(operationId, generation, noMutation);
             });
     connect(
         worker_, &DeviceWorker::printerMetricsAvailabilityChanged, this,
@@ -1262,6 +1331,8 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
             worker_, &DeviceWorker::deletePrinterMedia);
     connect(this, &DeviceManager::requestPrinterApplyMedia,
             worker_, &DeviceWorker::applyPrinterMedia);
+    connect(this, &DeviceManager::requestPrinterApplyMediaWithBadgesV1,
+            worker_, &DeviceWorker::applyPrinterMediaWithBadgesV1);
     connect(this, &DeviceManager::requestPrinterConfigureMetrics,
             worker_, &DeviceWorker::configurePrinterMetrics);
     connect(this, &DeviceManager::requestPrinterSysinfo,
@@ -1792,6 +1863,12 @@ bool DeviceManager::prepareRuntimeDowngradeV10(
     if (!operationReadiness.retryCacheReady) {
         return fail(tr(
             "Stored retry media is not fully validated for runtime downgrade"));
+    }
+
+    if (!sessionController_.overlayConfigurationSupportsDowngradeV10() || !savedLayoutStore_
+        || !savedLayoutStore_->writesEnabled()
+        || !tryx::configurationVersionIsSupported(savedLayoutStore_->indexPath(), 1024 * 1024, {1})) {
+        return fail(tr("Overlay or saved-layout settings require a newer runtime. No configuration was downgraded or removed."));
     }
 
     if (!operationReadiness.retryCompatible) {
@@ -2349,6 +2426,13 @@ QString DeviceManager::queueEnsureMediaAndApplyOperation(
                                 applyRequest, true, true, transform);
 }
 
+QString DeviceManager::queueUploadWithBadgesOperation(const QString &operationId, const QString &localPath,
+    const TryxRuntimeApplyWithBadgesV1 &request, bool ensureExisting, const TryxRuntimeMediaTransform &transform) {
+    if (request.schemaVersion != 1) return {};
+    return operationCoordinator_.queueUploadOperation(operationContext(), operationId, localPath, true,
+        request.request, true, ensureExisting, tryxFullFrameMediaPreparationProfile(transform), request.badges);
+}
+
 QString DeviceManager::queueDeleteMediaOperation(
     const QString &requestedOperationId,
     const QStringList &fileNames) {
@@ -2367,17 +2451,37 @@ QString DeviceManager::queueApplyOperation(
         proofDeviceIdentity, proof, savedLayoutApply);
 }
 
+QString DeviceManager::queueApplyWithBadgesOperation(const QString &operationId,
+                                                    const TryxRuntimeApplyWithBadgesV1 &request) {
+    if (request.schemaVersion != 1) return {};
+    return operationCoordinator_.queueApplyOperation(operationContext(), operationId,
+        request.request, false, {}, {}, false, request.badges);
+}
+
 QString DeviceManager::queueSavedLayoutApplyOperation(
     const QString &requestedOperationId, const QString &layoutId,
     quint64 expectedLayoutRevision,
     const TryxRuntimeApplyRequest &currentDraft) {
+    return queueSavedLayoutApplyInternal(requestedOperationId, layoutId, expectedLayoutRevision, currentDraft, std::nullopt);
+}
+
+QString DeviceManager::queueSavedLayoutApplyWithBadgesOperation(const QString &operationId, const QString &layoutId,
+    quint64 expectedLayoutRevision, const TryxRuntimeApplyWithBadgesV1 &currentDraft) {
+    if (currentDraft.schemaVersion != 1) return {};
+    return queueSavedLayoutApplyInternal(operationId, layoutId, expectedLayoutRevision, currentDraft.request, currentDraft.badges);
+}
+
+QString DeviceManager::queueSavedLayoutApplyInternal(const QString &requestedOperationId, const QString &layoutId,
+    quint64 expectedLayoutRevision, const TryxRuntimeApplyRequest &currentDraft,
+    const std::optional<TryxRuntimeOverlayBadgesV1> &badges) {
     const QString operationId =
         normalizedOperationId(requestedOperationId);
     if (operationId.isEmpty()) {
         return {};
     }
     if (!operationCoordinator_.operationInfo(operationId).id.isEmpty()) {
-        return operationId;
+        return operationCoordinator_.repeatSavedLayoutApplyOperation(operationContext(), operationId,
+            currentDraft, badges, layoutId, expectedLayoutRevision);
     }
     const auto reject =
         [this, &operationId, &layoutId](
@@ -2392,8 +2496,7 @@ QString DeviceManager::queueSavedLayoutApplyOperation(
             tr("Saved layout Apply is blocked after runtime downgrade preparation"));
     }
 
-    const TryxRuntimeSavedLayoutsSnapshotV1 snapshot =
-        savedLayoutsSnapshot();
+    const TryxRuntimeSavedLayoutsSnapshotV2 snapshot = savedLayoutsSnapshotV2();
     if (snapshot.status != QStringLiteral("Ready")) {
         return reject(
             snapshot.status == QStringLiteral("Unsupported")
@@ -2406,7 +2509,7 @@ QString DeviceManager::queueSavedLayoutApplyOperation(
 
     auto found = std::find_if(
         snapshot.layouts.cbegin(), snapshot.layouts.cend(),
-        [&layoutId](const TryxRuntimeSavedLayoutV1 &layout) {
+        [&layoutId](const TryxRuntimeSavedLayoutV2 &layout) {
             return layout.layoutId == layoutId;
     });
     if (found == snapshot.layouts.cend()) {
@@ -2442,9 +2545,13 @@ QString DeviceManager::queueSavedLayoutApplyOperation(
                 ? tr("The saved layout media is unavailable")
                 : validationError);
     }
-    TryxRuntimeSavedLayoutV1 candidate = *found;
+    if (!badges && tryxOverlayBadgesHaveCustomText(found->badges)) {
+        return reject(QStringLiteral("UnsupportedConfiguration"), tr("This saved layout requires the V2 interface"));
+    }
+    TryxRuntimeSavedLayoutV2 candidate = *found;
     candidate.media = proof;
     candidate.request = currentDraft;
+    candidate.badges = badges.value_or(TryxRuntimeOverlayBadgesV1{});
     if (!tryx::SavedLayoutStore::layoutIsCanonical(
             candidate, &validationError)) {
         return reject(
@@ -2454,9 +2561,8 @@ QString DeviceManager::queueSavedLayoutApplyOperation(
                 : validationError);
     }
 
-    return queueApplyOperation(
-        operationId, currentDraft, false,
-        snapshot.deviceIdentity, proof, true);
+    return operationCoordinator_.queueApplyOperation(operationContext(),
+        operationId, currentDraft, false, snapshot.deviceIdentity, proof, true, badges, layoutId, expectedLayoutRevision);
 }
 
 QString DeviceManager::queueCacheCleanupOperation(

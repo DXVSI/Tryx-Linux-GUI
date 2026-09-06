@@ -29,6 +29,7 @@ HEADERS += \
     src/cli/tryxclirunner.h
 
 SOURCES += \
+    src/runtimebadgetext.cpp \
     src/runtimecontract.cpp \
     src/runtimedowngradestore.cpp \
     src/supportsnapshot.cpp \

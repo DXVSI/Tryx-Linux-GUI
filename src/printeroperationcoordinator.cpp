@@ -1045,6 +1045,10 @@ PrinterOperationCoordinator::retryCacheOperationRecord(
     const tryx::RetryCacheStore::StoredRetryCandidate &candidate,
     quint64 currentGeneration) const {
     OperationRecord record;
+    if (candidate.applyWithBadges) {
+        record.applyRequest = candidate.applyWithBadges->request;
+        record.badgeChoices = candidate.applyWithBadges->badges;
+    }
     record.info.id = candidate.operationId;
     record.info.kind = candidate.attempt > 1
         ? QStringLiteral("UploadRetry")
@@ -1131,6 +1135,10 @@ PrinterOperationCoordinator::retryCacheOperationRecord(
     const tryx::RetryCacheStore::StoredDispatch &dispatch,
     quint64 currentGeneration) const {
     OperationRecord record;
+    if (dispatch.applyWithBadges) {
+        record.applyRequest = dispatch.applyWithBadges->request;
+        record.badgeChoices = dispatch.applyWithBadges->badges;
+    }
     record.info.id = dispatch.operationId;
     record.info.kind = dispatch.attempt > 1
         ? QStringLiteral("UploadRetry")
@@ -2424,6 +2432,9 @@ bool PrinterOperationCoordinator::dispatchPreparedUploadWithRetryBarrier(
         input.subject = found->info.subject;
         input.primaryErrorCategory = found->info.primaryErrorCategory;
         input.primaryErrorMessage = found->info.primaryErrorMessage;
+        if (found->badgeChoices && found->info.applyAfterUpload && !found->replaceOperation) {
+            input.applyWithBadges = TryxRuntimeApplyWithBadgesV1{1, found->applyRequest, *found->badgeChoices};
+        }
         input.prepared.stagingPath = found->preparedPath;
         input.prepared.expectedSize = QFileInfo(found->preparedPath).size();
         input.prepared.expectedSha256 = found->preparedSha256;
@@ -2825,11 +2836,7 @@ void PrinterOperationCoordinator::handleMediaListReady(
             record.info.message = tryx::DeviceManagerMessages::tr(
                 "The media is already on the device; applying it without conversion or upload...");
             publishOperation(operationId);
-            emit requestApplyMedia(
-                context.devicePath, record.mediaFile,
-                record.applyRequest, record.updateMetrics,
-                QString(), {},
-                operationId, context.generation);
+            dispatchApplyRequest(context, record);
             return;
         }
         record.info.state = QStringLiteral("Converting");
@@ -3055,13 +3062,7 @@ void PrinterOperationCoordinator::handleMediaListReady(
                 completed->info.message =
                     tryx::DeviceManagerMessages::tr("Applying the verified media...");
                 publishOperation(operationId);
-                emit requestApplyMedia(
-                    context.devicePath,
-                    completed->mediaFile,
-                    completed->applyRequest,
-                    completed->updateMetrics, QString(), {},
-                    operationId,
-                    context.generation);
+                dispatchApplyRequest(context, *completed);
                 return;
             }
             finishOperation(
@@ -3506,12 +3507,7 @@ void PrinterOperationCoordinator::handleMediaListReady(
                     reused->info.message = tryx::DeviceManagerMessages::tr(
                         "A confirmed copy already exists; applying it without retransmission...");
                     publishOperation(operationId);
-                    emit requestApplyMedia(
-                        context.devicePath, reused->mediaFile,
-                        reused->applyRequest,
-                        reused->updateMetrics, QString(), {},
-                        operationId,
-                        context.generation);
+                    dispatchApplyRequest(context, *reused);
                     return;
                 }
                 finishOperation(
@@ -3629,12 +3625,7 @@ void PrinterOperationCoordinator::handleMediaListReady(
                 verified->info.message = tryx::DeviceManagerMessages::tr(
                     "The previous upload is present in FileList; applying it without retransmission...");
                 publishOperation(operationId);
-                emit requestApplyMedia(
-                    context.devicePath, verified->mediaFile,
-                    verified->applyRequest,
-                    verified->updateMetrics,
-                    QString(), {},
-                    operationId, context.generation);
+                dispatchApplyRequest(context, *verified);
                 return;
             }
             finishOperation(
@@ -4598,7 +4589,8 @@ QString PrinterOperationCoordinator::queueUploadOperation(
     bool applyAfterUpload,
     const TryxRuntimeApplyRequest &applyRequest, bool updateMetrics,
     bool ensureExisting,
-    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    const TryxRuntimeMediaPreparationProfileV1 &profile,
+    const std::optional<TryxRuntimeOverlayBadgesV1> &badgeChoices) {
     using tryx::private_runtime_paths::pathIsInside;
     const QString operationId = normalizedOperationId(requestedOperationId);
     if (operationId.isEmpty()) {
@@ -4633,9 +4625,32 @@ QString PrinterOperationCoordinator::queueUploadOperation(
         return rejectedResult();
     };
 
+    TryxRuntimeApplyRequest normalizedApplyRequest = applyRequest;
+    if (normalizedApplyRequest.screenMode.isEmpty()) normalizedApplyRequest.screenMode = QStringLiteral("Full Screen");
+    if (normalizedApplyRequest.playMode.isEmpty()) normalizedApplyRequest.playMode = QStringLiteral("Single");
+    if (normalizedApplyRequest.ratio.isEmpty()) normalizedApplyRequest.ratio = QStringLiteral("2:1");
+    if (normalizedApplyRequest.settingsColor.isEmpty()) normalizedApplyRequest.settingsColor = QStringLiteral("#dcdcdc");
+    if (normalizedApplyRequest.settingsColor2.isEmpty()) normalizedApplyRequest.settingsColor2 = normalizedApplyRequest.settingsColor;
+    bool overlayStyleValid = true;
+    if (applyAfterUpload) {
+        normalizedApplyRequest.media.clear();
+        if (normalizedApplyRequest.waterfallMode && !normalizedApplyRequest.display.orientationPresent) {
+            normalizedApplyRequest.display.orientationPresent = true;
+            normalizedApplyRequest.display.waterfallMode = true;
+        }
+        normalizedApplyRequest.replaceOverlay = updateMetrics || normalizedApplyRequest.replaceOverlay
+            || !normalizedApplyRequest.sysinfoLabels.isEmpty() || !normalizedApplyRequest.settingsBadges.isEmpty();
+        overlayStyleValid = tryx::pase_overlay_config::normalizeAndValidatePaseApplyOverlayStyles(&normalizedApplyRequest);
+    }
+    TryxRuntimeOverlayBadgesV1 normalizedBadges;
+    const bool badgesValid = !badgeChoices || tryxNormalizeOverlayBadgesV1(*badgeChoices,
+        normalizedApplyRequest.settingsBadges, normalizedApplyRequest.settingsBadges2,
+        normalizedApplyRequest.screenMode == QStringLiteral("Screen Splitting"), &normalizedBadges);
+    const bool versionedId = badgeChoices.has_value() || operations_.value(operationId).badgeChoices.has_value();
     QString transformError;
     if (!tryxMediaPreparationProfileV1IsValid(
             profile, &transformError)) {
+        if (versionedId && operations_.contains(operationId)) return {};
         const bool nestedTransformValid =
             tryxMediaTransformIsValid(profile.transform);
         if (!operations_.contains(operationId)) {
@@ -4661,6 +4676,13 @@ QString PrinterOperationCoordinator::queueUploadOperation(
             : rejectedResult();
     }
     if (operations_.contains(operationId)) {
+        const auto &existing = operations_[operationId];
+        if (versionedId && (!badgeChoices || !existing.badgeChoices || !badgesValid || !overlayStyleValid
+            || *existing.badgeChoices != normalizedBadges || !(existing.applyRequest == normalizedApplyRequest)
+            || existing.requestedSourcePath != QFileInfo(localPath).absoluteFilePath()
+            || existing.ensureExisting != ensureExisting || existing.info.applyAfterUpload != applyAfterUpload
+            || existing.info.deviceGeneration != context.generation || existing.uploadDeviceIdentity != context.deviceIdentity
+            || existing.printerProductId != context.productId)) return {};
         if (tryxMediaPreparationProfileFingerprint(
                 operations_.value(operationId)
                     .mediaPreparationProfile) !=
@@ -4673,6 +4695,11 @@ QString PrinterOperationCoordinator::queueUploadOperation(
                            mediaSpoolDirectory())
             ? QString()
             : operationId;
+    }
+    if (!badgesValid || (badgeChoices && !applyAfterUpload)
+        || (tryxOverlayBadgesHaveCustomText(normalizedBadges) && context.productId != 0x1021)) {
+        return reject(QStringLiteral("UnsupportedBadgeChoices"),
+                      QStringLiteral("Badge choices are invalid or unsupported by this device."));
     }
     if (context.firmwareExclusiveActive) {
         return reject(QStringLiteral("FirmwareUpdateActive"),
@@ -4747,30 +4774,7 @@ QString PrinterOperationCoordinator::queueUploadOperation(
                       tryx::DeviceManagerMessages::tr("Media file does not exist"));
     }
 
-    TryxRuntimeApplyRequest normalizedApplyRequest = applyRequest;
-    if (normalizedApplyRequest.screenMode.isEmpty()) {
-        normalizedApplyRequest.screenMode = QStringLiteral("Full Screen");
-    }
-    if (normalizedApplyRequest.playMode.isEmpty()) {
-        normalizedApplyRequest.playMode = QStringLiteral("Single");
-    }
-    if (normalizedApplyRequest.ratio.isEmpty()) {
-        normalizedApplyRequest.ratio = QStringLiteral("2:1");
-    }
-    if (normalizedApplyRequest.settingsColor.isEmpty()) {
-        normalizedApplyRequest.settingsColor = QStringLiteral("#dcdcdc");
-    }
-    if (normalizedApplyRequest.settingsColor2.isEmpty()) {
-        normalizedApplyRequest.settingsColor2 =
-            normalizedApplyRequest.settingsColor;
-    }
     if (applyAfterUpload) {
-        normalizedApplyRequest.media.clear();
-        if (normalizedApplyRequest.waterfallMode &&
-            !normalizedApplyRequest.display.orientationPresent) {
-            normalizedApplyRequest.display.orientationPresent = true;
-            normalizedApplyRequest.display.waterfallMode = true;
-        }
         const auto metricsAreValid = [](const QStringList &metrics) {
             return metrics.size() <= 3 &&
                    !tryx::pase_overlay_config::
@@ -4793,15 +4797,6 @@ QString PrinterOperationCoordinator::queueUploadOperation(
                                isSupportedPaseBadge(badge);
                        });
         };
-        const bool overlayRequested =
-            updateMetrics || normalizedApplyRequest.replaceOverlay ||
-            !normalizedApplyRequest.sysinfoLabels.isEmpty() ||
-            !normalizedApplyRequest.settingsBadges.isEmpty();
-        normalizedApplyRequest.replaceOverlay = overlayRequested;
-        const bool overlayStyleValid =
-            tryx::pase_overlay_config::
-                normalizeAndValidatePaseApplyOverlayStyles(
-                    &normalizedApplyRequest);
         if (normalizedApplyRequest.screenMode !=
                 QStringLiteral("Full Screen") ||
             (normalizedApplyRequest.playMode !=
@@ -4860,6 +4855,8 @@ QString PrinterOperationCoordinator::queueUploadOperation(
     record.uploadDeviceIdentity = context.deviceIdentity;
     record.uploadDeviceGeneration = context.generation;
     record.applyRequest = normalizedApplyRequest;
+    if (badgeChoices) record.badgeChoices = normalizedBadges;
+    record.requestedSourcePath = sourceInfo.absoluteFilePath();
     record.mediaTransform = profile.transform;
     record.mediaPreparationProfile = profile;
     record.updateMetrics =
@@ -5269,13 +5266,31 @@ void PrinterOperationCoordinator::resumePendingDeleteReconciliation(
         context.generation);
 }
 
+QString PrinterOperationCoordinator::repeatSavedLayoutApplyOperation(
+    const PrinterOperationContext &context, const QString &operationId,
+    const TryxRuntimeApplyRequest &request,
+    const std::optional<TryxRuntimeOverlayBadgesV1> &badgeChoices,
+    const QString &layoutId, quint64 layoutRevision) {
+    const auto found = operations_.constFind(operationId);
+    if (found == operations_.cend()) return {};
+    if (!badgeChoices) return found->badgeChoices ? QString() : operationId;
+    // Copy the accepted proof inside its owner; duplicate validation must not
+    // reread a changed Saved Layout or expose mutable coordinator records.
+    const auto identity = found->applyProofDeviceIdentity;
+    const auto proof = found->applyProof;
+    return queueApplyOperation(context, operationId, request, false, identity, proof,
+        true, badgeChoices, layoutId, layoutRevision);
+}
+
 QString PrinterOperationCoordinator::queueApplyOperation(
     const PrinterOperationContext &context,
     const QString &requestedOperationId,
     const TryxRuntimeApplyRequest &request, bool updateMetrics,
     const QString &proofDeviceIdentity,
     const QList<TryxRuntimeSavedMediaRefV1> &proof,
-    bool savedLayoutApply) {
+    bool savedLayoutApply,
+    const std::optional<TryxRuntimeOverlayBadgesV1> &badgeChoices,
+    const QString &savedLayoutId, quint64 savedLayoutRevision) {
     using namespace tryx::pase_overlay_config;
     const QString operationId = normalizedOperationId(requestedOperationId);
     if (operationId.isEmpty()) {
@@ -5331,7 +5346,22 @@ QString PrinterOperationCoordinator::queueApplyOperation(
     const QString subject = hasMediaChange
         ? subjectMedia.join(QStringLiteral(" + "))
         : tryx::DeviceManagerMessages::tr("Display settings");
+    TryxRuntimeOverlayBadgesV1 normalizedBadges;
+    const bool badgeChoicesValid = !badgeChoices || tryxNormalizeOverlayBadgesV1(*badgeChoices,
+        normalizedRequest.settingsBadges, normalizedRequest.settingsBadges2,
+        normalizedRequest.screenMode == QStringLiteral("Screen Splitting"), &normalizedBadges);
     if (operations_.contains(operationId)) {
+        const OperationRecord &existing = operations_[operationId];
+        if (badgeChoices || existing.badgeChoices) {
+            if (!badgeChoicesValid || !badgeChoices || !existing.badgeChoices || *existing.badgeChoices != normalizedBadges
+                || existing.info.kind != (savedLayoutApply ? QStringLiteral("SavedLayoutApply") : QStringLiteral("Apply"))
+                || existing.printerProductId != context.productId
+                || !(existing.applyRequest == normalizedRequest)
+                || existing.info.deviceGeneration != context.generation
+                || existing.uploadDeviceIdentity != context.deviceIdentity
+                || existing.savedLayoutId != savedLayoutId || existing.savedLayoutRevision != savedLayoutRevision
+                || existing.applyProofDeviceIdentity != proofDeviceIdentity || existing.applyProof != proof) return {};
+        }
         return operationId;
     }
     const auto reject = [this, &context, &operationId, &subject,
@@ -5346,6 +5376,11 @@ QString PrinterOperationCoordinator::queueApplyOperation(
         pruneOperationHistory();
         return operationId;
     };
+    if (!badgeChoicesValid || (tryxOverlayBadgesHaveCustomText(normalizedBadges)
+                               && context.productId != 0x1021)) {
+        return reject(QStringLiteral("UnsupportedBadgeChoices"),
+                      QStringLiteral("Badge choices are invalid or unsupported by this device."));
+    }
     if (context.firmwareExclusiveActive) {
         return reject(QStringLiteral("FirmwareUpdateActive"),
                       context.firmwareExclusiveStatusText);
@@ -5463,17 +5498,47 @@ QString PrinterOperationCoordinator::queueApplyOperation(
         ? printerMediaConfigName(normalizedRequest.media.constFirst())
         : QString();
     record.applyRequest = normalizedRequest;
+    if (badgeChoices) {
+        record.badgeChoices = normalizedBadges;
+        record.uploadDeviceIdentity = context.deviceIdentity;
+        record.applyProofDeviceIdentity = proofDeviceIdentity;
+        record.applyProof = proof;
+        record.savedLayoutId = savedLayoutId;
+        record.savedLayoutRevision = savedLayoutRevision;
+    }
     record.updateMetrics = normalizedRequest.replaceOverlay;
     operations_.insert(operationId, record);
     operationOrder_.append(operationId);
     activeOperationId_ = operationId;
     publishOperation(operationId);
     emit requestBeginForegroundOperation(operationId, context.generation);
-    emit requestApplyMedia(
-        context.devicePath, record.mediaFile, record.applyRequest,
-        record.updateMetrics, proofDeviceIdentity, proof, operationId,
-        context.generation);
+    dispatchApplyRequest(context, record, proofDeviceIdentity, proof);
     return operationId;
+}
+
+void PrinterOperationCoordinator::dispatchApplyRequest(const PrinterOperationContext &context,
+    const OperationRecord &record, const QString &proofDeviceIdentity,
+    const QList<TryxRuntimeSavedMediaRefV1> &proof) {
+    const OperationRecord dispatch = record;
+    auto &stored = operations_[dispatch.info.id];
+    if (!stored.applyDeviceIdentity.isEmpty() && stored.applyDeviceIdentity != context.deviceIdentity) {
+        finishOperation(record.info.id, QStringLiteral("Failed"), QStringLiteral("DeviceChanged"),
+            QStringLiteral("ReconcileOnly"), tryx::DeviceManagerMessages::tr("The Apply device identity changed before dispatch"));
+        return;
+    }
+    stored.applyDeviceIdentity = context.deviceIdentity;
+    emit displayMutationStarted(dispatch.info.id, context.generation, dispatch.updateMetrics || dispatch.applyRequest.replaceOverlay);
+    const auto current = operations_.constFind(dispatch.info.id);
+    if (current == operations_.cend() || current->deviceChangePending
+        || activeOperationId_ != dispatch.info.id || current->info.deviceGeneration != context.generation) return;
+    if (dispatch.badgeChoices) {
+        const TryxRuntimeApplyWithBadgesV1 envelope{1, dispatch.applyRequest, *dispatch.badgeChoices};
+        emit requestApplyMediaWithBadgesV1(context.devicePath, dispatch.mediaFile, envelope,
+            dispatch.updateMetrics, proofDeviceIdentity, proof, dispatch.info.id, context.generation);
+    } else {
+        emit requestApplyMedia(context.devicePath, dispatch.mediaFile, dispatch.applyRequest,
+            dispatch.updateMetrics, proofDeviceIdentity, proof, dispatch.info.id, context.generation);
+    }
 }
 
 QString PrinterOperationCoordinator::queueMetricsConfigOperation(
@@ -5573,11 +5638,13 @@ QString PrinterOperationCoordinator::queueMetricsConfigOperation(
     record.info.deviceGeneration = context.generation;
     record.printerProductId = context.productId;
     record.metricsRequest = request;
+    record.applyDeviceIdentity = context.deviceIdentity;
     operations_.insert(operationId, record);
     operationOrder_.append(operationId);
     activeOperationId_ = operationId;
     publishOperation(operationId);
     emit requestBeginForegroundOperation(operationId, context.generation);
+    emit displayMutationStarted(operationId, context.generation, true);
     emit requestConfigureMetrics(
         context.devicePath, request, operationId, context.generation);
     return operationId;
@@ -5593,6 +5660,13 @@ QString PrinterOperationCoordinator::retryOperation(
         return {};
     }
     if (operations_.contains(newOperationId)) {
+        const auto &existing = operations_[newOperationId];
+        const auto source = operations_.constFind(sourceOperationId);
+        if (existing.badgeChoices || (source != operations_.cend() && source->badgeChoices)) {
+            if (existing.info.kind != QStringLiteral("UploadRetry") || existing.info.parentId != sourceOperationId
+                || existing.printerProductId != context.productId || existing.info.deviceGeneration != context.generation
+                || existing.uploadDeviceIdentity != context.deviceIdentity) return {};
+        }
         return newOperationId;
     }
     const auto reject = [this, &context, &newOperationId](
@@ -5679,6 +5753,7 @@ QString PrinterOperationCoordinator::retryOperation(
                       context.unavailableStatusText);
     }
     const bool identityRequired =
+        candidate.applyWithBadges.has_value() ||
         source->retryMustUseNewRemoteName ||
         source->info.terminalOutcome ==
             QStringLiteral("PartialOrUnknown") ||
@@ -5708,7 +5783,16 @@ QString PrinterOperationCoordinator::retryOperation(
         record.replaceReferenceSlots.clear();
         record.info.applyAfterUpload = false;
         record.applyRequest = {};
+        record.badgeChoices.reset();
         record.updateMetrics = false;
+    }
+    if (candidate.applyWithBadges) {
+        // This entry point is an explicit new manual Retry. Recovery and
+        // FileList reconciliation retain the payload with these flags off.
+        record.applyRequest = candidate.applyWithBadges->request;
+        record.badgeChoices = candidate.applyWithBadges->badges;
+        record.info.applyAfterUpload = true;
+        record.updateMetrics = record.applyRequest.replaceOverlay;
     }
     record.info.id = newOperationId;
     record.info.parentId = sourceOperationId;
@@ -6852,7 +6936,8 @@ void PrinterOperationCoordinator::handleApplyFinished(
     const std::function<void(
         const PrinterProtocol::PaseOverlayConfig &, bool,
         const QString &, bool)> &publishMetrics,
-    const std::function<void()> &screenConfigChanged) {
+    const std::function<void()> &screenConfigChanged,
+    const std::function<void(const PrinterProtocol::PaseOverlayConfig &)> &acceptDisplay) {
     using namespace tryx::pase_overlay_config;
     if (!operationResultIsExpected(context, operationId, generation)) {
         return;
@@ -6860,7 +6945,7 @@ void PrinterOperationCoordinator::handleApplyFinished(
     OperationRecord &record = operations_[operationId];
     record.info.resultName = mediaFile;
     if (success) {
-        if (record.deviceChangePending) {
+        if (record.deviceChangePending || (!record.applyDeviceIdentity.isEmpty() && record.applyDeviceIdentity != context.deviceIdentity)) {
             finishOperation(
                 operationId, QStringLiteral("Failed"),
                 QStringLiteral("DeviceChanged"),
@@ -6871,6 +6956,7 @@ void PrinterOperationCoordinator::handleApplyFinished(
                     : record.deviceChangeMessage);
             return;
         }
+        auto effectiveOverlay = persistedMetrics ? persistedMetrics(context.deviceIdentity) : PrinterProtocol::PaseOverlayConfig{};
         if (metricsUpdated) {
             PrinterProtocol::PaseOverlayConfig overlay =
                 record.updateMetrics || record.applyRequest.replaceOverlay
@@ -6878,6 +6964,8 @@ void PrinterOperationCoordinator::handleApplyFinished(
                     : persistedMetrics
                         ? persistedMetrics(context.deviceIdentity)
                         : PrinterProtocol::PaseOverlayConfig{};
+            if ((record.updateMetrics || record.applyRequest.replaceOverlay) && record.badgeChoices)
+                overlay.badgeChoices = *record.badgeChoices;
             if (record.applyRequest.display.orientationPresent) {
                 overlay.waterfallMode =
                     record.applyRequest.display.waterfallMode;
@@ -6909,7 +6997,10 @@ void PrinterOperationCoordinator::handleApplyFinished(
                 publishMetrics(
                     overlay, overlayHasMetrics, QString(), true);
             }
+            effectiveOverlay = overlay;
         }
+        if (acceptDisplay && (metricsUpdated || (!record.updateMetrics && !record.applyRequest.replaceOverlay)))
+            acceptDisplay(effectiveOverlay);
         if (record.replaceOperation) {
             record.replaceJournal.applyVerified = true;
             QString journalError;
@@ -7049,12 +7140,13 @@ void PrinterOperationCoordinator::handleMetricsConfigured(
         QString *)> &persistMetrics,
     const std::function<void(
         const PrinterProtocol::PaseOverlayConfig &, bool,
-        const QString &, bool)> &publishMetrics) {
+        const QString &, bool)> &publishMetrics,
+    const std::function<void(const PrinterProtocol::PaseOverlayConfig &)> &acceptDisplay) {
     if (!operationResultIsExpected(context, operationId, generation)) {
         return;
     }
     OperationRecord &record = operations_[operationId];
-    if (success && record.deviceChangePending) {
+    if (success && (record.deviceChangePending || (!record.applyDeviceIdentity.isEmpty() && record.applyDeviceIdentity != context.deviceIdentity))) {
         finishOperation(
             operationId, QStringLiteral("Failed"),
             QStringLiteral("DeviceChanged"),
@@ -7092,6 +7184,7 @@ void PrinterOperationCoordinator::handleMetricsConfigured(
             publishMetrics(
                 overlay, record.metricsRequest.enabled, QString(), true);
         }
+        if (acceptDisplay) acceptDisplay(overlay);
         finishOperation(
             operationId, QStringLiteral("Succeeded"), QString(),
             QString(),

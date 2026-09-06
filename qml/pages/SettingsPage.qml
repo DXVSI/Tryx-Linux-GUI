@@ -14,6 +14,11 @@ ScrollView {
     required property var supportBundle
     required property var cacheManagement
 
+    property bool updateAvailable: false
+    property string availableVersion: ""
+    property url releaseUrl: ""
+    signal openReleaseRequested()
+
     property string temporaryFilesFocusState:
         cacheManagement.state
     property string temporaryFilesFocusPhase:
@@ -1096,6 +1101,39 @@ ScrollView {
                     Label {
                         text: qsTr("Open-source Linux control application")
                         color: "#9ca4ac"
+                    }
+
+                    ColumnLayout {
+                        objectName: "releaseUpdateRow"
+                        Layout.fillWidth: true
+                        Layout.topMargin: visible ? 12 : 0
+                        spacing: 8
+                        visible: root.updateAvailable
+                        onVisibleChanged: {
+                            if (!visible && openReleaseButton.activeFocus)
+                                openGitHubButton.forceActiveFocus()
+                        }
+
+                        Label {
+                            id: availableReleaseLabel
+                            objectName: "availableReleaseLabel"
+                            Layout.fillWidth: true
+                            text: qsTr("Version %1 is available").arg(root.availableVersion)
+                            textFormat: Text.PlainText
+                            color: "#def750"
+                            wrapMode: Text.WordWrap
+                            Accessible.name: text
+                        }
+
+                        Button {
+                            id: openReleaseButton
+                            objectName: "openReleaseButton"
+                            text: qsTr("Open release")
+                            enabled: root.updateAvailable && String(root.releaseUrl).length > 0
+                            Accessible.name: text
+                            Accessible.description: availableReleaseLabel.text
+                            onClicked: root.openReleaseRequested()
+                        }
                     }
                 }
 

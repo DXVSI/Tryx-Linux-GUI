@@ -44,6 +44,7 @@ SOURCES += \
     ../../src/nvidiasmiparser.cpp \
     ../../src/nvidiasmiprovider.cpp \
     ../../src/systemmonitor.cpp \
+    ../../src/runtimebadgetext.cpp \
     ../../src/runtimecontract.cpp \
     ../../src/supportsnapshot.cpp \
     ../../src/quick/supportbundle.cpp \

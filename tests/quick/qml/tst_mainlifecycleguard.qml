@@ -444,6 +444,11 @@ TestCase {
             windowChrome: windowChromeMock
             supportBundle: supportBundleMock
             cacheManagement: cacheManagementMock
+            releaseUpdates: QtObject {
+                property bool updateAvailable: false
+                property string availableVersion: ""
+                property url releaseUrl: ""
+            }
             quickSmokeTest: false
             autostartRequested: false
         }

@@ -118,6 +118,10 @@ public slots:
         quint64 expectedRevision, const QString &temperatureUnit,
         const QString &timeFormat);
     TryxRuntimeSavedLayoutsSnapshotV1 GetSavedLayoutsV1() const;
+    TryxRuntimeSavedLayoutsSnapshotV2 GetSavedLayoutsV2() const;
+    TryxRuntimeSavedLayoutsSnapshotV2 PutSavedLayoutV2(quint64 expectedSnapshotRevision,
+                                                       const TryxRuntimeSavedLayoutV2 &layout);
+    TryxRuntimeSavedLayoutsSnapshotV2 DeleteSavedLayoutV2(quint64 expectedSnapshotRevision, const QString &layoutId);
     TryxRuntimeSavedLayoutsSnapshotV1 PutSavedLayoutV1(
         quint64 expectedSnapshotRevision,
         const TryxRuntimeSavedLayoutV1 &layout);
@@ -130,6 +134,7 @@ public slots:
     QStringList GetMetricsCapabilities() const;
     TryxRuntimeMetricsState GetMetricsState() const;
     TryxRuntimeDisplayState GetDisplayState() const;
+    TryxRuntimeDisplaySnapshotV1 GetDisplaySnapshotV1() const;
     QString QueueUpload(const QString &operationId, const QString &localPath,
                         bool applyAfterUpload);
     QString QueueUploadWithTransform(
@@ -156,6 +161,13 @@ public slots:
                              const QStringList &fileNames);
     QString QueueApply(const QString &operationId,
                        const TryxRuntimeApplyRequest &request);
+    QString QueueApplyWithBadgesV1(const QString &operationId, const TryxRuntimeApplyWithBadgesV1 &request);
+    QString QueueUploadWithApplyAndBadgesV1(const QString &operationId, const QString &localPath,
+        const TryxRuntimeApplyWithBadgesV1 &request, const TryxRuntimeMediaTransform &transform);
+    QString QueueEnsureMediaAndApplyWithBadgesV1(const QString &operationId, const QString &localPath,
+        const TryxRuntimeApplyWithBadgesV1 &request, const TryxRuntimeMediaTransform &transform);
+    QString QueueSavedLayoutApplyV2(const QString &operationId, const QString &layoutId,
+        quint64 expectedLayoutRevision, const TryxRuntimeApplyWithBadgesV1 &currentDraft);
     QString QueueApplyWithMetrics(
         const QString &operationId,
         const TryxRuntimeApplyRequest &request);
@@ -207,6 +219,7 @@ signals:
         const TryxRuntimeMediaCatalogSnapshot &snapshot);
     void MetricsStateUpdated(const TryxRuntimeMetricsState &state);
     void DisplayStateUpdated(const TryxRuntimeDisplayState &state);
+    void DisplaySnapshotChangedV1(quint64 revision);
     void PresentationPreferencesChangedV1(
         const TryxRuntimePresentationPreferencesV1 &preferences);
 

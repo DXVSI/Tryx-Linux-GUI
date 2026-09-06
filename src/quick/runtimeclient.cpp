@@ -30,6 +30,7 @@
 namespace {
 
 constexpr int kRuntimeCallTimeoutMs = 5000;
+constexpr int kMaximumConnectionRevisionRefreshes = 3;
 constexpr int kLegacyUploadTimeoutMs = 15 * 60 * 1000;
 constexpr int kDisplayApplyTimeoutMs = 2 * 60 * 1000;
 constexpr int kTurrisMediaTargetWidth = 1280;
@@ -420,10 +421,41 @@ SavedLayoutMutationFailureAction savedLayoutMutationFailureAction(
     }
 }
 
+TryxRuntimeSavedLayoutsSnapshotV2 promoteSavedLayouts(const TryxRuntimeSavedLayoutsSnapshotV1 &old) {
+    TryxRuntimeSavedLayoutsSnapshotV2 result{old.schemaVersion == 1 ? 2U : 0U, old.revision, old.status,
+        old.diagnostic, old.deviceIdentity, old.productId, {}};
+    for (const auto &layout : old.layouts) {
+        auto promoted = tryxSavedLayoutV2FromV1(layout);
+        if (layout.schemaVersion != 1) promoted.schemaVersion = 0;
+        result.layouts.append(promoted);
+    }
+    return result;
+}
+
+// One internal lossless representation; legacy wire replies are promoted only
+// when that wire version was explicitly selected before dispatch.
+struct SavedLayoutsReply {
+    TryxRuntimeSavedLayoutsSnapshotV2 snapshot;
+    QDBusError failure;
+    bool isValid() const { return !failure.isValid(); }
+    const QDBusError &error() const { return failure; }
+    const TryxRuntimeSavedLayoutsSnapshotV2 &value() const { return snapshot; }
+};
+
+SavedLayoutsReply savedLayoutsReply(QDBusPendingCallWatcher *watcher, bool version2) {
+    if (version2) {
+        const QDBusPendingReply<TryxRuntimeSavedLayoutsSnapshotV2> reply = *watcher;
+        return {reply.isValid() ? reply.value() : TryxRuntimeSavedLayoutsSnapshotV2{}, reply.error()};
+    }
+    const QDBusPendingReply<TryxRuntimeSavedLayoutsSnapshotV1> reply = *watcher;
+    return {reply.isValid() ? promoteSavedLayouts(reply.value()) : TryxRuntimeSavedLayoutsSnapshotV2{}, reply.error()};
+}
+
 bool savedLayoutIsCanonical(
-    const TryxRuntimeSavedLayoutV1 &layout,
+    const TryxRuntimeSavedLayoutV2 &layout,
     const QString &deviceIdentity, const QString &productId) {
-    if (layout.schemaVersion != 1U || layout.revision == 0 ||
+    TryxRuntimeOverlayBadgesV1 normalized;
+    if (layout.schemaVersion != 2U || layout.revision == 0 ||
         !canonicalSavedLayoutId(layout.layoutId) ||
         !tryxSavedLayoutDeviceIdentityIsCanonical(deviceIdentity) ||
         !tryxSavedLayoutProductIdIsSupported(productId) ||
@@ -431,7 +463,11 @@ bool savedLayoutIsCanonical(
         layout.productId != productId ||
         !savedLayoutNameIsValid(layout.name) ||
         !savedApplyRequestIsCanonical(layout.request) ||
-        layout.media.size() != layout.request.media.size()) {
+        layout.media.size() != layout.request.media.size()
+        || !tryxNormalizeOverlayBadgesV1(layout.badges, layout.request.settingsBadges, layout.request.settingsBadges2,
+            layout.request.screenMode == QStringLiteral("Screen Splitting"), &normalized)
+        || normalized != layout.badges
+        || (tryxOverlayBadgesHaveCustomText(layout.badges) && productId != QStringLiteral("391a:1021"))) {
         return false;
     }
     for (qsizetype index = 0; index < layout.media.size(); ++index) {
@@ -449,11 +485,11 @@ bool savedLayoutIsCanonical(
 }
 
 bool savedLayoutsSnapshotIsValid(
-    const TryxRuntimeSavedLayoutsSnapshotV1 &snapshot) {
+    const TryxRuntimeSavedLayoutsSnapshotV2 &snapshot) {
     const QStringList statuses = {
         QStringLiteral("Ready"), QStringLiteral("Disconnected"),
         QStringLiteral("Unsupported"), QStringLiteral("Unavailable")};
-    if (snapshot.schemaVersion != 1U ||
+    if (snapshot.schemaVersion != 2U ||
         !statuses.contains(snapshot.status) ||
         snapshot.diagnostic.size() > 512 ||
         snapshot.layouts.size() > 32) {
@@ -473,7 +509,7 @@ bool savedLayoutsSnapshotIsValid(
     QSet<QString> ids;
     QSet<QString> names;
     QSet<quint64> revisions;
-    for (const TryxRuntimeSavedLayoutV1 &layout : snapshot.layouts) {
+    for (const TryxRuntimeSavedLayoutV2 &layout : snapshot.layouts) {
         const QString folded = layout.name.toCaseFolded();
         if (ids.contains(layout.layoutId) || names.contains(folded) ||
             revisions.contains(layout.revision) ||
@@ -489,26 +525,26 @@ bool savedLayoutsSnapshotIsValid(
     return true;
 }
 
-const TryxRuntimeSavedLayoutV1 *savedLayoutById(
-    const TryxRuntimeSavedLayoutsSnapshotV1 &snapshot,
+const TryxRuntimeSavedLayoutV2 *savedLayoutById(
+    const TryxRuntimeSavedLayoutsSnapshotV2 &snapshot,
     const QString &layoutId) {
     const auto found = std::find_if(
         snapshot.layouts.cbegin(), snapshot.layouts.cend(),
-        [&layoutId](const TryxRuntimeSavedLayoutV1 &layout) {
+        [&layoutId](const TryxRuntimeSavedLayoutV2 &layout) {
             return layout.layoutId == layoutId;
         });
     return found == snapshot.layouts.cend() ? nullptr : &*found;
 }
 
 bool unchangedSavedLayoutsArePreserved(
-    const TryxRuntimeSavedLayoutsSnapshotV1 &before,
-    const TryxRuntimeSavedLayoutsSnapshotV1 &after,
+    const TryxRuntimeSavedLayoutsSnapshotV2 &before,
+    const TryxRuntimeSavedLayoutsSnapshotV2 &after,
     const QString &changedLayoutId) {
-    for (const TryxRuntimeSavedLayoutV1 &layout : before.layouts) {
+    for (const TryxRuntimeSavedLayoutV2 &layout : before.layouts) {
         if (layout.layoutId == changedLayoutId) {
             continue;
         }
-        const TryxRuntimeSavedLayoutV1 *confirmed =
+        const TryxRuntimeSavedLayoutV2 *confirmed =
             savedLayoutById(after, layout.layoutId);
         if (!confirmed || !(*confirmed == layout)) {
             return false;
@@ -518,10 +554,10 @@ bool unchangedSavedLayoutsArePreserved(
 }
 
 bool savedLayoutPutReplyIsExact(
-    const TryxRuntimeSavedLayoutsSnapshotV1 &before,
-    const TryxRuntimeSavedLayoutV1 &submitted,
-    const TryxRuntimeSavedLayoutsSnapshotV1 &after,
-    TryxRuntimeSavedLayoutV1 *confirmed) {
+    const TryxRuntimeSavedLayoutsSnapshotV2 &before,
+    const TryxRuntimeSavedLayoutV2 &submitted,
+    const TryxRuntimeSavedLayoutsSnapshotV2 &after,
+    TryxRuntimeSavedLayoutV2 *confirmed) {
     if (before.revision == std::numeric_limits<quint64>::max() ||
         after.revision != before.revision + 1 ||
         after.status != QStringLiteral("Ready") ||
@@ -537,9 +573,9 @@ bool savedLayoutPutReplyIsExact(
         before.layouts.size() + (create ? 1 : 0)) {
         return false;
     }
-    const TryxRuntimeSavedLayoutV1 *stored = nullptr;
+    const TryxRuntimeSavedLayoutV2 *stored = nullptr;
     if (create) {
-        for (const TryxRuntimeSavedLayoutV1 &layout : after.layouts) {
+        for (const TryxRuntimeSavedLayoutV2 &layout : after.layouts) {
             if (layout.name.compare(
                     submitted.name, Qt::CaseInsensitive) == 0) {
                 if (stored) {
@@ -559,6 +595,7 @@ bool savedLayoutPutReplyIsExact(
         stored->name != submitted.name ||
         stored->media != submitted.media ||
         !(stored->request == submitted.request) ||
+        stored->badges != submitted.badges ||
         !unchangedSavedLayoutsArePreserved(
             before, after, submitted.layoutId)) {
         return false;
@@ -570,9 +607,9 @@ bool savedLayoutPutReplyIsExact(
 }
 
 bool savedLayoutDeleteReplyIsExact(
-    const TryxRuntimeSavedLayoutsSnapshotV1 &before,
+    const TryxRuntimeSavedLayoutsSnapshotV2 &before,
     const QString &deletedLayoutId,
-    const TryxRuntimeSavedLayoutsSnapshotV1 &after) {
+    const TryxRuntimeSavedLayoutsSnapshotV2 &after) {
     return before.revision != std::numeric_limits<quint64>::max() &&
            after.revision == before.revision + 1 &&
            after.status == QStringLiteral("Ready") &&
@@ -855,13 +892,18 @@ SavedLayoutListModel *RuntimeClient::savedLayoutModel() {
 }
 
 bool RuntimeClient::savedLayoutsSupported() const {
-    return capabilitiesReady_ && runtimeCapabilities_.contains(
-        tryxRuntimeSavedLayoutsV1Token());
+    return capabilitiesReady_ && (runtimeCapabilities_.contains(tryxRuntimeSavedLayoutsV1Token()) || savedLayoutsV2Supported());
+}
+
+bool RuntimeClient::savedLayoutsV2Supported() const {
+    return capabilitiesReady_ && runtimeCapabilities_.contains(tryxRuntimeSavedLayoutsV2Token());
 }
 
 bool RuntimeClient::savedLayoutsReady() const {
     return savedLayoutsSupported() &&
-           savedLayouts_.status == QStringLiteral("Ready");
+           savedLayouts_.status == QStringLiteral("Ready")
+        && (savedLayoutsV2Supported() || std::none_of(savedLayouts_.layouts.cbegin(), savedLayouts_.layouts.cend(),
+            [](const auto &layout) { return tryxOverlayBadgesHaveCustomText(layout.badges); }));
 }
 
 bool RuntimeClient::savedLayoutsBusy() const {
@@ -1151,9 +1193,9 @@ void RuntimeClient::refreshSavedLayouts() {
     if (offline_) {
         savedLayoutsBusy_ = true;
         ++savedLayoutsAttempt_;
+        const QString method = savedLayoutsV2Supported() ? QStringLiteral("GetSavedLayoutsV2") : QStringLiteral("GetSavedLayoutsV1");
         offlineRequests_.append({
-            QStringLiteral("GetSavedLayoutsV1"), {}, {},
-            QStringLiteral("GetSavedLayoutsV1"),
+            method, {}, {}, method,
         });
         emit savedLayoutsChanged();
         return;
@@ -1164,9 +1206,9 @@ void RuntimeClient::refreshSavedLayouts() {
 
 QVariantMap RuntimeClient::savedLayoutDraft(
     const QString &layoutId) const {
-    TryxRuntimeSavedLayoutV1 layout;
+    TryxRuntimeSavedLayoutV2 layout;
     if (!savedLayoutsReady() ||
-        !savedLayoutModel_.layoutById(layoutId, &layout) ||
+        !savedLayoutModel_.layoutV2ById(layoutId, &layout) ||
         !savedLayoutIsCanonical(
             layout, savedLayouts_.deviceIdentity,
             savedLayouts_.productId)) {
@@ -1180,6 +1222,7 @@ QVariantMap RuntimeClient::savedLayoutDraft(
     layoutDraft.insert(QStringLiteral("split"), split);
     layoutDraft.insert(QStringLiteral("media"), request.media);
     layoutDraft.insert(QStringLiteral("playMode"), request.playMode);
+    if (savedLayoutsV2Supported()) layoutDraft.insert(QStringLiteral("badgeChoices"), tryxOverlayBadgesV1ToJson(layout.badges).toVariantMap());
     if (split) {
         layoutDraft.insert(
             QStringLiteral("leftMetrics"), request.sysinfoLabels);
@@ -1255,7 +1298,7 @@ void RuntimeClient::putSavedLayout(
         return;
     }
 
-    TryxRuntimeSavedLayoutV1 layout;
+    TryxRuntimeSavedLayoutV2 layout;
     QString validationError;
     if (!savedLayoutFromDraft(
             name, requestedId, fullDraft,
@@ -1277,8 +1320,15 @@ void RuntimeClient::putSavedLayout(
         reject(message);
         return;
     }
+    const bool version2 = savedLayoutsV2Supported();
+    const QString method = version2 ? QStringLiteral("PutSavedLayoutV2") : QStringLiteral("PutSavedLayoutV1");
+    TryxRuntimeSavedLayoutV1 legacyLayout;
+    if (!version2 && !tryxSavedLayoutV2ToV1(layout, &legacyLayout)) {
+        reject(tr("Custom badge text cannot be stored through the legacy saved-layout API"));
+        return;
+    }
     const quint64 expectedRevision = savedLayouts_.revision;
-    const TryxRuntimeSavedLayoutsSnapshotV1 expectedSnapshot =
+    const TryxRuntimeSavedLayoutsSnapshotV2 expectedSnapshot =
         savedLayouts_;
     const quint64 requestAttempt = ++savedLayoutsAttempt_;
     savedLayoutsBusy_ = true;
@@ -1286,12 +1336,11 @@ void RuntimeClient::putSavedLayout(
 
     const QVariantList arguments = {
         QVariant::fromValue(expectedRevision),
-        QVariant::fromValue(layout),
+        version2 ? QVariant::fromValue(layout) : QVariant::fromValue(legacyLayout),
     };
     if (offline_) {
         offlineRequests_.append({
-            QStringLiteral("PutSavedLayoutV1"), arguments, {},
-            QStringLiteral("PutSavedLayoutV1"),
+            method, arguments, {}, method,
         });
         return;
     }
@@ -1302,15 +1351,14 @@ void RuntimeClient::putSavedLayout(
     runtime.setTimeout(kRuntimeCallTimeoutMs);
     auto *watcher = new QDBusPendingCallWatcher(
         runtime.asyncCallWithArgumentList(
-            QStringLiteral("PutSavedLayoutV1"), arguments),
+            method, arguments),
         this);
     connect(
         watcher, &QDBusPendingCallWatcher::finished, this,
         [this, watcher, epoch, handshakeAttempt, owner,
          requestAttempt, requestedId, layout,
-         expectedSnapshot]() {
-            const QDBusPendingReply<
-                TryxRuntimeSavedLayoutsSnapshotV1> reply = *watcher;
+         expectedSnapshot, version2]() {
+            const auto reply = savedLayoutsReply(watcher, version2);
             watcher->deleteLater();
             if (requestAttempt != savedLayoutsAttempt_ ||
                 !handshakeContextIsCurrent(
@@ -1342,9 +1390,9 @@ void RuntimeClient::putSavedLayout(
                 return;
             }
 
-            const TryxRuntimeSavedLayoutsSnapshotV1 snapshot =
+            const TryxRuntimeSavedLayoutsSnapshotV2 snapshot =
                 reply.value();
-            TryxRuntimeSavedLayoutV1 confirmed;
+            TryxRuntimeSavedLayoutV2 confirmed;
             if (!savedLayoutsSnapshotIsValid(snapshot) ||
                 snapshot.deviceIdentity !=
                     savedLayoutConnectionIdentity() ||
@@ -1387,10 +1435,10 @@ void RuntimeClient::deleteSavedLayout(const QString &layoutId) {
                 requestedId, false, message);
             emit userMessage(message, true);
         };
-    TryxRuntimeSavedLayoutV1 existing;
+    TryxRuntimeSavedLayoutV2 existing;
     if (!savedLayoutsReady() || savedLayoutsBusy_ ||
         operationBusy() ||
-        !savedLayoutModel_.layoutById(requestedId, &existing)) {
+        !savedLayoutModel_.layoutV2ById(requestedId, &existing)) {
         reject(tr("The saved layout is unavailable for deletion"));
         return;
     }
@@ -1406,8 +1454,14 @@ void RuntimeClient::deleteSavedLayout(const QString &layoutId) {
         reject(message);
         return;
     }
+    const bool version2 = savedLayoutsV2Supported();
+    const QString method = version2 ? QStringLiteral("DeleteSavedLayoutV2") : QStringLiteral("DeleteSavedLayoutV1");
+    if (!version2 && tryxOverlayBadgesHaveCustomText(existing.badges)) {
+        reject(tr("Custom badge layouts require the versioned saved-layout API"));
+        return;
+    }
     const quint64 expectedRevision = savedLayouts_.revision;
-    const TryxRuntimeSavedLayoutsSnapshotV1 expectedSnapshot =
+    const TryxRuntimeSavedLayoutsSnapshotV2 expectedSnapshot =
         savedLayouts_;
     const quint64 requestAttempt = ++savedLayoutsAttempt_;
     savedLayoutsBusy_ = true;
@@ -1416,8 +1470,7 @@ void RuntimeClient::deleteSavedLayout(const QString &layoutId) {
         QVariant::fromValue(expectedRevision), requestedId};
     if (offline_) {
         offlineRequests_.append({
-            QStringLiteral("DeleteSavedLayoutV1"), arguments, {},
-            QStringLiteral("DeleteSavedLayoutV1"),
+            method, arguments, {}, method,
         });
         return;
     }
@@ -1428,14 +1481,13 @@ void RuntimeClient::deleteSavedLayout(const QString &layoutId) {
     runtime.setTimeout(kRuntimeCallTimeoutMs);
     auto *watcher = new QDBusPendingCallWatcher(
         runtime.asyncCallWithArgumentList(
-            QStringLiteral("DeleteSavedLayoutV1"), arguments),
+            method, arguments),
         this);
     connect(
         watcher, &QDBusPendingCallWatcher::finished, this,
         [this, watcher, epoch, handshakeAttempt, owner,
-         requestAttempt, requestedId, expectedSnapshot]() {
-            const QDBusPendingReply<
-                TryxRuntimeSavedLayoutsSnapshotV1> reply = *watcher;
+         requestAttempt, requestedId, expectedSnapshot, version2]() {
+            const auto reply = savedLayoutsReply(watcher, version2);
             watcher->deleteLater();
             if (requestAttempt != savedLayoutsAttempt_ ||
                 !handshakeContextIsCurrent(
@@ -1466,7 +1518,7 @@ void RuntimeClient::deleteSavedLayout(const QString &layoutId) {
                 }
                 return;
             }
-            const TryxRuntimeSavedLayoutsSnapshotV1 snapshot =
+            const TryxRuntimeSavedLayoutsSnapshotV2 snapshot =
                 reply.value();
             if (!savedLayoutsSnapshotIsValid(snapshot) ||
                 snapshot.deviceIdentity !=
@@ -1486,7 +1538,7 @@ void RuntimeClient::deleteSavedLayout(const QString &layoutId) {
             QString snapshotError;
             if (!applySavedLayoutsSnapshot(
                     snapshot, &snapshotError) ||
-                savedLayoutModel_.layoutById(requestedId, nullptr)) {
+                savedLayoutModel_.layoutV2ById(requestedId, static_cast<TryxRuntimeSavedLayoutV2 *>(nullptr))) {
                 const QString message = snapshotError.isEmpty()
                     ? tr("The runtime did not confirm the layout deletion")
                     : snapshotError;
@@ -1514,9 +1566,9 @@ QString RuntimeClient::submitSavedLayoutDraft(
         emit userMessage(message, true);
         return {};
     }
-    TryxRuntimeSavedLayoutV1 layout;
+    TryxRuntimeSavedLayoutV2 layout;
     quint64 expectedRevision = 0;
-    if (!savedLayoutModel_.layoutById(layoutId, &layout) ||
+    if (!savedLayoutModel_.layoutV2ById(layoutId, &layout) ||
         !parseSavedLayoutRevision(
             revisionDecimal, &expectedRevision) ||
         expectedRevision != layout.revision) {
@@ -1537,7 +1589,8 @@ QString RuntimeClient::submitSavedLayoutDraft(
     return beginDisplaySubmission(
         request, true, true, true, false, false,
         QStringLiteral("QueueSavedLayoutApplyV1"),
-        layout.layoutId, layout.revision);
+        layout.layoutId, layout.revision,
+        fullDraft.value(QStringLiteral("layout")).toMap().value(QStringLiteral("badgeChoices")).toMap());
 }
 
 MediaCatalogModel *RuntimeClient::mediaModel() {
@@ -1648,6 +1701,9 @@ bool RuntimeClient::displayStateValid() const {
                !identity.isEmpty() &&
                legacyDisplayStateIdentity_ == identity;
     }
+    if (!capabilitiesReady_) return false;
+    if (usesDisplaySnapshotV1()) return !displaySnapshotReadFailed_ && displaySnapshot_.status == QStringLiteral("HostAccepted")
+        && displaySnapshotContextIsCurrent(displaySnapshot_);
     return connection_.printerClassDevicePresent &&
            display_.valid;
 }
@@ -1667,7 +1723,158 @@ bool RuntimeClient::legacyDisplayBrightnessConfirmed() const {
 }
 
 quint64 RuntimeClient::displayRevision() const {
-    return display_.revision;
+    return usesDisplaySnapshotV1() ? displaySnapshot_.revision : display_.revision;
+}
+
+bool RuntimeClient::usesDisplaySnapshotV1() const {
+    return !legacyConnected() && (displaySnapshotRequired_
+        || (capabilitiesReady_ && runtimeCapabilities_.contains(tryxRuntimeDisplaySnapshotV1Token())));
+}
+
+bool RuntimeClient::customBadgeTextSupported() const {
+    return serviceAvailable_ && compatible_ && capabilitiesReady_ && deviceCapabilitiesReady_
+        && connection_.printerClassConnected && connection_.productId == QStringLiteral("391a:1021")
+        && runtimeCapabilities_.contains(tryxRuntimeApplyWithBadgesV1Token())
+        && runtimeCapabilities_.contains(tryxRuntimeDisplaySnapshotV1Token())
+        && runtimeCapabilities_.contains(tryxRuntimeSavedLayoutsV2Token())
+        && deviceCapabilities_.contains(tryxDeviceOverlayBadgeTextV1Token())
+        && deviceCapabilitiesSnapshot_.deviceIdentity == connection_.serial.trimmed()
+        && !deviceCapabilitiesSnapshot_.deviceIdentity.isEmpty()
+        && deviceCapabilitiesSnapshot_.connectionRevision == connection_.revision
+        && deviceCapabilitiesSnapshot_.physicalGeneration != 0;
+}
+
+QVariantMap RuntimeClient::displayBadgeChoices() const {
+    return tryxOverlayBadgesV1ToJson(displaySnapshot_.status == QStringLiteral("HostAccepted")
+        ? displaySnapshot_.badges : TryxRuntimeOverlayBadgesV1{}).toVariantMap();
+}
+
+QString RuntimeClient::badgeTextError(const QString &mode, const QString &text) const {
+    return tryxNormalizeBadgeTextV1({mode, text}, nullptr) ? QString()
+        : tr("Enter one line of 1-32 characters (up to 128 UTF-8 bytes), without control or formatting characters");
+}
+
+bool RuntimeClient::normalizeBadgeDraft(const QVariantMap &draft, const TryxRuntimeApplyRequest &request,
+    TryxRuntimeOverlayBadgesV1 *badges) const {
+    TryxRuntimeOverlayBadgesV1 parsed;
+    if (!draft.isEmpty()) {
+        QJsonObject json = QJsonObject::fromVariantMap(draft);
+        for (const auto &key : {QStringLiteral("primaryCpu"), QStringLiteral("primaryGpu"),
+                               QStringLiteral("secondaryCpu"), QStringLiteral("secondaryGpu")}) {
+            if (!json.value(key).isObject()) return false;
+            auto slot = json.value(key).toObject();
+            if (slot.size() != 2 || !slot.value(QStringLiteral("mode")).isString() || !slot.value(QStringLiteral("text")).isString()) return false;
+            TryxRuntimeBadgeTextV1 normalized;
+            if (!tryxNormalizeBadgeTextV1({slot.value(QStringLiteral("mode")).toString(), slot.value(QStringLiteral("text")).toString()}, &normalized)) return false;
+            slot.insert(QStringLiteral("text"), normalized.text);
+            json.insert(key, slot);
+        }
+        if (!tryxOverlayBadgesV1FromJson(json, &parsed)) return false;
+    }
+    return tryxNormalizeOverlayBadgesV1(parsed, request.settingsBadges, request.settingsBadges2,
+        request.screenMode == QStringLiteral("Screen Splitting"), badges);
+}
+
+bool RuntimeClient::displaySnapshotContextIsCurrent(const TryxRuntimeDisplaySnapshotV1 &snapshot) const {
+    return usesDisplaySnapshotV1() && serviceAvailable_ && compatible_ && capabilitiesReady_ && deviceCapabilitiesReady_
+        && runtimeCapabilities_.contains(tryxRuntimeDisplaySnapshotV1Token())
+        && connection_.printerClassConnected && connection_.printerClassDevicePresent && connection_.displaySessionActive
+        && !connection_.serial.isEmpty() && snapshot.connectionRevision == connection_.revision
+        && snapshot.productId == connection_.productId && snapshot.physicalGeneration != 0
+        && snapshot.physicalGeneration == deviceCapabilitiesSnapshot_.physicalGeneration
+        && deviceCapabilitiesSnapshot_.deviceIdentity == connection_.serial.trimmed()
+        && deviceCapabilitiesSnapshot_.connectionRevision == connection_.revision
+        && (snapshot.status != QStringLiteral("HostAccepted") || snapshot.display.deviceSerial == connection_.serial.trimmed());
+}
+
+bool RuntimeClient::displaySubmissionContextIsCurrent() const {
+    return displaySubmission_.coherentSnapshot && displayStateValid()
+        && (!tryxOverlayBadgesHaveCustomText(displaySubmission_.expectedBadges) || customBadgeTextSupported())
+        && displaySubmission_.serviceEpoch == serviceEpoch_ && displaySubmission_.handshakeAttempt == handshakeAttempt_
+        && displaySubmission_.owner == runtimeOwner_ && displaySubmission_.productId == connection_.productId
+        && displaySubmission_.physicalGeneration == displaySnapshot_.physicalGeneration
+        && displaySubmission_.deviceIdentity == connection_.serial.trimmed();
+}
+
+bool RuntimeClient::applyDisplaySnapshotV1(const TryxRuntimeDisplaySnapshotV1 &snapshot) {
+    if (!tryxDisplaySnapshotV1IsValid(snapshot) || !displaySnapshotContextIsCurrent(snapshot)
+        || snapshot.revision < displaySnapshot_.revision) return false;
+    // A connection revision can advance independently of the display bundle.
+    if (snapshot.revision == displaySnapshot_.revision && snapshot == displaySnapshot_ && !displaySnapshotReadFailed_) return true;
+    if (snapshot.revision == displaySnapshot_.revision) {
+        auto current = displaySnapshot_;
+        current.connectionRevision = snapshot.connectionRevision;
+        if (!(current == snapshot)) return false;
+    }
+    const QString oldIdentity = displayDeviceIdentity();
+    displaySnapshotRequired_ = true;
+    displaySnapshotReadFailed_ = false;
+    displaySnapshot_ = snapshot;
+    if (snapshot.status == QStringLiteral("HostAccepted")) {
+        display_ = snapshot.display;
+        displayRevisionReceived_ = true;
+        legacyDisplayStateIdentity_.clear();
+        legacyLayoutConfirmed_ = legacyBrightnessConfirmed_ = false;
+        completeConnectionRevisionReconciliation();
+    }
+    // Pending/unavailable never replaces a user's baseline with empty Auto.
+    emit displayChanged();
+    if (oldIdentity != displayDeviceIdentity()) emit displayDeviceIdentityChanged();
+    if (!displaySubmission_.active() || displaySubmission_.resultEmitted || !displaySubmission_.coherentSnapshot
+        || snapshot.revision <= displaySubmission_.startingDisplayRevision) return true;
+    displaySubmission_.matchingStateObserved = false;
+    if (snapshot.status != QStringLiteral("HostAccepted") || snapshot.acceptedOperationId != displaySubmission_.id
+        || !displaySubmissionContextIsCurrent()) return true;
+    if (snapshot.badges != displaySubmission_.expectedBadges || !displaySubmissionMatches(snapshot.display)) {
+        finishDisplaySubmission(QStringLiteral("Unresolved"), tr("The confirmed display state does not match the submitted draft"), true);
+        return true;
+    }
+    displaySubmission_.matchingStateObserved = true;
+    if (displaySubmission_.terminalSucceeded)
+        finishDisplaySubmission(QStringLiteral("Succeeded"), tr("The display changes were confirmed"));
+    return true;
+}
+
+void RuntimeClient::refreshDisplaySnapshotV1() {
+    if (!usesDisplaySnapshotV1() || !capabilitiesReady_ || !deviceCapabilitiesReady_
+        || !runtimeCapabilities_.contains(tryxRuntimeDisplaySnapshotV1Token())
+        || !handshakeContextIsCurrent(serviceEpoch_, handshakeAttempt_, runtimeOwner_)) return;
+    if (displaySnapshotReadPending_) {
+        displaySnapshotReadAgain_ = true;
+        return;
+    }
+    const quint64 epoch = serviceEpoch_, handshake = handshakeAttempt_, attempt = ++displaySnapshotReadAttempt_;
+    const quint64 connectionRevision = connection_.revision;
+    const QString owner = runtimeOwner_;
+    displaySnapshotReadPending_ = true;
+    QDBusInterface runtime(owner, tryxRuntimeObjectPath(), tryxRuntimeOperationsInterfaceName(), bus_);
+    runtime.setTimeout(kRuntimeCallTimeoutMs);
+    auto *watcher = new QDBusPendingCallWatcher(runtime.asyncCall(QStringLiteral("GetDisplaySnapshotV1")), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher, epoch, handshake, attempt, owner, connectionRevision]() {
+        const QDBusPendingReply<TryxRuntimeDisplaySnapshotV1> reply = *watcher;
+        watcher->deleteLater();
+        if (attempt != displaySnapshotReadAttempt_) return;
+        displaySnapshotReadPending_ = false;
+        if (!handshakeContextIsCurrent(epoch, handshake, owner)) return;
+        if (connectionRevision == connection_.revision && (!reply.isValid() || !applyDisplaySnapshotV1(reply.value()))) {
+            displaySnapshotReadFailed_ = true;
+            setDiagnostic(tr("The runtime did not return a coherent display snapshot for the current device"));
+            emit displayChanged();
+            if (reply.isValid()) {
+                const auto snapshot = reply.value();
+                if (tryxDisplaySnapshotV1IsValid(snapshot)
+                    && snapshot.productId == connection_.productId
+                    && snapshot.physicalGeneration == deviceCapabilitiesSnapshot_.physicalGeneration
+                    && (snapshot.status != QStringLiteral("HostAccepted")
+                        || snapshot.display.deviceSerial == connection_.serial.trimmed())) {
+                    reconcileConnectionRevision(snapshot.connectionRevision);
+                }
+            }
+        }
+        const bool again = displaySnapshotReadAgain_;
+        displaySnapshotReadAgain_ = false;
+        if (again) refreshDisplaySnapshotV1();
+    });
 }
 
 QString RuntimeClient::displayDeviceIdentity() const {
@@ -2107,6 +2314,12 @@ QString RuntimeClient::queueReplaceDeviceMediaWithPreparationProfile(
     if (!mutationReady(tr("Replace"))) {
         return {};
     }
+    const QString badgeBlock = displayMediaReplacementBlockReason();
+    if (!badgeBlock.isEmpty()) {
+        setDiagnostic(badgeBlock);
+        emit userMessage(badgeBlock, true);
+        return {};
+    }
     if (artifactId.isEmpty() || leaseId.isEmpty() ||
         originalMediaId.isEmpty()) {
         setDiagnostic(tr("The recovered media replacement is unavailable"));
@@ -2154,6 +2367,18 @@ QString RuntimeClient::queueReplaceDeviceMediaWithPreparationProfile(
          QVariant::fromValue(profile.transform)},
         operationId, QStringLiteral("ReplaceDeviceMedia"));
     return operationId;
+}
+
+QString RuntimeClient::displayMediaReplacementBlockReason() const {
+    if (!capabilitiesReady_ || (usesDisplaySnapshotV1() && !displayStateValid())) {
+        return tr("Replace requires a fresh active layout that references the original media");
+    }
+    // The frozen Replace contract cannot carry badge choices. Never clone a
+    // Custom layout through its Auto-only request or replacement journal.
+    if (usesDisplaySnapshotV1() && tryxOverlayBadgesHaveCustomText(displaySnapshot_.badges)) {
+        return tr("Replace cannot preserve custom badge text. Save a new copy, then select it and use Apply.");
+    }
+    return {};
 }
 
 TryxRuntimeApplyRequest
@@ -2329,6 +2554,7 @@ void RuntimeClient::clearCacheCleanupTracking(
 }
 
 void RuntimeClient::refreshAll() {
+    connectionRevisionRefreshes_ = 0;
     if (!serviceAvailable_) {
         setDiagnostic(tr("Runtime service is not running"));
         return;
@@ -2644,7 +2870,7 @@ QString RuntimeClient::submitFullDisplayDraft(
     const QString &position, const QString &color,
     const QString &alignment, bool layoutPresent,
     bool brightnessPresent, int brightness,
-    bool orientationPresent, bool mirror, bool waterfall) {
+    bool orientationPresent, bool mirror, bool waterfall, const QVariantMap &badgeChoices) {
     if (!mutationReady(tr("Apply"))) {
         return {};
     }
@@ -2707,7 +2933,7 @@ QString RuntimeClient::submitFullDisplayDraft(
             orientationPresent, false, false,
             layoutPresent
                 ? QStringLiteral("QueueApplyWithMetrics")
-                : QStringLiteral("QueueApply"));
+                : QStringLiteral("QueueApply"), {}, 0, badgeChoices);
     }
 
     const bool mirrorChanged =
@@ -2750,7 +2976,7 @@ QString RuntimeClient::submitFullDisplayDraft(
         brightnessPresent,
         screenConfig
             ? QStringLiteral("SetScreenConfig")
-            : QStringLiteral("SetBrightness"));
+            : QStringLiteral("SetBrightness"), {}, 0, badgeChoices);
 }
 
 QString RuntimeClient::submitSplitDisplayDraft(
@@ -2767,7 +2993,7 @@ QString RuntimeClient::submitSplitDisplayDraft(
     const QString &rightAlignment,
     bool layoutPresent, bool brightnessPresent,
     int brightness, bool orientationPresent,
-    bool mirror, bool waterfall) {
+    bool mirror, bool waterfall, const QVariantMap &badgeChoices) {
     if (!mutationReady(tr("Apply"))) {
         return {};
     }
@@ -2852,7 +3078,7 @@ QString RuntimeClient::submitSplitDisplayDraft(
             orientationPresent, false, false,
             layoutPresent
                 ? QStringLiteral("QueueApplyWithMetrics")
-                : QStringLiteral("QueueApply"));
+                : QStringLiteral("QueueApply"), {}, 0, badgeChoices);
     }
 
     if (layoutPresent &&
@@ -2905,7 +3131,7 @@ QString RuntimeClient::submitSplitDisplayDraft(
         brightnessPresent,
         screenConfig
             ? QStringLiteral("SetScreenConfig")
-            : QStringLiteral("SetBrightness"));
+            : QStringLiteral("SetBrightness"), {}, 0, badgeChoices);
 }
 
 void RuntimeClient::abandonDisplaySubmission(
@@ -3154,6 +3380,11 @@ void RuntimeClient::onDisplayStateUpdated(
         return;
     }
     applyDisplayState(state);
+}
+
+void RuntimeClient::onDisplaySnapshotChangedV1(quint64 revision) {
+    if (compatible_ && dbusSignalContextIsCurrent() && usesDisplaySnapshotV1()
+        && revision > displaySnapshot_.revision) refreshDisplaySnapshotV1();
 }
 
 void RuntimeClient::onDeviceConnected(
@@ -3459,6 +3690,8 @@ void RuntimeClient::subscribeSignals() {
         service, path, manager2,
         QStringLiteral("DisplayStateUpdated"), this,
         SLOT(onDisplayStateUpdated(TryxRuntimeDisplayState)));
+    ok &= bus_.connect(service, path, manager2, QStringLiteral("DisplaySnapshotChangedV1"), this,
+                       SLOT(onDisplaySnapshotChangedV1(quint64)));
     ok &= bus_.connect(
         service, path, manager1, QStringLiteral("DeviceConnected"),
         this,
@@ -3634,6 +3867,8 @@ void RuntimeClient::startRuntimeCapabilitiesHandshake(
                 if (changed) {
                     emit capabilitiesChanged();
                 }
+                emit displayChanged();
+                if (legacyRuntime) refreshDisplay();
                 return;
             }
 
@@ -3644,9 +3879,12 @@ void RuntimeClient::startRuntimeCapabilitiesHandshake(
                                  runtimeCapabilities_ != filtered;
             capabilitiesReady_ = true;
             runtimeCapabilities_ = filtered;
+            if (filtered.contains(tryxRuntimeDisplaySnapshotV1Token())) displaySnapshotRequired_ = true;
             if (changed) {
                 emit capabilitiesChanged();
             }
+            emit displayChanged();
+            if (!usesDisplaySnapshotV1()) refreshDisplay();
             if (runtimeCapabilities_.contains(
                     tryxRuntimeDeviceCapabilitiesV1Token())) {
                 requestDeviceCapabilities(
@@ -3662,8 +3900,7 @@ void RuntimeClient::startRuntimeCapabilitiesHandshake(
             } else {
                 clearPresentationPreferencesState();
             }
-            if (runtimeCapabilities_.contains(
-                    tryxRuntimeSavedLayoutsV1Token())) {
+            if (savedLayoutsSupported()) {
                 requestSavedLayouts(
                     epoch, handshakeAttempt, owner);
             } else {
@@ -3821,6 +4058,11 @@ void RuntimeClient::requestDeviceCapabilities(
                 }
                 setDiagnostic(tr(
                     "The runtime returned device capabilities for an invalid device context"));
+                if (value.schemaVersion == 1
+                    && value.deviceIdentity == expectedIdentity
+                    && value.physicalGeneration != 0) {
+                    reconcileConnectionRevision(value.connectionRevision);
+                }
                 return;
             }
 
@@ -3832,9 +4074,13 @@ void RuntimeClient::requestDeviceCapabilities(
             deviceCapabilitiesSnapshot_.capabilities = filtered;
             deviceCapabilities_ = filtered;
             deviceCapabilitiesReady_ = true;
+            if (!usesDisplaySnapshotV1()) {
+                completeConnectionRevisionReconciliation();
+            }
             if (changed) {
                 emit capabilitiesChanged();
             }
+            if (usesDisplaySnapshotV1()) refreshDisplaySnapshotV1();
             if (runtimeCapabilities_.contains(
                     tryxRuntimeDeviceSpecificationsV1Token())) {
                 requestDeviceSpecifications(
@@ -3843,6 +4089,30 @@ void RuntimeClient::requestDeviceCapabilities(
                 clearDeviceSpecificationsState();
             }
         });
+}
+
+bool RuntimeClient::reconcileConnectionRevision(quint64 observedRevision) {
+    if (observedRevision <= connection_.revision
+        || !handshakeContextIsCurrent(serviceEpoch_, handshakeAttempt_, runtimeOwner_)) {
+        return false;
+    }
+    connectionRevisionDiagnostic_ = diagnostic_;
+    if (connectionRevisionRefreshes_ >= kMaximumConnectionRevisionRefreshes) return false;
+    // Manager1 also advances its revision for catalog and metrics events.
+    // Re-read the whole context instead of accepting a mismatched reply or
+    // repeating a device mutation. A continuously changing context stays closed.
+    ++connectionRevisionRefreshes_;
+    emit displayChanged();
+    refreshConnection();
+    return true;
+}
+
+void RuntimeClient::completeConnectionRevisionReconciliation() {
+    connectionRevisionRefreshes_ = 0;
+    if (!connectionRevisionDiagnostic_.isEmpty() && diagnostic_ == connectionRevisionDiagnostic_) {
+        setDiagnostic({});
+    }
+    connectionRevisionDiagnostic_.clear();
 }
 
 void RuntimeClient::requestDeviceSpecifications(
@@ -4056,6 +4326,8 @@ void RuntimeClient::requestSavedLayouts(
     }
     savedLayoutsBusy_ = true;
     const quint64 requestAttempt = ++savedLayoutsAttempt_;
+    const bool version2 = savedLayoutsV2Supported();
+    const QString method = version2 ? QStringLiteral("GetSavedLayoutsV2") : QStringLiteral("GetSavedLayoutsV1");
     emit savedLayoutsChanged();
 
     QDBusInterface runtime(
@@ -4063,14 +4335,13 @@ void RuntimeClient::requestSavedLayouts(
         tryxRuntimeOperationsInterfaceName(), bus_);
     runtime.setTimeout(kRuntimeCallTimeoutMs);
     auto *watcher = new QDBusPendingCallWatcher(
-        runtime.asyncCall(QStringLiteral("GetSavedLayoutsV1")),
+        runtime.asyncCall(method),
         this);
     connect(
         watcher, &QDBusPendingCallWatcher::finished, this,
         [this, watcher, epoch, handshakeAttempt, owner,
-         requestAttempt]() {
-            const QDBusPendingReply<
-                TryxRuntimeSavedLayoutsSnapshotV1> reply = *watcher;
+         requestAttempt, version2]() {
+            const auto reply = savedLayoutsReply(watcher, version2);
             watcher->deleteLater();
             if (requestAttempt != savedLayoutsAttempt_ ||
                 !handshakeContextIsCurrent(
@@ -4214,7 +4485,7 @@ QString RuntimeClient::savedLayoutConnectionIdentity() const {
 }
 
 bool RuntimeClient::applySavedLayoutsSnapshot(
-    const TryxRuntimeSavedLayoutsSnapshotV1 &snapshot,
+    const TryxRuntimeSavedLayoutsSnapshotV2 &snapshot,
     QString *errorMessage) {
     const auto fail =
         [this, errorMessage](const QString &message) {
@@ -4250,7 +4521,7 @@ bool RuntimeClient::applySavedLayoutsSnapshot(
     if (snapshot.status == QStringLiteral("Ready")) {
         lastConfirmedSavedLayouts_ = snapshot;
         lastConfirmedSavedLayoutsReady_ = true;
-        savedLayoutModel_.applyLayouts(snapshot.layouts);
+        savedLayoutModel_.applyLayoutsV2(snapshot.layouts);
     } else {
         savedLayoutModel_.clear();
     }
@@ -4259,6 +4530,10 @@ bool RuntimeClient::applySavedLayoutsSnapshot(
     }
     emit savedLayoutsChanged();
     return true;
+}
+
+bool RuntimeClient::applySavedLayoutsSnapshot(const TryxRuntimeSavedLayoutsSnapshotV1 &snapshot, QString *errorMessage) {
+    return applySavedLayoutsSnapshot(promoteSavedLayouts(snapshot), errorMessage);
 }
 
 bool RuntimeClient::fullSavedLayoutDraftToRequest(
@@ -4306,7 +4581,7 @@ bool RuntimeClient::fullSavedLayoutDraftToRequest(
             "The saved layout display state is incomplete or invalid"));
     }
 
-    const QStringList expectedLayoutKeys = split
+    QStringList expectedLayoutKeys = split
         ? QStringList{
               QStringLiteral("split"), QStringLiteral("media"),
               QStringLiteral("playMode"),
@@ -4325,6 +4600,11 @@ bool RuntimeClient::fullSavedLayoutDraftToRequest(
               QStringLiteral("playMode"), QStringLiteral("metrics"),
               QStringLiteral("badges"), QStringLiteral("position"),
               QStringLiteral("color"), QStringLiteral("alignment")};
+    if (layout.contains(QStringLiteral("badgeChoices"))) {
+        if (layout.value(QStringLiteral("badgeChoices")).metaType().id() != QMetaType::QVariantMap)
+            return fail(tr("The saved layout badge choices are invalid"));
+        expectedLayoutKeys.append(QStringLiteral("badgeChoices"));
+    }
     if (!mapHasExactKeys(layout, expectedLayoutKeys)) {
         return fail(tr(
             "The saved layout fields do not match the selected screen mode"));
@@ -4438,7 +4718,7 @@ bool RuntimeClient::fullSavedLayoutDraftToRequest(
 bool RuntimeClient::savedLayoutFromDraft(
     const QString &name, const QString &overwriteLayoutId,
     const QVariantMap &fullDraft,
-    TryxRuntimeSavedLayoutV1 *layout,
+    TryxRuntimeSavedLayoutV2 *layout,
     QString *errorMessage) const {
     const auto fail = [errorMessage](const QString &message) {
         if (errorMessage) {
@@ -4455,10 +4735,10 @@ bool RuntimeClient::savedLayoutFromDraft(
             fullDraft, &request, errorMessage)) {
         return false;
     }
-    TryxRuntimeSavedLayoutV1 candidate;
+    TryxRuntimeSavedLayoutV2 candidate;
     if (!overwriteLayoutId.isEmpty()) {
-        TryxRuntimeSavedLayoutV1 existing;
-        if (!savedLayoutModel_.layoutById(
+        TryxRuntimeSavedLayoutV2 existing;
+        if (!savedLayoutModel_.layoutV2ById(
                 overwriteLayoutId, &existing) ||
             existing.name.compare(name, Qt::CaseInsensitive) != 0) {
             return fail(tr(
@@ -4473,6 +4753,10 @@ bool RuntimeClient::savedLayoutFromDraft(
     candidate.deviceIdentity = savedLayouts_.deviceIdentity;
     candidate.productId = savedLayouts_.productId;
     candidate.request = request;
+    if (!normalizeBadgeDraft(fullDraft.value(QStringLiteral("layout")).toMap().value(QStringLiteral("badgeChoices")).toMap(),
+            request, &candidate.badges)
+        || (tryxOverlayBadgesHaveCustomText(candidate.badges) && !customBadgeTextSupported()))
+        return fail(tr("Custom badge text is invalid or is not supported by the current runtime and device"));
     for (const QString &mediaName : request.media) {
         TryxRuntimeMediaEntry entry;
         if (!mediaModel_.uniqueEntryByName(mediaName, &entry) ||
@@ -4496,6 +4780,13 @@ bool RuntimeClient::savedLayoutFromDraft(
         errorMessage->clear();
     }
     return true;
+}
+
+bool RuntimeClient::savedLayoutFromDraft(const QString &name, const QString &overwriteLayoutId, const QVariantMap &fullDraft,
+    TryxRuntimeSavedLayoutV1 *layout, QString *errorMessage) const {
+    TryxRuntimeSavedLayoutV2 candidate;
+    return savedLayoutFromDraft(name, overwriteLayoutId, fullDraft, &candidate, errorMessage)
+        && tryxSavedLayoutV2ToV1(candidate, layout);
 }
 
 bool RuntimeClient::parseSavedLayoutRevision(
@@ -4589,6 +4880,10 @@ void RuntimeClient::clearCapabilityState() {
                          deviceCapabilitiesReady_ ||
                          !deviceCapabilities_.isEmpty();
     runtimeCapabilitiesPending_ = false;
+    connectionRevisionRefreshes_ = 0;
+    connectionRevisionDiagnostic_.clear();
+    ++displaySnapshotReadAttempt_;
+    displaySnapshotReadPending_ = displaySnapshotReadAgain_ = false;
     runtimeCapabilitiesFailed_ = false;
     capabilitiesReady_ = false;
     runtimeCapabilities_.clear();
@@ -4604,6 +4899,7 @@ void RuntimeClient::clearCapabilityState() {
     if (changed) {
         emit capabilitiesChanged();
     }
+    emit displayChanged();
 }
 
 void RuntimeClient::clearMetricsCatalogState() {
@@ -4651,6 +4947,8 @@ void RuntimeClient::clearDeviceCapabilityState() {
     const bool changed = deviceCapabilitiesReady_ ||
                          !deviceCapabilities_.isEmpty();
     ++deviceCapabilitiesAttempt_;
+    ++displaySnapshotReadAttempt_;
+    displaySnapshotReadPending_ = displaySnapshotReadAgain_ = false;
     deviceCapabilitiesReady_ = false;
     deviceCapabilitiesSnapshot_ = {};
     deviceCapabilities_.clear();
@@ -4750,6 +5048,11 @@ void RuntimeClient::clearRuntimeState() {
         legacyDisplayStateIdentity_.clear();
     }
     displayRevisionReceived_ = false;
+    displaySnapshot_ = {};
+    displaySnapshotRequired_ = false;
+    ++displaySnapshotReadAttempt_;
+    displaySnapshotReadPending_ = displaySnapshotReadAgain_ = false;
+    displaySnapshotReadFailed_ = false;
     legacyLayoutConfirmed_ = false;
     legacyBrightnessConfirmed_ = false;
     activeOperationId_.clear();
@@ -4768,21 +5071,23 @@ void RuntimeClient::clearRuntimeState() {
 }
 
 void RuntimeClient::refreshConnection() {
+    const quint64 epoch = serviceEpoch_, handshake = handshakeAttempt_;
+    const QString owner = runtimeOwner_;
+    if (!handshakeContextIsCurrent(epoch, handshake, owner)) return;
     QDBusInterface runtime(
-        tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
+        owner, tryxRuntimeObjectPath(),
         tryxRuntimeOperationsInterfaceName(), bus_);
     runtime.setTimeout(kRuntimeCallTimeoutMs);
-    const quint64 epoch = serviceEpoch_;
     auto *watcher = new QDBusPendingCallWatcher(
         runtime.asyncCall(
             QStringLiteral("GetConnectionSnapshot")),
         this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, epoch]() {
+            [this, watcher, epoch, handshake, owner]() {
                 QDBusPendingReply<TryxRuntimeSnapshot> reply =
                     *watcher;
                 watcher->deleteLater();
-                if (epoch != serviceEpoch_) {
+                if (!handshakeContextIsCurrent(epoch, handshake, owner)) {
                     return;
                 }
                 if (!reply.isValid()) {
@@ -4849,6 +5154,11 @@ void RuntimeClient::refreshMetrics() {
 }
 
 void RuntimeClient::refreshDisplay() {
+    if (!legacyConnected() && !capabilitiesReady_) return;
+    if (usesDisplaySnapshotV1()) {
+        refreshDisplaySnapshotV1();
+        return;
+    }
     const quint64 epoch = serviceEpoch_;
     const quint64 handshakeAttempt = handshakeAttempt_;
     const QString owner = runtimeOwner_;
@@ -5851,14 +6161,41 @@ QString RuntimeClient::beginDisplaySubmission(
     bool orientationPresent, bool legacyScreenConfig,
     bool legacyBrightness, const QString &method,
     const QString &savedLayoutId,
-    quint64 savedLayoutRevision) {
+    quint64 savedLayoutRevision, const QVariantMap &badgeChoices) {
+    if (!legacyScreenConfig && !legacyBrightness && !capabilitiesReady_) {
+        setDiagnostic(tr("Apply is blocked until a coherent display snapshot is available"));
+        emit userMessage(diagnostic_, true);
+        return {};
+    }
+    TryxRuntimeOverlayBadgesV1 normalizedBadges;
+    if (!normalizeBadgeDraft(badgeChoices, request, &normalizedBadges)
+        || (tryxOverlayBadgesHaveCustomText(normalizedBadges) && !customBadgeTextSupported())) {
+        const QString error = tr("Custom badge text is invalid or is not supported by the current runtime and device");
+        setDiagnostic(error);
+        emit userMessage(error, true);
+        return {};
+    }
     DisplaySubmissionState submission;
     submission.id = nextOperationId();
     submission.request = request;
     submission.startingDisplayRevision =
         legacyScreenConfig || legacyBrightness
         ? qMax(display_.revision, connection_.revision)
-        : display_.revision;
+        : displayRevision();
+    submission.coherentSnapshot = !legacyScreenConfig && !legacyBrightness && usesDisplaySnapshotV1();
+    if (submission.coherentSnapshot) {
+        if (!displayStateValid() || !runtimeCapabilities_.contains(tryxRuntimeApplyWithBadgesV1Token())) {
+            setDiagnostic(tr("Apply is blocked until a coherent display snapshot is available"));
+            emit userMessage(diagnostic_, true);
+            return {};
+        }
+        submission.expectedBadges = request.replaceOverlay ? normalizedBadges : displaySnapshot_.badges;
+        submission.physicalGeneration = displaySnapshot_.physicalGeneration;
+        submission.productId = connection_.productId;
+        submission.owner = runtimeOwner_;
+        submission.serviceEpoch = serviceEpoch_;
+        submission.handshakeAttempt = handshakeAttempt_;
+    }
     submission.layoutPresent = layoutPresent;
     submission.brightnessPresent = brightnessPresent;
     submission.orientationPresent = orientationPresent;
@@ -5910,15 +6247,15 @@ QString RuntimeClient::beginDisplaySubmission(
             submission.id);
     } else if (!savedLayoutId.isEmpty()) {
         sendOperation(
-            method,
+            submission.coherentSnapshot && savedLayoutsV2Supported() ? QStringLiteral("QueueSavedLayoutApplyV2") : method,
             {submission.id, savedLayoutId,
              QVariant::fromValue(savedLayoutRevision),
-             QVariant::fromValue(request)},
+             submission.coherentSnapshot && savedLayoutsV2Supported() ? QVariant::fromValue(TryxRuntimeApplyWithBadgesV1{1, request, normalizedBadges}) : QVariant::fromValue(request)},
             submission.id, QStringLiteral("SavedLayoutApply"));
     } else {
         sendOperation(
-            method,
-            {submission.id, QVariant::fromValue(request)},
+            submission.coherentSnapshot ? QStringLiteral("QueueApplyWithBadgesV1") : method,
+            {submission.id, submission.coherentSnapshot ? QVariant::fromValue(TryxRuntimeApplyWithBadgesV1{1, request, normalizedBadges}) : QVariant::fromValue(request)},
             submission.id, QStringLiteral("Apply"));
     }
     return submission.id;
@@ -6000,6 +6337,7 @@ bool RuntimeClient::displaySubmissionMatches(
 
 void RuntimeClient::observeDisplaySubmissionState(
     const TryxRuntimeDisplayState &state) {
+    if (displaySubmission_.coherentSnapshot) return;
     const bool legacyBrightnessOnly =
         displaySubmission_.legacyBrightness &&
         !displaySubmission_.legacyScreenConfig;
@@ -6037,9 +6375,11 @@ void RuntimeClient::observeDisplaySubmissionOperation(
         info.id != displaySubmission_.id) {
         return;
     }
+    if (displaySubmission_.coherentSnapshot && info.deviceGeneration != displaySubmission_.physicalGeneration) return;
     if (info.state == QStringLiteral("Succeeded")) {
         displaySubmission_.terminalSucceeded = true;
-        if (displaySubmission_.matchingStateObserved) {
+        if (displaySubmission_.matchingStateObserved
+            && (!displaySubmission_.coherentSnapshot || displaySubmissionContextIsCurrent())) {
             finishDisplaySubmission(
                 QStringLiteral("Succeeded"),
                 info.message.isEmpty()
@@ -6272,7 +6612,7 @@ void RuntimeClient::applyMetricsState(
 
 void RuntimeClient::applyDisplayState(
     const TryxRuntimeDisplayState &state) {
-    if (legacyConnected()) {
+    if (legacyConnected() || !capabilitiesReady_ || usesDisplaySnapshotV1()) {
         return;
     }
     if (state.valid) {

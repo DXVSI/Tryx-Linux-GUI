@@ -21,5 +21,7 @@ HEADERS += \
 SOURCES += \
     savedlayoutstore_tests.cpp \
     $$PWD/../src/runtimeapplyrequestcodec.cpp \
+    $$PWD/../src/runtimebadgetext.cpp \
     $$PWD/../src/runtimecontract.cpp \
     $$PWD/../src/savedlayoutstore.cpp
+SOURCES += $$PWD/../src/configurationformatbackup.cpp

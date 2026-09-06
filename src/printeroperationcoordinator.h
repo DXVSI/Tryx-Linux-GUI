@@ -57,6 +57,7 @@ private:
     struct OperationRecord {
         TryxRuntimeOperationInfo info;
         QString sourcePath;
+        QString requestedSourcePath;
         QString preparedPath;
         QString preparedSha256;
         QString stagedThumbnailPath;
@@ -73,6 +74,12 @@ private:
         QStringList deleteNames;
         QStringList deletedNames;
         TryxRuntimeApplyRequest applyRequest;
+        std::optional<TryxRuntimeOverlayBadgesV1> badgeChoices;
+        QString applyProofDeviceIdentity;
+        QString applyDeviceIdentity;
+        QList<TryxRuntimeSavedMediaRefV1> applyProof;
+        QString savedLayoutId;
+        quint64 savedLayoutRevision = 0;
         TryxRuntimeMediaTransform mediaTransform;
         TryxRuntimeMediaPreparationProfileV1 mediaPreparationProfile;
         TryxRuntimeMetricsConfigRequest metricsRequest;
@@ -265,7 +272,8 @@ public:
         const TryxRuntimeApplyRequest &applyRequest,
         bool updateMetrics,
         bool ensureExisting,
-        const TryxRuntimeMediaPreparationProfileV1 &profile);
+        const TryxRuntimeMediaPreparationProfileV1 &profile,
+        const std::optional<TryxRuntimeOverlayBadgesV1> &badgeChoices = std::nullopt);
     QString queueDeleteMediaOperation(
         const PrinterOperationContext &context,
         const QString &requestedOperationId,
@@ -277,7 +285,16 @@ public:
         bool updateMetrics,
         const QString &proofDeviceIdentity,
         const QList<TryxRuntimeSavedMediaRefV1> &proof,
-        bool savedLayoutApply);
+        bool savedLayoutApply,
+        const std::optional<TryxRuntimeOverlayBadgesV1> &badgeChoices = std::nullopt,
+        const QString &savedLayoutId = {}, quint64 savedLayoutRevision = 0);
+    void dispatchApplyRequest(const PrinterOperationContext &context, const OperationRecord &record,
+                              const QString &proofDeviceIdentity = {},
+                              const QList<TryxRuntimeSavedMediaRefV1> &proof = {});
+    QString repeatSavedLayoutApplyOperation(const PrinterOperationContext &context,
+        const QString &operationId, const TryxRuntimeApplyRequest &request,
+        const std::optional<TryxRuntimeOverlayBadgesV1> &badgeChoices,
+        const QString &layoutId, quint64 layoutRevision);
     QString queueMetricsConfigOperation(
         const PrinterOperationContext &context,
         const QString &requestedOperationId,
@@ -451,7 +468,8 @@ public:
             bool,
             const QString &,
             bool)> &publishMetrics,
-        const std::function<void()> &screenConfigChanged);
+        const std::function<void()> &screenConfigChanged,
+        const std::function<void(const PrinterProtocol::PaseOverlayConfig &)> &acceptDisplay = {});
     void handleMetricsConfigured(
         const PrinterOperationContext &context,
         const QString &operationId,
@@ -467,7 +485,8 @@ public:
             const PrinterProtocol::PaseOverlayConfig &,
             bool,
             const QString &,
-            bool)> &publishMetrics);
+            bool)> &publishMetrics,
+        const std::function<void(const PrinterProtocol::PaseOverlayConfig &)> &acceptDisplay = {});
     void handleArtifactOwnerUnregistered(
         const PrinterOperationContext &context,
         const QString &ownerUniqueName);
@@ -479,6 +498,7 @@ public:
     void pruneOperationHistory();
 
 signals:
+    void displayMutationStarted(const QString &operationId, quint64 generation, bool replacesOverlay);
     void operationChanged(const TryxRuntimeOperationInfo &operation,
                           quint64 revision);
     void operationRemoved(const QString &operationId, quint64 revision);
@@ -564,6 +584,11 @@ signals:
         const QList<TryxRuntimeSavedMediaRefV1> &proof,
         const QString &operationId,
         quint64 generation);
+    void requestApplyMediaWithBadgesV1(
+        const QString &devicePath, const QString &mediaFile,
+        const TryxRuntimeApplyWithBadgesV1 &request, bool updateMetrics,
+        const QString &proofDeviceIdentity, const QList<TryxRuntimeSavedMediaRefV1> &proof,
+        const QString &operationId, quint64 generation);
     void requestConfigureMetrics(
         const QString &devicePath,
         const TryxRuntimeMetricsConfigRequest &request,

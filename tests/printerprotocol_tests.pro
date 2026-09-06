@@ -58,9 +58,26 @@ HEADERS += \
     $$PWD/../src/devicemediaartifactstore.h \
     $$PWD/../src/devicemanagermessages.h \
     $$PWD/../src/printerprotocol.h \
+    $$PWD/../src/printermediaupload.h \
+    $$PWD/../src/turrismediaclient.h \
+    $$PWD/../src/paseconfigurationclient.h \
+    $$PWD/../src/pasemediaclient.h \
+    $$PWD/../src/printertransactionchannel.h \
+    $$PWD/../src/printermediahelpers_p.h \
+    $$PWD/../src/usbprintertransport.h \
+    $$PWD/../src/printeroperation_p.h \
+    $$PWD/../src/printerprotocolconstants_p.h \
+    $$PWD/../src/printerproductprofile.h \
+    $$PWD/../src/printerframecodec.h \
+    $$PWD/../src/printerframecodec_p.h \
+    $$PWD/../src/printerdiscovery_p.h \
     $$PWD/../src/runtimebridge.h \
     $$PWD/../src/devicemanager.h \
     $$PWD/../src/deviceworker.h \
+    $$PWD/../src/legacydevicesession.h \
+    $$PWD/../src/printerclasssession.h \
+    $$PWD/../src/deviceworkersessioncontext_p.h \
+    $$PWD/../src/deviceworkermetrics_p.h \
     $$PWD/../src/firmwarebridge.h \
     $$PWD/../src/firmwarerecoveryjournal.h \
     $$PWD/../src/firmwareupdater.h \
@@ -96,9 +113,23 @@ SOURCES += \
     $$PWD/../src/deleteintentstore.cpp \
     $$PWD/../src/devicemediaartifactstore.cpp \
     $$PWD/../src/printerprotocol.cpp \
+    $$PWD/../src/printermediaupload.cpp \
+    $$PWD/../src/turrismediaclient.cpp \
+    $$PWD/../src/paseconfigurationclient.cpp \
+    $$PWD/../src/pasemediaclient.cpp \
+    $$PWD/../src/printeroperation.cpp \
+    $$PWD/../src/printertransactionchannel.cpp \
+    $$PWD/../src/printermediahelpers.cpp \
+    $$PWD/../src/usbprintertransport.cpp \
+    $$PWD/../src/printerproductprofile.cpp \
+    $$PWD/../src/printerframecodec.cpp \
+    $$PWD/../src/printerdiscovery.cpp \
     $$PWD/../src/runtimebridge.cpp \
     $$PWD/../src/devicemanager.cpp \
     $$PWD/../src/deviceworker.cpp \
+    $$PWD/../src/legacydevicesession.cpp \
+    $$PWD/../src/printerclasssession.cpp \
+    $$PWD/../src/deviceworkermetrics.cpp \
     $$PWD/../src/firmwarebridge.cpp \
     $$PWD/../src/firmwarerecoveryjournal.cpp \
     $$PWD/../src/firmwareupdater.cpp \
@@ -111,6 +142,7 @@ SOURCES += \
     $$PWD/../src/mediatransform.cpp \
     $$PWD/../src/paseoverlayconfig.cpp \
     $$PWD/../src/pasemetricsconfigstore.cpp \
+    $$PWD/../src/configurationformatbackup.cpp \
     $$PWD/../src/privateruntimepaths.cpp \
     $$PWD/../src/printermediafileintegrity.cpp \
     $$PWD/../src/printermediaidentity.cpp \
@@ -126,6 +158,7 @@ SOURCES += \
     $$PWD/../src/runtimepresentationpreferencesstore.cpp \
     $$PWD/../src/savedlayoutstore.cpp \
     $$PWD/../src/supportsnapshot.cpp \
+    $$PWD/../src/runtimebadgetext.cpp \
     $$PWD/../src/runtimecontract.cpp \
     $$PWD/../src/turrismediaformat.cpp \
     $$PWD/../src/core/protocol.cpp \

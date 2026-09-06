@@ -2,6 +2,44 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="ru_RU">
 <context>
+    <name>BadgeTextEditor</name>
+    <message>
+        <source>Automatic</source>
+        <translation>Автоматически</translation>
+    </message>
+    <message>
+        <source>Custom text</source>
+        <translation>Свой текст</translation>
+    </message>
+    <message>
+        <source>%1 text source</source>
+        <translation>Источник надписи: %1</translation>
+    </message>
+    <message>
+        <source>1-32 characters</source>
+        <translation>1-32 символа</translation>
+    </message>
+    <message>
+        <source>%1 custom text</source>
+        <translation>Своя надпись: %1</translation>
+    </message>
+    <message>
+        <source>Plain text, applied with the display layout</source>
+        <translation>Обычный текст, применяется вместе с макетом экрана</translation>
+    </message>
+</context>
+<context>
+    <name>ReleaseUpdateController</name>
+    <message>
+        <source>TRYX Panorama Manager update</source>
+        <translation>Обновление TRYX Panorama Manager</translation>
+    </message>
+    <message>
+        <source>Version %1 is available. Open Settings to view the release.</source>
+        <translation>Доступна версия %1. Откройте настройки, чтобы перейти к релизу.</translation>
+    </message>
+</context>
+<context>
     <name>AppSettingsController</name>
     <message>
         <location filename="../src/quick/appsettingscontroller.cpp" line="21"/>
@@ -386,6 +424,26 @@
 </context>
 <context>
     <name>DeviceManager</name>
+    <message>
+        <source>This saved layout requires the V2 interface</source>
+        <translation>Для этого сохранённого макета требуется интерфейс V2</translation>
+    </message>
+    <message>
+        <source>The Apply device identity changed before dispatch</source>
+        <translation>Устройство операции Apply изменилось до отправки</translation>
+    </message>
+    <message>
+        <source>The saved layout is invalid</source>
+        <translation>Сохранённый макет некорректен</translation>
+    </message>
+    <message>
+        <source>The previous overlay is not confirmed; apply a complete layout to resolve it</source>
+        <translation>Предыдущая конфигурация наложения не подтверждена; примените полный макет для устранения неопределённости</translation>
+    </message>
+    <message>
+        <source>Overlay or saved-layout settings require a newer runtime. No configuration was downgraded or removed.</source>
+        <translation>Настройки наложения или сохранённых макетов требуют более новой версии runtime. Формат настроек не понижен, данные не удалены.</translation>
+    </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="10108"/>
         <location filename="../src/devicemanager.cpp" line="10387"/>
@@ -6129,6 +6187,26 @@
 <context>
     <name>PanoramaPage</name>
     <message>
+        <source>Left CPU badge</source>
+        <translation>Бейдж CPU слева</translation>
+    </message>
+    <message>
+        <source>Left GPU badge</source>
+        <translation>Бейдж GPU слева</translation>
+    </message>
+    <message>
+        <source>Right CPU badge</source>
+        <translation>Бейдж CPU справа</translation>
+    </message>
+    <message>
+        <source>Right GPU badge</source>
+        <translation>Бейдж GPU справа</translation>
+    </message>
+    <message>
+        <source>Custom text uses a neutral background. Cyrillic and other glyphs have not been verified on the device.</source>
+        <translation>Свой текст использует нейтральный фон. Кириллица и другие символы пока не проверены на устройстве.</translation>
+    </message>
+    <message>
         <location filename="../qml/pages/PanoramaPage.qml" line="1483"/>
         <location filename="../qml/pages/PanoramaPage.qml" line="1545"/>
         <location filename="../qml/pages/PanoramaPage.qml" line="1595"/>
@@ -8292,6 +8370,42 @@
 <context>
     <name>RuntimeClient</name>
     <message>
+        <source>Replace requires a fresh active layout that references the original media</source>
+        <translation>Для замены нужен актуальный активный макет с исходным медиафайлом</translation>
+    </message>
+    <message>
+        <source>Replace cannot preserve custom badge text. Save a new copy, then select it and use Apply.</source>
+        <translation>Замена не сохраняет свой текст бейджей. Сохраните новую копию, затем выберите её и нажмите Apply.</translation>
+    </message>
+    <message>
+        <source>Custom badge text cannot be stored through the legacy saved-layout API</source>
+        <translation>Свой текст бейджа нельзя сохранить через старый API макетов</translation>
+    </message>
+    <message>
+        <source>Custom badge layouts require the versioned saved-layout API</source>
+        <translation>Макеты со своим текстом требуют версионного API сохранённых макетов</translation>
+    </message>
+    <message>
+        <source>Enter one line of 1-32 characters (up to 128 UTF-8 bytes), without control or formatting characters</source>
+        <translation>Введите одну строку из 1-32 символов (до 128 байт UTF-8), без управляющих символов и символов форматирования</translation>
+    </message>
+    <message>
+        <source>The runtime did not return a coherent display snapshot for the current device</source>
+        <translation>Runtime не вернул согласованный снимок экрана для текущего устройства</translation>
+    </message>
+    <message>
+        <source>The saved layout badge choices are invalid</source>
+        <translation>Параметры надписей сохранённого макета некорректны</translation>
+    </message>
+    <message>
+        <source>Custom badge text is invalid or is not supported by the current runtime and device</source>
+        <translation>Свой текст бейджа некорректен или не поддерживается текущими runtime и устройством</translation>
+    </message>
+    <message>
+        <source>Apply is blocked until a coherent display snapshot is available</source>
+        <translation>Apply заблокирован до получения согласованного снимка экрана</translation>
+    </message>
+    <message>
         <location filename="../src/quick/runtimeclient.cpp" line="1781"/>
         <location filename="../src/quick/runtimeclient.cpp" line="2053"/>
         <location filename="../src/quick/runtimeclient.cpp" line="2119"/>
@@ -9262,6 +9376,14 @@
 </context>
 <context>
     <name>SettingsPage</name>
+    <message>
+        <source>Version %1 is available</source>
+        <translation>Доступна версия %1</translation>
+    </message>
+    <message>
+        <source>Open release</source>
+        <translation>Открыть релиз</translation>
+    </message>
     <message>
         <location filename="../qml/pages/SettingsPage.qml" line="30"/>
         <source>Celsius (°C)</source>

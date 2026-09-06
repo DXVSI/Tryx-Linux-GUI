@@ -123,6 +123,9 @@ public slots:
     QString queueUploadWithPreparationProfileOperation(
         const QString &operationId, const QString &localPath,
         const TryxRuntimeMediaPreparationProfileV1 &profile);
+    QString queueUploadWithBadgesOperation(const QString &operationId, const QString &localPath,
+        const TryxRuntimeApplyWithBadgesV1 &request, bool ensureExisting,
+        const TryxRuntimeMediaTransform &transform = {});
     QString queueEnsureMediaAndApplyOperation(
         const QString &operationId,
         const QString &localPath,
@@ -141,6 +144,8 @@ public slots:
         const QString &operationId, const QString &layoutId,
         quint64 expectedLayoutRevision,
         const TryxRuntimeApplyRequest &currentDraft);
+    QString queueApplyWithBadgesOperation(const QString &operationId,
+                                          const TryxRuntimeApplyWithBadgesV1 &request);
     QString queueMetricsConfigOperation(
         const QString &operationId,
         const TryxRuntimeMetricsConfigRequest &request);
@@ -204,6 +209,9 @@ public:
     TryxRuntimeDisplayState displayState() const {
         return sessionController_.state().displayState;
     }
+    TryxRuntimeDisplaySnapshotV1 displaySnapshotV1(quint64 connectionRevision) const {
+        return sessionController_.displaySnapshotV1(connectionRevision);
+    }
     TryxRuntimeMediaCatalogSnapshot mediaCatalogSnapshot() const;
     TryxRuntimeDeviceCapabilitiesV1 deviceCapabilitiesV1(
         quint64 connectionRevision) const;
@@ -213,6 +221,15 @@ public:
         return presentationPreferences_;
     }
     TryxRuntimeSavedLayoutsSnapshotV1 savedLayoutsSnapshot() const;
+    TryxRuntimeSavedLayoutsSnapshotV2 savedLayoutsSnapshotV2() const;
+    bool putSavedLayoutV2(quint64 expectedRevision, const TryxRuntimeSavedLayoutV2 &layout,
+                           TryxRuntimeSavedLayoutsSnapshotV2 *confirmed = nullptr,
+                           QString *errorName = nullptr, QString *errorMessage = nullptr);
+    bool deleteSavedLayoutV2(quint64 expectedRevision, const QString &layoutId,
+                              TryxRuntimeSavedLayoutsSnapshotV2 *confirmed = nullptr,
+                              QString *errorName = nullptr, QString *errorMessage = nullptr);
+    QString queueSavedLayoutApplyWithBadgesOperation(const QString &operationId, const QString &layoutId,
+        quint64 expectedLayoutRevision, const TryxRuntimeApplyWithBadgesV1 &currentDraft);
     bool putSavedLayout(
         quint64 expectedSnapshotRevision,
         const TryxRuntimeSavedLayoutV1 &layout,
@@ -280,6 +297,7 @@ signals:
         const TryxRuntimeOperationsSnapshot &snapshot);
     void metricsStateUpdated(const TryxRuntimeMetricsState &state);
     void displayStateUpdated(const TryxRuntimeDisplayState &state);
+    void displaySnapshotChangedV1(quint64 revision);
     void presentationPreferencesChanged(
         const TryxRuntimePresentationPreferencesV1 &preferences);
     void firmwareTransportQuiesced(const QString &leaseId,
@@ -409,6 +427,11 @@ signals:
                                    const QString &expectedReplacementName,
                                    qint64 expectedReplacementSize,
                                    quint64 generation);
+    void requestPrinterApplyMediaWithBadgesV1(
+        const QString &devicePath, const QString &mediaFile,
+        const TryxRuntimeApplyWithBadgesV1 &request, bool updateMetrics,
+        const QString &proofDeviceIdentity, const QList<TryxRuntimeSavedMediaRefV1> &proof,
+        const QString &operationId, quint64 generation);
     void requestPrinterApplyMedia(const QString &devicePath, const QString &mediaFile,
                                   const TryxRuntimeApplyRequest &request,
                                   bool updateMetrics,
@@ -527,6 +550,13 @@ private:
 
 private:
     PrinterOperationCoordinator operationCoordinator_;
+    bool putSavedLayoutInternal(quint64 expectedRevision, const TryxRuntimeSavedLayoutV2 &layout,
+        bool legacyInterface, TryxRuntimeSavedLayoutsSnapshotV2 *confirmed, QString *errorName, QString *errorMessage);
+    bool deleteSavedLayoutInternal(quint64 expectedRevision, const QString &layoutId,
+        bool legacyInterface, TryxRuntimeSavedLayoutsSnapshotV2 *confirmed, QString *errorName, QString *errorMessage);
+    QString queueSavedLayoutApplyInternal(const QString &operationId, const QString &layoutId,
+        quint64 expectedLayoutRevision, const TryxRuntimeApplyRequest &currentDraft,
+        const std::optional<TryxRuntimeOverlayBadgesV1> &badges);
     PrinterSessionController sessionController_;
     QThread workerThread_;
     DeviceWorker *worker_ = nullptr;

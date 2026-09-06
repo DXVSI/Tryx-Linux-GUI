@@ -30,6 +30,55 @@ reject_source_pattern() {
 }
 
 require_source_pattern \
+    src/printerproductprofile.cpp \
+    'printerProductProfileForId('
+require_source_pattern \
+    src/printerframecodec.cpp \
+    'PrinterFrameCodec::takeFrame('
+require_source_pattern \
+    src/printerdiscovery.cpp \
+    'PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover('
+require_source_pattern \
+    src/printerdiscovery.cpp \
+    'PrinterDeviceMonitor::start()'
+require_source_pattern src/usbprintertransport.cpp 'class UsbPrinterTransport::Impl'
+require_source_pattern src/usbprintertransport.h 'struct WriteResult'
+require_source_pattern src/usbprintertransport.h 'int fd_ = -1;'
+reject_source_pattern src/printerprotocol.cpp 'int fd_ = -1;'
+require_source_pattern src/printertransactionchannel.h 'class PrinterTransactionChannel final'
+require_source_pattern src/printertransactionchannel.h 'QByteArray receiveBuffer_;'
+reject_source_pattern src/printerprotocol.cpp 'class PrinterProtocol::Impl'
+reject_source_pattern src/printertransactionchannel.h 'int fd_ = -1;'
+require_source_pattern src/paseconfigurationclient.cpp 'PaseConfigurationClient::bootstrapSession('
+require_source_pattern src/pasemediaclient.cpp 'PaseMediaClient::pullValidatedUserMedia('
+reject_source_pattern src/printertransactionchannel.cpp 'mutable_user_configuration_query('
+reject_source_pattern src/printertransactionchannel.h 'mediaPullMaximumBytes_'
+require_source_pattern src/printermediaupload.cpp 'mutable_transfer_chunk('
+require_source_pattern src/turrismediaclient.cpp 'tryx::turris_media::validateBlob('
+reject_source_pattern src/printerprotocol.cpp 'mutable_transfer_chunk('
+reject_source_pattern src/printertransactionchannel.cpp 'mutable_transfer_begin('
+reject_source_pattern src/printermediaupload.cpp 'productProfile_'
+reject_source_pattern src/printerprotocol.cpp 'class LibusbAsyncTransport'
+for protocol_layer in printerproductprofile printerframecodec printerdiscovery \
+    usbprintertransport printertransactionchannel paseconfigurationclient \
+    pasemediaclient turrismediaclient printermediaupload printermediahelpers \
+    printeroperation; do
+    require_source_pattern tryx-panorama.pro "src/$protocol_layer.cpp"
+    require_source_pattern tests/printerprotocol_tests.pro "src/$protocol_layer.cpp"
+done
+require_source_pattern src/printertransactionchannel.h 'UsbPrinterTransport libusbTransport_;'
+require_source_pattern src/printertransactionchannel.h 'using KeepaliveFrameFactory = QByteArray (*)(QString *);'
+for model_client in paseconfigurationclient pasemediaclient turrismediaclient; do
+    require_source_pattern "src/$model_client.h" 'PrinterTransactionChannel &channel_;'
+    reject_source_pattern "src/$model_client.h" 'std::unique_ptr<PrinterTransactionChannel>'
+    reject_source_pattern "src/$model_client.h" 'receiveBuffer_'
+    reject_source_pattern "src/$model_client.cpp" 'mutable_transfer_chunk('
+done
+reject_source_pattern src/usbprintertransport.cpp 'nextTrackId_'
+reject_source_pattern src/usbprintertransport.cpp 'PrinterFrameCodec::takeFrame('
+reject_source_pattern src/printermediaupload.cpp 'kTurris'
+
+require_source_pattern \
     src/deviceworker.h \
     'class DeviceWorker : public QObject'
 require_source_pattern \
@@ -53,6 +102,37 @@ reject_source_pattern \
 reject_source_pattern \
     src/devicemanager.cpp \
     'DeviceWorker::DeviceWorker(QObject *parent)'
+
+for policy in legacydevicesession printerclasssession; do
+    require_source_pattern tryx-panorama.pro "src/$policy.h"
+    require_source_pattern tryx-panorama.pro "src/$policy.cpp"
+    require_source_pattern tests/printerprotocol_tests.pro "src/$policy.h"
+    require_source_pattern tests/printerprotocol_tests.pro "src/$policy.cpp"
+done
+require_source_pattern \
+    src/legacydevicesession.h \
+    'class LegacyDeviceSession final : public QObject'
+require_source_pattern \
+    src/legacydevicesession.h \
+    'std::unique_ptr<panorama::Device> device_;'
+require_source_pattern \
+    src/printerclasssession.h \
+    'class PrinterClassSession final : public QObject'
+require_source_pattern \
+    src/printerclasssession.h \
+    'std::unique_ptr<PrinterProtocol> printerProtocol_;'
+require_source_pattern \
+    src/deviceworkersessioncontext_p.h \
+    'const DeviceWorker &worker_;'
+reject_source_pattern \
+    src/deviceworker.h \
+    'std::unique_ptr<panorama::Device>'
+reject_source_pattern \
+    src/deviceworker.h \
+    'std::unique_ptr<PrinterProtocol>'
+reject_source_pattern \
+    src/printerclasssession.h \
+    'std::atomic'
 
 require_source_pattern \
     src/printersessioncontroller.h \
@@ -358,7 +438,7 @@ require_source_pattern \
     src/quick/runtimeclient.cpp \
     'QStringLiteral("QueueSavedLayoutApplyV1")'
 require_source_pattern \
-    src/deviceworker.cpp \
+    src/printerclasssession.cpp \
     'QStringLiteral("VerifyingSavedLayout")'
 require_source_pattern \
     src/savedlayoutstore.cpp \
@@ -694,6 +774,82 @@ require_tests() {
     printf 'Baseline suite %s verified\n' "$suite_name"
 }
 
+# C16 keeps old wire tuples frozen and adds lossless, capability-bound paths.
+require_source_pattern resources/quick.qrc 'components/BadgeTextEditor.qml'
+require_source_pattern src/runtimebridge.h 'GetDisplaySnapshotV1('
+require_source_pattern src/runtimebridge.h 'QueueApplyWithBadgesV1('
+require_source_pattern src/runtimebridge.h 'GetSavedLayoutsV2('
+require_source_pattern src/retrycachestore.h 'FormatVersion = 12'
+require_source_pattern src/quick/mediaeditorcontroller.cpp 'displayMediaReplacementBlockReason()'
+require_tests c16-badge-text "$project_root/build/badgetext-tests/badgetext-tests" true <<'EOF'
+normalizeText
+canonicalSlots
+wireContract
+codecAndFingerprint
+savedLayoutWireContract
+coherentDisplayWireContract
+coherentDisplayValidation
+EOF
+require_tests c16-badge-store "$project_root/build/pasebadgestore-tests/pasebadgestore-tests" <<'EOF'
+roundTrip
+legacyReadDoesNotWriteAndUpgradeHasBackup
+malformedFailsClosed
+backupRejectsUnsafeState
+backupRetryRequiresDurableDirectory
+backupRemainsBoundToOpenedDirectory
+EOF
+
+# B5 belongs to the primary GUI process, never to a runtime/CLI/USB owner.
+for release_layer in releaseinfo releaseupdatecontroller; do
+    require_source_pattern tryx-panorama-quick.pro "src/quick/$release_layer.cpp"
+    reject_source_pattern tryx-panorama.pro "$release_layer"
+    reject_source_pattern tryx-cli.pro "$release_layer"
+done
+require_source_pattern src/quick/main.cpp 'ReleaseUpdateController releaseUpdates;'
+require_source_pattern src/quick/main.cpp '&ReleaseUpdateController::stop'
+require_source_pattern_count src/quick/main.cpp 'releaseUpdates.start();' 1
+require_source_pattern src/quick/main.cpp '&ReleaseUpdateController::newReleaseAvailable'
+require_source_pattern qml/Main.qml 'if (window.releaseUpdates.updateAvailable)'
+require_source_pattern qml/pages/SettingsPage.qml 'visible: root.updateAvailable'
+require_source_pattern tryx-panorama-quick.pro 'releaseupdatecontroller_tests.pro'
+reject_source_pattern src/quick/releaseupdatecontroller.cpp 'ignoreSslErrors'
+reject_source_pattern src/quick/releaseupdatecontroller.cpp 'ConfigManager'
+reject_source_pattern src/quick/releaseupdatecontroller.cpp 'getenv'
+reject_source_pattern src/quick/releaseupdatecontroller.cpp 'RuntimeClient'
+
+awk '
+    /SingleInstanceAcquireResult::NotifiedExisting/ { secondary = NR }
+    /ReleaseUpdateController releaseUpdates;/ { controller = NR }
+    /engine.load\(entry\)/ { loaded = NR }
+    /if \(smokeTest\)/ { smoke = NR }
+    /releaseUpdates.start\(\)/ {
+        if (!(secondary < controller && controller < loaded && loaded < smoke && smoke < NR))
+            exit 1
+        found = 1
+    }
+    END { if (!found) exit 1 }
+' "$project_root/src/quick/main.cpp" || {
+    printf '%s\n' 'B5 startup must follow single-instance/QML success and exclude smoke mode' >&2
+    exit 1
+}
+
+require_tests b5-release-updates \
+    "$project_root/build/releaseupdate-tests/releaseupdatecontroller-tests" <<'EOF'
+versionParsing
+numericComparison
+validatedReleaseIgnoresUntrustedFields
+malformedRelease
+startupScheduleAndRequestBoundary
+availabilityEtagAndNotificationSuppression
+silentFailurePreservesValidatedSnapshot
+unknownLocalOlderRemoteAndUnbound304
+absoluteTimeoutAndBoundedStreaming
+stopAndDestructionCancelWithoutPublishing
+rateLimitBackoff
+notificationFailureKeepsSettingsWithoutShowingWindow
+slowNotificationServiceDoesNotBlockGuiThread
+EOF
+
 require_qml_tests() {
     suite_name=$1
     test_file=$2
@@ -807,6 +963,12 @@ require_qml_tests \
     "$project_root/tests/quick/qml/tst_settingslayout.qml" \
     SettingsLayout <<'EOF'
 test_supportBundleStatesRemainAccessible
+EOF
+
+require_qml_tests c16-badge-editor \
+    "$project_root/tests/quick/qml/tst_panoramalayout.qml" PanoramaLayout <<'EOF'
+test_customBadgeEditsOneImmutableDraft
+test_customBadgeSplitAndCapabilityLossPreserveDraft
 EOF
 
 require_qml_tests \
@@ -992,6 +1154,17 @@ test_routeFirstIntentStayAndDiscardUseProductionMain
 test_hideAndExplicitQuitWaitForDiscard
 EOF
 
+require_qml_tests b5-settings-update \
+    "$project_root/tests/quick/qml/tst_settingslayout.qml" SettingsLayout <<'EOF'
+test_releaseUpdateIsConditionalAndKeyboardAccessible
+EOF
+
+require_qml_tests b5-settings-update-ru \
+    "$project_root/tests/quick/qml/tst_settingslayout.qml" SettingsLayout \
+    "$project_root/build/quick/i18n/tryx-panorama_ru.qm" <<'EOF'
+test_releaseUpdateRussian
+EOF
+
 require_tests \
     b9-nvidia-provider \
     "$project_root/build/nvidiasmiprovider-tests/nvidiasmiprovider-tests" <<'EOF'
@@ -1033,6 +1206,9 @@ EOF
 require_tests \
     c5-saved-layout-store \
     "$project_root/build/savedlayoutstore-tests/savedlayoutstore-tests" <<'EOF'
+customBadgesRoundTripAndLegacyCannotEraseThem
+legacyUpgradePreservesBackup
+malformedBadgeRecordsFailClosed
 versionedRoundTripPreservesExactDeviceScopedDraft
 otherDeviceLayoutsAreFilteredButNotDeleted
 deleteRequiresExactDeviceAndProductScope
@@ -1113,6 +1289,9 @@ EOF
 require_tests \
     printer-protocol \
     "$project_root/build/tests/printerprotocol-tests" <<'EOF'
+protocolLayerOwnersAreNotCopyable
+usbTransportOwnsOnlyItsDataDescriptor
+modelClientsBorrowOneBufferedChannel
 runtimeOperationDbusRoundTrip
 operationCoordinatorOwnsLedgerBehindSynchronousManagerFacade
 sessionGenerationTransitionsPreserveEventBoundaries
@@ -1120,6 +1299,14 @@ sessionControllerPublishesThroughSynchronousManagerFacade
 sessionTransitionStopsAfterReentrantFence
 firmwareAcquireOrdersReentrantReleaseAfterQuiesce
 sessionTeardownPreservesReentrantReconnect
+legacyWorkerSerialLifecycleAndQuiesce
+workerSessionsShareIoContextAndTeardown
+workerGateInterruptsBlockedForegroundResponse
+staleForegroundCompletionDoesNotRestartTimers
+foregroundOperationPausesMetricsAndKeepalive
+userCancellationDoesNotInterruptSessionRecovery
+queuedApplyCancellationIsNotDrainedOrExecuted
+applyFailureResultPrecedesSessionLoss
 runtimeMetricsDbusRoundTrip
 runtimeMediaPreparationProfileDbusRoundTrip
 runtimeDeviceCapabilitiesDbusRoundTrip
@@ -1154,6 +1341,17 @@ savedLayoutDowngradeLatchBlocksCrudWithoutDispatch
 savedLayoutQueueRejectsBeforeWorkerDispatch
 savedLayoutQueuePreservesEditedDraftAndFreshProof
 savedLayoutWorkerFreshFileListBoundary
+savedLayoutCustomBadgeDraftUsesOneVersionedApply
+customBadgeSnapshotCommitsAtomically
+customBadgeApplyIsImmutableAndPersistsAcceptedChoices
+customBadgeRestoreRejectsInvalidState
+paseCustomBadgesSerialize
+paseCustomBadgesRejectBeforeTransport
+retryCacheStorePreservesBadgeContinuationV12
+customBadgeRetryRequiresExplicitContinuation
+retryBadgeManifestRejectsMutation
+retryLegacyUpgradePreservesBackup
+runtimeDowngradeBlocksBadgeFormats
 runtimeDowngradeV10PreparationIsAtomicAndFailClosed
 productProfilesExposeExactCapabilities
 mediaTransformChangesConversionProfile
@@ -1316,6 +1514,13 @@ deviceMediaMetadataFailureDoesNotInvalidateArtifactClaim
 newArtifactSupersedesPendingDeviceMediaMetadataRequest
 staleDeviceMediaMetadataReplyFromPreviousOwnerIsDiscarded
 savedLayoutsRequireExactCapabilityAndConfirmedSnapshot
+coherentBadgeHandshakeAndSavedV2
+connectionRevisionAdvancingBetweenReadsRecovers
+staleConnectionReconciliationIsDiscarded
+pendingDisplayDoesNotResetConnectionReconciliationBudget
+recoveredConnectionClearsOnlyItsOwnDiagnostic
+exhaustedReconciliationClearsLastDiagnosticAfterRefresh
+printerInactiveLifecycleEventsRequestSnapshotRefresh
 advertisedSavedLayoutsUnknownMethodFailsClosed
 malformedSavedLayoutsSnapshotFailsClosed
 staleSavedLayoutsReplyFromPreviousOwnerIsDiscarded
@@ -1341,6 +1546,8 @@ require_tests \
     quick-client \
     "$project_root/build/quick-tests/tryx-quick-tests" <<'EOF'
 legacyScreenConfigKeepsManager1Shape
+customSavedLayoutUsesVersionedContract
+badgeDisplaySubmissionRequiresCoherentSnapshot
 savedLayoutModelUsesExactDecimalRevisionAndFullStateDto
 savedLayoutsSnapshotValidationFailsClosed
 savedLayoutsRequireCapabilityAndExactDevice

@@ -1,4 +1,5 @@
 #include "printersessioncontroller.h"
+#include "configurationformatbackup.h"
 #include "devicemanagermessages.h"
 #include "paseoverlayconfig.h"
 #include "pasemetricsconfigstore.h"
@@ -10,6 +11,46 @@
 
 using namespace tryx::pase_overlay_config;
 using namespace tryx::printer_lifecycle;
+
+namespace {
+TryxRuntimeDisplayState projectDisplayState(const PrinterProtocol::PaseDisplayState &raw,
+    const PrinterProtocol::PaseOverlayConfig &overlay, const QString &identity, bool coherent = false) {
+    TryxRuntimeDisplayState display;
+    display.deviceSerial = identity;
+    display.valid = true;
+    display.backlightEnabled = raw.backlightEnabled;
+    display.brightness = raw.brightness;
+    display.standbyEnabled = raw.standbyEnabled;
+    display.standbyMedia = raw.standbyMedia;
+    display.mirrorMode = raw.mirrorMode;
+    display.waterfallMode = raw.waterfallMode;
+    display.screenMode = raw.screenMode;
+    display.playMode = raw.playMode;
+    display.media = raw.media;
+    display.sysinfoLabels = overlay.left.metrics;
+    display.settingsBadges = overlay.left.badges;
+    display.settingsPosition = overlay.left.verticalPlacement;
+    display.settingsColor = paseTextColorName(overlay.left.textColor);
+    display.settingsAlign = overlay.left.alignment;
+    if (coherent ? raw.screenMode == QStringLiteral("Screen Splitting") : overlay.dualMode) {
+        display.sysinfoLabels2 = overlay.right.metrics;
+        display.settingsBadges2 = overlay.right.badges;
+        display.settingsPosition2 = overlay.right.verticalPlacement;
+        display.settingsColor2 = paseTextColorName(overlay.right.textColor);
+        display.settingsAlign2 = overlay.right.alignment;
+    }
+    return display;
+}
+
+bool displayAndOverlayAreCoherent(const PrinterProtocol::PaseDisplayState &raw,
+    const PrinterProtocol::PaseOverlayConfig &overlay, quint16 productId) {
+    return raw.brightness >= 0 && raw.brightness <= 100
+        && (raw.screenMode == QStringLiteral("Full Screen") || raw.screenMode == QStringLiteral("Screen Splitting"))
+        && (raw.playMode == QStringLiteral("Single") || raw.playMode == QStringLiteral("Loop") || raw.playMode == QStringLiteral("Shuffle"))
+        && paseBadgeChoicesAreValid(overlay, productId)
+        && (!paseOverlayHasContent(overlay) || overlay.dualMode == (raw.screenMode == QStringLiteral("Screen Splitting")));
+}
+}
 
 PrinterSessionController::PrinterSessionController(Callbacks callbacks,
                                                    QObject *parent)
@@ -34,7 +75,145 @@ void PrinterSessionController::setPrinterDisplaySessionActive(bool active) {
         return;
     }
     state_.printerDisplaySessionActive = active;
+    if (!active) invalidateDisplaySnapshot();
     emit printerDisplaySessionChanged(active);
+    if (active) tryAcceptBootstrapDisplay();
+}
+
+bool PrinterSessionController::coherentDisplayContextIsCurrent(quint64 generation,
+    const QString &identity, quint16 productId) const {
+    return printerResultIsCurrent(generation) && state_.printerDisplaySessionActive
+        && !identity.isEmpty() && identity == state_.printerDeviceSerial.trimmed()
+        && productId == state_.printerProductId && (productId == 0x1021 || productId == 0x1011);
+}
+
+TryxRuntimeDisplaySnapshotV1 PrinterSessionController::displaySnapshotV1(quint64 connectionRevision) const {
+    auto snapshot = displaySnapshot_;
+    if (!coherentDisplayContextIsCurrent(snapshot.physicalGeneration, displaySnapshotIdentity_, state_.printerProductId)
+        || snapshot.productId != printerProductIdString(state_.printerProductId)) {
+        const auto revision = snapshot.revision;
+        snapshot = {};
+        snapshot.revision = revision;
+        snapshot.physicalGeneration = state_.printerGeneration;
+    }
+    snapshot.connectionRevision = connectionRevision;
+    return snapshot;
+}
+
+void PrinterSessionController::publishDisplaySnapshot(TryxRuntimeDisplaySnapshotV1 snapshot) {
+    snapshot.revision = displaySnapshot_.revision + 1;
+    snapshot.physicalGeneration = state_.printerGeneration;
+    snapshot.productId = state_.printerClassConnected ? printerProductIdString(state_.printerProductId) : QString();
+    snapshot.connectionRevision = 0; // Getter stamps the live D-Bus connection context.
+    snapshot.display.revision = snapshot.display.valid ? snapshot.revision : 0;
+    if (snapshot.status == QStringLiteral("HostAccepted") && !tryxDisplaySnapshotV1IsValid(snapshot)) {
+        snapshot.status = QStringLiteral("Unresolved");
+        snapshot.acceptedOperationId.clear();
+        snapshot.display = {};
+        snapshot.badges = {};
+    }
+    displaySnapshotIdentity_ = state_.printerDeviceSerial.trimmed();
+    displaySnapshot_ = std::move(snapshot);
+    // This is an invalidation hint, not a state payload. Queue/coalesce it so a
+    // subscriber cannot re-enter a half-completed connection transition.
+    const quint64 revision = displaySnapshot_.revision;
+    QMetaObject::invokeMethod(this, [this, revision]() {
+        if (displaySnapshot_.revision == revision) emit displaySnapshotChangedV1(revision);
+    }, Qt::QueuedConnection);
+}
+
+void PrinterSessionController::invalidateDisplaySnapshot(bool newGeneration) {
+    if (newGeneration || displaySnapshot_.physicalGeneration != state_.printerGeneration) bootstrapDisplayAllowed_ = true;
+    bootstrapDisplay_.reset();
+    pendingDisplayOperationId_.clear();
+    pendingDisplayReplacesOverlay_ = false;
+    beforeDisplayMutation_ = {};
+    publishDisplaySnapshot({});
+}
+
+void PrinterSessionController::tryAcceptBootstrapDisplay() {
+    if (!bootstrapDisplayAllowed_ || !bootstrapDisplay_
+        || !coherentDisplayContextIsCurrent(displaySnapshot_.physicalGeneration, displaySnapshotIdentity_, state_.printerProductId)) return;
+    const auto overlay = persistedPaseOverlayForDevice(displaySnapshotIdentity_);
+    TryxRuntimeDisplaySnapshotV1 snapshot;
+    if (displayAndOverlayAreCoherent(*bootstrapDisplay_, overlay, state_.printerProductId)) {
+        snapshot.status = QStringLiteral("HostAccepted");
+        snapshot.display = projectDisplayState(*bootstrapDisplay_, overlay, displaySnapshotIdentity_, true);
+        snapshot.badges = overlay.badgeChoices;
+    } else {
+        snapshot.status = QStringLiteral("Unresolved");
+    }
+    bootstrapDisplayAllowed_ = false;
+    bootstrapDisplay_.reset();
+    publishDisplaySnapshot(std::move(snapshot));
+}
+
+void PrinterSessionController::beginDisplayMutation(const QString &operationId, quint64 generation, bool replacesOverlay) {
+    if (!coherentDisplayContextIsCurrent(generation, state_.printerDeviceSerial.trimmed(), state_.printerProductId)
+        || operationId.isEmpty() || pendingDisplayOperationId_ == operationId) return;
+    beforeDisplayMutation_ = displaySnapshotV1(0);
+    pendingDisplayOperationId_ = operationId;
+    pendingDisplayReplacesOverlay_ = replacesOverlay;
+    bootstrapDisplayAllowed_ = false;
+    bootstrapDisplay_.reset();
+    TryxRuntimeDisplaySnapshotV1 snapshot;
+    snapshot.status = QStringLiteral("Pending");
+    publishDisplaySnapshot(std::move(snapshot));
+}
+
+bool PrinterSessionController::displayMutationCanPersistOverlay(const QString &operationId, quint64 generation) const {
+    // Legacy untracked completions keep their persistence behavior but cannot
+    // commit a coherent snapshot. A tracked control-only operation must not
+    // reuse the store after an unresolved overlay mutation.
+    if (pendingDisplayOperationId_.isEmpty()) return true;
+    return pendingDisplayOperationId_ == operationId && generation == displaySnapshot_.physicalGeneration
+        && (pendingDisplayReplacesOverlay_ || beforeDisplayMutation_.status == QStringLiteral("HostAccepted"));
+}
+
+void PrinterSessionController::finishDisplayMutation(const QString &operationId, quint64 generation, bool provenNoMutation) {
+    if (pendingDisplayOperationId_ != operationId || generation != displaySnapshot_.physicalGeneration
+        || !coherentDisplayContextIsCurrent(generation, displaySnapshotIdentity_, state_.printerProductId)) return;
+    auto snapshot = provenNoMutation ? beforeDisplayMutation_ : TryxRuntimeDisplaySnapshotV1{};
+    if (!provenNoMutation) snapshot.status = QStringLiteral("Unresolved");
+    pendingDisplayOperationId_.clear();
+    pendingDisplayReplacesOverlay_ = false;
+    beforeDisplayMutation_ = {};
+    publishDisplaySnapshot(std::move(snapshot));
+}
+
+void PrinterSessionController::commitDisplayMutation(const QString &operationId, quint64 generation,
+    const QString &identity, quint16 productId, const PrinterProtocol::PaseDisplayStateResult &readback,
+    const PrinterProtocol::PaseOverlayConfig &overlay) {
+    if (pendingDisplayOperationId_ != operationId || generation != displaySnapshot_.physicalGeneration
+        || identity != displaySnapshotIdentity_ || !coherentDisplayContextIsCurrent(generation, identity, productId)
+        || !displayMutationCanPersistOverlay(operationId, generation)
+        || !readback.success || !displayAndOverlayAreCoherent(readback.state, overlay, productId)) return;
+    TryxRuntimeDisplaySnapshotV1 snapshot;
+    snapshot.status = QStringLiteral("HostAccepted");
+    snapshot.acceptedOperationId = operationId;
+    snapshot.display = projectDisplayState(readback.state, overlay, identity, true);
+    snapshot.badges = overlay.badgeChoices;
+    pendingDisplayOperationId_.clear();
+    pendingDisplayReplacesOverlay_ = false;
+    beforeDisplayMutation_ = {};
+    publishDisplaySnapshot(std::move(snapshot));
+}
+
+void PrinterSessionController::commitMetricsDisplayMutation(const QString &operationId, quint64 generation,
+    const QString &identity, quint16 productId, const PrinterProtocol::PaseOverlayConfig &overlay) {
+    if (beforeDisplayMutation_.status != QStringLiteral("HostAccepted")) return;
+    const auto &display = beforeDisplayMutation_.display;
+    PrinterProtocol::PaseDisplayState raw;
+    raw.backlightEnabled = display.backlightEnabled;
+    raw.brightness = display.brightness;
+    raw.standbyEnabled = display.standbyEnabled;
+    raw.standbyMedia = display.standbyMedia;
+    raw.mirrorMode = display.mirrorMode;
+    raw.waterfallMode = display.waterfallMode;
+    raw.screenMode = display.screenMode;
+    raw.playMode = display.playMode;
+    raw.media = display.media;
+    commitDisplayMutation(operationId, generation, identity, productId, {true, {}, raw}, overlay);
 }
 
 void PrinterSessionController::clearDeviceSpecificationsCache() {
@@ -89,6 +268,7 @@ void PrinterSessionController::handlePrinterSnapshot(
     }
     state_.printerSnapshot = snapshot;
     const quint64 generation = ++state_.printerGeneration;
+    invalidateDisplaySnapshot(true);
     state_.printerGenerationElapsedTimer.start();
     emit requestCancelPrinterPreparation(state_.printerGeneration);
     if (wasPrinterConnected) {
@@ -387,6 +567,7 @@ void PrinterSessionController::connectDevice(const QString &port) {
                 return;
             }
             const quint64 generation = ++state_.printerGeneration;
+            invalidateDisplaySnapshot(true);
             state_.printerGenerationElapsedTimer.start();
             emit requestCancelPrinterPreparation(generation);
             if (!sessionTransitionIsCurrent(generation)) {
@@ -558,6 +739,7 @@ void PrinterSessionController::disconnectDevice() {
         return;
     }
     const quint64 generation = ++state_.printerGeneration;
+    invalidateDisplaySnapshot(true);
     emit requestCancelPrinterPreparation(generation);
     if (!disconnectIsCurrent(generation)) {
         return;
@@ -644,6 +826,7 @@ void PrinterSessionController::attachPrinterClassDevice(
     state_.printerDevicePath = device.devicePath;
     state_.printerDeviceSerial = device.serial;
     state_.printerProductId = device.productId;
+    invalidateDisplaySnapshot();
     callbacks_.clearMediaCatalogView();
     emit mediaListUpdated({});
     if (!sessionTransitionIsCurrent(generation)) {
@@ -663,6 +846,7 @@ void PrinterSessionController::detachPrinterClassDevice(bool notify) {
     state_.printerDevicePath.clear();
     state_.printerDeviceSerial.clear();
     state_.printerProductId = 0;
+    invalidateDisplaySnapshot();
     if (wasConnected) {
         state_.displayStateReadGeneration = 0;
         const quint64 metricsRevision = state_.metricsState.revision;
@@ -873,6 +1057,7 @@ void PrinterSessionController::requirePrinterRecovery(const QString &message) {
     if (callbacks_.workerAvailable()) {
         if (enteringRecovery) {
             ++state_.printerGeneration;
+            invalidateDisplaySnapshot(true);
             emit requestCancelPrinterPreparation(state_.printerGeneration);
         }
         emit requestGenerationGate(state_.printerGeneration, false);
@@ -980,6 +1165,7 @@ bool PrinterSessionController::acquireFirmwareExclusive(const QString &leaseId,
     state_.firmwareResumeAutoConnect = state_.autoConnectMode;
     clearDeviceSpecificationsCache();
     state_.firmwareQuiesceGeneration = ++state_.printerGeneration;
+    invalidateDisplaySnapshot(true);
     firmwareQuiesceDispatchPending_ = true;
     setPrinterDisplaySessionActive(false);
     state_.printerSessionResumePending = false;
@@ -1068,38 +1254,9 @@ void PrinterSessionController::updateDisplayState(
     const PrinterProtocol::PaseOverlayConfig &overlay) {
     const int previousBrightness = state_.displayState.brightness;
     const bool hadValidState = state_.displayState.valid;
-    state_.displayState.deviceSerial = state_.printerDeviceSerial.trimmed();
-    state_.displayState.valid = true;
-    state_.displayState.backlightEnabled = state.backlightEnabled;
-    state_.displayState.brightness = state.brightness;
-    state_.displayState.standbyEnabled = state.standbyEnabled;
-    state_.displayState.standbyMedia = state.standbyMedia;
-    state_.displayState.mirrorMode = state.mirrorMode;
-    state_.displayState.waterfallMode = state.waterfallMode;
-    state_.displayState.screenMode = state.screenMode;
-    state_.displayState.playMode = state.playMode;
-    state_.displayState.media = state.media;
-    state_.displayState.sysinfoLabels = overlay.left.metrics;
-    state_.displayState.settingsBadges = overlay.left.badges;
-    state_.displayState.settingsPosition = overlay.left.verticalPlacement;
-    state_.displayState.settingsColor =
-        paseTextColorName(overlay.left.textColor);
-    state_.displayState.settingsAlign = overlay.left.alignment;
-    if (overlay.dualMode) {
-        state_.displayState.sysinfoLabels2 = overlay.right.metrics;
-        state_.displayState.settingsBadges2 = overlay.right.badges;
-        state_.displayState.settingsPosition2 = overlay.right.verticalPlacement;
-        state_.displayState.settingsColor2 =
-            paseTextColorName(overlay.right.textColor);
-        state_.displayState.settingsAlign2 = overlay.right.alignment;
-    } else {
-        state_.displayState.sysinfoLabels2.clear();
-        state_.displayState.settingsBadges2.clear();
-        state_.displayState.settingsPosition2.clear();
-        state_.displayState.settingsColor2.clear();
-        state_.displayState.settingsAlign2.clear();
-    }
-    state_.displayState.diagnostic.clear();
+    const auto previousRevision = state_.displayState.revision;
+    state_.displayState = projectDisplayState(state, overlay, state_.printerDeviceSerial.trimmed());
+    state_.displayState.revision = previousRevision;
     publishDisplayState();
     if (!hadValidState ||
         previousBrightness != state_.displayState.brightness) {
@@ -1139,6 +1296,8 @@ TryxRuntimeDeviceCapabilitiesV1 PrinterSessionController::deviceCapabilitiesV1(
     if (profile->overlayMetricsSupported) {
         snapshot.capabilities.append(tryxDeviceOverlayMetricsV1Token());
     }
+    if (profile->productId == 0x1021 && profile->overlayMetricsSupported && profile->displayConfigurationSupported)
+        snapshot.capabilities.append(tryxDeviceOverlayBadgeTextV1Token());
     if (profile->firmwareFlashSupported) {
         snapshot.capabilities.append(tryxDeviceFirmwareFlashV1Token());
     }
@@ -1207,6 +1366,11 @@ void PrinterSessionController::loadPaseMetricsConfig() {
     for (const QString &warning : result.warnings) {
         qWarning().noquote() << warning;
     }
+}
+
+bool PrinterSessionController::overlayConfigurationSupportsDowngradeV10() const {
+    return paseMetricsConfigStore_ && paseMetricsConfigStore_->writesEnabled()
+        && tryx::configurationVersionIsSupported(paseMetricsConfigStore_->configPath(), 64 * 1024, {1, 2});
 }
 
 bool PrinterSessionController::persistPaseMetricsConfiguration(
@@ -1639,8 +1803,18 @@ void PrinterSessionController::handleWorkerPrinterDisplayStateReady(
     if (!printerResultIsCurrent(generation)) {
         return;
     }
+    const auto identity = state_.printerDeviceSerial.trimmed();
+    if (displaySnapshot_.physicalGeneration != generation) invalidateDisplaySnapshot(true);
     updateDisplayState(
         state, persistedPaseOverlayForDevice(state_.printerDeviceSerial));
+    if (!printerResultIsCurrent(generation) || identity != state_.printerDeviceSerial.trimmed()
+        || !bootstrapDisplayAllowed_) return;
+    if (displaySnapshotIdentity_ != identity) {
+        invalidateDisplaySnapshot();
+        if (!printerResultIsCurrent(generation) || identity != state_.printerDeviceSerial.trimmed()) return;
+    }
+    bootstrapDisplay_ = state;
+    tryAcceptBootstrapDisplay();
 }
 
 void PrinterSessionController::handleWorkerPrinterDisplayStateFailed(
@@ -1785,6 +1959,7 @@ void PrinterSessionController::shutdownBeforeWorkersStopped() {
         tryx::DeviceManagerMessages::tr("TRYX runtime is stopping"));
     clearDeviceSpecificationsCache();
     ++state_.printerGeneration;
+    invalidateDisplaySnapshot(true);
     emit requestCancelPrinterPreparation(state_.printerGeneration);
     emit requestGenerationGate(state_.printerGeneration, false);
     emit requestClearPrinter(state_.printerGeneration);
@@ -1793,6 +1968,7 @@ void PrinterSessionController::shutdownBeforeWorkersStopped() {
 
 void PrinterSessionController::invalidateForRuntimeDowngrade() {
     ++state_.printerGeneration;
+    invalidateDisplaySnapshot(true);
     emit requestCancelPrinterPreparation(state_.printerGeneration);
     emit requestGenerationGate(state_.printerGeneration, false);
 }

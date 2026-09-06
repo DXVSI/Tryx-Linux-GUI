@@ -313,6 +313,16 @@ public:
         QStringLiteral("CPU Frequency"),
         QStringLiteral("GPU Temperature"),
     };
+    TryxRuntimeDisplaySnapshotV1 coherentDisplay;
+    TryxRuntimeSavedLayoutsSnapshotV2 savedLayoutsV2;
+    TryxRuntimeSavedLayoutV2 lastSavedLayoutV2;
+    bool delayCoherentDisplay = false;
+    bool delayConnectionSnapshot = false;
+    QDBusMessage delayedConnectionSnapshotMessage;
+    int advanceRevisionOnDeviceCapabilities = 0;
+    int advanceRevisionOnDisplaySnapshot = 0;
+    std::atomic_int coherentDisplayCalls{0};
+    QDBusMessage delayedCoherentDisplayMessage;
     QStringList runtimeCapabilities = {
         tryxRuntimeDeviceCapabilitiesV1Token(),
     };
@@ -614,9 +624,13 @@ public slots:
     }
 
     TryxRuntimeSnapshot GetConnectionSnapshot() {
+        if (delayConnectionSnapshot) {
+            setDelayedReply(true);
+            delayedConnectionSnapshotMessage = message();
+        }
         connectionSnapshotCalls.fetch_add(
             1, std::memory_order_release);
-        return connection;
+        return delayConnectionSnapshot ? TryxRuntimeSnapshot{} : connection;
     }
 
     TryxRuntimeOperationsSnapshot GetOperations() {
@@ -642,6 +656,46 @@ public slots:
 
     TryxRuntimeDisplayState GetDisplayState() {
         return display;
+    }
+
+    TryxRuntimeDisplaySnapshotV1 GetDisplaySnapshotV1() {
+        if (advanceRevisionOnDisplaySnapshot > 0) {
+            --advanceRevisionOnDisplaySnapshot;
+            ++connection.revision;
+            deviceCapabilities.connectionRevision = connection.revision;
+            coherentDisplay.connectionRevision = connection.revision;
+            deviceSpecifications.connectionRevision = connection.revision;
+        }
+        coherentDisplayCalls.fetch_add(1, std::memory_order_release);
+        if (delayCoherentDisplay) {
+            setDelayedReply(true);
+            delayedCoherentDisplayMessage = message();
+            return {};
+        }
+        return coherentDisplay;
+    }
+
+    TryxRuntimeSavedLayoutsSnapshotV2 GetSavedLayoutsV2() { return savedLayoutsV2; }
+    TryxRuntimeSavedLayoutsSnapshotV2 PutSavedLayoutV2(quint64 revision, const TryxRuntimeSavedLayoutV2 &layout) {
+        lastSavedLayoutV2 = layout;
+        if (revision != savedLayoutsV2.revision || savedLayoutsV2.layouts.size() != 1
+            || savedLayoutsV2.layouts.first().layoutId != layout.layoutId) {
+            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid fixture CAS"));
+            return {};
+        }
+        savedLayoutsV2.layouts[0] = layout;
+        savedLayoutsV2.layouts[0].revision = ++savedLayoutsV2.revision;
+        return savedLayoutsV2;
+    }
+    TryxRuntimeSavedLayoutsSnapshotV2 DeleteSavedLayoutV2(quint64 revision, const QString &id) {
+        if (revision != savedLayoutsV2.revision || savedLayoutsV2.layouts.size() != 1
+            || savedLayoutsV2.layouts.first().layoutId != id) {
+            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid fixture CAS"));
+            return {};
+        }
+        ++savedLayoutsV2.revision;
+        savedLayoutsV2.layouts.clear();
+        return savedLayoutsV2;
     }
 
     QStringList GetMetricsCapabilities() {
@@ -701,6 +755,13 @@ public slots:
     }
 
     TryxRuntimeDeviceCapabilitiesV1 GetDeviceCapabilitiesV1() {
+        if (advanceRevisionOnDeviceCapabilities > 0) {
+            --advanceRevisionOnDeviceCapabilities;
+            ++connection.revision;
+            deviceCapabilities.connectionRevision = connection.revision;
+            coherentDisplay.connectionRevision = connection.revision;
+            deviceSpecifications.connectionRevision = connection.revision;
+        }
         if (deviceReplyMode == DeviceReplyMode::Delayed) {
             setDelayedReply(true);
             delayedDeviceMessage = message();
@@ -1004,6 +1065,37 @@ void configureSavedLayoutsRuntime(
         connectionRevision);
 }
 
+void configureBadgeRuntime(CapabilityRuntimeObject *runtime, const QString &text) {
+    const auto legacy = savedLayout(QStringLiteral("01234567-89ab-4cde-8f01-23456789abcd"), QStringLiteral("Badge fixture"), 3);
+    runtime->connection.productId = legacy.productId;
+    runtime->runtimeCapabilities.append({tryxRuntimeApplyWithBadgesV1Token(), tryxRuntimeDisplaySnapshotV1Token(), tryxRuntimeSavedLayoutsV2Token()});
+    runtime->deviceCapabilities.capabilities.append(tryxDeviceOverlayBadgeTextV1Token());
+    auto layout = tryxSavedLayoutV2FromV1(legacy);
+    layout.request.settingsBadges = {QStringLiteral("CPU Badge")};
+    layout.badges.primaryCpu = {QStringLiteral("Custom"), text};
+    runtime->savedLayoutsV2 = {2, 4, QStringLiteral("Ready"), {}, legacy.deviceIdentity, legacy.productId, {layout}};
+    runtime->mediaCatalog = savedLayoutMediaCatalog();
+    auto &snapshot = runtime->coherentDisplay;
+    snapshot.revision = 5;
+    snapshot.connectionRevision = 1;
+    snapshot.physicalGeneration = 7;
+    snapshot.status = QStringLiteral("HostAccepted");
+    snapshot.productId = legacy.productId;
+    snapshot.badges = layout.badges;
+    auto &display = snapshot.display;
+    display.revision = 5;
+    display.deviceSerial = legacy.deviceIdentity;
+    display.valid = true;
+    display.brightness = 50;
+    display.screenMode = QStringLiteral("Full Screen");
+    display.playMode = QStringLiteral("Single");
+    display.media = layout.request.media;
+    display.settingsBadges = layout.request.settingsBadges;
+    display.settingsPosition = layout.request.settingsPosition;
+    display.settingsColor = layout.request.settingsColor;
+    display.settingsAlign = layout.request.settingsAlign;
+}
+
 class ScopedRuntimeService final {
 public:
     explicit ScopedRuntimeService(QObject *object)
@@ -1155,6 +1247,17 @@ class RuntimeClientHandshakeTests final : public QObject {
 
 private slots:
     void initTestCase();
+    void coherentBadgeHandshakeAndSavedV2_data();
+    void coherentBadgeHandshakeAndSavedV2();
+    void connectionRevisionAdvancingBetweenReadsRecovers_data();
+    void connectionRevisionAdvancingBetweenReadsRecovers();
+    void staleConnectionReconciliationIsDiscarded_data();
+    void staleConnectionReconciliationIsDiscarded();
+    void pendingDisplayDoesNotResetConnectionReconciliationBudget();
+    void recoveredConnectionClearsOnlyItsOwnDiagnostic_data();
+    void recoveredConnectionClearsOnlyItsOwnDiagnostic();
+    void exhaustedReconciliationClearsLastDiagnosticAfterRefresh();
+    void printerInactiveLifecycleEventsRequestSnapshotRefresh();
     void fullMetricsCatalogUsesExactUniqueOwner();
     void metricsCatalogIsSeparateFromLiveAvailability();
     void missingMetricsCatalogMethodUsesBoundedFallback();
@@ -1227,6 +1330,365 @@ private slots:
     void supportBundleControllerAllowsOnlyOneInflightRequest();
     void supportBundleControllerRejectsInvalidSnapshotWithoutFile();
 };
+
+void RuntimeClientHandshakeTests::connectionRevisionAdvancingBetweenReadsRecovers_data() {
+    QTest::addColumn<int>("capabilityAdvances");
+    QTest::addColumn<int>("displayAdvances");
+    QTest::addColumn<bool>("exhausted");
+    QTest::newRow("before-capabilities") << 1 << 0 << false;
+    QTest::newRow("before-display") << 0 << 1 << false;
+    QTest::newRow("both-reads") << 1 << 1 << false;
+    QTest::newRow("capabilities-never-settle") << 20 << 0 << true;
+    QTest::newRow("display-never-settles") << 0 << 20 << true;
+}
+
+void RuntimeClientHandshakeTests::connectionRevisionAdvancingBetweenReadsRecovers() {
+    QFETCH(int, capabilityAdvances);
+    QFETCH(int, displayAdvances);
+    QFETCH(bool, exhausted);
+
+    CapabilityRuntimeObject runtime;
+    configureBadgeRuntime(&runtime, QStringLiteral("Keep custom text"));
+    runtime.advanceRevisionOnDeviceCapabilities = capabilityAdvances;
+    runtime.advanceRevisionOnDisplaySnapshot = displayAdvances;
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.capabilitiesReady(), 3000);
+    if (exhausted) {
+        QTRY_VERIFY_WITH_TIMEOUT(runtime.deviceCapabilityCalls.load() >= 4, 3000);
+        processEventsFor(100);
+        const int reads = runtime.connectionSnapshotCalls.load();
+        QVERIFY(reads <= 4);
+        QVERIFY(!client.displayStateValid());
+        QVERIFY(client.beginDisplaySubmission(savedLayoutRequest(), true, false, false,
+            false, false, QStringLiteral("QueueApplyWithMetrics")).isEmpty());
+        processEventsFor(100);
+        QCOMPARE(runtime.connectionSnapshotCalls.load(), reads);
+        QVERIFY(service.invoke([&]() {
+            runtime.advanceRevisionOnDeviceCapabilities = 0;
+            runtime.advanceRevisionOnDisplaySnapshot = 0;
+        }));
+        // Only an explicit refresh starts another bounded read attempt.
+        client.refreshAll();
+    }
+
+    QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid(), 3000);
+    QVERIFY(client.customBadgeTextSupported());
+    QCOMPARE(client.connection_.revision, client.deviceCapabilitiesSnapshot_.connectionRevision);
+    QCOMPARE(client.connection_.revision, client.displaySnapshot_.connectionRevision);
+    QCOMPARE(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap()
+        .value(QStringLiteral("text")).toString(), QStringLiteral("Keep custom text"));
+    QTRY_VERIFY_WITH_TIMEOUT(client.savedLayoutsReady(), 3000);
+    QCOMPARE(runtime.savedLayoutsQueueCalls.load(), 0);
+    QCOMPARE(runtime.savedLayoutsPutCalls.load(), 0);
+}
+
+void RuntimeClientHandshakeTests::staleConnectionReconciliationIsDiscarded_data() {
+    QTest::addColumn<bool>("replaceOwner");
+    QTest::newRow("same-owner-new-handshake") << false;
+    QTest::newRow("replacement-owner") << true;
+}
+
+void RuntimeClientHandshakeTests::staleConnectionReconciliationIsDiscarded() {
+    QFETCH(bool, replaceOwner);
+    CapabilityRuntimeObject runtime;
+    configureBadgeRuntime(&runtime, QStringLiteral("Initial badge"));
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid() && client.savedLayoutsReady(), 3000);
+    const int initialReads = runtime.connectionSnapshotCalls.load();
+    QVERIFY(service.invoke([&]() {
+        runtime.advanceRevisionOnDisplaySnapshot = 1;
+        runtime.delayConnectionSnapshot = true;
+    }));
+    client.refreshDisplay();
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.connectionSnapshotCalls.load(), initialReads + 1, 3000);
+    QVERIFY(!client.displayStateValid());
+
+    CapabilityRuntimeObject replacement;
+    configureBadgeRuntime(&replacement, QStringLiteral("Current badge"));
+    ScopedRuntimeService replacementService(&replacement);
+    if (replaceOwner) {
+        QVERIFY(service.releaseServiceName());
+        QVERIFY(replacementService.start());
+    } else {
+        QVERIFY(service.invoke([&]() {
+            runtime.delayConnectionSnapshot = false;
+            runtime.coherentDisplay.badges.primaryCpu.text = QStringLiteral("Current badge");
+            ++runtime.coherentDisplay.revision;
+            ++runtime.coherentDisplay.display.revision;
+        }));
+        client.startHandshake();
+    }
+    QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid() && client.savedLayoutsReady(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap()
+        .value(QStringLiteral("text")).toString(), QStringLiteral("Current badge"), 3000);
+    const auto accepted = client.connection_;
+    bool sent = false;
+    QVERIFY(service.invoke([&]() {
+        auto stale = runtime.connection;
+        stale.revision = 900;
+        stale.serial = QStringLiteral("stale-device");
+        sent = service.connection().send(runtime.delayedConnectionSnapshotMessage.createReply({QVariant::fromValue(stale)}));
+    }));
+    QVERIFY(sent);
+    processEventsFor(75);
+    QCOMPARE(client.connection_.revision, accepted.revision);
+    QCOMPARE(client.connection_.serial, accepted.serial);
+    QVERIFY(client.displayStateValid());
+}
+
+void RuntimeClientHandshakeTests::pendingDisplayDoesNotResetConnectionReconciliationBudget() {
+    CapabilityRuntimeObject runtime;
+    configureBadgeRuntime(&runtime, QStringLiteral("Not yet accepted"));
+    runtime.coherentDisplay.status = QStringLiteral("Pending");
+    runtime.coherentDisplay.display = {};
+    runtime.coherentDisplay.badges = {};
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_COMPARE_WITH_TIMEOUT(client.displaySnapshot_.status, QStringLiteral("Pending"), 3000);
+    const int initialReads = runtime.connectionSnapshotCalls.load();
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        const int displayReads = runtime.coherentDisplayCalls.load();
+        QVERIFY(service.invoke([&]() { runtime.advanceRevisionOnDisplaySnapshot = 1; }));
+        client.refreshDisplay();
+        QTRY_VERIFY_WITH_TIMEOUT(runtime.coherentDisplayCalls.load() >= displayReads + 2, 3000);
+        QTRY_COMPARE_WITH_TIMEOUT(client.displaySnapshot_.connectionRevision, quint64(1 + attempt), 3000);
+        QCOMPARE(client.connectionRevisionRefreshes_, attempt);
+        QVERIFY(!client.displayStateValid());
+    }
+    QVERIFY(service.invoke([&]() { runtime.advanceRevisionOnDisplaySnapshot = 1; }));
+    client.refreshDisplay();
+    QTRY_VERIFY_WITH_TIMEOUT(client.displaySnapshotReadFailed_, 3000);
+    processEventsFor(75);
+    QCOMPARE(runtime.connectionSnapshotCalls.load(), initialReads + 3);
+    QVERIFY(!client.displayStateValid());
+}
+
+void RuntimeClientHandshakeTests::recoveredConnectionClearsOnlyItsOwnDiagnostic_data() {
+    QTest::addColumn<bool>("advanceCapabilities");
+    QTest::addColumn<bool>("unrelatedDiagnostic");
+    QTest::newRow("capabilities-recovered") << true << false;
+    QTest::newRow("display-recovered") << false << false;
+    QTest::newRow("unrelated-error-is-preserved") << false << true;
+}
+
+void RuntimeClientHandshakeTests::recoveredConnectionClearsOnlyItsOwnDiagnostic() {
+    QFETCH(bool, advanceCapabilities);
+    QFETCH(bool, unrelatedDiagnostic);
+    CapabilityRuntimeObject runtime;
+    configureBadgeRuntime(&runtime, QStringLiteral("Keep custom text"));
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid() && client.savedLayoutsReady(), 3000);
+    processEventsFor(75); // Finish the initial getters before testing later recovery.
+    const int initialReads = runtime.connectionSnapshotCalls.load();
+    QVERIFY(service.invoke([&]() {
+        runtime.delayConnectionSnapshot = true;
+        ++runtime.coherentDisplay.revision;
+        ++runtime.coherentDisplay.display.revision;
+        runtime.coherentDisplay.display.brightness = 60;
+        if (advanceCapabilities) runtime.advanceRevisionOnDeviceCapabilities = 1;
+        else runtime.advanceRevisionOnDisplaySnapshot = 1;
+    }));
+    int brightnessAtRecovery = -1;
+    connect(&client, &RuntimeClient::diagnosticChanged, &client, [&]() {
+        if (client.diagnostic().isEmpty() && client.displayStateValid())
+            brightnessAtRecovery = client.brightness();
+    });
+    if (advanceCapabilities) client.requestDeviceCapabilities(client.serviceEpoch_, client.handshakeAttempt_, client.runtimeOwner_);
+    else client.refreshDisplay();
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.connectionSnapshotCalls.load(), initialReads + 1, 3000);
+    QVERIFY(!client.displayStateValid());
+    QVERIFY(!client.diagnostic().isEmpty());
+    const QString otherError = QStringLiteral("Independent operation failed");
+    if (unrelatedDiagnostic) client.setDiagnostic(otherError);
+    bool sent = false;
+    QVERIFY(service.invoke([&]() {
+        runtime.delayConnectionSnapshot = false;
+        sent = service.connection().send(runtime.delayedConnectionSnapshotMessage.createReply({QVariant::fromValue(runtime.connection)}));
+    }));
+    QVERIFY(sent);
+    QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid(), 3000);
+    QCOMPARE(client.diagnostic(), unrelatedDiagnostic ? otherError : QString());
+    if (!unrelatedDiagnostic) QCOMPARE(brightnessAtRecovery, 60);
+    QCOMPARE(client.connectionRevisionRefreshes_, 0);
+    QCOMPARE(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap()
+        .value(QStringLiteral("text")).toString(), QStringLiteral("Keep custom text"));
+}
+
+void RuntimeClientHandshakeTests::exhaustedReconciliationClearsLastDiagnosticAfterRefresh() {
+    CapabilityRuntimeObject runtime;
+    configureBadgeRuntime(&runtime, QStringLiteral("Keep custom text"));
+    // Do not let a successful, unrelated saved-layout getter clear this error.
+    runtime.runtimeCapabilities.removeAll(tryxRuntimeSavedLayoutsV2Token());
+    runtime.advanceRevisionOnDeviceCapabilities = 3;
+    runtime.advanceRevisionOnDisplaySnapshot = 1;
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.displaySnapshotReadFailed_, 3000);
+    QCOMPARE(runtime.connectionSnapshotCalls.load(), 4);
+    QVERIFY(!client.displayStateValid());
+    QVERIFY(!client.diagnostic().isEmpty());
+    // Exercise the cached connection leg of Refresh without unrelated legacy calls.
+    client.refreshConnection();
+    QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid(), 3000);
+    QCOMPARE(client.diagnostic(), QString());
+}
+
+void RuntimeClientHandshakeTests::printerInactiveLifecycleEventsRequestSnapshotRefresh() {
+    CapabilityRuntimeObject runtime;
+    runtime.connection.displaySessionActive = false;
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.capabilitiesReady() && client.deviceCapabilitiesReady(), 3000);
+    const int initialReads = runtime.connectionSnapshotCalls.load();
+    client.onLegacyMediaListUpdated({}, 2);
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.connectionSnapshotCalls.load(), initialReads + 1, 3000);
+    client.onLegacyUploadStatus(QStringLiteral("restricted recovery"), 3);
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.connectionSnapshotCalls.load(), initialReads + 2, 3000);
+    auto active = client.connection_;
+    active.displaySessionActive = true;
+    ++active.revision;
+    client.applyConnectionSnapshot(active);
+    client.onLegacyMediaListUpdated({}, 4);
+    client.onLegacyUploadStatus(QStringLiteral("active"), 5);
+    processEventsFor(75);
+    QCOMPARE(runtime.connectionSnapshotCalls.load(), initialReads + 2);
+}
+
+void RuntimeClientHandshakeTests::coherentBadgeHandshakeAndSavedV2_data() {
+    QTest::addColumn<QString>("scenario");
+    for (const char *name : {"saved-roundtrip", "malformed", "foreign-generation", "stale-attempt", "stale-owner", "capabilities-pending", "capabilities-no-reply"})
+        QTest::newRow(name) << QString::fromLatin1(name);
+}
+
+void RuntimeClientHandshakeTests::coherentBadgeHandshakeAndSavedV2() {
+    QFETCH(QString, scenario);
+    CapabilityRuntimeObject runtime;
+    configureBadgeRuntime(&runtime, QStringLiteral("Private badge"));
+    const bool delayedCapabilities = scenario.startsWith(QStringLiteral("capabilities-"));
+    if (delayedCapabilities) {
+        runtime.runtimeReplyMode = CapabilityRuntimeObject::RuntimeReplyMode::Delayed;
+        runtime.display = runtime.coherentDisplay.display;
+    }
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    if (delayedCapabilities) {
+        QTRY_VERIFY_WITH_TIMEOUT(runtime.runtimeCapabilityCalls.load() > 0 && client.connection_.printerClassConnected, 3000);
+        QVERIFY(service.sendDisplayStateUpdated(runtime.display));
+        processEventsFor(75);
+        QVERIFY(!client.capabilitiesReady());
+        QVERIFY(!client.displayStateValid());
+        QVERIFY(!client.displayRevisionReceived_);
+        const auto submit = [&]() {
+            return client.beginDisplaySubmission(savedLayoutRequest(), true, false, false, false, false,
+                QStringLiteral("QueueApplyWithMetrics"));
+        };
+        QVERIFY(submit().isEmpty());
+        if (scenario == QStringLiteral("capabilities-no-reply")) {
+            QVERIFY(service.invoke([&]() {
+                service.connection().send(runtime.delayedRuntimeMessage.createErrorReply(QDBusError::NoReply, QStringLiteral("fixture no reply")));
+                runtime.runtimeReplyMode = CapabilityRuntimeObject::RuntimeReplyMode::Normal;
+            }));
+            QTRY_VERIFY_WITH_TIMEOUT(client.runtimeCapabilitiesFailed_, 3000);
+            QVERIFY(!client.displayStateValid());
+            QVERIFY(submit().isEmpty());
+            client.startHandshake();
+            QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid(), 3000);
+            QCOMPARE(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("Private badge"));
+            return;
+        }
+        bool sent = false;
+        QVERIFY(service.invoke([&]() { sent = runtime.sendDelayedRuntimeReply(service.connection(), runtime.runtimeCapabilities); }));
+        QVERIFY(sent);
+        QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid(), 3000);
+        QCOMPARE(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("Private badge"));
+        return;
+    }
+    QTRY_VERIFY_WITH_TIMEOUT(client.customBadgeTextSupported() && client.displayStateValid(), 3000);
+    const auto accepted = client.displayBadgeChoices();
+    QCOMPARE(accepted.value(QStringLiteral("primaryCpu")).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("Private badge"));
+    QTRY_VERIFY_WITH_TIMEOUT(client.savedLayoutsReady() && client.savedLayoutModel()->rowCount() == 1, 3000);
+    const QString layoutId = QStringLiteral("01234567-89ab-4cde-8f01-23456789abcd");
+    auto dto = client.savedLayoutDraft(layoutId);
+    QCOMPARE(dto.value(QStringLiteral("layout")).toMap().value(QStringLiteral("badgeChoices")).toMap(), accepted);
+    TryxRuntimeDisplayState oldState = runtime.coherentDisplay.display;
+    oldState.revision = 900;
+    oldState.brightness = 1;
+    QVERIFY(service.sendDisplayStateUpdated(oldState));
+    processEventsFor(50);
+    QCOMPARE(client.brightness(), 50);
+    if (scenario == QStringLiteral("saved-roundtrip")) {
+        auto draft = dto.value(QStringLiteral("layout")).toMap();
+        auto choices = accepted;
+        choices.insert(QStringLiteral("primaryCpu"), QVariantMap{{QStringLiteral("mode"), QStringLiteral("Custom")}, {QStringLiteral("text"), QStringLiteral("New typed text")}});
+        draft.insert(QStringLiteral("badgeChoices"), choices);
+        QSignalSpy put(&client, &RuntimeClient::savedLayoutPutFinished);
+        client.putSavedLayout(QStringLiteral("Badge fixture"), layoutId,
+            {{QStringLiteral("layout"), draft}, {QStringLiteral("brightness"), dto.value(QStringLiteral("brightness"))},
+             {QStringLiteral("orientation"), dto.value(QStringLiteral("orientation"))}});
+        QTRY_COMPARE_WITH_TIMEOUT(put.count(), 1, 3000);
+        QVERIFY(put.first().at(3).toBool());
+        QCOMPARE(client.savedLayoutDraft(layoutId).value(QStringLiteral("layout")).toMap().value(QStringLiteral("badgeChoices")).toMap(), choices);
+        QCOMPARE(runtime.savedLayoutsPutCalls.load(), 0);
+        QSignalSpy deleted(&client, &RuntimeClient::savedLayoutDeleteFinished);
+        client.deleteSavedLayout(layoutId);
+        QTRY_COMPARE_WITH_TIMEOUT(deleted.count(), 1, 3000);
+        QVERIFY(deleted.first().at(1).toBool());
+        QCOMPARE(client.savedLayoutModel()->rowCount(), 0);
+        QCOMPARE(runtime.savedLayoutsDeleteCalls.load(), 0);
+        return;
+    }
+    if (scenario == QStringLiteral("malformed") || scenario == QStringLiteral("foreign-generation")) {
+        QVERIFY(service.invoke([&]() {
+            if (scenario == QStringLiteral("malformed")) runtime.coherentDisplay.badges.schemaVersion = 2;
+            else ++runtime.coherentDisplay.physicalGeneration;
+        }));
+        client.refreshDisplay();
+        QTRY_VERIFY_WITH_TIMEOUT(!client.displayStateValid(), 3000);
+        QCOMPARE(client.displayBadgeChoices(), accepted);
+        QVERIFY(service.invoke([&]() { runtime.coherentDisplay.badges.schemaVersion = 1; runtime.coherentDisplay.physicalGeneration = 7; }));
+        client.refreshDisplay();
+        QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid(), 3000);
+        QCOMPARE(client.displayBadgeChoices(), accepted);
+        return;
+    }
+    QVERIFY(service.invoke([&]() { runtime.delayCoherentDisplay = true; }));
+    const int before = runtime.coherentDisplayCalls.load();
+    client.refreshDisplay();
+    QTRY_VERIFY_WITH_TIMEOUT(runtime.coherentDisplayCalls.load() > before, 3000);
+    if (scenario == QStringLiteral("stale-attempt")) {
+        QVERIFY(service.invoke([&]() { runtime.delayCoherentDisplay = false; runtime.coherentDisplay.badges.primaryCpu.text = QStringLiteral("New attempt"); ++runtime.coherentDisplay.revision; ++runtime.coherentDisplay.display.revision; }));
+        client.startHandshake();
+        QTRY_COMPARE_WITH_TIMEOUT(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("New attempt"), 3000);
+        QVERIFY(service.invoke([&]() {
+            auto stale = runtime.coherentDisplay;
+            stale.badges.primaryCpu.text = QStringLiteral("Stale attempt");
+            service.connection().send(runtime.delayedCoherentDisplayMessage.createReply({QVariant::fromValue(stale)}));
+        }));
+        processEventsFor(50);
+        QCOMPARE(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("New attempt"));
+        return;
+    }
+    QVERIFY(service.releaseServiceName());
+    CapabilityRuntimeObject replacement;
+    configureBadgeRuntime(&replacement, QStringLiteral("New owner"));
+    ScopedRuntimeService replacementService(&replacement);
+    QVERIFY(replacementService.start());
+    QTRY_COMPARE_WITH_TIMEOUT(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("New owner"), 3000);
+    QVERIFY(service.invoke([&]() { service.connection().send(runtime.delayedCoherentDisplayMessage.createReply({QVariant::fromValue(runtime.coherentDisplay)})); }));
+    processEventsFor(50);
+    QCOMPARE(client.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("New owner"));
+}
 
 void RuntimeClientHandshakeTests::
     supportBundleControllerExportsUnavailableHostReport() {
@@ -3495,6 +3957,8 @@ void RuntimeClientHandshakeTests::
 void RuntimeClientHandshakeTests::
     savedLayoutPreSendOwnerFailureIsDeliveredAsynchronously() {
     RuntimeClient client;
+    // The wire version was negotiated before the owner disappeared.
+    client.capabilitiesReady_ = true;
     client.connection_ = connectedSnapshot();
     client.display_.valid = true;
     client.display_.revision = 1;

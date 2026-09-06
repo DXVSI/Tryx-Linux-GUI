@@ -3,8 +3,15 @@
 #include <QtDBus>
 
 #include "printerprotocol.h"
+#include "printertransactionchannel.h"
+#include "usbprintertransport.h"
+#include "paseconfigurationclient.h"
+#include "pasemediaclient.h"
+#include "turrismediaclient.h"
 #include "deleteintentstore.h"
 #include "devicemanager.h"
+#include "legacydevicesession.h"
+#include "printerclasssession.h"
 #include "devicemediaartifactstore.h"
 #include "firmwarebridge.h"
 #include "firmwareupdater.h"
@@ -17,6 +24,7 @@
 #include "printermediavalidator.h"
 #include "privateruntimepaths.h"
 #include "runtimeapplyrequestcodec.h"
+#include "paseoverlayconfig.h"
 #include "runtimebridge.h"
 #include "runtimedowngradestore.h"
 #include "runtimepresentationpreferencesstore.h"
@@ -40,6 +48,7 @@
 #include <QProcess>
 #include <QSaveFile>
 #include <QSemaphore>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
@@ -64,6 +73,7 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <unistd.h>
 
@@ -2187,6 +2197,7 @@ private slots:
     void savedLayoutDowngradeLatchBlocksCrudWithoutDispatch();
     void savedLayoutQueueRejectsBeforeWorkerDispatch();
     void savedLayoutQueuePreservesEditedDraftAndFreshProof();
+    void savedLayoutCustomBadgeDraftUsesOneVersionedApply();
     void savedLayoutWorkerFreshFileListBoundary_data();
     void savedLayoutWorkerFreshFileListBoundary();
     void runtimeCapabilitiesAreProfileBounded();
@@ -2274,6 +2285,14 @@ private slots:
     void paseWaterfallFullScreenGeometry();
     void paseWaterfallSplitGeometryAndIndependentStyles();
     void paseSplitApplyBuildsDualUserConfigAndBadges();
+    void paseCustomBadgesSerialize_data();
+    void paseCustomBadgesSerialize();
+    void paseCustomBadgesRejectBeforeTransport_data();
+    void paseCustomBadgesRejectBeforeTransport();
+    void customBadgeApplyIsImmutableAndPersistsAcceptedChoices();
+    void customBadgeSnapshotCommitsAtomically_data();
+    void customBadgeSnapshotCommitsAtomically();
+    void customBadgeRestoreRejectsInvalidState();
     void paseApplyRetriesDroppedReadOnlyConfigResponse_data();
     void paseApplyRetriesDroppedReadOnlyConfigResponse();
     void paseApplyReadOnlyRetryCancellationSendsNoMutation();
@@ -2317,6 +2336,7 @@ private slots:
     void mediaCatalogStoreRejectsSelfProducedThumbnailBudgetOverflow();
     void mediaCatalogStoreFailClosedLoadRejectsThumbnailMutation();
     void ensureMediaReusesOriginWithoutPreparation();
+    void ensureMediaReusesOriginWithoutPreparation_data();
     void ensureOriginMissReleasesForegroundBeforePreparation();
     void previewCommitFailureRemainsRetryable_data();
     void previewCommitFailureRemainsRetryable();
@@ -2329,6 +2349,13 @@ private slots:
     void retryCacheStoreRejectsInvalidPreparedDomainMetadata_data();
     void retryCacheStoreRejectsInvalidPreparedDomainMetadata();
     void retryCacheStorePersistsPreparingCanonicalV11();
+    void retryCacheStorePreservesBadgeContinuationV12();
+    void customBadgeRetryRequiresExplicitContinuation();
+    void retryBadgeManifestRejectsMutation_data();
+    void retryBadgeManifestRejectsMutation();
+    void retryLegacyUpgradePreservesBackup();
+    void runtimeDowngradeBlocksBadgeFormats_data();
+    void runtimeDowngradeBlocksBadgeFormats();
     void retryCacheSplitPreparationPersistsExactGeometry();
     void retryCacheReleasedV10DowngradeGateIsExact();
     void retryCacheSplitShadowCleanupPreservesCanonicalV11();
@@ -2555,6 +2582,11 @@ private slots:
     void firmwareExclusiveGateRejectsUnresolvedDeviceState();
     void firmwareExclusiveGateSuppressesReconnectUntilRelease();
     void firmwareWorkerQuiesceClosesTransport();
+    void legacyWorkerSerialLifecycleAndQuiesce();
+    void workerSessionsShareIoContextAndTeardown();
+    void workerGateInterruptsBlockedForegroundResponse_data();
+    void workerGateInterruptsBlockedForegroundResponse();
+    void staleForegroundCompletionDoesNotRestartTimers();
     void firmwareReleaseFenceWaitsForLateQuiesce();
     void approvedFirmwareStagingPinsBytes();
     void rockchipLoaderIdentityIsFailClosed();
@@ -2632,6 +2664,10 @@ private slots:
     void incompleteUserConfigIsNotWritten();
     void paseStandbyMutationIsRejectedBeforeUsb();
     void unsafeMediaNamesAreRejected();
+    void protocolLayerOwnersAreNotCopyable();
+    void usbTransportOwnsOnlyItsDataDescriptor_data();
+    void usbTransportOwnsOnlyItsDataDescriptor();
+    void modelClientsBorrowOneBufferedChannel();
     void duplexInputReceivesAckDuringOutput();
     void duplexZeroLengthInputDefersRearmUntilOutputCompletes();
     void duplexInputErrorDefersRearmWithoutStarvingOutput();
@@ -4115,6 +4151,66 @@ void PrinterProtocolTests::
     QCOMPARE(workerSpy.count(), 1);
 }
 
+void PrinterProtocolTests::savedLayoutCustomBadgeDraftUsesOneVersionedApply() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString sysRoot = directory.filePath(QStringLiteral("sys"));
+    const QString devRoot = directory.filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(manager.get(), &DeviceManager::requestPrinterApplyMediaWithBadgesV1,
+                        manager->worker_, &DeviceWorker::applyPrinterMediaWithBadgesV1);
+    QObject::disconnect(manager.get(), &DeviceManager::requestPrinterApplyMedia,
+                        manager->worker_, &DeviceWorker::applyPrinterMedia);
+    QObject::disconnect(manager.get(), &DeviceManager::requestBeginPrinterForegroundOperation,
+                        manager->worker_, &DeviceWorker::beginPrinterForegroundOperation);
+    QObject::disconnect(manager.get(), &DeviceManager::requestStartPrinterSession,
+                        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    PrinterProtocol::MediaFile media;
+    media.name = QStringLiteral("layout.mp4.h264_2240x1080");
+    media.size = 4096;
+    media.source = PrinterProtocol::MediaSource::User;
+    manager->updateMediaCatalog({media});
+    auto draft = tryxSavedLayoutV2FromV1(savedLayoutForTesting(manager.get(), QStringLiteral("Custom")));
+    draft.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Saved text")};
+    TryxRuntimeSavedLayoutsSnapshotV2 confirmed;
+    QString errorName;
+    QString error;
+    QSignalSpy apply(manager.get(), &DeviceManager::requestPrinterApplyMediaWithBadgesV1);
+    QSignalSpy legacy(manager.get(), &DeviceManager::requestPrinterApplyMedia);
+    QVERIFY2(manager->putSavedLayoutV2(0, draft, &confirmed, &errorName, &error), qPrintable(error));
+    QCOMPARE(confirmed.layouts.size(), 1);
+    QCOMPARE(apply.count(), 0);
+    const auto saved = confirmed.layouts.first();
+    QVERIFY(manager->savedLayoutsSnapshot().layouts.isEmpty());
+    QVERIFY(!manager->deleteSavedLayout(confirmed.revision, saved.layoutId, nullptr, &errorName, &error));
+    TryxRuntimeApplyWithBadgesV1 edited{1, saved.request, saved.badges};
+    edited.badges.primaryCpu.text = QStringLiteral("Edited since Load");
+    const QString operationId = QStringLiteral("16161616-1616-4161-8161-161616160005");
+    QCOMPARE(manager->queueSavedLayoutApplyWithBadgesOperation(operationId, saved.layoutId, saved.revision, edited), operationId);
+    QCOMPARE(apply.count(), 1);
+    QCOMPARE(legacy.count(), 0);
+    QCOMPARE(apply.first()[2].value<TryxRuntimeApplyWithBadgesV1>(), edited);
+    QCOMPARE(apply.first()[4].toString(), saved.deviceIdentity);
+    QCOMPARE(apply.first()[5].value<QList<TryxRuntimeSavedMediaRefV1>>(), saved.media);
+    QCOMPARE(manager->queueSavedLayoutApplyWithBadgesOperation(operationId, saved.layoutId, saved.revision, edited), operationId);
+    QVERIFY(manager->queueSavedLayoutApplyOperation(operationId, saved.layoutId, saved.revision, saved.request).isEmpty());
+    edited.badges.primaryCpu.text = QStringLiteral("Conflicting retry");
+    QVERIFY(manager->queueSavedLayoutApplyWithBadgesOperation(operationId, saved.layoutId, saved.revision, edited).isEmpty());
+    edited.badges.primaryCpu.text = QStringLiteral("invalid\nretry");
+    QVERIFY(manager->queueSavedLayoutApplyWithBadgesOperation(operationId, saved.layoutId, saved.revision, edited).isEmpty());
+    QCOMPARE(manager->operationInfo(operationId).state, QStringLiteral("Preflight"));
+    edited.badges.primaryCpu.text = QStringLiteral("Edited since Load");
+    QVERIFY(manager->queueSavedLayoutApplyWithBadgesOperation(operationId, QStringLiteral("different-layout-id"), saved.revision, edited).isEmpty());
+    QCOMPARE(manager->operationInfo(operationId).state, QStringLiteral("Preflight"));
+    QCOMPARE(apply.count(), 1);
+    QCOMPARE(manager->savedLayoutsSnapshotV2().layouts.first(), saved);
+}
+
 void PrinterProtocolTests::savedLayoutWorkerFreshFileListBoundary_data() {
     QTest::addColumn<QString>("scenario");
     QTest::addColumn<QString>("expectedCategory");
@@ -4228,9 +4324,9 @@ void PrinterProtocolTests::savedLayoutWorkerFreshFileListBoundary() {
     worker.configurePrinterDevice(
         endpoint, deviceIdentity, 0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
-    worker.printerSessionState_ =
-        DeviceWorker::PrinterSessionState::Active;
-    worker.printerRecoveryTimer_->stop();
+    worker.printerSession_->printerSessionState_ =
+        PrinterClassSession::PrinterSessionState::Active;
+    worker.printerSession_->printerRecoveryTimer_->stop();
     worker.beginPrinterForegroundOperation(operationId, generation);
 
     int fileListCount = 0;
@@ -4407,11 +4503,11 @@ void PrinterProtocolTests::savedLayoutWorkerFreshFileListBoundary() {
     QSignalSpy applySpy(
         &worker, &DeviceWorker::printerApplyFinished);
     if (scenario == QStringLiteral("generation-after-proof")) {
-        worker.savedLayoutProofConfirmedHookForTesting_ = [&worker]() {
+        worker.printerSession_->savedLayoutProofConfirmedHookForTesting_ = [&worker]() {
             worker.updatePrinterGenerationGate(generation + 1, true);
         };
     } else if (scenario == QStringLiteral("cancel-after-proof")) {
-        worker.savedLayoutProofConfirmedHookForTesting_ =
+        worker.printerSession_->savedLayoutProofConfirmedHookForTesting_ =
             [&worker, &operationId]() {
                 worker.cancelPrinterOperation(operationId);
             };
@@ -4437,6 +4533,13 @@ void PrinterProtocolTests::savedLayoutWorkerFreshFileListBoundary() {
         QCOMPARE(applySpy.count(), 1);
         QCOMPARE(applySpy.constFirst().at(2).toBool(),
                  expectedOutcome == QStringLiteral("Succeeded"));
+        QCOMPARE(applySpy.constFirst().size(), 8);
+        const auto readback = applySpy.constFirst().at(7).value<PrinterProtocol::PaseDisplayStateResult>();
+        QCOMPARE(readback.success, expectedOutcome == QStringLiteral("Succeeded"));
+        if (readback.success) {
+            QCOMPARE(readback.state.media, QStringList{mediaName});
+            QCOMPARE(readback.state.screenMode, QStringLiteral("Full Screen"));
+        }
         QCOMPARE(
             qvariant_cast<PrinterProtocol::MutationOutcome>(
                 applySpy.constFirst().at(4)),
@@ -4912,9 +5015,9 @@ void PrinterProtocolTests::
         worker.publishedPresentationPreferences_.load(
             std::memory_order_acquire),
         0U);
-    QCOMPARE(worker.presentationPreferences_.temperatureUnit,
+    QCOMPARE(worker.printerSession_->presentationPreferences_.temperatureUnit,
              QStringLiteral("Celsius"));
-    QCOMPARE(worker.presentationPreferences_.timeFormat,
+    QCOMPARE(worker.printerSession_->presentationPreferences_.timeFormat,
              QStringLiteral("24H"));
 }
 
@@ -4989,6 +5092,9 @@ void PrinterProtocolTests::runtimeCapabilitiesAreProfileBounded() {
             QStringLiteral("runtime.device-specifications.v1"),
             QStringLiteral("runtime.presentation-preferences.v1"),
             QStringLiteral("runtime.saved-layouts.v1"),
+            QStringLiteral("runtime.saved-layouts.v2"),
+            QStringLiteral("runtime.apply-with-badges.v1"),
+            QStringLiteral("runtime.display-snapshot.v1"),
             QStringLiteral("runtime.cache-cleanup.v1"),
             QStringLiteral("runtime.support-snapshot.v1"),
             QStringLiteral(
@@ -5012,10 +5118,12 @@ void PrinterProtocolTests::runtimeCapabilitiesAreProfileBounded() {
             QStringLiteral("device.display-configuration.v1"),
             QStringLiteral("device.media-split-area.v1"),
             QStringLiteral("device.overlay-metrics.v1"),
+            QStringLiteral("device.overlay-badge-text.v1"),
             QStringLiteral("device.firmware-flash.v1")}));
 
     manager->sessionController_.state_.printerProductId = 0x1011;
     capabilities = operationsAdaptor.GetDeviceCapabilitiesV1();
+    QVERIFY(!capabilities.capabilities.contains(QStringLiteral("device.overlay-badge-text.v1")));
     QVERIFY(capabilities.capabilities.contains(
         QStringLiteral("device.media-upload.v1")));
     QVERIFY(capabilities.capabilities.contains(
@@ -5667,6 +5775,7 @@ void PrinterProtocolTests::runtimeApi8ContractIsAdditive() {
         "slot:void UploadMedia(QString)")
         .split(QLatin1Char('\n'));
     const QStringList expectedManager2 = QStringLiteral(
+        "signal:void DisplaySnapshotChangedV1(qulonglong)\n"
         "signal:void DisplayStateUpdated(TryxRuntimeDisplayState)\n"
         "signal:void MediaCatalogUpdated(TryxRuntimeMediaCatalogSnapshot)\n"
         "signal:void MetricsStateUpdated(TryxRuntimeMetricsState)\n"
@@ -5677,20 +5786,24 @@ void PrinterProtocolTests::runtimeApi8ContractIsAdditive() {
         "slot:QString PrepareRuntimeDowngradeV10()\n"
         "slot:QString QueueApply(QString,TryxRuntimeApplyRequest)\n"
         "slot:QString QueueApplyWithMetrics(QString,TryxRuntimeApplyRequest)\n"
+        "slot:QString QueueApplyWithBadgesV1(QString,TryxRuntimeApplyWithBadgesV1)\n"
         "slot:QString QueueCacheCleanupV1(QString)\n"
         "slot:QString QueueDeleteMedia(QString,QStringList)\n"
         "slot:QString QueueEnsureMediaAndApply(QString,QString,TryxRuntimeApplyRequest)\n"
         "slot:QString QueueEnsureMediaAndApplyWithTransform(QString,QString,TryxRuntimeApplyRequest,TryxRuntimeMediaTransform)\n"
+        "slot:QString QueueEnsureMediaAndApplyWithBadgesV1(QString,QString,TryxRuntimeApplyWithBadgesV1,TryxRuntimeMediaTransform)\n"
         "slot:QString QueueMetricsConfig(QString,TryxRuntimeMetricsConfigRequest)\n"
         "slot:QString QueueRecoveredMediaUploadWithPreparationProfileV1(QString,QString,QString,TryxRuntimeMediaPreparationProfileV1)\n"
         "slot:QString QueueRecoveredMediaUploadWithTransform(QString,QString,QString,TryxRuntimeMediaTransform)\n"
         "slot:QString QueueReplaceDeviceMedia(QString,QString,QString,QString,TryxRuntimeApplyRequest,TryxRuntimeMediaTransform)\n"
         "slot:QString QueueReplaceDeviceMediaWithPreparationProfileV1(QString,QString,QString,QString,TryxRuntimeApplyRequest,TryxRuntimeMediaPreparationProfileV1)\n"
         "slot:QString QueueSavedLayoutApplyV1(QString,QString,qulonglong,TryxRuntimeApplyRequest)\n"
+        "slot:QString QueueSavedLayoutApplyV2(QString,QString,qulonglong,TryxRuntimeApplyWithBadgesV1)\n"
         "slot:QString QueueStageDeviceMedia(QString,QString)\n"
         "slot:QString QueueUpload(QString,QString,bool)\n"
         "slot:QString QueueUploadWithApply(QString,QString,TryxRuntimeApplyRequest)\n"
         "slot:QString QueueUploadWithApplyAndTransform(QString,QString,TryxRuntimeApplyRequest,TryxRuntimeMediaTransform)\n"
+        "slot:QString QueueUploadWithApplyAndBadgesV1(QString,QString,TryxRuntimeApplyWithBadgesV1,TryxRuntimeMediaTransform)\n"
         "slot:QString QueueUploadWithPreparationProfileV1(QString,QString,TryxRuntimeMediaPreparationProfileV1)\n"
         "slot:QString QueueUploadWithTransform(QString,QString,TryxRuntimeMediaTransform)\n"
         "slot:QString RetryOperation(QString,QString)\n"
@@ -5701,6 +5814,7 @@ void PrinterProtocolTests::runtimeApi8ContractIsAdditive() {
         "slot:TryxRuntimeDeviceMediaMetadataV1 GetDeviceMediaMetadataV1(QString,QString)\n"
         "slot:TryxRuntimeDeviceSpecificationsV1 GetDeviceSpecificationsV1()\n"
         "slot:TryxRuntimeDisplayState GetDisplayState()\n"
+        "slot:TryxRuntimeDisplaySnapshotV1 GetDisplaySnapshotV1()\n"
         "slot:TryxRuntimeMediaCatalogSnapshot GetMediaCatalog()\n"
         "slot:TryxRuntimeMetricsState GetMetricsState()\n"
         "slot:TryxRuntimeOperationInfo GetActiveOperation()\n"
@@ -5711,6 +5825,9 @@ void PrinterProtocolTests::runtimeApi8ContractIsAdditive() {
         "slot:TryxRuntimeSavedLayoutsSnapshotV1 DeleteSavedLayoutV1(qulonglong,QString)\n"
         "slot:TryxRuntimeSavedLayoutsSnapshotV1 GetSavedLayoutsV1()\n"
         "slot:TryxRuntimeSavedLayoutsSnapshotV1 PutSavedLayoutV1(qulonglong,TryxRuntimeSavedLayoutV1)\n"
+        "slot:TryxRuntimeSavedLayoutsSnapshotV2 DeleteSavedLayoutV2(qulonglong,QString)\n"
+        "slot:TryxRuntimeSavedLayoutsSnapshotV2 GetSavedLayoutsV2()\n"
+        "slot:TryxRuntimeSavedLayoutsSnapshotV2 PutSavedLayoutV2(qulonglong,TryxRuntimeSavedLayoutV2)\n"
         "slot:TryxRuntimeSnapshot GetConnectionSnapshot()\n"
         "slot:bool ReleaseDeviceMediaArtifact(QString,QString)\n"
         "slot:bool RenewDeviceMediaArtifactLease(QString,QString)\n"
@@ -5771,7 +5888,9 @@ void PrinterProtocolTests::runtimeApi8ContractIsAdditive() {
                 .classInfo(manager2InterfaceInfo).value()),
         tryxRuntimeOperationsInterfaceName());
     QCOMPARE(manager1, expectedManager1);
-    QCOMPARE(manager2, expectedManager2);
+    auto sortedExpectedManager2 = expectedManager2;
+    sortedExpectedManager2.sort();
+    QCOMPARE(manager2, sortedExpectedManager2);
     QCOMPARE(wireSignatures, expectedWireSignatures);
 }
 
@@ -6252,10 +6371,10 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
             manager->worker_,
             [worker = manager->worker_,
              &earlierWorkerCommandCompleted]() {
-                worker->legacyMetricsTimer_->start(60000);
-                worker->printerKeepaliveTimer_->start(60000);
-                worker->printerMetricsTimer_->start(60000);
-                worker->printerRecoveryTimer_->start(60000);
+                worker->legacySession_->legacyMetricsTimer_->start(60000);
+                worker->printerSession_->printerKeepaliveTimer_->start(60000);
+                worker->printerSession_->printerMetricsTimer_->start(60000);
+                worker->printerSession_->printerRecoveryTimer_->start(60000);
                 earlierWorkerCommandCompleted.store(
                     true, std::memory_order_release);
             },
@@ -6282,13 +6401,13 @@ runtimeDowngradeV10PreparationIsAtomicAndFailClosed() {
             [worker = manager->worker_,
              &workerTransportQuiesced]() {
                 workerTransportQuiesced =
-                    !worker->legacyMetricsTimer_->isActive() &&
-                    !worker->printerKeepaliveTimer_->isActive() &&
-                    !worker->printerMetricsTimer_->isActive() &&
-                    !worker->printerRecoveryTimer_->isActive() &&
-                    !worker->device_ &&
-                    worker->printerSessionState_ ==
-                        DeviceWorker::PrinterSessionState::Passive;
+                    !worker->legacySession_->legacyMetricsTimer_->isActive() &&
+                    !worker->printerSession_->printerKeepaliveTimer_->isActive() &&
+                    !worker->printerSession_->printerMetricsTimer_->isActive() &&
+                    !worker->printerSession_->printerRecoveryTimer_->isActive() &&
+                    !worker->legacySession_->device_ &&
+                    worker->printerSession_->printerSessionState_ ==
+                        PrinterClassSession::PrinterSessionState::Passive;
             },
             Qt::BlockingQueuedConnection));
         QVERIFY(workerTransportQuiesced);
@@ -8774,9 +8893,9 @@ void PrinterProtocolTests::
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"), 0x1011, generation);
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
-    worker.printerSessionState_ =
-        DeviceWorker::PrinterSessionState::Active;
-    worker.printerRecoveryTimer_->stop();
+    worker.printerSession_->printerSessionState_ =
+        PrinterClassSession::PrinterSessionState::Active;
+    worker.printerSession_->printerRecoveryTimer_->stop();
     QSignalSpy finishedSpy(&worker, &DeviceWorker::printerDeleteFinished);
     worker.deletePrinterMedia(
         endpoint, QStringList{target}, operationId, intentPath, false,
@@ -13114,6 +13233,391 @@ paseWaterfallSplitGeometryAndIndependentStyles() {
              panorama::wire::v1::OverlayGroup::ALIGN_LEFT);
 }
 
+void PrinterProtocolTests::customBadgeSnapshotCommitsAtomically_data() {
+    QTest::addColumn<QString>("scenario");
+    for (const char *name : {"readback-first", "completion-first", "persistence-failure", "verification-failed", "cancelled", "stale-generation", "empty-split"})
+        QTest::newRow(name) << QString::fromLatin1(name);
+}
+
+void PrinterProtocolTests::customBadgeSnapshotCommitsAtomically() {
+    QFETCH(QString, scenario);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString sysRoot = directory.filePath(QStringLiteral("sys"));
+    const QString devRoot = directory.filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    QObject::disconnect(manager.get(), &DeviceManager::requestPrinterDisplayState,
+        manager->worker_, &DeviceWorker::readPrinterDisplayState);
+    QObject::disconnect(manager.get(), &DeviceManager::requestPrinterApplyMedia,
+        manager->worker_, &DeviceWorker::applyPrinterMedia);
+    QObject::disconnect(manager.get(), &DeviceManager::requestPrinterApplyMediaWithBadgesV1,
+        manager->worker_, &DeviceWorker::applyPrinterMediaWithBadgesV1);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    const quint64 generation = manager->sessionController_.state_.printerGeneration;
+    PrinterProtocol::PaseOverlayConfig oldOverlay;
+    oldOverlay.left.badges = {QStringLiteral("CPU Badge")};
+    oldOverlay.badgeChoices.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Accepted A")};
+    if (scenario == QStringLiteral("empty-split")) oldOverlay = {};
+    QString error;
+    QVERIFY(manager->persistPaseMetricsConfiguration(oldOverlay, scenario != QStringLiteral("empty-split"), &error));
+    PrinterProtocol::PaseDisplayState raw;
+    raw.brightness = 40;
+    if (scenario == QStringLiteral("empty-split")) {
+        raw.screenMode = QStringLiteral("Screen Splitting");
+        raw.media = {QStringLiteral("left.mp4.h264_1120x1080"), QStringLiteral("right.mp4.h264_1120x1080")};
+    }
+    manager->worker_->printerSessionStarted(generation);
+    manager->worker_->printerDisplayStateReady(raw, generation);
+    const auto initial = manager->displaySnapshotV1(91);
+    QCOMPARE(initial.status, QStringLiteral("HostAccepted"));
+    QCOMPARE(initial.badges, oldOverlay.badgeChoices);
+    QCOMPARE(initial.connectionRevision, quint64(91));
+    QVERIFY(initial.acceptedOperationId.isEmpty());
+    QVERIFY(tryxDisplaySnapshotV1IsValid(initial));
+    if (scenario == QStringLiteral("empty-split")) {
+        TryxRuntimeApplyRequest mediaOnly;
+        mediaOnly.screenMode = raw.screenMode;
+        mediaOnly.playMode = raw.playMode;
+        mediaOnly.media = raw.media;
+        const QString mediaId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QCOMPARE(manager->queueApplyOperation(mediaId, mediaOnly), mediaId);
+        manager->worker_->printerApplyFinished(mediaId, {}, true, false,
+            PrinterProtocol::MutationOutcome::Succeeded, {}, generation, {true, {}, raw});
+        QCOMPARE(manager->displaySnapshotV1(92).status, QStringLiteral("HostAccepted"));
+        QVERIFY(tryxDisplaySnapshotV1IsValid(manager->displaySnapshotV1(92)));
+        return;
+    }
+
+    TryxRuntimeApplyWithBadgesV1 request;
+    request.request.screenMode = QStringLiteral("Full Screen");
+    request.request.replaceOverlay = true;
+    request.request.settingsBadges = {QStringLiteral("CPU Badge")};
+    request.request.settingsColor = QStringLiteral("#00ff00");
+    request.request.display.brightnessPresent = true;
+    request.request.display.brightness = 80;
+    request.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Accepted B")};
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QCOMPARE(manager->queueApplyWithBadgesOperation(id, request), id);
+    QCOMPARE(manager->displaySnapshotV1(92).status, QStringLiteral("Pending"));
+    QVERIFY(!manager->displaySnapshotV1(92).display.valid);
+    raw.brightness = 80;
+    if (scenario != QStringLiteral("completion-first")) {
+        manager->worker_->printerDisplayStateReady(raw, generation);
+        QCOMPARE(manager->displaySnapshotV1(93).status, QStringLiteral("Pending"));
+        QVERIFY(!manager->displaySnapshotV1(93).display.valid);
+    }
+    if (scenario == QStringLiteral("persistence-failure")) {
+        const auto path = manager->sessionController_.paseMetricsConfigStore_->configPath();
+        QVERIFY(QFile::rename(path, path + QStringLiteral(".preserved")));
+        QVERIFY(QFile::link(path + QStringLiteral(".preserved"), path));
+    }
+    if (scenario == QStringLiteral("stale-generation")) ++manager->sessionController_.state_.printerGeneration;
+    const bool success = scenario != QStringLiteral("verification-failed") && scenario != QStringLiteral("cancelled");
+    const auto outcome = success ? PrinterProtocol::MutationOutcome::Succeeded
+        : scenario == QStringLiteral("cancelled") ? PrinterProtocol::MutationOutcome::Cancelled
+        : PrinterProtocol::MutationOutcome::VerificationFailed;
+    manager->worker_->printerApplyFinished(id, {}, success, true, outcome, {}, generation, {true, {}, raw});
+    auto snapshot = manager->displaySnapshotV1(94);
+    if (scenario == QStringLiteral("stale-generation")) {
+        QCOMPARE(snapshot.status, QStringLiteral("Unavailable"));
+        QVERIFY(!snapshot.display.valid);
+        return;
+    }
+    if (scenario == QStringLiteral("persistence-failure") || scenario == QStringLiteral("verification-failed")) {
+        QCOMPARE(snapshot.status, QStringLiteral("Unresolved"));
+        QVERIFY(!snapshot.display.valid);
+        QCOMPARE(snapshot.badges, TryxRuntimeOverlayBadgesV1());
+        if (scenario == QStringLiteral("persistence-failure")) {
+            const auto path = manager->sessionController_.paseMetricsConfigStore_->configPath();
+            QVERIFY(QFile::remove(path));
+            QVERIFY(QFile::rename(path + QStringLiteral(".preserved"), path));
+            TryxRuntimeApplyRequest control;
+            control.display.brightnessPresent = true;
+            control.display.brightness = 65;
+            const QString controlId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QCOMPARE(manager->queueApplyOperation(controlId, control), controlId);
+            raw.brightness = 65;
+            manager->worker_->printerApplyFinished(controlId, {}, true, false,
+                PrinterProtocol::MutationOutcome::Succeeded, {}, generation, {true, {}, raw});
+            QCOMPARE(manager->displaySnapshotV1(95).status, QStringLiteral("Unresolved"));
+            control = {};
+            control.display.orientationPresent = true;
+            control.display.waterfallMode = true;
+            const QString orientationId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            QCOMPARE(manager->queueApplyOperation(orientationId, control), orientationId);
+            raw.waterfallMode = true;
+            manager->worker_->printerApplyFinished(orientationId, {}, true, true,
+                PrinterProtocol::MutationOutcome::Succeeded, {}, generation, {true, {}, raw});
+            QCOMPARE(manager->displaySnapshotV1(96).status, QStringLiteral("Unresolved"));
+            QCOMPARE(manager->persistedPaseOverlayForDevice(QStringLiteral("1-1")).badgeChoices, oldOverlay.badgeChoices);
+            QVERIFY(!manager->persistedPaseOverlayForDevice(QStringLiteral("1-1")).waterfallMode);
+        }
+        return;
+    }
+    QCOMPARE(snapshot.status, QStringLiteral("HostAccepted"));
+    QVERIFY(snapshot.revision > initial.revision);
+    QCOMPARE(snapshot.display.revision, snapshot.revision);
+    if (scenario == QStringLiteral("cancelled")) {
+        QCOMPARE(snapshot.badges, initial.badges);
+        QCOMPARE(snapshot.display.brightness, 40);
+        return;
+    }
+    QCOMPARE(snapshot.acceptedOperationId, id);
+    QCOMPARE(snapshot.badges, request.badges);
+    QCOMPARE(snapshot.display.brightness, 80);
+    QCOMPARE(snapshot.display.settingsColor, QStringLiteral("#00ff00"));
+    const auto acceptedRevision = snapshot.revision;
+    raw.brightness = 10;
+    manager->worker_->printerDisplayStateReady(raw, generation);
+    QCOMPARE(manager->displaySnapshotV1(95).revision, acceptedRevision);
+    QCOMPARE(manager->displaySnapshotV1(95).display.brightness, 80);
+
+    TryxRuntimeApplyRequest brightness;
+    brightness.display.brightnessPresent = true;
+    brightness.display.brightness = 65;
+    const QString brightnessId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QCOMPARE(manager->queueApplyOperation(brightnessId, brightness), brightnessId);
+    raw.brightness = 65;
+    manager->worker_->printerApplyFinished(brightnessId, {}, true, false,
+        PrinterProtocol::MutationOutcome::Succeeded, {}, generation, {true, {}, raw});
+    snapshot = manager->displaySnapshotV1(96);
+    QCOMPARE(snapshot.status, QStringLiteral("HostAccepted"));
+    QCOMPARE(snapshot.badges, request.badges);
+    QCOMPARE(snapshot.acceptedOperationId, brightnessId);
+    const QString legacyId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QCOMPARE(manager->queueApplyOperation(legacyId, request.request), legacyId);
+    raw.brightness = 80;
+    manager->worker_->printerApplyFinished(legacyId, {}, true, true,
+        PrinterProtocol::MutationOutcome::Succeeded, {}, generation, {true, {}, raw});
+    QCOMPARE(manager->displaySnapshotV1(97).badges, TryxRuntimeOverlayBadgesV1());
+    QCOMPARE(manager->displaySnapshotV1(97).acceptedOperationId, legacyId);
+}
+
+void PrinterProtocolTests::customBadgeApplyIsImmutableAndPersistsAcceptedChoices() {
+    static QMutex logMutex;
+    static QStringList capturedLogs;
+    static QtMessageHandler previousHandler = nullptr;
+    capturedLogs.clear();
+    previousHandler = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &context, const QString &message) {
+        {
+            QMutexLocker locker(&logMutex);
+            capturedLogs.append(message);
+        }
+        if (previousHandler) previousHandler(type, context, message);
+    });
+    const auto restoreHandler = qScopeGuard([]() { qInstallMessageHandler(previousHandler); });
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString sysRoot = directory.filePath(QStringLiteral("sys"));
+    const QString devRoot = directory.filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(manager.get(), &DeviceManager::requestPrinterApplyMedia,
+                        manager->worker_, &DeviceWorker::applyPrinterMedia);
+    QObject::disconnect(manager.get(), &DeviceManager::requestPrinterApplyMediaWithBadgesV1,
+                        manager->worker_, &DeviceWorker::applyPrinterMediaWithBadgesV1);
+    QObject::disconnect(manager.get(), &DeviceManager::requestStartPrinterSession,
+                        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QSignalSpy apply(manager.get(), &DeviceManager::requestPrinterApplyMediaWithBadgesV1);
+    QSignalSpy legacy(manager.get(), &DeviceManager::requestPrinterApplyMedia);
+    TryxRuntimeApplyWithBadgesV1 request;
+    request.request.screenMode = QStringLiteral("Screen Splitting");
+    request.request.replaceOverlay = true;
+    request.request.settingsBadges = {QStringLiteral("CPU Badge")};
+    request.request.settingsBadges2 = {QStringLiteral("CPU Badge")};
+    request.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("  private left  ")};
+    request.badges.secondaryCpu = {QStringLiteral("Custom"), QStringLiteral("private right")};
+    const QString id = QStringLiteral("16161616-1616-4161-8161-161616161601");
+    QCOMPARE(manager->queueApplyWithBadgesOperation(id, request), id);
+    QCOMPARE(apply.count(), 1);
+    QCOMPARE(legacy.count(), 0);
+    const auto sent = apply.first().at(2).value<TryxRuntimeApplyWithBadgesV1>();
+    QCOMPARE(sent.badges.primaryCpu.text, QStringLiteral("private left"));
+    QCOMPARE(sent.badges.secondaryCpu.text, QStringLiteral("private right"));
+    QCOMPARE(manager->queueApplyWithBadgesOperation(id, request), id);
+    QCOMPARE(apply.count(), 1);
+    QVERIFY(manager->queueApplyOperation(id, sent.request).isEmpty());
+    request.badges.primaryCpu.text = QStringLiteral("different draft");
+    QVERIFY(manager->queueApplyWithBadgesOperation(id, request).isEmpty());
+    QCOMPARE(apply.count(), 1);
+    const quint64 generation = manager->sessionController_.state_.printerGeneration;
+    manager->worker_->printerApplyFinished(id, {}, true, true,
+        PrinterProtocol::MutationOutcome::Succeeded, {}, generation);
+    QCOMPARE(manager->operationInfo(id).state, QStringLiteral("Succeeded"));
+    QCOMPARE(manager->persistedPaseOverlayForDevice(QStringLiteral("1-1")).badgeChoices, sent.badges);
+    TryxRuntimeSnapshot connection;
+    connection.revision = 1;
+    connection.connected = connection.printerClassConnected = connection.printerClassDevicePresent = connection.displaySessionActive = true;
+    connection.productId = QStringLiteral("391a:1021");
+    connection.serial = QStringLiteral("1-1");
+    const QString support = manager->supportSnapshotV1(connection);
+    QString supportError;
+    QVERIFY(tryx::supportSnapshotV1IsValid(support, &supportError));
+    QVERIFY(!support.contains(QStringLiteral("private left")));
+    QVERIFY(!support.contains(QStringLiteral("private right")));
+    QString logText;
+    {
+        QMutexLocker locker(&logMutex);
+        logText = capturedLogs.join(QLatin1Char('\n'));
+    }
+    QVERIFY(!logText.contains(QStringLiteral("private left")));
+    QVERIFY(!logText.contains(QStringLiteral("private right")));
+    TryxRuntimeApplyRequest brightness;
+    brightness.display.brightnessPresent = true;
+    brightness.display.brightness = 80;
+    const QString brightnessId = QStringLiteral("16161616-1616-4161-8161-161616161602");
+    QCOMPARE(manager->queueApplyOperation(brightnessId, brightness), brightnessId);
+    manager->worker_->printerApplyFinished(brightnessId, {}, true, false,
+        PrinterProtocol::MutationOutcome::Succeeded, {}, generation);
+    QCOMPARE(manager->persistedPaseOverlayForDevice(QStringLiteral("1-1")).badgeChoices, sent.badges);
+    const QString autoId = QStringLiteral("16161616-1616-4161-8161-161616161603");
+    QCOMPARE(manager->queueApplyOperation(autoId, sent.request), autoId);
+    manager->worker_->printerApplyFinished(autoId, {}, true, true,
+        PrinterProtocol::MutationOutcome::Succeeded, {}, generation);
+    QCOMPARE(manager->persistedPaseOverlayForDevice(QStringLiteral("1-1")).badgeChoices, TryxRuntimeOverlayBadgesV1());
+    QVERIFY(manager->queueApplyWithBadgesOperation(autoId, sent).isEmpty());
+    ++manager->sessionController_.state_.printerGeneration;
+    QVERIFY(manager->queueApplyOperation(id, sent.request).isEmpty());
+    QVERIFY(manager->queueApplyWithBadgesOperation(id, sent).isEmpty());
+}
+
+void PrinterProtocolTests::customBadgeRestoreRejectsInvalidState() {
+    constexpr quint64 generation = 1616;
+    for (const quint16 product : {quint16(0x1021), quint16(0x1011)}) {
+        DeviceWorker worker;
+        worker.printerSession_->printerSystemMonitor_->nvidiaProviderRequestsEnabledForTesting_ = false;
+        worker.configurePrinterDevice(QStringLiteral("/dev/usb/lp-c16-restore-fixture"),
+                                      QStringLiteral("C16-fixture"), product, generation);
+        worker.updatePrinterGenerationGate(generation, true);
+        worker.printerSession_->printerSessionState_ = PrinterClassSession::PrinterSessionState::Active;
+        PrinterProtocol::PaseOverlayConfig overlay;
+        overlay.left.badges = {QStringLiteral("CPU Badge")};
+        overlay.badgeChoices.primaryCpu = {QStringLiteral("Custom"),
+            product == 0x1021 ? QStringLiteral("private\ntext") : QStringLiteral("private")};
+        worker.restorePrinterOverlay(overlay, generation);
+        QCOMPARE(worker.printerSession_->printerOverlayConfig_.badgeChoices, TryxRuntimeOverlayBadgesV1());
+        QVERIFY(!worker.printerSession_->printerOverlayActivationPending_);
+        QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
+        QCOMPARE(worker.printerSession_->printerSessionState_, PrinterClassSession::PrinterSessionState::Active);
+    }
+}
+
+void PrinterProtocolTests::paseCustomBadgesSerialize_data() {
+    QTest::addColumn<bool>("dual");
+    QTest::addColumn<bool>("waterfall");
+    QTest::newRow("full") << false << false;
+    QTest::newRow("full-waterfall") << false << true;
+    QTest::newRow("split") << true << false;
+    QTest::newRow("split-waterfall") << true << true;
+}
+
+void PrinterProtocolTests::paseCustomBadgesSerialize() {
+    QFETCH(bool, dual);
+    QFETCH(bool, waterfall);
+    int sockets[2] = {-1, -1};
+    QString error;
+    QVERIFY2(createSocketPair(sockets, &error), qPrintable(error));
+    PrinterProtocol protocol(500);
+    const QString endpoint = QStringLiteral("/dev/usb/lp-c16-fixture");
+    protocol.adoptFileDescriptorForTesting(sockets[0], endpoint);
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.dualMode = dual;
+    overlay.waterfallMode = waterfall;
+    overlay.left.badges = {QStringLiteral("CPU Badge"), QStringLiteral("GPU Badge")};
+    overlay.right.badges = dual ? overlay.left.badges : QStringList();
+    overlay.cpuBadgeText = QStringLiteral("AMD Ryzen");
+    overlay.gpuBadgeText = QStringLiteral("NVIDIA GPU");
+    overlay.badgeChoices.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Intel мой ПК")};
+    overlay.badgeChoices.primaryGpu = {QStringLiteral("Custom"), QStringLiteral("<b>GPU</b>")};
+    if (dual) overlay.badgeChoices.secondaryGpu = {QStringLiteral("Custom"), QStringLiteral("Правая сторона")};
+    panorama::wire::v1::Request captured;
+    QString peerError;
+    std::thread peer([&]() {
+        if (!readRequest(sockets[1], &captured, &peerError)) return;
+        auto response = baseResponse(captured);
+        response.mutable_acknowledgement();
+        writeResponse(sockets[1], response, &peerError);
+    });
+    const bool sent = protocol.sendPaseRunConfigForTesting(endpoint, overlay, &error, {});
+    peer.join();
+    ::close(sockets[1]);
+    QVERIFY2(sent, qPrintable(error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    const auto &groups = captured.overlay_layout().label_groups();
+    QCOMPARE(groups.size(), dual ? 2 : 1);
+    QCOMPARE(groups[0].group_id(), 300U);
+    QCOMPARE(groups[0].labels_size(), 2);
+    QCOMPARE(groups[0].labels(0).label_id(), 301U);
+    QCOMPARE(groups[0].labels(0).text(), QStringLiteral("  Intel мой ПК  ").toStdString());
+    QCOMPARE(groups[0].labels(0).background_color(), 0x004A4A4AU);
+    QCOMPARE(groups[0].labels(0).gradient_color(), 0x00707070U);
+    QCOMPARE(groups[0].labels(1).text(), std::string("  <b>GPU</b>  "));
+    QCOMPARE(groups[0].labels(1).text_font(), std::string("roboto-regular"));
+    if (dual) {
+        QCOMPARE(groups[1].group_id(), 400U);
+        QCOMPARE(groups[1].labels(0).label_id(), 401U);
+        QCOMPARE(groups[1].labels(0).text(), std::string("  AMD Ryzen  "));
+        QCOMPARE(groups[1].labels(0).background_color(), 0x00A92F2CU);
+        QCOMPARE(groups[1].labels(1).label_id(), 402U);
+        QCOMPARE(groups[1].labels(1).text(), QStringLiteral("  Правая сторона  ").toStdString());
+        QCOMPARE(groups[1].labels(1).background_color(), 0x004A4A4AU);
+    }
+}
+
+void PrinterProtocolTests::paseCustomBadgesRejectBeforeTransport_data() {
+    QTest::addColumn<quint16>("productId");
+    QTest::addColumn<QString>("text");
+    QTest::newRow("control") << quint16(0x1021) << QStringLiteral("private\ntext");
+    QTest::newRow("empty") << quint16(0x1021) << QString();
+    QTest::newRow("1011") << quint16(0x1011) << QStringLiteral("private");
+    QTest::newRow("turris") << quint16(0x2011) << QStringLiteral("private");
+}
+
+void PrinterProtocolTests::paseCustomBadgesRejectBeforeTransport() {
+    QFETCH(quint16, productId);
+    QFETCH(QString, text);
+    int sockets[2] = {-1, -1};
+    QString error;
+    QVERIFY2(createSocketPair(sockets, &error), qPrintable(error));
+    const auto profile = printerProductProfileForId(productId);
+    QVERIFY(profile.has_value());
+    PrinterProtocol protocol(*profile, 50);
+    const QString endpoint = QStringLiteral("/dev/usb/lp-c16-reject-fixture");
+    protocol.adoptFileDescriptorForTesting(sockets[0], endpoint);
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.left.badges = {QStringLiteral("CPU Badge")};
+    overlay.badgeChoices.primaryCpu = {QStringLiteral("Custom"), text};
+    const bool sent = protocol.sendPaseRunConfigForTesting(endpoint, overlay, &error, {});
+    const auto keepalive = protocol.sendDisplayKeepalive(endpoint, &error, {}, &overlay);
+    PrinterProtocol::PaseApplyConfig apply;
+    apply.replaceOverlay = true;
+    apply.overlay = overlay;
+    const bool applied = protocol.applyPaseConfiguration(endpoint, apply, &error, {});
+    apply.replaceOverlay = false;
+    apply.display.brightnessPresent = true;
+    apply.display.brightness = 80;
+    const bool brightnessApplied = protocol.applyPaseConfiguration(endpoint, apply, &error, {});
+    char byte = 0;
+    const ssize_t bytes = ::recv(sockets[1], &byte, 1, MSG_DONTWAIT);
+    ::close(sockets[1]);
+    QVERIFY(!sent);
+    QVERIFY(!applied);
+    QVERIFY(!brightnessApplied);
+    QCOMPARE(keepalive, PrinterProtocol::KeepaliveOutcome::FatalFailure);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!error.contains(QStringLiteral("private")));
+    QCOMPARE(bytes, ssize_t(-1));
+}
+
 void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
     int sockets[2] = {-1, -1};
     QString socketError;
@@ -14122,12 +14626,12 @@ verificationFailureKeepsHealthySessionActive() {
         0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(
         sockets[0], endpoint);
-    worker.printerSessionState_ =
-        DeviceWorker::PrinterSessionState::Active;
-    worker.printerRecoveryTimer_->stop();
-    worker.printerGpuPin_.entityKey =
+    worker.printerSession_->printerSessionState_ =
+        PrinterClassSession::PrinterSessionState::Active;
+    worker.printerSession_->printerRecoveryTimer_->stop();
+    worker.printerSession_->printerGpuPin_.entityKey =
         QStringLiteral("gpu:existing:0000:01:00.0");
-    worker.printerGpuPin_.providerUuid =
+    worker.printerSession_->printerGpuPin_.providerUuid =
         QStringLiteral("GPU-EXISTING");
 
     TryxRuntimeApplyRequest request;
@@ -14172,16 +14676,16 @@ verificationFailureKeepsHealthySessionActive() {
             applySpy.first().at(4)),
         PrinterProtocol::MutationOutcome::VerificationFailed);
     QCOMPARE(
-        worker.printerSessionState_,
-        DeviceWorker::PrinterSessionState::Active);
-    QCOMPARE(worker.printerGpuPin_.entityKey,
+        worker.printerSession_->printerSessionState_,
+        PrinterClassSession::PrinterSessionState::Active);
+    QCOMPARE(worker.printerSession_->printerGpuPin_.entityKey,
              QStringLiteral("gpu:existing:0000:01:00.0"));
-    QCOMPARE(worker.printerGpuPin_.providerUuid,
+    QCOMPARE(worker.printerSession_->printerGpuPin_.providerUuid,
              QStringLiteral("GPU-EXISTING"));
     QCOMPARE(
-        worker.printerSystemMonitor_->nvidiaDemand_,
+        worker.printerSession_->printerSystemMonitor_->nvidiaDemand_,
         tryx::nvidia::NvidiaSampleDemand::Off);
-    QVERIFY(!worker.printerRecoveryTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerRecoveryTimer_->isActive());
 }
 
 void PrinterProtocolTests::
@@ -14218,12 +14722,12 @@ applyFailureResultPrecedesSessionLoss() {
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"),
         0x1021, generation);
-    worker.printerProtocol_ =
+    worker.printerSession_->printerProtocol_ =
         std::make_unique<PrinterProtocol>(75);
     worker.adoptPrinterFileDescriptorForTesting(
         sockets[0], endpoint);
-    worker.printerSessionState_ =
-        DeviceWorker::PrinterSessionState::Active;
+    worker.printerSession_->printerSessionState_ =
+        PrinterClassSession::PrinterSessionState::Active;
 
     QStringList terminalEvents;
     connect(
@@ -14279,8 +14783,8 @@ applyFailureResultPrecedesSessionLoss() {
             QStringLiteral("apply-finished"),
             QStringLiteral("session-lost")}));
     QCOMPARE(
-        worker.printerSessionState_,
-        DeviceWorker::PrinterSessionState::Lost);
+        worker.printerSession_->printerSessionState_,
+        PrinterClassSession::PrinterSessionState::Lost);
 }
 
 void PrinterProtocolTests::lateRunConfigDummyDoesNotBreakReadback() {
@@ -15109,8 +15613,8 @@ void PrinterProtocolTests::daemonMetricsBatchRunsWithoutGui() {
                                   0x1021, generation);
     worker.updatePrinterGenerationGate(generation, true);
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], devicePath);
-    worker.printerSessionState_ = DeviceWorker::PrinterSessionState::Active;
-    worker.printerOverlayConfig_.left.metrics = {
+    worker.printerSession_->printerSessionState_ = PrinterClassSession::PrinterSessionState::Active;
+    worker.printerSession_->printerOverlayConfig_.left.metrics = {
         QStringLiteral("Date&Time")};
 
     panorama::wire::v1::Request captured;
@@ -15118,7 +15622,7 @@ void PrinterProtocolTests::daemonMetricsBatchRunsWithoutGui() {
     std::thread peer([&]() {
         readRequest(sockets[1], &captured, &peerError);
     });
-    worker.printerKeepaliveTimer_->start(5000);
+    worker.printerSession_->printerKeepaliveTimer_->start(5000);
     QSignalSpy sentSpy(&worker, &DeviceWorker::printerSysinfoSent);
     worker.sendPrinterMetrics();
     peer.join();
@@ -15143,8 +15647,8 @@ void PrinterProtocolTests::daemonMetricsBatchRunsWithoutGui() {
                  .label_texts(0)
                  .label_id(),
              132U);
-    QCOMPARE(worker.printerKeepaliveTimer_->interval(), 5000);
-    worker.printerKeepaliveTimer_->stop();
+    QCOMPARE(worker.printerSession_->printerKeepaliveTimer_->interval(), 5000);
+    worker.printerSession_->printerKeepaliveTimer_->stop();
 }
 
 void PrinterProtocolTests::foregroundOperationPausesMetricsAndKeepalive() {
@@ -15154,30 +15658,30 @@ void PrinterProtocolTests::foregroundOperationPausesMetricsAndKeepalive() {
         QStringLiteral("/dev/usb/lp-pase-pause"),
         QStringLiteral("PASE-23"), 0x1021, generation);
     worker.updatePrinterGenerationGate(generation, true);
-    worker.printerSessionState_ = DeviceWorker::PrinterSessionState::Active;
-    worker.printerOverlayConfig_.left.metrics = {
+    worker.printerSession_->printerSessionState_ = PrinterClassSession::PrinterSessionState::Active;
+    worker.printerSession_->printerOverlayConfig_.left.metrics = {
         QStringLiteral("Date&Time")};
-    worker.printerKeepaliveTimer_->start(10000);
-    worker.printerMetricsTimer_->start(1000);
+    worker.printerSession_->printerKeepaliveTimer_->start(10000);
+    worker.printerSession_->printerMetricsTimer_->start(1000);
 
     const QString operationId =
         QStringLiteral("17171717-1717-4717-8717-171717171717");
     worker.beginPrinterForegroundOperation(operationId, generation);
-    QCOMPARE(worker.foregroundPrinterOperationId_, operationId);
-    QVERIFY(!worker.printerKeepaliveTimer_->isActive());
-    QVERIFY(!worker.printerMetricsTimer_->isActive());
+    QCOMPARE(worker.printerSession_->foregroundPrinterOperationId_, operationId);
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
 
     worker.endPrinterForegroundOperation(
         QStringLiteral("18181818-1818-4818-8818-181818181818"),
         generation);
-    QCOMPARE(worker.foregroundPrinterOperationId_, operationId);
-    QVERIFY(!worker.printerMetricsTimer_->isActive());
+    QCOMPARE(worker.printerSession_->foregroundPrinterOperationId_, operationId);
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
 
-    worker.printerOverlayConfig_ = {};
+    worker.printerSession_->printerOverlayConfig_ = {};
     worker.endPrinterForegroundOperation(operationId, generation);
-    QVERIFY(worker.foregroundPrinterOperationId_.isEmpty());
-    QVERIFY(worker.printerKeepaliveTimer_->isActive());
-    QVERIFY(worker.printerMetricsTimer_->isActive());
+    QVERIFY(worker.printerSession_->foregroundPrinterOperationId_.isEmpty());
+    QVERIFY(worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QVERIFY(worker.printerSession_->printerMetricsTimer_->isActive());
 
     QSignalSpy availabilitySpy(
         &worker, &DeviceWorker::printerMetricsAvailabilityChanged);
@@ -15186,11 +15690,11 @@ void PrinterProtocolTests::foregroundOperationPausesMetricsAndKeepalive() {
     SystemMetrics providerCompletion;
     providerCompletion.cpu.usagePercent = 12.0;
     providerCompletion.cpu.usageAvailable = true;
-    worker.printerSystemMonitor_->metricsUpdated(providerCompletion);
+    worker.printerSession_->printerSystemMonitor_->metricsUpdated(providerCompletion);
     QCOMPARE(availabilitySpy.count(), 1);
     QCOMPARE(usbWriteSpy.count(), 0);
-    worker.printerKeepaliveTimer_->stop();
-    worker.printerMetricsTimer_->stop();
+    worker.printerSession_->printerKeepaliveTimer_->stop();
+    worker.printerSession_->printerMetricsTimer_->stop();
 }
 
 void PrinterProtocolTests::
@@ -15201,31 +15705,31 @@ nvidiaDemandFollowsCommittedGpuMetrics() {
         QStringLiteral("/dev/usb/lp-pase-demand"),
         QStringLiteral("PASE-24"), 0x1021, generation);
     worker.updatePrinterGenerationGate(generation, true);
-    worker.printerSessionState_ =
-        DeviceWorker::PrinterSessionState::Active;
+    worker.printerSession_->printerSessionState_ =
+        PrinterClassSession::PrinterSessionState::Active;
 
-    worker.printerOverlayConfig_ = {};
-    worker.printerGpuPin_ = {};
-    worker.startPrinterMetrics();
+    worker.printerSession_->printerOverlayConfig_ = {};
+    worker.printerSession_->printerGpuPin_ = {};
+    worker.printerSession_->startPrinterMetrics();
     QCOMPARE(
-        worker.printerSystemMonitor_->nvidiaDemand_,
+        worker.printerSession_->printerSystemMonitor_->nvidiaDemand_,
         tryx::nvidia::NvidiaSampleDemand::Discovery);
 
-    worker.printerOverlayConfig_.left.badges = {
+    worker.printerSession_->printerOverlayConfig_.left.badges = {
         QStringLiteral("GPU Badge")};
-    worker.printerGpuPin_.entityKey =
+    worker.printerSession_->printerGpuPin_.entityKey =
         QStringLiteral("gpu:24:0000:01:00.0");
-    worker.startPrinterMetrics();
+    worker.printerSession_->startPrinterMetrics();
     QCOMPARE(
-        worker.printerSystemMonitor_->nvidiaDemand_,
+        worker.printerSession_->printerSystemMonitor_->nvidiaDemand_,
         tryx::nvidia::NvidiaSampleDemand::Discovery);
 
-    worker.printerOverlayConfig_.left.metrics = {
+    worker.printerSession_->printerOverlayConfig_.left.metrics = {
         QStringLiteral("GPU Temperature")};
-    worker.printerGpuPin_ = {};
-    worker.startPrinterMetrics();
+    worker.printerSession_->printerGpuPin_ = {};
+    worker.printerSession_->startPrinterMetrics();
     QCOMPARE(
-        worker.printerSystemMonitor_->nvidiaDemand_,
+        worker.printerSession_->printerSystemMonitor_->nvidiaDemand_,
         tryx::nvidia::NvidiaSampleDemand::Active);
 
     GpuMetrics staleNvidia;
@@ -15239,26 +15743,26 @@ nvidiaDemandFollowsCommittedGpuMetrics() {
     staleNvidia.vramUsedMB = 4096;
     staleNvidia.vramTotalMB = 8192;
     staleNvidia.vramAvailable = true;
-    worker.printerSystemMonitor_->metrics_.gpus = {staleNvidia};
+    worker.printerSession_->printerSystemMonitor_->metrics_.gpus = {staleNvidia};
 
     const QString operationId = QStringLiteral(
         "24242424-2424-4242-8242-242424242424");
     worker.beginPrinterForegroundOperation(
         operationId, generation);
     QCOMPARE(
-        worker.printerSystemMonitor_->nvidiaDemand_,
+        worker.printerSession_->printerSystemMonitor_->nvidiaDemand_,
         tryx::nvidia::NvidiaSampleDemand::Off);
     const GpuMetrics clearedNvidia =
-        worker.printerSystemMonitor_->currentMetrics().gpus.constFirst();
+        worker.printerSession_->printerSystemMonitor_->currentMetrics().gpus.constFirst();
     QVERIFY(!clearedNvidia.temperatureAvailable);
     QVERIFY(!clearedNvidia.powerAvailable);
     QVERIFY(!clearedNvidia.vramAvailable);
     QCOMPARE(clearedNvidia.temperature, 0.0);
     QCOMPARE(clearedNvidia.vramUsedMB, 0);
 
-    worker.stopPrinterSession();
+    worker.printerSession_->stopPrinterSession();
     QCOMPARE(
-        worker.printerSystemMonitor_->nvidiaDemand_,
+        worker.printerSession_->printerSystemMonitor_->nvidiaDemand_,
         tryx::nvidia::NvidiaSampleDemand::Off);
 }
 
@@ -15288,15 +15792,15 @@ restoredGpuOverlayKeepsExactIdentityAfterDelayedUuid() {
     const QString endpoint =
         QStringLiteral("/dev/usb/lp-pase-restored-gpu");
     DeviceWorker worker;
-    worker.printerSystemMonitor_
+    worker.printerSession_->printerSystemMonitor_
         ->nvidiaProviderRequestsEnabledForTesting_ = false;
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("PASE-25"), 0x1021, generation);
     worker.updatePrinterGenerationGate(generation, true);
-    worker.printerSystemMonitor_->gpuDrmRoot_ = drmFixture.path();
+    worker.printerSession_->printerSystemMonitor_->gpuDrmRoot_ = drmFixture.path();
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
-    worker.printerSessionState_ =
-        DeviceWorker::PrinterSessionState::Active;
+    worker.printerSession_->printerSessionState_ =
+        PrinterClassSession::PrinterSessionState::Active;
 
     PrinterProtocol::PaseOverlayConfig restoredOverlay;
     restoredOverlay.left.metrics = {
@@ -15305,8 +15809,8 @@ restoredGpuOverlayKeepsExactIdentityAfterDelayedUuid() {
         QStringLiteral("GPU Badge")};
     worker.restorePrinterOverlay(restoredOverlay, generation);
     QCOMPARE(
-        worker.printerSessionState_,
-        DeviceWorker::PrinterSessionState::AwaitingOverlayActivation);
+        worker.printerSession_->printerSessionState_,
+        PrinterClassSession::PrinterSessionState::AwaitingOverlayActivation);
 
     panorama::wire::v1::Request capturedLayout;
     QString peerError;
@@ -15318,19 +15822,19 @@ restoredGpuOverlayKeepsExactIdentityAfterDelayedUuid() {
         response.mutable_acknowledgement();
         writeResponse(sockets[1], response, &peerError);
     });
-    worker.activateRestoredPrinterOverlay(generation);
+    worker.printerSession_->activateRestoredPrinterOverlay(generation);
     peer.join();
 
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
     QCOMPARE(
-        worker.printerSessionState_,
-        DeviceWorker::PrinterSessionState::Active);
-    worker.printerMetricsTimer_->stop();
-    worker.printerKeepaliveTimer_->stop();
-    QCOMPARE(worker.printerGpuPin_.entityKey,
+        worker.printerSession_->printerSessionState_,
+        PrinterClassSession::PrinterSessionState::Active);
+    worker.printerSession_->printerMetricsTimer_->stop();
+    worker.printerSession_->printerKeepaliveTimer_->stop();
+    QCOMPARE(worker.printerSession_->printerGpuPin_.entityKey,
              QStringLiteral("gpu:1:0000:02:00.0"));
-    QVERIFY(worker.printerGpuPin_.providerUuid.isEmpty());
-    QCOMPARE(worker.printerOverlayConfig_.gpuBadgeText,
+    QVERIFY(worker.printerSession_->printerGpuPin_.providerUuid.isEmpty());
+    QCOMPARE(worker.printerSession_->printerOverlayConfig_.gpuBadgeText,
              QStringLiteral("NVIDIA GeForce RTX Test"));
 
     bool unavailableGpuTemperatureFound = false;
@@ -15350,11 +15854,11 @@ restoredGpuOverlayKeepsExactIdentityAfterDelayedUuid() {
     QVERIFY(unavailableGpuTemperatureFound);
 
     SystemMetrics delayed =
-        worker.printerSystemMonitor_->currentMetrics();
+        worker.printerSession_->printerSystemMonitor_->currentMetrics();
     QCOMPARE(delayed.gpus.size(), 2);
     GpuMetrics &delayedNvidia = delayed.gpus[0];
     QCOMPARE(delayedNvidia.entityKey,
-             worker.printerGpuPin_.entityKey);
+             worker.printerSession_->printerGpuPin_.entityKey);
     delayedNvidia.providerUuid = QStringLiteral("GPU-EXACT-25");
     delayedNvidia.temperature = 0.0;
     delayedNvidia.temperatureAvailable = true;
@@ -15371,10 +15875,10 @@ restoredGpuOverlayKeepsExactIdentityAfterDelayedUuid() {
         descriptor.events = POLLIN;
         return ::poll(&descriptor, 1, 25);
     };
-    worker.publishPrinterMetricsAvailability(delayed);
-    QCOMPARE(worker.printerGpuPin_.entityKey,
+    worker.printerSession_->publishPrinterMetricsAvailability(delayed);
+    QCOMPARE(worker.printerSession_->printerGpuPin_.entityKey,
              QStringLiteral("gpu:1:0000:02:00.0"));
-    QCOMPARE(worker.printerGpuPin_.providerUuid,
+    QCOMPARE(worker.printerSession_->printerGpuPin_.providerUuid,
              QStringLiteral("GPU-EXACT-25"));
     QCOMPARE(availabilitySpy.count(), 1);
     QVERIFY(availabilitySpy.takeFirst().at(0).toStringList().contains(
@@ -15382,24 +15886,24 @@ restoredGpuOverlayKeepsExactIdentityAfterDelayedUuid() {
     QCOMPARE(usbWriteSpy.count(), 0);
     QCOMPARE(usbFailureSpy.count(), 0);
     QCOMPARE(peerPollResult(), 0);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Active);
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Active);
 
     SystemMetrics nextTopology = delayed;
     nextTopology.gpus[0].entityKey =
         QStringLiteral("gpu:2:0000:02:00.0");
     nextTopology.gpus[1].entityKey =
         QStringLiteral("gpu:2:0000:09:00.0");
-    worker.publishPrinterMetricsAvailability(nextTopology);
-    QCOMPARE(worker.printerGpuPin_.entityKey,
+    worker.printerSession_->publishPrinterMetricsAvailability(nextTopology);
+    QCOMPARE(worker.printerSession_->printerGpuPin_.entityKey,
              QStringLiteral("gpu:2:0000:02:00.0"));
-    QCOMPARE(worker.printerGpuPin_.providerUuid,
+    QCOMPARE(worker.printerSession_->printerGpuPin_.providerUuid,
              QStringLiteral("GPU-EXACT-25"));
     QCOMPARE(usbWriteSpy.count(), 0);
     QCOMPARE(usbFailureSpy.count(), 0);
     QCOMPARE(peerPollResult(), 0);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Active);
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Active);
 
     SystemMetrics unrelatedTopology;
     GpuMetrics unrelated = nextTopology.gpus[1];
@@ -15408,18 +15912,18 @@ restoredGpuOverlayKeepsExactIdentityAfterDelayedUuid() {
     unrelated.temperature = 77.0;
     unrelated.temperatureAvailable = true;
     unrelatedTopology.gpus.append(unrelated);
-    worker.publishPrinterMetricsAvailability(unrelatedTopology);
-    QCOMPARE(worker.printerGpuPin_.entityKey,
+    worker.printerSession_->publishPrinterMetricsAvailability(unrelatedTopology);
+    QCOMPARE(worker.printerSession_->printerGpuPin_.entityKey,
              QStringLiteral("gpu:2:0000:02:00.0"));
-    QCOMPARE(worker.printerGpuPin_.providerUuid,
+    QCOMPARE(worker.printerSession_->printerGpuPin_.providerUuid,
              QStringLiteral("GPU-EXACT-25"));
     QVERIFY(!availabilitySpy.takeLast().at(0).toStringList().contains(
         QStringLiteral("GPU Temperature")));
     QCOMPARE(usbWriteSpy.count(), 0);
     QCOMPARE(usbFailureSpy.count(), 0);
     QCOMPARE(peerPollResult(), 0);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Active);
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Active);
     ::close(sockets[1]);
 }
 
@@ -15619,14 +16123,15 @@ paseMetricsConfigStoreRoundTripsAndScopesToDevice() {
         QJsonDocument::fromJson(persistedBytes).object();
     QCOMPARE(
         persistedRoot.keys(),
-        QStringList({QStringLiteral("deviceSerial"),
+        QStringList({QStringLiteral("badgeChoices"),
+                     QStringLiteral("deviceSerial"),
                      QStringLiteral("dualMode"),
                      QStringLiteral("enabled"),
                      QStringLiteral("left"),
                      QStringLiteral("right"),
                      QStringLiteral("version"),
                      QStringLiteral("waterfallMode")}));
-    QCOMPARE(persistedRoot.value(QStringLiteral("version")).toInt(), 2);
+    QCOMPARE(persistedRoot.value(QStringLiteral("version")).toInt(), 3);
     QCOMPARE(persistedRoot.value(QStringLiteral("deviceSerial")).toString(),
              QStringLiteral("PASE-A"));
 
@@ -15763,7 +16268,7 @@ paseMetricsConfigStoreRejectsUnsafePersistentState_data() {
 
     QJsonObject future =
         QJsonDocument::fromJson(paseMetricsV2Fixture()).object();
-    future.insert(QStringLiteral("version"), 3);
+    future.insert(QStringLiteral("version"), 4);
     QTest::newRow("future-version")
         << QJsonDocument(future).toJson(QJsonDocument::Compact)
         << QStringLiteral("regular")
@@ -16183,7 +16688,7 @@ void PrinterProtocolTests::metricsConfigurationValidatesPersistsAndDisables() {
             dualConfigFile.readAll()).object();
     QCOMPARE(dualRoot.value(
                  QStringLiteral("version")).toInt(),
-             2);
+             3);
     QCOMPARE(dualRoot.value(
                  QStringLiteral("dualMode")).toBool(),
              true);
@@ -17679,7 +18184,14 @@ mediaCatalogStoreFailClosedLoadRejectsThumbnailMutation() {
     QCOMPARE(unchangedIndex.readAll(), unsupportedPayload);
 }
 
+void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation_data() {
+    QTest::addColumn<bool>("custom");
+    QTest::newRow("legacy-auto") << false;
+    QTest::newRow("versioned-custom") << true;
+}
+
 void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation() {
+    QFETCH(bool, custom);
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
     const QString sysRoot =
@@ -17749,14 +18261,30 @@ void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation() {
     QSignalSpy applySpy(manager.get(),
                        &DeviceManager::requestPrinterApplyMedia);
 
+    QObject::disconnect(manager.get(), &DeviceManager::requestPrinterApplyMediaWithBadgesV1,
+                        manager->worker_, &DeviceWorker::applyPrinterMediaWithBadgesV1);
+    QSignalSpy badgeSpy(manager.get(), &DeviceManager::requestPrinterApplyMediaWithBadgesV1);
+
     TryxRuntimeApplyRequest request;
     request.screenMode = QStringLiteral("Full Screen");
     request.playMode = QStringLiteral("Single");
     request.ratio = QStringLiteral("2:1");
-    const QString operationId =
-        manager->queueEnsureMediaAndApplyOperation(
-            QStringLiteral("14141414-1414-4414-8414-141414141414"),
-            sourcePath, request);
+    TryxRuntimeApplyWithBadgesV1 envelope{1, request, {}};
+    envelope.request.settingsBadges = {QStringLiteral("CPU Badge")};
+    envelope.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Ensure text")};
+    const QString id = QStringLiteral("14141414-1414-4414-8414-141414141414");
+    const QString operationId = custom
+        ? manager->queueUploadWithBadgesOperation(id, sourcePath, envelope, true)
+        : manager->queueEnsureMediaAndApplyOperation(id, sourcePath, request);
+    if (custom) {
+        QCOMPARE(manager->queueUploadWithBadgesOperation(id, sourcePath, envelope, true), id);
+        QVERIFY(manager->queueApplyWithBadgesOperation(id, envelope).isEmpty());
+        auto changed = envelope;
+        changed.badges.primaryCpu.text = QStringLiteral("Other text");
+        QVERIFY(manager->queueUploadWithBadgesOperation(id, sourcePath, changed, true).isEmpty());
+        QVERIFY(manager->queueUploadWithBadgesOperation(id, sourcePath, envelope, false).isEmpty());
+        QVERIFY(manager->queueEnsureMediaAndApplyOperation(id, sourcePath, request).isEmpty());
+    }
     QCOMPARE(analyzeSpy.count(), 1);
     emit manager->printerMediaPreparer_->sourceAnalyzed(
         operationId, sourcePath, sourceSha, sourceBytes.size(), profile,
@@ -17767,14 +18295,21 @@ void PrinterProtocolTests::ensureMediaReusesOriginWithoutPreparation() {
         manager->sessionController_.state_.printerGeneration);
     QCOMPARE(prepareSpy.count(), 0);
     QCOMPARE(uploadSpy.count(), 0);
-    QCOMPARE(applySpy.count(), 1);
-    QCOMPARE(applySpy.first().at(1).toString(), remote.name);
+    QCOMPARE(applySpy.count(), custom ? 0 : 1);
+    QCOMPARE(badgeSpy.count(), custom ? 1 : 0);
+    const auto &dispatch = custom ? badgeSpy.first() : applySpy.first();
+    QCOMPARE(dispatch.at(1).toString(), remote.name);
+    if (custom) {
+        QCOMPARE(dispatch.at(2).value<TryxRuntimeApplyWithBadgesV1>().badges, envelope.badges);
+        QVERIFY(dispatch.at(3).toBool());
+    }
     emit manager->worker_->printerApplyFinished(
-        operationId, remote.name, true, false,
+        operationId, remote.name, true, custom,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
         manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
+    if (custom) QCOMPARE(manager->persistedPaseOverlayForDevice(QStringLiteral("1-1")).badgeChoices, envelope.badges);
 }
 
 void PrinterProtocolTests::ensureOriginMissReleasesForegroundBeforePreparation() {
@@ -18806,6 +19341,303 @@ void PrinterProtocolTests::
     QFile preservedStaging(stagingPath);
     QVERIFY(preservedStaging.open(QIODevice::ReadOnly));
     QCOMPARE(preservedStaging.readAll(), preparedBytes);
+}
+
+void PrinterProtocolTests::runtimeDowngradeBlocksBadgeFormats_data() {
+    QTest::addColumn<QString>("storeName");
+    QTest::newRow("overlay-v3") << QStringLiteral("overlay");
+    QTest::newRow("saved-v2") << QStringLiteral("saved");
+}
+
+void PrinterProtocolTests::runtimeDowngradeBlocksBadgeFormats() {
+    QFETCH(QString, storeName);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(
+        temporary.filePath(QStringLiteral("sys")), temporary.filePath(QStringLiteral("dev"))));
+    const QString path = storeName == QStringLiteral("overlay")
+        ? manager->sessionController_.paseMetricsConfigStore_->configPath()
+        : manager->savedLayoutStore_->indexPath();
+    QVERIFY(QDir().mkpath(QFileInfo(path).absolutePath()));
+    const QByteArray bytes = storeName == QStringLiteral("overlay")
+        ? QByteArrayLiteral("{\"version\":3}") : QByteArrayLiteral("{\"version\":2}");
+    QVERIFY(writeAtomicOwnerFile(path, bytes));
+    QSignalSpy exitSpy(manager.get(), &DeviceManager::runtimeDowngradeV10PreparedForExit);
+    QString mode, errorName, errorMessage;
+    QVERIFY(!manager->prepareRuntimeDowngradeV10(&mode, &errorName, &errorMessage));
+    QCOMPARE(errorName, QStringLiteral("org.tryx.Panorama.Error.DowngradeV10Blocked"));
+    QVERIFY(!manager->runtimeDowngradeV10Prepared());
+    QCOMPARE(exitSpy.count(), 0);
+    QCOMPARE(readFileBytes(path), bytes);
+}
+
+void PrinterProtocolTests::retryLegacyUpgradePreservesBackup() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString retryRoot = temporary.filePath(QStringLiteral("retry"));
+    const QString canonicalRoot = QDir(retryRoot).filePath(QStringLiteral("v11"));
+    QVERIFY(QDir().mkpath(canonicalRoot));
+    QVERIFY(QFile::setPermissions(retryRoot, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    QVERIFY(QFile::setPermissions(canonicalRoot, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    const QString manifestPath = QDir(canonicalRoot).filePath(QStringLiteral("retry-manifest.json"));
+    const QByteArray oldBytes("{\"version\":11,\"storeRevision\":\"19\"}");
+    QVERIFY(writeAtomicOwnerFile(manifestPath, oldBytes));
+    tryx::RetryCacheStore store(retryRoot);
+    const auto loaded = store.load();
+    QCOMPARE(loaded.status, tryx::RetryCacheStore::LoadStatus::Loaded);
+    QCOMPARE(readFileBytes(manifestPath), oldBytes);
+    QCOMPARE(QDir(canonicalRoot).entryList(QDir::Files).size(), 1);
+    const QByteArray bytes("legacy-upgrade-prepared");
+    const QString staging = temporary.filePath(QStringLiteral("prepared.bin"));
+    QVERIFY(writeAtomicOwnerFile(staging, bytes));
+    auto input = retryCachePreparedInput(staging, bytes, QStringLiteral("upgrade"));
+    TryxRuntimeApplyWithBadgesV1 autoEnvelope;
+    autoEnvelope.request.screenMode = QStringLiteral("Full Screen");
+    autoEnvelope.request.playMode = QStringLiteral("Single");
+    autoEnvelope.request.ratio = QStringLiteral("2:1");
+    input.applyWithBadges = autoEnvelope; // Accepted Auto continuation need not replace the overlay.
+    const auto persisted = store.persistPrepared(*loaded.snapshot, input);
+    QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
+    const QString backupPath = manifestPath + QStringLiteral(".pre-c16-")
+        + QString::fromLatin1(QCryptographicHash::hash(oldBytes, QCryptographicHash::Sha256).toHex());
+    QCOMPARE(readFileBytes(backupPath), oldBytes);
+    QCOMPARE(QJsonDocument::fromJson(readFileBytes(manifestPath)).object().value(QStringLiteral("version")).toInt(), 12);
+    tryx::RetryCacheStore::ExpectedDispatch expected{input.lineageId, input.dispatchId, input.operationId,
+        input.productId, input.deviceIdentity, input.deviceGeneration};
+    const auto armed = store.armDispatch(*persisted.snapshot, expected);
+    QVERIFY2(armed.ok(), qPrintable(armed.detail));
+    const auto retired = store.retireDispatch(*armed.snapshot, expected,
+        tryx::RetryCacheStore::DispatchRetirement::ProvenNotStarted);
+    QVERIFY2(retired.ok(), qPrintable(retired.detail));
+    tryx::RetryCacheStore restarted(retryRoot);
+    QCOMPARE(restarted.load().status, tryx::RetryCacheStore::LoadStatus::Loaded);
+    QCOMPARE(readFileBytes(backupPath), oldBytes);
+    QVERIFY(writeAtomicOwnerFile(backupPath, QByteArrayLiteral("{\"version\":11}")));
+    tryx::RetryCacheStore tampered(retryRoot);
+    QCOMPARE(tampered.load().status, tryx::RetryCacheStore::LoadStatus::Conflict);
+    QVERIFY(QFileInfo::exists(backupPath));
+}
+
+void PrinterProtocolTests::retryBadgeManifestRejectsMutation_data() {
+    QTest::addColumn<QString>("mutation");
+    for (const char *name : {"missing-fingerprint", "wrong-fingerprint", "future-schema", "hidden-text", "invalid-text",
+             "unexpected-media", "unsupported-product", "disguised-v11", "retry-missing", "retry-different"})
+        QTest::newRow(name) << QString::fromLatin1(name);
+}
+
+void PrinterProtocolTests::retryBadgeManifestRejectsMutation() {
+    QFETCH(QString, mutation);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QByteArray bytes("strict-badge-payload");
+    const QString staging = temporary.filePath(QStringLiteral("prepared.bin"));
+    QVERIFY(writeAtomicOwnerFile(staging, bytes));
+    auto input = retryCachePreparedInput(staging, bytes, QStringLiteral("strict"));
+    TryxRuntimeApplyWithBadgesV1 envelope;
+    envelope.request.screenMode = QStringLiteral("Full Screen");
+    envelope.request.playMode = QStringLiteral("Single");
+    envelope.request.ratio = QStringLiteral("2:1");
+    envelope.request.replaceOverlay = true;
+    envelope.request.settingsBadges = {QStringLiteral("CPU Badge")};
+    envelope.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Private sentinel")};
+    QVERIFY(tryx::pase_overlay_config::normalizeAndValidatePaseApplyOverlayStyles(&envelope.request));
+    input.applyWithBadges = envelope;
+    tryx::RetryCacheStore writer(temporary.filePath(QStringLiteral("retry")));
+    QVERIFY(writer.persistPrepared(input).ok());
+    QJsonObject manifest = QJsonDocument::fromJson(readFileBytes(writer.canonicalManifestPath())).object();
+    auto dispatch = manifest.value(QStringLiteral("inFlightDispatch")).toObject();
+    if (mutation.startsWith(QStringLiteral("retry-"))) {
+        auto candidate = dispatch;
+        candidate.insert(QStringLiteral("phase"), QStringLiteral("NotStarted"));
+        candidate.insert(QStringLiteral("confirmedBytes"), QStringLiteral("0"));
+        candidate.insert(QStringLiteral("lastConfirmedChunkIndex"), -1);
+        candidate.insert(QStringLiteral("requiresDeviceRecovery"), false);
+        candidate.insert(QStringLiteral("requiresNewRemoteName"), false);
+        candidate.insert(QStringLiteral("finalizationOnlyReconciliation"), false);
+        manifest.insert(QStringLiteral("retryCandidate"), candidate);
+        dispatch.insert(QStringLiteral("dispatchId"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+        dispatch.insert(QStringLiteral("operationId"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+        dispatch.insert(QStringLiteral("attempt"), 2);
+        dispatch.insert(QStringLiteral("retriesLineageId"), input.lineageId);
+    }
+    if (mutation == QStringLiteral("future-schema")) envelope.schemaVersion = 2;
+    if (mutation == QStringLiteral("hidden-text")) envelope.request.settingsBadges.clear();
+    if (mutation == QStringLiteral("invalid-text")) envelope.badges.primaryCpu.text.append(QLatin1Char('\n'));
+    if (mutation == QStringLiteral("unexpected-media")) envelope.request.media = {input.originalRemoteName};
+    if (mutation == QStringLiteral("unsupported-product")) dispatch.insert(QStringLiteral("productId"), 0x1011);
+    if (mutation == QStringLiteral("disguised-v11")) manifest.insert(QStringLiteral("version"), 11);
+    if (mutation == QStringLiteral("retry-different")) envelope.badges.primaryCpu.text = QStringLiteral("Different intent");
+    dispatch.insert(QStringLiteral("applyWithBadges"), tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1ToJson(envelope));
+    dispatch.insert(QStringLiteral("applyWithBadgesFingerprint"), tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1Fingerprint(envelope));
+    if (mutation == QStringLiteral("missing-fingerprint")) dispatch.remove(QStringLiteral("applyWithBadgesFingerprint"));
+    if (mutation == QStringLiteral("wrong-fingerprint")) dispatch.insert(QStringLiteral("applyWithBadgesFingerprint"), QString(64, QLatin1Char('0')));
+    if (mutation == QStringLiteral("retry-missing")) {
+        dispatch.remove(QStringLiteral("applyWithBadges"));
+        dispatch.remove(QStringLiteral("applyWithBadgesFingerprint"));
+    }
+    manifest.insert(QStringLiteral("inFlightDispatch"), dispatch);
+    const auto malformed = QJsonDocument(manifest).toJson(QJsonDocument::Compact);
+    QVERIFY(writeAtomicOwnerFile(writer.canonicalManifestPath(), malformed));
+    tryx::RetryCacheStore reader(temporary.filePath(QStringLiteral("retry")));
+    const auto rejected = reader.load();
+    QCOMPARE(rejected.status, tryx::RetryCacheStore::LoadStatus::Invalid);
+    QVERIFY(reader.blocksMutations());
+    QVERIFY(!rejected.detail.contains(QStringLiteral("Private sentinel")));
+    QCOMPARE(readFileBytes(writer.canonicalManifestPath()), malformed);
+}
+
+void PrinterProtocolTests::customBadgeRetryRequiresExplicitContinuation() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    PrinterOperationCoordinator coordinator;
+    coordinator.retryCacheDirectoryOverride_ = temporary.filePath(QStringLiteral("retry"));
+    coordinator.retryCacheLoadComplete_ = true;
+    tryx::RetryCacheStore::StoredRetryCandidate candidate;
+    candidate.operationId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    candidate.dispatchId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    candidate.lineageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    candidate.productId = 0x1021;
+    candidate.deviceIdentity = QStringLiteral("badge-device");
+    candidate.deviceGeneration = 7;
+    candidate.conversion = mediaConversionForProduct(0x1021);
+    candidate.originalRemoteName = QStringLiteral("badge.mp4.h264_2240x1080");
+    candidate.retryRemoteName = candidate.originalRemoteName;
+    candidate.prepared = {QStringLiteral("prepared-%1.bin").arg(candidate.lineageId), 12, QString(64, QLatin1Char('a'))};
+    TryxRuntimeApplyWithBadgesV1 envelope;
+    envelope.request.screenMode = QStringLiteral("Full Screen");
+    envelope.request.playMode = QStringLiteral("Single");
+    envelope.request.ratio = QStringLiteral("2:1");
+    envelope.request.replaceOverlay = true;
+    envelope.request.settingsBadges = {QStringLiteral("CPU Badge")};
+    envelope.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Durable choice")};
+    QVERIFY(tryx::pase_overlay_config::normalizeAndValidatePaseApplyOverlayStyles(&envelope.request));
+    candidate.applyWithBadges = envelope;
+    auto recovered = coordinator.retryCacheOperationRecord(candidate, 8);
+    QVERIFY(!recovered.info.applyAfterUpload);
+    QVERIFY(!recovered.updateMetrics);
+    QVERIFY(recovered.badgeChoices.has_value());
+    QCOMPARE(*recovered.badgeChoices, envelope.badges);
+    QCOMPARE(recovered.applyRequest, envelope.request);
+    auto finalization = candidate;
+    finalization.finalizationOnlyReconciliation = true;
+    finalization.outcome = tryx::RetryCacheStore::TerminalOutcome::FinalizationUnknown;
+    QVERIFY(!coordinator.retryCacheOperationRecord(finalization, 8).info.applyAfterUpload);
+    // The mutable operation surface is not the source of retry intent.
+    recovered.badgeChoices->primaryCpu.text = QStringLiteral("Unrelated draft");
+    coordinator.operations_.insert(candidate.operationId, recovered);
+    coordinator.operationOrder_.append(candidate.operationId);
+    coordinator.retryCacheSnapshot_.storeRevision = 4;
+    coordinator.retryCacheSnapshot_.retryCandidate = candidate;
+    PrinterOperationContext context;
+    context.connected = context.printerClassConnected = context.printerEndpointReady = true;
+    context.displaySessionActive = context.supportsMediaCatalog = context.supportsDisplayConfiguration = true;
+    context.productId = candidate.productId;
+    context.generation = 8;
+    context.deviceIdentity = QStringLiteral("another-device");
+    context.devicePath = QStringLiteral("fixture-endpoint");
+    QSignalSpy applySpy(&coordinator, &PrinterOperationCoordinator::requestApplyMediaWithBadgesV1);
+    QSignalSpy refreshSpy(&coordinator, &PrinterOperationCoordinator::requestRefreshMedia);
+    const QString wrongId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QCOMPARE(coordinator.retryOperation(context, candidate.operationId, wrongId), wrongId);
+    QCOMPARE(coordinator.operationInfo(wrongId).errorCategory, QStringLiteral("DeviceIdentityMismatch"));
+    QCOMPARE(refreshSpy.count(), 0);
+    context.deviceIdentity = candidate.deviceIdentity;
+    const QString retryId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QCOMPARE(coordinator.retryOperation(context, candidate.operationId, retryId), retryId);
+    QCOMPARE(coordinator.retryOperation(context, candidate.operationId, retryId), retryId);
+    QVERIFY(coordinator.retryOperation(context, candidate.operationId, candidate.operationId).isEmpty());
+    const auto retried = coordinator.operations_.value(retryId);
+    QVERIFY(retried.info.applyAfterUpload);
+    QVERIFY(retried.updateMetrics);
+    QCOMPARE(retried.applyRequest, envelope.request);
+    QCOMPARE(*retried.badgeChoices, envelope.badges);
+    QCOMPARE(refreshSpy.count(), 1);
+    QCOMPARE(applySpy.count(), 0); // Preflight is not itself permission to Apply.
+}
+
+void PrinterProtocolTests::retryCacheStorePreservesBadgeContinuationV12() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString staging = temporary.filePath(QStringLiteral("prepared.bin"));
+    const QByteArray bytes("badge-retry-prepared");
+    QVERIFY(writeAtomicOwnerFile(staging, bytes));
+    auto input = retryCachePreparedInput(staging, bytes, QStringLiteral("badge-retry"));
+    TryxRuntimeApplyWithBadgesV1 envelope;
+    envelope.request.screenMode = QStringLiteral("Full Screen");
+    envelope.request.ratio = QStringLiteral("2:1");
+    envelope.request.playMode = QStringLiteral("Single");
+    envelope.request.replaceOverlay = true;
+    envelope.request.settingsBadges = {QStringLiteral("CPU Badge")};
+    envelope.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Sentinel C16 retry")};
+    QVERIFY(tryx::pase_overlay_config::normalizeAndValidatePaseApplyOverlayStyles(&envelope.request));
+    input.applyWithBadges = envelope;
+    tryx::RetryCacheStore writer(temporary.filePath(QStringLiteral("retry")));
+    const auto persisted = writer.persistPrepared(input);
+    QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
+    QVERIFY(persisted.snapshot->inFlightDispatch->applyWithBadges.has_value());
+    QVERIFY(*persisted.snapshot->inFlightDispatch->applyWithBadges == envelope);
+    const auto dispatch = *persisted.snapshot->inFlightDispatch;
+    tryx::RetryCacheStore::ExpectedDispatch expected;
+    expected.lineageId = dispatch.lineageId;
+    expected.dispatchId = dispatch.dispatchId;
+    expected.operationId = dispatch.operationId;
+    expected.productId = dispatch.productId;
+    expected.deviceIdentity = dispatch.deviceIdentity;
+    expected.deviceGeneration = dispatch.deviceGeneration;
+    const auto armed = writer.armDispatch(*persisted.snapshot, expected);
+    QVERIFY2(armed.ok(), qPrintable(armed.detail));
+    QFile shadow(writer.legacyShadowManifestPath());
+    QVERIFY(shadow.open(QIODevice::ReadOnly));
+    const auto shadowObject = QJsonDocument::fromJson(shadow.readAll()).object();
+    QCOMPARE(shadowObject.value(QStringLiteral("version")).toInt(), 12);
+    QVERIFY(!shadowObject.value(QStringLiteral("applyAfterUpload")).toBool());
+    QCOMPARE(shadowObject.value(QStringLiteral("applyWithBadges")).toObject(),
+        tryx::runtime_apply_request_codec::runtimeApplyWithBadgesV1ToJson(envelope));
+    tryx::RetryCacheStore restarted(temporary.filePath(QStringLiteral("retry")));
+    const auto loaded = restarted.load();
+    QCOMPARE(loaded.status, tryx::RetryCacheStore::LoadStatus::NeedsValidation);
+    QVERIFY(!loaded.validationRequests.isEmpty());
+    tryx::RetryCacheStore::MutationResult validated;
+    for (const auto &request : loaded.validationRequests) {
+        tryx::RetryCacheStore::ValidationResult result;
+        result.token = request.token;
+        result.valid = true;
+        result.actualSize = request.expectedSize;
+        result.actualSha256 = request.expectedSha256;
+        result.actualDevice = request.expectedDevice;
+        result.actualInode = request.expectedInode;
+        validated = restarted.completeValidation(result);
+        QVERIFY2(validated.ok(), qPrintable(validated.detail));
+    }
+    QVERIFY(validated.snapshot->retryCandidate.has_value());
+    QVERIFY(validated.snapshot->retryCandidate->applyWithBadges.has_value());
+    QVERIFY(*validated.snapshot->retryCandidate->applyWithBadges == envelope);
+    QVERIFY(!restarted.releasedV10DowngradeSafety(*validated.snapshot).safe);
+    const auto reconnected = restarted.resolveCandidateRecovery(*validated.snapshot, expected,
+        tryx::RetryCacheStore::CandidateRecoveryProof::PhysicalReconnectObserved);
+    QVERIFY2(reconnected.ok(), qPrintable(reconnected.detail));
+    QVERIFY(*reconnected.snapshot->retryCandidate->applyWithBadges == envelope);
+    tryx::RetryCacheStore::RetryPreparedInput retry;
+    retry.dispatchId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    retry.operationId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    retry.deviceIdentity = input.deviceIdentity;
+    retry.deviceGeneration = input.deviceGeneration + 1;
+    retry.retryRemoteName = QStringLiteral("badge-retry-2.mp4.h264_2240x1080");
+    const auto retried = restarted.beginRetry(*reconnected.snapshot, retry);
+    QVERIFY2(retried.ok(), qPrintable(retried.detail));
+    QVERIFY(*retried.snapshot->inFlightDispatch->applyWithBadges == envelope);
+    expected.dispatchId = retry.dispatchId;
+    expected.operationId = retry.operationId;
+    expected.deviceGeneration = retry.deviceGeneration;
+    const auto retryArmed = restarted.armDispatch(*retried.snapshot, expected);
+    QVERIFY2(retryArmed.ok(), qPrintable(retryArmed.detail));
+    tryx::RetryCacheStore::RetryableOutcomeInput outcome;
+    outcome.outcome = tryx::RetryCacheStore::TerminalOutcome::PartialOrUnknown;
+    const auto terminal = restarted.recordRetryableOutcome(*retryArmed.snapshot, expected, outcome);
+    QVERIFY2(terminal.ok(), qPrintable(terminal.detail));
+    QVERIFY(*terminal.snapshot->retryCandidate->applyWithBadges == envelope);
+    const auto cleared = restarted.clearCandidate(*terminal.snapshot, expected);
+    QVERIFY2(cleared.ok(), qPrintable(cleared.detail));
 }
 
 void PrinterProtocolTests::retryCacheStorePersistsPreparingCanonicalV11() {
@@ -28673,7 +29505,7 @@ void PrinterProtocolTests::retryCacheStorePreservesUnknownCanonicalState() {
         QJsonObject manifest =
             QJsonDocument::fromJson(mutatedBytes).object();
         if (mutation == QStringLiteral("future")) {
-            manifest.insert(QStringLiteral("version"), 12);
+            manifest.insert(QStringLiteral("version"), tryx::RetryCacheStore::FormatVersion + 1);
         } else if (mutation == QStringLiteral("unknown")) {
             manifest.insert(QStringLiteral("unexpected"), true);
         } else if (mutation == QStringLiteral("attempt-over-int")) {
@@ -33869,12 +34701,12 @@ applyPreflightTimeoutPreservesNotStartedBeforeSessionLoss() {
     QVERIFY(QMetaObject::invokeMethod(
         worker,
         [worker, fd = sockets[0], endpoint]() {
-            worker->printerProtocol_ =
+            worker->printerSession_->printerProtocol_ =
                 std::make_unique<PrinterProtocol>(75);
             worker->adoptPrinterFileDescriptorForTesting(
                 fd, endpoint);
-            worker->printerSessionState_ =
-                DeviceWorker::PrinterSessionState::Active;
+            worker->printerSession_->printerSessionState_ =
+                PrinterClassSession::PrinterSessionState::Active;
         },
         Qt::BlockingQueuedConnection));
     manager->sessionController_.state_.printerDisplaySessionActive = true;
@@ -34654,7 +35486,7 @@ void PrinterProtocolTests::sessionTeardownPreservesReentrantReconnect() {
     QVERIFY(manager->isConnected());
     QVERIFY(manager->isPrinterClassConnected());
     QCOMPARE(manager->printerGenerationForTesting(), generation + 1);
-    QVERIFY(manager->worker_->printerGenerationIsCurrent(generation + 1));
+    QVERIFY(manager->worker_->printerSession_->printerGenerationIsCurrent(generation + 1));
 }
 
 void PrinterProtocolTests::firmwareAcquireOrdersReentrantReleaseAfterQuiesce_data() {
@@ -36123,6 +36955,266 @@ void PrinterProtocolTests::
     QVERIFY(replaceIntent.remove());
 }
 
+void PrinterProtocolTests::legacyWorkerSerialLifecycleAndQuiesce() {
+    const int master = ::posix_openpt(
+        O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    QVERIFY(master >= 0);
+    const auto closeMaster = qScopeGuard([master]() { ::close(master); });
+    QCOMPARE(::grantpt(master), 0);
+    QCOMPARE(::unlockpt(master), 0);
+    const char *slaveName = ::ptsname(master);
+    QVERIFY(slaveName != nullptr);
+    const QString port = QString::fromLocal8Bit(slaveName);
+
+    int printerSockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(printerSockets, &socketError),
+             qPrintable(socketError));
+    const auto closePrinterPeer = qScopeGuard(
+        [&]() { ::close(printerSockets[1]); });
+
+    QString peerError;
+    QStringList commands;
+    QList<QJsonObject> payloads;
+    std::thread peer([&]() {
+        for (int index = 0; index < 4; ++index) {
+            QByteArray frame;
+            QElapsedTimer deadline;
+            deadline.start();
+            while (deadline.elapsed() < kPeerTimeoutMs) {
+                pollfd descriptor{master, POLLIN, 0};
+                const int ready = ::poll(&descriptor, 1, 10);
+                if (ready <= 0 || !(descriptor.revents & POLLIN))
+                    continue;
+                char byte = 0;
+                if (::read(master, &byte, 1) != 1)
+                    continue;
+                frame.append(byte);
+                if (frame.size() > 1 &&
+                    static_cast<uint8_t>(byte) == panorama::FRAME_MARKER)
+                    break;
+            }
+            const std::vector<uint8_t> bytes(frame.cbegin(), frame.cend());
+            const auto request = panorama::parse_response(bytes);
+            if (!request) {
+                peerError = QStringLiteral("Missing legacy command %1").arg(index);
+                return;
+            }
+            commands.append(QString::fromStdString(request->status));
+            payloads.append(QJsonDocument::fromJson(
+                QByteArray::fromStdString(request->body)).object());
+            if (index == 3)
+                continue;
+            const auto response = panorama::build_frame(
+                "1", "OK",
+                R"({"productId":"cm01_se","sn":"legacy-test","version":{"firmware":"fw-test","app":"app-test"}})");
+            if (!writeAllFd(master,
+                    QByteArray(reinterpret_cast<const char *>(response.data()),
+                               static_cast<qsizetype>(response.size())),
+                    &peerError))
+                return;
+        }
+    });
+    auto joinPeer = qScopeGuard([&]() { peer.join(); });
+
+    DeviceWorker worker;
+    worker.adoptPrinterFileDescriptorForTesting(
+        printerSockets[0], QStringLiteral("test-endpoint"));
+    bool bothTransportsClosedBeforeAck = false;
+    connect(&worker, &DeviceWorker::firmwareTransportQuiesced,
+            &worker, [&]() {
+        pollfd serialDescriptor{master, POLLIN, 0};
+        const bool serialClosed =
+            ::poll(&serialDescriptor, 1, 0) == 1 &&
+            (serialDescriptor.revents & POLLHUP);
+        char byte = 0;
+        const bool printerClosed = ::recv(
+            printerSockets[1], &byte, 1, MSG_DONTWAIT) == 0;
+        bothTransportsClosedBeforeAck = serialClosed && printerClosed;
+    });
+    QSignalSpy connectedSpy(&worker, &DeviceWorker::connected);
+    QSignalSpy disconnectedSpy(&worker, &DeviceWorker::disconnected);
+    QSignalSpy brightnessSpy(&worker, &DeviceWorker::brightnessSet);
+    QSignalSpy sysinfoSpy(&worker, &DeviceWorker::sysinfoSent);
+    QSignalSpy errorSpy(&worker, &DeviceWorker::error);
+    QSignalSpy quiescedSpy(&worker, &DeviceWorker::firmwareTransportQuiesced);
+    worker.connectDevice(port);
+    QCOMPARE(connectedSpy.count(), 1);
+    QCOMPARE(connectedSpy.first(), QVariantList({
+        QStringLiteral("cm01_se"), QStringLiteral("legacy-test"),
+        QStringLiteral("fw-test"), QStringLiteral("app-test")}));
+    QVERIFY(worker.legacySession_->legacyMetricsTimer_->isActive());
+    worker.setBrightness(42);
+    QCOMPARE(brightnessSpy.count(), 1);
+    QCOMPARE(brightnessSpy.first().first().toInt(), 42);
+    worker.setRotation(90);
+    worker.sendSysinfo({QStringLiteral("CPU Temperature")},
+                      {QStringLiteral("50")}, {QStringLiteral("°C")});
+    QCOMPARE(sysinfoSpy.count(), 1);
+    QCOMPARE(errorSpy.count(), 0);
+    worker.quiesceForFirmware(QStringLiteral("legacy-lease"), 12);
+    QCOMPARE(quiescedSpy.count(), 1);
+    QVERIFY(bothTransportsClosedBeforeAck);
+    QVERIFY(!worker.legacySession_->legacyMetricsTimer_->isActive());
+    QVERIFY(!worker.legacySession_->device_);
+    QCOMPARE(disconnectedSpy.count(), 0);
+    QCoreApplication::processEvents();
+    worker.sendKeepalive();
+    worker.sendLegacyMetrics();
+    worker.disconnectDevice();
+    QCOMPARE(disconnectedSpy.count(), 0);
+    worker.setBrightness(20);
+    QCOMPARE(errorSpy.count(), 1);
+
+    peer.join();
+    joinPeer.dismiss();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(commands, QStringList({QStringLiteral("conn"),
+        QStringLiteral("brightness"), QStringLiteral("rotate"),
+        QStringLiteral("all")}));
+    QCOMPARE(payloads.at(1).value(QStringLiteral("value")).toInt(), 42);
+    QCOMPARE(payloads.at(2).value(QStringLiteral("degree")).toInt(), 90);
+    pollfd descriptor{master, POLLIN, 0};
+    QCOMPARE(::poll(&descriptor, 1, 0), 1);
+    QVERIFY(descriptor.revents & POLLHUP);
+    QVERIFY(!(descriptor.revents & POLLIN));
+}
+
+void PrinterProtocolTests::workerSessionsShareIoContextAndTeardown() {
+    auto worker = std::make_unique<DeviceWorker>();
+    QList<QObject *> sessions;
+    for (QObject *child : worker->children()) {
+        const QByteArray className(child->metaObject()->className());
+        if (className == "LegacyDeviceSession" ||
+            className == "PrinterClassSession")
+            sessions.append(child);
+    }
+    QCOMPARE(sessions.size(), 2);
+    QCOMPARE(worker->findChildren<SystemMonitor *>().size(), 1);
+    QCOMPARE(worker->findChildren<QTimer *>(Qt::FindDirectChildrenOnly).size(), 0);
+
+    const int generationFd = worker->printerCancellationFd_;
+    const int operationFd = worker->printerOperationCancellationFd_;
+    QVERIFY(generationFd >= 0);
+    QVERIFY(operationFd >= 0);
+    QVERIFY(generationFd != operationFd);
+    int destroyedSessions = 0;
+    bool gatesOpenDuringSessionDestruction = true;
+    bool destroyedInIoThread = true;
+    QThread ioThread;
+    for (QObject *session : sessions) {
+        connect(session, &QObject::destroyed, worker.get(), [&]() {
+            ++destroyedSessions;
+            gatesOpenDuringSessionDestruction &=
+                ::fcntl(generationFd, F_GETFD) >= 0 &&
+                ::fcntl(operationFd, F_GETFD) >= 0;
+            destroyedInIoThread &= QThread::currentThread() == &ioThread;
+        }, Qt::DirectConnection);
+    }
+    QPointer<DeviceWorker> workerGuard(worker.get());
+    DeviceWorker *ioWorker = worker.release();
+    ioWorker->moveToThread(&ioThread);
+    connect(&ioThread, &QThread::finished, ioWorker, &QObject::deleteLater);
+    ioThread.start();
+    bool sameThread = false;
+    const bool invoked = QMetaObject::invokeMethod(ioWorker, [&]() {
+        sameThread = ioWorker->thread() == QThread::currentThread();
+        for (QObject *child : ioWorker->findChildren<QObject *>())
+            sameThread &= child->thread() == QThread::currentThread();
+    }, Qt::BlockingQueuedConnection);
+    ioThread.quit();
+    QVERIFY(ioThread.wait(kPeerTimeoutMs));
+    QVERIFY(invoked);
+    QVERIFY(sameThread);
+    QVERIFY(workerGuard.isNull());
+    QCOMPARE(destroyedSessions, 2);
+    QVERIFY(gatesOpenDuringSessionDestruction);
+    QVERIFY(destroyedInIoThread);
+    errno = 0;
+    QCOMPARE(::fcntl(generationFd, F_GETFD), -1);
+    QCOMPARE(errno, EBADF);
+    errno = 0;
+    QCOMPARE(::fcntl(operationFd, F_GETFD), -1);
+    QCOMPARE(errno, EBADF);
+}
+
+void PrinterProtocolTests::workerGateInterruptsBlockedForegroundResponse_data() {
+    QTest::addColumn<bool>("generationChanged");
+    QTest::newRow("user-cancel") << false;
+    QTest::newRow("same-path-new-generation") << true;
+}
+
+void PrinterProtocolTests::workerGateInterruptsBlockedForegroundResponse() {
+    QFETCH(bool, generationChanged);
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+    const auto closePeer = qScopeGuard([&]() { ::close(sockets[1]); });
+    constexpr quint64 generation = 82;
+    const QString endpoint = QStringLiteral("test-endpoint");
+    const QString operationId = QStringLiteral("blocked-foreground-operation");
+    DeviceWorker worker;
+    worker.updatePrinterGenerationGate(generation, true);
+    worker.configurePrinterDevice(endpoint, QStringLiteral("test-serial"),
+                                  0x1021, generation);
+    worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
+    worker.printerSession_->printerSessionState_ = PrinterClassSession::PrinterSessionState::Active;
+    worker.beginPrinterForegroundOperation(operationId, generation);
+    QSignalSpy failedSpy(&worker, &DeviceWorker::printerMediaListFailed);
+    QSignalSpy successSpy(&worker, &DeviceWorker::printerMediaListReady);
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
+            if (peerError.isEmpty())
+                peerError = QStringLiteral("Missing blocked foreground query");
+            return;
+        }
+        // These entry points must act immediately from a foreign thread,
+        // even while the worker is synchronously waiting for the response.
+        if (generationChanged)
+            worker.updatePrinterGenerationGate(generation + 1, true);
+        else
+            worker.cancelPrinterOperation(operationId);
+        waitForPeerClosureWithoutPayload(sockets[1], kPeerTimeoutMs, &peerError);
+    });
+    auto joinPeer = qScopeGuard([&]() { peer.join(); });
+    QElapsedTimer deadline;
+    deadline.start();
+    worker.refreshPrinterMediaList(endpoint, operationId, generation);
+    const qint64 elapsed = deadline.elapsed();
+    peer.join();
+    joinPeer.dismiss();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(elapsed < 500);
+    QCOMPARE(successSpy.count(), 0);
+    QCOMPARE(failedSpy.count(), 1);
+    QVERIFY(failedSpy.first().at(1).toString().contains(
+        QStringLiteral("cancel"), Qt::CaseInsensitive));
+    QCOMPARE(worker.printerSession_->printerOperationIsCancelled(operationId), !generationChanged);
+    worker.endPrinterForegroundOperation(operationId, generation);
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
+}
+
+void PrinterProtocolTests::staleForegroundCompletionDoesNotRestartTimers() {
+    DeviceWorker worker;
+    constexpr quint64 generation = 83;
+    worker.updatePrinterGenerationGate(generation, true);
+    worker.configurePrinterDevice(QStringLiteral("test-endpoint"),
+                                  QStringLiteral("test-serial"), 0x1021, generation);
+    worker.printerSession_->printerSessionState_ = PrinterClassSession::PrinterSessionState::Active;
+    const QString operationId = QStringLiteral("stale-foreground-operation");
+    worker.beginPrinterForegroundOperation(operationId, generation);
+    worker.updatePrinterGenerationGate(generation + 1, true);
+    worker.endPrinterForegroundOperation(operationId, generation);
+    QVERIFY(worker.printerSession_->foregroundPrinterOperationId_.isEmpty());
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
+}
+
 void PrinterProtocolTests::
     firmwareWorkerQuiesceClosesTransport() {
     int sockets[2] = {-1, -1};
@@ -37498,13 +38590,13 @@ void PrinterProtocolTests::
     worker.updatePrinterGenerationGate(generation, true);
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"), 0x1021, generation);
-    worker.printerSessionState_ =
-        DeviceWorker::PrinterSessionState::Active;
-    worker.printerOverlayActivationPending_ = true;
-    worker.printerKeepaliveTimer_->start(10000);
-    worker.printerMetricsTimer_->start(10000);
-    worker.printerRecoveryTimer_->start(10000);
-    worker.printerProtocol_
+    worker.printerSession_->printerSessionState_ =
+        PrinterClassSession::PrinterSessionState::Active;
+    worker.printerSession_->printerOverlayActivationPending_ = true;
+    worker.printerSession_->printerKeepaliveTimer_->start(10000);
+    worker.printerSession_->printerMetricsTimer_->start(10000);
+    worker.printerSession_->printerRecoveryTimer_->start(10000);
+    worker.printerSession_->printerProtocol_
         ->setPersistentUsbInputFailureForTesting(true);
 
     QSignalSpy stoppedSpy(
@@ -37516,35 +38608,35 @@ void PrinterProtocolTests::
     QSignalSpy startedSpy(
         &worker, &DeviceWorker::printerSessionStarted);
 
-    worker.schedulePrinterSessionRecovery(
+    worker.printerSession_->schedulePrinterSessionRecovery(
         QStringLiteral("persistent input transport failure"),
         generation);
 
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Lost);
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Lost);
     QCOMPARE(stoppedSpy.count(), 1);
     QCOMPARE(lostSpy.count(), 1);
     QCOMPARE(errorSpy.count(), 1);
     QCOMPARE(startedSpy.count(), 0);
-    QVERIFY(!worker.printerKeepaliveTimer_->isActive());
-    QVERIFY(!worker.printerMetricsTimer_->isActive());
-    QVERIFY(!worker.printerRecoveryTimer_->isActive());
-    QVERIFY(!worker.printerOverlayActivationPending_);
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerRecoveryTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerOverlayActivationPending_);
 
     worker.startPrinterDisplaySession(endpoint, generation);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Lost);
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Lost);
     QCOMPARE(startedSpy.count(), 0);
     QCOMPARE(lostSpy.count(), 1);
-    QVERIFY(!worker.printerRecoveryTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerRecoveryTimer_->isActive());
 
     const quint64 newGeneration = generation + 1;
     worker.updatePrinterGenerationGate(newGeneration, true);
     worker.configurePrinterDevice(
         endpoint, QStringLiteral("test-serial"), 0x1021, newGeneration);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Passive);
-    QVERIFY(!worker.printerProtocol_
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Passive);
+    QVERIFY(!worker.printerSession_->printerProtocol_
                  ->persistentUsbInputFailure());
 }
 
@@ -38201,13 +39293,13 @@ void PrinterProtocolTests::turrisWorkerSessionSendsNoPaseTraffic() {
     QCOMPARE(startedSpy.count(), 1);
     QCOMPARE(readySpy.count(), 1);
     QCOMPARE(specificationsSpy.count(), 0);
-    QVERIFY(!worker.printerKeepaliveTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
 
     worker.readPrinterDeviceInfo(endpoint, generation);
     QCOMPARE(infoSpy.count(), 1);
-    worker.restartPrinterKeepaliveAfterActivity();
+    worker.printerSession_->restartPrinterKeepaliveAfterActivity();
     worker.sendPrinterKeepalive();
-    QVERIFY(!worker.printerKeepaliveTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
 
     QString peerError;
     QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
@@ -41191,12 +42283,12 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
         });
 
     worker.startPrinterDisplaySession(endpoint, generation);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::
                  AwaitingOverlayActivation);
-    QVERIFY(worker.printerOverlayActivationPending_);
+    QVERIFY(worker.printerSession_->printerOverlayActivationPending_);
     QVERIFY(!worker.printerSessionActiveForTesting());
-    QVERIFY(!worker.printerMetricsTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
     QCOMPARE(startedSpy.count(), 0);
     QCOMPARE(specificationsSpy.count(), 0);
     QCOMPARE(lostSpy.count(), 0);
@@ -41215,9 +42307,9 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
     peer.join();
     ::close(sockets[1]);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Active);
-    QVERIFY(!worker.printerOverlayActivationPending_);
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Active);
+    QVERIFY(!worker.printerSession_->printerOverlayActivationPending_);
     QCOMPARE(startedSpy.count(), 1);
     QCOMPARE(specificationsSpy.count(), 1);
     QCOMPARE(publicationOrder,
@@ -41244,8 +42336,8 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
     QCOMPARE(errorSpy.count(), 0);
     QCOMPARE(readySpy.count(), 3);
     QVERIFY(worker.printerSessionActiveForTesting());
-    QVERIFY(worker.printerMetricsTimer_->isActive());
-    QVERIFY(!worker.printerRecoveryTimer_->isActive());
+    QVERIFY(worker.printerSession_->printerMetricsTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerRecoveryTimer_->isActive());
 }
 
 void PrinterProtocolTests::
@@ -41382,8 +42474,8 @@ restoredOverlayFailureBecomesLostWithoutReplay() {
         &worker, &DeviceWorker::printerDeviceSpecificationsReady);
 
     worker.startPrinterDisplaySession(endpoint, generation);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::
                  AwaitingOverlayActivation);
     QCOMPARE(startedSpy.count(), 0);
     QCOMPARE(specificationsSpy.count(), 0);
@@ -41399,17 +42491,17 @@ restoredOverlayFailureBecomesLostWithoutReplay() {
     ::close(sockets[1]);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
     QCOMPARE(overlayRunCount, 1);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Lost);
-    QVERIFY(!worker.printerOverlayActivationPending_);
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Lost);
+    QVERIFY(!worker.printerSession_->printerOverlayActivationPending_);
     QCOMPARE(startedSpy.count(), 0);
     QCOMPARE(specificationsSpy.count(), 0);
     QCOMPARE(stoppedSpy.count(), 1);
     QCOMPARE(lostSpy.count(), 1);
     QCOMPARE(errorSpy.count(), 1);
-    QVERIFY(!worker.printerKeepaliveTimer_->isActive());
-    QVERIFY(!worker.printerMetricsTimer_->isActive());
-    QVERIFY(!worker.printerRecoveryTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerRecoveryTimer_->isActive());
 }
 
 void PrinterProtocolTests::
@@ -41452,13 +42544,13 @@ overlayLeaseRejectionBecomesLostWithoutRecovery() {
         0x1021, generation);
     worker.adoptPrinterFileDescriptorForTesting(
         sockets[0], endpoint);
-    worker.printerSessionState_ =
-        DeviceWorker::PrinterSessionState::Active;
-    worker.printerOverlayConfig_.left.metrics = {
+    worker.printerSession_->printerSessionState_ =
+        PrinterClassSession::PrinterSessionState::Active;
+    worker.printerSession_->printerOverlayConfig_.left.metrics = {
         QStringLiteral("CPU Temperature")};
-    worker.printerOverlayLeaseRefreshNext_ = true;
-    worker.printerMetricsTimer_->start(10000);
-    worker.printerRecoveryTimer_->start(10000);
+    worker.printerSession_->printerOverlayLeaseRefreshNext_ = true;
+    worker.printerSession_->printerMetricsTimer_->start(10000);
+    worker.printerSession_->printerRecoveryTimer_->start(10000);
 
     QSignalSpy lostSpy(
         &worker, &DeviceWorker::printerSessionLost);
@@ -41473,14 +42565,14 @@ overlayLeaseRejectionBecomesLostWithoutRecovery() {
     ::close(sockets[1]);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
     QCOMPARE(leaseCount, 1);
-    QCOMPARE(worker.printerSessionState_,
-             DeviceWorker::PrinterSessionState::Lost);
+    QCOMPARE(worker.printerSession_->printerSessionState_,
+             PrinterClassSession::PrinterSessionState::Lost);
     QCOMPARE(lostSpy.count(), 1);
     QCOMPARE(errorSpy.count(), 1);
-    QVERIFY(!worker.printerOverlayLeaseRefreshNext_);
-    QVERIFY(!worker.printerKeepaliveTimer_->isActive());
-    QVERIFY(!worker.printerMetricsTimer_->isActive());
-    QVERIFY(!worker.printerRecoveryTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerOverlayLeaseRefreshNext_);
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
+    QVERIFY(!worker.printerSession_->printerRecoveryTimer_->isActive());
 }
 
 void PrinterProtocolTests::applyMediaPreservesUnknownFields() {
@@ -42052,6 +43144,113 @@ void PrinterProtocolTests::uploadRejectsSymlinkAndHashMismatchBeforeUsb() {
     descriptor.revents = 0;
     QCOMPARE(::poll(&descriptor, 1, 50), 0);
     ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::protocolLayerOwnersAreNotCopyable() {
+    QVERIFY(!std::is_copy_constructible<UsbPrinterTransport>::value);
+    QVERIFY(!std::is_copy_constructible<PrinterTransactionChannel>::value);
+    QVERIFY(!std::is_copy_constructible<PaseConfigurationClient>::value);
+    QVERIFY(!std::is_copy_constructible<PaseMediaClient>::value);
+    QVERIFY(!std::is_copy_constructible<TurrisMediaClient>::value);
+}
+
+void PrinterProtocolTests::usbTransportOwnsOnlyItsDataDescriptor_data() {
+    QTest::addColumn<bool>("explicitClose");
+    QTest::newRow("close") << true;
+    QTest::newRow("destructor") << false;
+}
+
+void PrinterProtocolTests::usbTransportOwnsOnlyItsDataDescriptor() {
+    QFETCH(bool, explicitClose);
+    int sockets[2] = {-1, -1};
+    QVERIFY(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+    const int cancellationFd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    const auto cleanup = qScopeGuard([&]() {
+        if (sockets[0] >= 0) {
+            ::close(sockets[0]);
+        }
+        ::close(sockets[1]);
+        if (cancellationFd >= 0) {
+            ::close(cancellationFd);
+        }
+    });
+    QVERIFY(cancellationFd >= 0);
+    const int ownedFd = sockets[0];
+    {
+        UsbPrinterTransport transport;
+        transport.adoptFileDescriptorForTesting(ownedFd, QStringLiteral("owner-test"));
+        sockets[0] = -1;
+        QVERIFY(transport.usesFileDescriptor());
+        PrinterProtocol::OperationContext context;
+        context.cancellationFd = cancellationFd;
+        QString error;
+        QCOMPARE(transport.waitForDescriptor(POLLIN, 5, context, &error),
+                 UsbPrinterTransport::WaitResult::Timeout);
+        const quint64 wake = 1;
+        QCOMPARE(::write(cancellationFd, &wake, sizeof(wake)), ssize_t(sizeof(wake)));
+        QCOMPARE(transport.waitForDescriptor(POLLIN, 50, context, &error),
+                 UsbPrinterTransport::WaitResult::Cancelled);
+        transport.setPersistentUsbInputFailureForTesting(true);
+        if (explicitClose) {
+            transport.close();
+            QVERIFY(transport.persistentUsbInputFailure());
+            QVERIFY(!transport.usesFileDescriptor());
+            QCOMPARE(::fcntl(ownedFd, F_GETFD), -1);
+            QCOMPARE(errno, EBADF);
+        }
+        QVERIFY(::fcntl(cancellationFd, F_GETFD) >= 0);
+    }
+    QCOMPARE(::fcntl(ownedFd, F_GETFD), -1);
+    QCOMPARE(errno, EBADF);
+    QVERIFY(::fcntl(cancellationFd, F_GETFD) >= 0);
+}
+
+void PrinterProtocolTests::modelClientsBorrowOneBufferedChannel() {
+    int sockets[2] = {-1, -1};
+    QVERIFY(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0);
+    const auto cleanup = qScopeGuard([&]() {
+        if (sockets[0] >= 0) {
+            ::close(sockets[0]);
+        }
+        ::close(sockets[1]);
+    });
+    const auto pase = printerProductProfileForId(0x1021);
+    const auto turris = printerProductProfileForId(0x2011);
+    QVERIFY(pase && turris);
+    PrinterTransactionChannel channel(pase->productId, 100, 100);
+    const int ownedFd = sockets[0];
+    channel.adoptFileDescriptor(ownedFd, QStringLiteral("shared-channel-test"));
+    sockets[0] = -1;
+    const quint64 firstTrackId = channel.allocateTrackId();
+    const QByteArray first = QByteArrayLiteral("first-frame");
+    const QByteArray second = QByteArrayLiteral("buffered-second-frame");
+    QString error;
+    QVERIFY2(writeAllFd(sockets[1], PrinterFrameCodec::encode(first) +
+                           PrinterFrameCodec::encode(second), &error),
+             qPrintable(error));
+    QByteArray payload;
+    const PrinterProtocol::OperationContext context;
+    QVERIFY2(channel.readFrame(&payload, context, 100, &error), qPrintable(error));
+    QCOMPARE(payload, first);
+    {
+        PaseConfigurationClient configuration(channel, *pase, 100);
+        PaseMediaClient media(channel, *pase);
+        TurrisMediaClient transferOnly(channel, *turris);
+        channel.closeDisplayActivationCycle();
+    }
+    // Destroying clients must neither close the borrowed stream nor discard
+    // a second frame which the one channel has already read from it.
+    QVERIFY(::fcntl(ownedFd, F_GETFD) >= 0);
+    QVERIFY2(channel.readFrame(&payload, context, 100, &error), qPrintable(error));
+    QCOMPARE(payload, second);
+    const quint64 expectedNext = firstTrackId == std::numeric_limits<quint64>::max()
+        ? 1 : firstTrackId + 1;
+    QCOMPARE(channel.allocateTrackId(), expectedNext);
+    channel.setPersistentUsbInputFailureForTesting(true);
+    channel.closeDevice();
+    QVERIFY(channel.persistentUsbInputFailure());
+    QCOMPARE(::fcntl(ownedFd, F_GETFD), -1);
+    QCOMPARE(errno, EBADF);
 }
 
 void PrinterProtocolTests::duplexInputReceivesAckDuringOutput() {

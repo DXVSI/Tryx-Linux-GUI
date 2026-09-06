@@ -137,6 +137,10 @@ private slots:
     void malformedFutureOversizedAndUnsafeStateFailClosed_data();
     void malformedFutureOversizedAndUnsafeStateFailClosed();
     void postCommitDirectoryRaceReportsUnknownAndDisablesWrites();
+    void customBadgesRoundTripAndLegacyCannotEraseThem();
+    void legacyUpgradePreservesBackup();
+    void malformedBadgeRecordsFailClosed_data();
+    void malformedBadgeRecordsFailClosed();
 };
 
 void SavedLayoutStoreTests::
@@ -180,6 +184,112 @@ void SavedLayoutStoreTests::
     QVERIFY(S_ISREG(status.st_mode));
     QCOMPARE(status.st_nlink, static_cast<nlink_t>(1));
     QCOMPARE(status.st_mode & 0777, static_cast<mode_t>(0600));
+}
+
+void SavedLayoutStoreTests::customBadgesRoundTripAndLegacyCannotEraseThem() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    Store store(directory.path());
+    QCOMPARE(store.load().status, Store::LoadStatus::Empty);
+    auto draft = tryxSavedLayoutV2FromV1(layout(id(16), QString::fromLatin1(kDeviceA), QStringLiteral("Custom"), true));
+    draft.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Мой ПК")};
+    draft.badges.secondaryGpu = {QStringLiteral("Custom"), QStringLiteral("Right GPU")};
+    const auto saved = store.putV2(0, draft);
+    QVERIFY2(saved.ok(), qPrintable(saved.detail));
+    QCOMPARE(saved.layoutV2.badges, draft.badges);
+    QVERIFY(store.layouts().isEmpty());
+    QVERIFY(store.snapshot(draft.deviceIdentity, draft.productId).layouts.isEmpty());
+    QCOMPARE(store.snapshotV2(draft.deviceIdentity, draft.productId).layouts.first(), saved.layoutV2);
+    const QByteArray original = readFile(store.indexPath());
+    auto legacy = layout(id(16), draft.deviceIdentity, draft.name, true);
+    legacy.revision = saved.revision;
+    QVERIFY(!store.put(saved.revision, legacy).ok());
+    QVERIFY(!store.remove(saved.revision, draft.deviceIdentity, draft.productId, draft.layoutId).ok());
+    QCOMPARE(readFile(store.indexPath()), original);
+    Store reloaded(directory.path());
+    QCOMPARE(reloaded.load().status, Store::LoadStatus::Loaded);
+    QCOMPARE(reloaded.snapshotV2(draft.deviceIdentity, draft.productId).layouts.first(), saved.layoutV2);
+    auto invalid = saved.layoutV2;
+    invalid.badges.primaryCpu.text = QStringLiteral("private\ntext");
+    const auto rejected = reloaded.putV2(saved.revision, invalid);
+    QVERIFY(!rejected.ok());
+    QVERIFY(!rejected.detail.contains(QStringLiteral("private")));
+    QCOMPARE(readFile(store.indexPath()), original);
+    QVERIFY(!reloaded.removeV2(0, draft.deviceIdentity, draft.productId, draft.layoutId).ok());
+    QVERIFY(reloaded.removeV2(saved.revision, draft.deviceIdentity, draft.productId, draft.layoutId).ok());
+    QVERIFY(reloaded.snapshotV2(draft.deviceIdentity, draft.productId).layouts.isEmpty());
+}
+
+void SavedLayoutStoreTests::malformedBadgeRecordsFailClosed_data() {
+    QTest::addColumn<QString>("mutation");
+    for (const char *name : {"missing", "future", "hidden", "invalid", "extra", "legacy-custom", "unsupported-product"})
+        QTest::newRow(name) << QString::fromLatin1(name);
+}
+
+void SavedLayoutStoreTests::malformedBadgeRecordsFailClosed() {
+    QFETCH(QString, mutation);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    Store store(directory.path());
+    auto draft = tryxSavedLayoutV2FromV1(layout(id(18)));
+    draft.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("private sentinel")};
+    QVERIFY(store.putV2(0, draft).ok());
+    auto root = QJsonDocument::fromJson(readFile(store.indexPath())).object();
+    auto records = root.value(QStringLiteral("layouts")).toArray();
+    auto record = records[0].toObject();
+    auto badges = record.value(QStringLiteral("badgeChoices")).toObject();
+    if (mutation == QStringLiteral("future")) badges.insert(QStringLiteral("schemaVersion"), 2);
+    if (mutation == QStringLiteral("hidden")) badges.insert(QStringLiteral("secondaryCpu"), badges.value(QStringLiteral("primaryCpu")));
+    if (mutation == QStringLiteral("invalid")) badges.insert(QStringLiteral("primaryCpu"), QJsonObject{
+        {QStringLiteral("mode"), QStringLiteral("Custom")}, {QStringLiteral("text"), QStringLiteral("private\ntext")}});
+    if (mutation == QStringLiteral("extra")) badges.insert(QStringLiteral("extra"), true);
+    record.insert(QStringLiteral("badgeChoices"), badges);
+    if (mutation == QStringLiteral("missing")) record.remove(QStringLiteral("badgeChoices"));
+    if (mutation == QStringLiteral("legacy-custom")) {
+        root.insert(QStringLiteral("version"), 1);
+        record.insert(QStringLiteral("schemaVersion"), 1);
+    }
+    if (mutation == QStringLiteral("unsupported-product")) record.insert(QStringLiteral("productId"), QStringLiteral("391a:1011"));
+    records[0] = record;
+    root.insert(QStringLiteral("layouts"), records);
+    const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    QVERIFY(writeFile(store.indexPath(), bytes));
+    Store reloaded(directory.path());
+    const auto result = reloaded.load();
+    QCOMPARE(result.status, Store::LoadStatus::IgnoredMalformed);
+    QVERIFY(!result.writesEnabled);
+    QVERIFY(!result.detail.contains(QStringLiteral("private")));
+    QVERIFY(!reloaded.putV2(0, draft).ok());
+    QCOMPARE(readFile(store.indexPath()), bytes);
+}
+
+void SavedLayoutStoreTests::legacyUpgradePreservesBackup() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    Store store(directory.path());
+    const auto saved = store.put(0, layout(id(17)));
+    QVERIFY2(saved.ok(), qPrintable(saved.detail));
+    auto root = QJsonDocument::fromJson(readFile(store.indexPath())).object();
+    auto records = root.value(QStringLiteral("layouts")).toArray();
+    auto record = records.first().toObject();
+    record.remove(QStringLiteral("badgeChoices"));
+    record.insert(QStringLiteral("schemaVersion"), 1);
+    records[0] = record;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("layouts"), records);
+    const QByteArray original = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    QVERIFY(writeFile(store.indexPath(), original));
+    Store reloaded(directory.path());
+    QCOMPARE(reloaded.load().status, Store::LoadStatus::Loaded);
+    QCOMPARE(readFile(store.indexPath()), original);
+    auto draft = reloaded.snapshotV2(QString::fromLatin1(kDeviceA), QString::fromLatin1(kProduct)).layouts.first();
+    QCOMPARE(draft.badges, TryxRuntimeOverlayBadgesV1());
+    draft.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("PC")};
+    QVERIFY(reloaded.putV2(saved.revision, draft).ok());
+    const QString backup = store.indexPath() + QStringLiteral(".pre-c16-")
+        + QString::fromLatin1(QCryptographicHash::hash(original, QCryptographicHash::Sha256).toHex());
+    QCOMPARE(readFile(backup), original);
+    QCOMPARE(QJsonDocument::fromJson(readFile(store.indexPath())).object().value(QStringLiteral("version")).toInt(), 2);
 }
 
 void SavedLayoutStoreTests::
@@ -582,7 +692,7 @@ void SavedLayoutStoreTests::
         QVERIFY(writeFile(index, QByteArrayLiteral("{")));
     } else if (caseName == QStringLiteral("future")) {
         QVERIFY(writeFile(index, QByteArrayLiteral(
-            "{\"layouts\":[],\"revision\":\"1\",\"version\":2}")));
+            "{\"layouts\":[],\"revision\":\"1\",\"version\":3}")));
     } else if (caseName == QStringLiteral("oversized")) {
         QVERIFY(writeFile(index, QByteArray(1024 * 1024 + 1, 'x')));
     } else if (caseName == QStringLiteral("unknown-keys")) {

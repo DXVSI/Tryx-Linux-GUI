@@ -1,27 +1,20 @@
 #pragma once
 
-#include "gpuinventory.h"
 #include "printermediavalidator.h"
 #include "printersessioncontroller.h"
 #include "printerprotocol.h"
 #include "runtimecontract.h"
 
 #include <QObject>
-#include <QElapsedTimer>
 #include <QMutex>
 #include <QString>
 #include <QStringList>
 #include <QSet>
-#include <QTimer>
 #include <atomic>
-#include <memory>
-#ifdef TRYX_PROTOCOL_TESTING
-#include <functional>
-#endif
-#include <panorama/device.hpp>
 
-class SystemMonitor;
-struct SystemMetrics;
+class LegacyDeviceSession;
+class PrinterClassSession;
+class DeviceWorkerSessionContext;
 
 class DeviceWorker : public QObject {
     Q_OBJECT
@@ -125,6 +118,11 @@ public slots:
                             const QString &expectedReplacementName,
                             qint64 expectedReplacementSize,
                             quint64 generation);
+    void applyPrinterMediaWithBadgesV1(
+        const QString &devicePath, const QString &mediaFile,
+        const TryxRuntimeApplyWithBadgesV1 &request, bool updateMetrics,
+        const QString &proofDeviceIdentity, const QList<TryxRuntimeSavedMediaRefV1> &proof,
+        const QString &operationId, quint64 generation);
     void applyPrinterMedia(const QString &devicePath, const QString &mediaFile,
                            const TryxRuntimeApplyRequest &request,
                            bool updateMetrics,
@@ -179,7 +177,8 @@ signals:
                               bool metricsUpdated,
                               PrinterProtocol::MutationOutcome outcome,
                               const QString &errorMessage,
-                              quint64 generation);
+                              quint64 generation,
+                              const PrinterProtocol::PaseDisplayStateResult &readback = PrinterProtocol::PaseDisplayStateResult{});
     void printerSavedLayoutProofFailed(
         const QString &operationId, const QString &errorCategory,
         const QString &errorMessage, quint64 generation);
@@ -260,86 +259,16 @@ private slots:
     void retryPrinterSessionStart();
 
 private:
-    enum class PrinterSessionState {
-        Passive,
-        AwaitingProtocolReadiness,
-        Starting,
-        AwaitingOverlayActivation,
-        Active,
-        Recovering,
-        Lost
-    };
-
-    bool preparePrinterOperation(const QString &devicePath, quint64 generation,
-                                 const QString &operationId,
-                                 PrinterProtocol::OperationContext *context,
-                                 QString *errorMessage);
-    bool ensurePrinterSession(const QString &devicePath, quint64 generation,
-                              const PrinterProtocol::OperationContext &context,
-                              QString *errorMessage,
-                              bool allowPendingOverlayActivation = false);
-    bool printerGenerationIsCurrent(quint64 generation) const;
-    bool printerOperationIsCancelled(const QString &operationId) const;
-    static void drainPrinterCancellation(int cancellationFd);
-    void drainAllPrinterCancellations();
-    static QString printerSessionStateName(PrinterSessionState state);
-    void transitionPrinterSessionState(PrinterSessionState state,
-                                       const QString &eventName);
-    void restartPrinterKeepaliveAfterActivity();
-    void activateRestoredPrinterOverlay(quint64 generation);
-    void publishPendingPrinterDeviceSpecifications(quint64 generation);
-    void markPrinterSessionLost(const QString &reason,
-                                quint64 generation);
-    void collectCurrentPrinterMetrics(QStringList *labels,
-                                      QStringList *values,
-                                      QStringList *units);
-    void publishPrinterMetricsAvailability(
-        const SystemMetrics &metrics);
-    void synchronizePublishedPresentationPreferences();
-    void updatePrinterOverlayInitialMetrics(
-        const QStringList &labels, const QStringList &values,
-        const QStringList &units);
-    void startPrinterMetrics();
-    void stopPrinterSession();
+    friend class DeviceWorkerSessionContext;
     void quiesceDeviceTransports(quint64 generation);
-    void schedulePrinterSessionRecovery(const QString &reason,
-                                        quint64 generation);
-    void attemptPrinterSessionStart(const QString &devicePath,
-                                    quint64 generation);
 
-    std::unique_ptr<panorama::Device> device_;
-    std::unique_ptr<PrinterProtocol> printerProtocol_;
-    QTimer *legacyMetricsTimer_;
-    QTimer *printerKeepaliveTimer_;
-    QTimer *printerMetricsTimer_;
-    QTimer *printerRecoveryTimer_;
-    SystemMonitor *printerSystemMonitor_;
     std::atomic<quint64> printerGenerationGate_{0};
     std::atomic_bool printerEndpointReady_{false};
     mutable QMutex printerOperationCancellationMutex_;
     QSet<QString> cancelledPrinterOperationIds_;
     int printerCancellationFd_ = -1;
     int printerOperationCancellationFd_ = -1;
-    QString printerDevicePath_;
-    QString printerDeviceSerial_;
-    quint16 printerProductId_ = 0;
-    quint64 configuredPrinterGeneration_ = 0;
-    PrinterSessionState printerSessionState_ = PrinterSessionState::Passive;
-    int printerKeepaliveRetryCount_ = 0;
-    int printerSessionRecoveryAttempt_ = 0;
-    bool printerOverlayActivationPending_ = false;
-    bool printerOverlayLeaseRefreshNext_ = false;
-    PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
-        PrinterOverlayLeaseMode::PingAndOverlayLease;
-    QElapsedTimer printerSessionElapsedTimer_;
-    QString foregroundPrinterOperationId_;
-    PrinterProtocol::DeviceSpecifications pendingPrinterDeviceSpecifications_;
-    bool printerDeviceSpecificationsPending_ = false;
-    PrinterProtocol::PaseOverlayConfig printerOverlayConfig_;
-    tryx::GpuSelectionPin printerGpuPin_;
-    TryxRuntimePresentationPreferencesV1 presentationPreferences_;
     std::atomic_uint publishedPresentationPreferences_{0};
-#ifdef TRYX_PROTOCOL_TESTING
-    std::function<void()> savedLayoutProofConfirmedHookForTesting_;
-#endif
+    PrinterClassSession *printerSession_;
+    LegacyDeviceSession *legacySession_;
 };

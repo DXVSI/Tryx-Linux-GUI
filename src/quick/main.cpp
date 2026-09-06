@@ -5,6 +5,7 @@
 #include "linuxtraycontroller.h"
 #include "mediaeditorcontroller.h"
 #include "mediapreviewcontroller.h"
+#include "releaseupdatecontroller.h"
 #include "runtimebootstrap.h"
 #include "runtimeclient.h"
 #include "startupvisibilitycontroller.h"
@@ -179,6 +180,18 @@ int main(int argc, char *argv[]) {
     StartupVisibilityController startupVisibility(
         &windowChrome);
     LinuxTrayController tray;
+    ReleaseUpdateController releaseUpdates;
+    QObject::connect(&app, &QCoreApplication::aboutToQuit,
+                     &releaseUpdates, &ReleaseUpdateController::stop);
+    QObject::connect(
+        &releaseUpdates, &ReleaseUpdateController::newReleaseAvailable,
+        &tray, [&tray](const QString &version) {
+            // Failure or desktop DND never clears the confirmed Settings row.
+            tray.showNotification(
+                ReleaseUpdateController::tr("TRYX Panorama Manager update"),
+                ReleaseUpdateController::tr(
+                    "Version %1 is available. Open Settings to view the release.").arg(version));
+        });
 
     windowChrome.setHideToTrayOnClose(
         settings.hideToTrayOnClose());
@@ -264,6 +277,8 @@ int main(int argc, char *argv[]) {
          QVariant::fromValue(
              static_cast<QObject *>(&cacheManagement))},
         {QStringLiteral("quickSmokeTest"), smokeTest},
+        {QStringLiteral("releaseUpdates"),
+         QVariant::fromValue(static_cast<QObject *>(&releaseUpdates))},
         {QStringLiteral("autostartRequested"),
          autostartRequested},
     });
@@ -310,6 +325,10 @@ int main(int argc, char *argv[]) {
     drainInstanceLaunchConnections();
     if (smokeTest) {
         QTimer::singleShot(0, &app, [&app]() { app.exit(0); });
+    } else {
+        // Primary GUI only, after successful QML startup, including hidden
+        // autostart/tray sessions. Secondary launches and helpers returned above.
+        releaseUpdates.start();
     }
     return app.exec();
 }

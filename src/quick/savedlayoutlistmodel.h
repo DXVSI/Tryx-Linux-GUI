@@ -24,12 +24,14 @@ public:
                   int role = Qt::DisplayRole) const override;
     QHash<int, QByteArray> roleNames() const override;
 
+    void applyLayoutsV2(const QList<TryxRuntimeSavedLayoutV2> &layouts);
     void applyLayouts(const QList<TryxRuntimeSavedLayoutV1> &layouts);
     void clear();
-    bool layoutById(const QString &layoutId,
-                    TryxRuntimeSavedLayoutV1 *layout) const;
+    bool layoutV2ById(const QString &layoutId,
+                    TryxRuntimeSavedLayoutV2 *layout) const;
+    bool layoutById(const QString &layoutId, TryxRuntimeSavedLayoutV1 *layout) const;
     QString idForName(const QString &name) const;
 
 private:
-    QList<TryxRuntimeSavedLayoutV1> layouts_;
+    QList<TryxRuntimeSavedLayoutV2> layouts_;
 };

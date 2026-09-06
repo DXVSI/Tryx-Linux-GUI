@@ -13,7 +13,7 @@ QVariant SavedLayoutListModel::data(const QModelIndex &index,
         index.row() >= layouts_.size()) {
         return {};
     }
-    const TryxRuntimeSavedLayoutV1 &layout = layouts_.at(index.row());
+    const TryxRuntimeSavedLayoutV2 &layout = layouts_.at(index.row());
     switch (role) {
     case Qt::DisplayRole:
     case NameRole:
@@ -41,8 +41,8 @@ QHash<int, QByteArray> SavedLayoutListModel::roleNames() const {
     };
 }
 
-void SavedLayoutListModel::applyLayouts(
-    const QList<TryxRuntimeSavedLayoutV1> &layouts) {
+void SavedLayoutListModel::applyLayoutsV2(
+    const QList<TryxRuntimeSavedLayoutV2> &layouts) {
     if (layouts_ == layouts) {
         return;
     }
@@ -60,10 +60,21 @@ void SavedLayoutListModel::clear() {
     endResetModel();
 }
 
-bool SavedLayoutListModel::layoutById(
+void SavedLayoutListModel::applyLayouts(const QList<TryxRuntimeSavedLayoutV1> &layouts) {
+    QList<TryxRuntimeSavedLayoutV2> promoted;
+    for (const auto &layout : layouts) promoted.append(tryxSavedLayoutV2FromV1(layout));
+    applyLayoutsV2(promoted);
+}
+
+bool SavedLayoutListModel::layoutById(const QString &layoutId, TryxRuntimeSavedLayoutV1 *layout) const {
+    TryxRuntimeSavedLayoutV2 current;
+    return layoutV2ById(layoutId, &current) && tryxSavedLayoutV2ToV1(current, layout);
+}
+
+bool SavedLayoutListModel::layoutV2ById(
     const QString &layoutId,
-    TryxRuntimeSavedLayoutV1 *layout) const {
-    for (const TryxRuntimeSavedLayoutV1 &candidate : layouts_) {
+    TryxRuntimeSavedLayoutV2 *layout) const {
+    for (const TryxRuntimeSavedLayoutV2 &candidate : layouts_) {
         if (candidate.layoutId != layoutId) {
             continue;
         }
@@ -76,7 +87,7 @@ bool SavedLayoutListModel::layoutById(
 }
 
 QString SavedLayoutListModel::idForName(const QString &name) const {
-    for (const TryxRuntimeSavedLayoutV1 &layout : layouts_) {
+    for (const TryxRuntimeSavedLayoutV2 &layout : layouts_) {
         if (layout.name.compare(name, Qt::CaseInsensitive) == 0) {
             return layout.layoutId;
         }

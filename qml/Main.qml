@@ -18,6 +18,7 @@ ApplicationWindow {
     required property var windowChrome
     required property var supportBundle
     required property var cacheManagement
+    required property var releaseUpdates
     required property bool quickSmokeTest
     required property bool autostartRequested
 
@@ -487,6 +488,13 @@ ApplicationWindow {
                         windowChrome: window.windowChrome
                         supportBundle: window.supportBundle
                         cacheManagement: window.cacheManagement
+                        updateAvailable: window.releaseUpdates.updateAvailable
+                        availableVersion: window.releaseUpdates.availableVersion
+                        releaseUrl: window.releaseUpdates.releaseUrl
+                        onOpenReleaseRequested: {
+                            if (window.releaseUpdates.updateAvailable)
+                                Qt.openUrlExternally(window.releaseUpdates.releaseUrl)
+                        }
                     }
                 }
             }

@@ -34,6 +34,34 @@ bool stringListFromJson(const QJsonObject &object, const QString &key,
 
 namespace tryx::runtime_apply_request_codec {
 
+QJsonObject runtimeApplyWithBadgesV1ToJson(const TryxRuntimeApplyWithBadgesV1 &request) {
+    return {{QStringLiteral("schemaVersion"), static_cast<qint64>(request.schemaVersion)},
+            {QStringLiteral("request"), runtimeApplyRequestToJson(request.request)},
+            {QStringLiteral("badges"), tryxOverlayBadgesV1ToJson(request.badges)}};
+}
+
+QString runtimeApplyWithBadgesV1Fingerprint(const TryxRuntimeApplyWithBadgesV1 &request) {
+    const QByteArray canonical = QJsonDocument(runtimeApplyWithBadgesV1ToJson(request)).toJson(QJsonDocument::Compact);
+    return QString::fromLatin1(QCryptographicHash::hash(canonical, QCryptographicHash::Sha256).toHex());
+}
+
+bool runtimeApplyWithBadgesV1FromJson(const QJsonObject &object, TryxRuntimeApplyWithBadgesV1 *request) {
+    if (!request || object.size() != 3 || object.value(QStringLiteral("schemaVersion")) != QJsonValue(1)
+        || !object.value(QStringLiteral("request")).isObject()
+        || !object.value(QStringLiteral("badges")).isObject()) return false;
+    TryxRuntimeApplyWithBadgesV1 result;
+    const QJsonObject base = object.value(QStringLiteral("request")).toObject();
+    if (!runtimeApplyRequestFromJson(base, &result.request, true)) return false;
+    // The legacy decoder fills missing color choices for old persisted records.
+    // A versioned envelope is lossless; normalization belongs at the Apply boundary.
+    result.request.settingsColor = base.value(QStringLiteral("settingsColor")).toString();
+    result.request.settingsColor2 = base.value(QStringLiteral("settingsColor2")).toString();
+    if (runtimeApplyRequestToJson(result.request) != base
+        || !tryxOverlayBadgesV1FromJson(object.value(QStringLiteral("badges")).toObject(), &result.badges)) return false;
+    *request = result;
+    return true;
+}
+
 QJsonObject runtimeApplyRequestToJson(
     const TryxRuntimeApplyRequest &request) {
     QJsonObject display;

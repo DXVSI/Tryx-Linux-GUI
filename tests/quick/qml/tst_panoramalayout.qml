@@ -124,6 +124,18 @@ TestCase {
         property bool samplingActive: false
         property string diagnostic: ""
         property bool capabilitiesReady: true
+        property bool customBadgeTextSupported: false
+        property var displayBadgeChoices: autoBadgeChoices()
+        property var lastBadgeChoices: ({})
+        function autoBadgeChoices() {
+            return {"schemaVersion": 1, "primaryCpu": {"mode": "Auto", "text": ""},
+                "primaryGpu": {"mode": "Auto", "text": ""}, "secondaryCpu": {"mode": "Auto", "text": ""},
+                "secondaryGpu": {"mode": "Auto", "text": ""}}
+        }
+        function badgeTextError(mode, text) {
+            return mode === "Auto" || (mode === "Custom" && text.trim().length > 0
+                && Array.from(text.trim()).length <= 32 && !/[\n\r\t]/.test(text)) ? "" : "Invalid badge text"
+        }
         property bool savedLayoutsSupported: true
         property bool savedLayoutsReady: true
         property bool savedLayoutsBusy: false
@@ -204,7 +216,8 @@ TestCase {
                 position, color, alignment,
                 layoutPresent,
                 brightnessPresent, brightness,
-                orientationPresent, mirror, waterfall) {
+                orientationPresent, mirror, waterfall, badgeChoices) {
+            lastBadgeChoices = badgeChoices || autoBadgeChoices()
             fullDraftSubmitCount += 1
             lastFullDraftSubmit = [
                 media, playMode, metrics, badges,
@@ -223,7 +236,8 @@ TestCase {
                 rightPosition, rightColor, rightAlignment,
                 layoutPresent,
                 brightnessPresent, brightness,
-                orientationPresent, mirror, waterfall) {
+                orientationPresent, mirror, waterfall, badgeChoices) {
+            lastBadgeChoices = badgeChoices || autoBadgeChoices()
             splitDraftSubmitCount += 1
             lastSplitDraftSubmit = [
                 left, right, playMode,
@@ -434,6 +448,9 @@ TestCase {
             "Memory Frequency", "Memory Usage", "Date&Time"
         ]
         runtimeMock.capabilitiesReady = true
+        runtimeMock.customBadgeTextSupported = false
+        runtimeMock.displayBadgeChoices = runtimeMock.autoBadgeChoices()
+        runtimeMock.lastBadgeChoices = ({})
         runtimeMock.savedLayoutsSupported = true
         runtimeMock.savedLayoutsReady = true
         runtimeMock.savedLayoutsBusy = false
@@ -1205,6 +1222,73 @@ TestCase {
                ", workspace: " +
                findChild(page, "displayWorkspace").width +
                ", page available width: " + page.availableWidth)
+    }
+
+    function test_customBadgeEditsOneImmutableDraft() {
+        runtimeMock.customBadgeTextSupported = true
+        runtimeMock.displayedMedia = ["one.mp4.h264_2240x1080"]
+        let accepted = runtimeMock.autoBadgeChoices()
+        accepted.primaryCpu = {"mode": "Custom", "text": "Accepted"}
+        runtimeMock.displayBadgeChoices = accepted
+        const page = createTemporaryObject(panoramaComponent, testCase, {"width": 1000, "height": 700})
+        verify(page !== null)
+        wait(0)
+        const field = findChild(page, "fullCpuBadgeTextField")
+        const mode = findChild(page, "fullCpuBadgeMode")
+        verify(field !== null)
+        verify(mode !== null)
+        compare(field.text, "Accepted")
+        verify(field.activeFocusOnTab)
+        verify(mode.activeFocusOnTab)
+        verify(!page.hasUnsavedChanges)
+        field.forceActiveFocus()
+        tryCompare(field, "activeFocus", true)
+        keyClick(Qt.Key_A, Qt.ControlModifier)
+        keyClick(Qt.Key_R)
+        keyClick(Qt.Key_I)
+        keyClick(Qt.Key_G)
+        compare(field.text, "rig")
+        compare(page.fullBadgeChoices.cpu.text, "rig")
+        compare(runtimeMock.fullDraftSubmitCount, 0)
+        page.editBadgeChoice("full", "cpu", "Custom", "")
+        verify(!page.canApplyChanges)
+        page.editBadgeChoice("full", "cpu", "Custom", "  My rig  ")
+        verify(page.hasUnsavedChanges)
+        verify(page.canApplyChanges)
+        compare(runtimeMock.fullDraftSubmitCount, 0)
+        page.applyChanges()
+        compare(runtimeMock.fullDraftSubmitCount, 1)
+        compare(runtimeMock.lastBadgeChoices.primaryCpu.text, "My rig")
+        compare(runtimeMock.lastBadgeChoices.secondaryCpu.mode, "Auto")
+        verify(!field.enabled)
+        page.applyChanges()
+        compare(runtimeMock.fullDraftSubmitCount, 1)
+    }
+
+    function test_customBadgeSplitAndCapabilityLossPreserveDraft() {
+        runtimeMock.customBadgeTextSupported = true
+        runtimeMock.currentScreenMode = "Screen Splitting"
+        runtimeMock.displayedMedia = ["one.mp4.h264_2240x1080", "two.mp4.h264_2240x1080"]
+        runtimeMock.displayRightBadges = ["CPU Badge"]
+        let accepted = runtimeMock.autoBadgeChoices()
+        accepted.primaryCpu = {"mode": "Custom", "text": "Left"}
+        accepted.secondaryCpu = {"mode": "Custom", "text": "Right"}
+        runtimeMock.displayBadgeChoices = accepted
+        const page = createTemporaryObject(panoramaComponent, testCase, {"width": 780, "height": 700})
+        verify(page !== null)
+        wait(0)
+        page.editBadgeChoice("right", "cpu", "Custom", "New right")
+        const draft = page.captureSavedLayoutFullState()
+        compare(draft.layout.badgeChoices.primaryCpu.text, "Left")
+        compare(draft.layout.badgeChoices.secondaryCpu.text, "New right")
+        runtimeMock.customBadgeTextSupported = false
+        verify(!page.canApplyChanges)
+        compare(page.captureSavedLayoutFullState().layout.badgeChoices.secondaryCpu.text, "New right")
+        runtimeMock.customBadgeTextSupported = true
+        page.toggleBadge("right", "CPU Badge")
+        page.toggleBadge("right", "CPU Badge")
+        compare(page.captureSavedLayoutFullState().layout.badgeChoices.secondaryCpu.mode, "Auto")
+        compare(runtimeMock.splitDraftSubmitCount, 0)
     }
 
     function test_dirtyUsesCanonicalActiveLayoutAndScreenDomains() {

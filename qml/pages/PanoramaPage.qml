@@ -23,6 +23,10 @@ ScrollView {
     property var fullBadges: []
     property var leftBadges: []
     property var rightBadges: []
+    property var fullBadgeChoices: emptyBadgeArea()
+    property var leftBadgeChoices: emptyBadgeArea()
+    property var rightBadgeChoices: emptyBadgeArea()
+    readonly property bool customBadgeTextSupported: "customBadgeTextSupported" in runtime && runtime.customBadgeTextSupported
     property int brightnessDraft: runtime.brightness
     property bool mirrorDraft: runtime.mirrorMode
     property bool waterfallDraft: runtime.waterfallMode
@@ -76,6 +80,67 @@ ScrollView {
 
     function copyList(value) {
         return value ? value.slice(0) : []
+    }
+
+    function copyBadgeChoice(value, trimText) {
+        const mode = value ? String(value.mode || "Auto") : "Auto"
+        const text = value ? String(value.text || "") : ""
+        return {"mode": mode, "text": trimText && mode === "Custom" ? text.trim() : text}
+    }
+
+    function emptyBadgeArea() {
+        return {"cpu": {"mode": "Auto", "text": ""}, "gpu": {"mode": "Auto", "text": ""}}
+    }
+
+    function badgeAreaFromEnvelope(value, secondary) {
+        return {"cpu": copyBadgeChoice(value ? value[secondary ? "secondaryCpu" : "primaryCpu"] : null, false),
+            "gpu": copyBadgeChoice(value ? value[secondary ? "secondaryGpu" : "primaryGpu"] : null, false)}
+    }
+
+    function copyBadgeArea(value) {
+        return {"cpu": copyBadgeChoice(value ? value.cpu : null, false),
+            "gpu": copyBadgeChoice(value ? value.gpu : null, false)}
+    }
+
+    function badgeEnvelope(primary, secondary, primaryIds, secondaryIds, split) {
+        return {"schemaVersion": 1,
+            "primaryCpu": copyBadgeChoice(primaryIds.indexOf("CPU Badge") >= 0 ? primary.cpu : null, true),
+            "primaryGpu": copyBadgeChoice(primaryIds.indexOf("GPU Badge") >= 0 ? primary.gpu : null, true),
+            "secondaryCpu": copyBadgeChoice(split && secondaryIds.indexOf("CPU Badge") >= 0 ? secondary.cpu : null, true),
+            "secondaryGpu": copyBadgeChoice(split && secondaryIds.indexOf("GPU Badge") >= 0 ? secondary.gpu : null, true)}
+    }
+
+    function runtimeBadgeChoices() {
+        const value = "displayBadgeChoices" in runtime ? runtime.displayBadgeChoices : null
+        return badgeEnvelope(badgeAreaFromEnvelope(value, false), badgeAreaFromEnvelope(value, true),
+            copyList(runtime.displayLeftBadges), copyList(runtime.displayRightBadges), runtime.currentScreenMode === "Screen Splitting")
+    }
+
+    function editBadgeChoice(area, slot, mode, text) {
+        if (!confirmedSnapshotReady || applyPending || !customBadgeTextSupported)
+            return
+        const value = copyBadgeArea(area === "full" ? fullBadgeChoices : area === "left" ? leftBadgeChoices : rightBadgeChoices)
+        value[slot] = {"mode": mode, "text": mode === "Auto" ? "" : text}
+        if (area === "full") fullBadgeChoices = value
+        else if (area === "left") leftBadgeChoices = value
+        else rightBadgeChoices = value
+    }
+
+    function badgeAreaIsValid(area, ids) {
+        for (const slot of ["cpu", "gpu"]) {
+            if (ids.indexOf(slot === "cpu" ? "CPU Badge" : "GPU Badge") < 0)
+                continue
+            const choice = area[slot]
+            if (choice.mode === "Custom" && (!customBadgeTextSupported || !("badgeTextError" in runtime)
+                || runtime.badgeTextError(choice.mode, choice.text).length > 0))
+                return false
+        }
+        return true
+    }
+
+    function activeBadgeChoicesAreValid() {
+        return splitMode ? badgeAreaIsValid(leftBadgeChoices, leftBadges) && badgeAreaIsValid(rightBadgeChoices, rightBadges)
+                         : badgeAreaIsValid(fullBadgeChoices, fullBadges)
     }
 
     function normalizedColor(value) {
@@ -186,6 +251,7 @@ ScrollView {
                 "rightMetrics": copyList(runtime.displayRightMetrics),
                 "leftBadges": copyList(runtime.displayLeftBadges),
                 "rightBadges": copyList(runtime.displayRightBadges),
+                "badgeChoices": runtimeBadgeChoices(),
                 "leftPosition": leftPosition,
                 "leftColor": leftColor,
                 "leftAlignment": leftAlignment,
@@ -200,6 +266,7 @@ ScrollView {
             "playMode": runtime.currentPlayMode || "Single",
             "metrics": copyList(runtime.displayLeftMetrics),
             "badges": copyList(runtime.displayLeftBadges),
+            "badgeChoices": runtimeBadgeChoices(),
             "position": leftPosition,
             "color": leftColor,
             "alignment": leftAlignment
@@ -218,6 +285,9 @@ ScrollView {
             "fullBadges": copyList(runtime.displayLeftBadges),
             "leftBadges": copyList(runtime.displayLeftBadges),
             "rightBadges": copyList(runtime.displayRightBadges),
+            "fullBadgeChoices": badgeAreaFromEnvelope(runtimeBadgeChoices(), false),
+            "leftBadgeChoices": badgeAreaFromEnvelope(runtimeBadgeChoices(), false),
+            "rightBadgeChoices": badgeAreaFromEnvelope(runtimeBadgeChoices(), true),
             "fullPosition": leftPosition,
             "fullColor": leftColor,
             "fullAlignment": leftAlignment,
@@ -244,6 +314,9 @@ ScrollView {
         fullBadges = copyList(snapshot.fullBadges)
         leftBadges = copyList(snapshot.leftBadges)
         rightBadges = copyList(snapshot.rightBadges)
+        fullBadgeChoices = copyBadgeArea(snapshot.fullBadgeChoices)
+        leftBadgeChoices = copyBadgeArea(snapshot.leftBadgeChoices)
+        rightBadgeChoices = copyBadgeArea(snapshot.rightBadgeChoices)
         fullStylePosition = snapshot.fullPosition
         fullStyleColor = snapshot.fullColor
         fullStyleAlignment = snapshot.fullAlignment
@@ -274,6 +347,7 @@ ScrollView {
                 "rightMetrics": copyList(rightMetrics),
                 "leftBadges": copyList(leftBadges),
                 "rightBadges": copyList(rightBadges),
+                "badgeChoices": badgeEnvelope(leftBadgeChoices, rightBadgeChoices, leftBadges, rightBadges, true),
                 "leftPosition": leftStylePosition,
                 "leftColor": normalizedColor(leftStyleColor),
                 "leftAlignment": leftStyleAlignment,
@@ -288,6 +362,7 @@ ScrollView {
             "playMode": playMode || "Single",
             "metrics": copyList(fullMetrics),
             "badges": copyList(fullBadges),
+            "badgeChoices": badgeEnvelope(fullBadgeChoices, emptyBadgeArea(), fullBadges, [], false),
             "position": fullStylePosition,
             "color": normalizedColor(fullStyleColor),
             "alignment": fullStyleAlignment
@@ -415,6 +490,8 @@ ScrollView {
             rightMetrics = copyList(snapshot.rightMetrics)
             leftBadges = copyList(snapshot.leftBadges)
             rightBadges = copyList(snapshot.rightBadges)
+            leftBadgeChoices = badgeAreaFromEnvelope(snapshot.badgeChoices, false)
+            rightBadgeChoices = badgeAreaFromEnvelope(snapshot.badgeChoices, true)
             leftStylePosition = snapshot.leftPosition
             leftStyleColor = snapshot.leftColor
             leftStyleAlignment = snapshot.leftAlignment
@@ -425,6 +502,7 @@ ScrollView {
             playMode = snapshot.playMode
             fullMetrics = copyList(snapshot.metrics)
             fullBadges = copyList(snapshot.badges)
+            fullBadgeChoices = badgeAreaFromEnvelope(snapshot.badgeChoices, false)
             fullStylePosition = snapshot.position
             fullStyleColor = snapshot.color
             fullStyleAlignment = snapshot.alignment
@@ -579,6 +657,8 @@ ScrollView {
     function activeLayoutIsValid(layoutPresent) {
         if (!layoutPresent)
             return true
+        if (!activeBadgeChoicesAreValid())
+            return false
         if ((!splitMode && selectedMedia.length !== 1) ||
             (splitMode && selectedMedia.length !== 2))
             return false
@@ -747,7 +827,7 @@ ScrollView {
                 draft.brightnessPresent, draft.brightness,
                 draft.orientationPresent,
                 draft.orientation.mirror,
-                draft.orientation.waterfall)
+                draft.orientation.waterfall, draft.layout.badgeChoices)
         } else {
             submissionId = runtime.submitFullDisplayDraft(
                 copyList(draft.layout.media),
@@ -761,7 +841,7 @@ ScrollView {
                 draft.brightnessPresent, draft.brightness,
                 draft.orientationPresent,
                 draft.orientation.mirror,
-                draft.orientation.waterfall)
+                draft.orientation.waterfall, draft.layout.badgeChoices)
         }
 
         activeDisplaySubmissionId = String(submissionId || "")
@@ -834,7 +914,7 @@ ScrollView {
     }
 
     function toggleBadge(group, value) {
-        if (!confirmedSnapshotReady)
+        if (!confirmedSnapshotReady || applyPending)
             return
         if (group === "full")
             fullBadges = toggled(fullBadges, value, 2)
@@ -842,6 +922,13 @@ ScrollView {
             leftBadges = toggled(leftBadges, value, 2)
         else
             rightBadges = toggled(rightBadges, value, 2)
+        if (!badgeSelected(group, value)) {
+            const choices = copyBadgeArea(group === "full" ? fullBadgeChoices : group === "left" ? leftBadgeChoices : rightBadgeChoices)
+            choices[value === "CPU Badge" ? "cpu" : "gpu"] = {"mode": "Auto", "text": ""}
+            if (group === "full") fullBadgeChoices = choices
+            else if (group === "left") leftBadgeChoices = choices
+            else rightBadgeChoices = choices
+        }
     }
 
     function requestDelete(mediaName) {
@@ -1502,6 +1589,21 @@ ScrollView {
                     }
                 }
 
+                Repeater {
+                    model: ["cpu", "gpu"]
+                    delegate: BadgeTextEditor {
+                        required property string modelData
+                        runtime: root.runtime
+                        badgeTitle: modelData === "cpu" ? qsTr("CPU Badge") : qsTr("GPU Badge")
+                        fieldPrefix: "full" + (modelData === "cpu" ? "Cpu" : "Gpu")
+                        choice: root.fullBadgeChoices[modelData]
+                        visible: !root.splitMode && (root.customBadgeTextSupported || choice.mode === "Custom")
+                            && root.badgeSelected("full", modelData === "cpu" ? "CPU Badge" : "GPU Badge")
+                        editable: root.customBadgeTextSupported && root.confirmedSnapshotReady && !root.applyPending
+                        onChoiceEdited: (mode, text) => root.editBadgeChoice("full", modelData, mode, text)
+                    }
+                }
+
                 GridLayout {
                     id: splitMetricGrid
 
@@ -1560,8 +1662,22 @@ ScrollView {
                                     root.badgeSelected(
                                         "left", "GPU Badge")
                                 onClicked:
-                                    root.toggleBadge(
+                                root.toggleBadge(
                                         "left", "GPU Badge")
+                            }
+                        }
+                        Repeater {
+                            model: ["cpu", "gpu"]
+                            delegate: BadgeTextEditor {
+                                required property string modelData
+                                runtime: root.runtime
+                                badgeTitle: modelData === "cpu" ? qsTr("Left CPU badge") : qsTr("Left GPU badge")
+                                fieldPrefix: "left" + (modelData === "cpu" ? "Cpu" : "Gpu")
+                                choice: root.leftBadgeChoices[modelData]
+                                visible: (root.customBadgeTextSupported || choice.mode === "Custom")
+                                    && root.badgeSelected("left", modelData === "cpu" ? "CPU Badge" : "GPU Badge")
+                                editable: root.customBadgeTextSupported && root.confirmedSnapshotReady && !root.applyPending
+                                onChoiceEdited: (mode, text) => root.editBadgeChoice("left", modelData, mode, text)
                             }
                         }
                     }
@@ -1611,8 +1727,22 @@ ScrollView {
                                     root.badgeSelected(
                                         "right", "GPU Badge")
                                 onClicked:
-                                    root.toggleBadge(
+                                root.toggleBadge(
                                         "right", "GPU Badge")
+                            }
+                        }
+                        Repeater {
+                            model: ["cpu", "gpu"]
+                            delegate: BadgeTextEditor {
+                                required property string modelData
+                                runtime: root.runtime
+                                badgeTitle: modelData === "cpu" ? qsTr("Right CPU badge") : qsTr("Right GPU badge")
+                                fieldPrefix: "right" + (modelData === "cpu" ? "Cpu" : "Gpu")
+                                choice: root.rightBadgeChoices[modelData]
+                                visible: (root.customBadgeTextSupported || choice.mode === "Custom")
+                                    && root.badgeSelected("right", modelData === "cpu" ? "CPU Badge" : "GPU Badge")
+                                editable: root.customBadgeTextSupported && root.confirmedSnapshotReady && !root.applyPending
+                                onChoiceEdited: (mode, text) => root.editBadgeChoice("right", modelData, mode, text)
                             }
                         }
                     }
@@ -1622,6 +1752,15 @@ ScrollView {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 1
                     color: "#343a40"
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    visible: root.customBadgeTextSupported
+                    text: qsTr("Custom text uses a neutral background. Cyrillic and other glyphs have not been verified on the device.")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    color: "#b8bbca"
                 }
 
                 OverlayStyleEditor {

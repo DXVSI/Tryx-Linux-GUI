@@ -12,6 +12,7 @@
         <file alias="qml/components/NavButton.qml">../qml/components/NavButton.qml</file>
         <file alias="qml/components/OperationBanner.qml">../qml/components/OperationBanner.qml</file>
         <file alias="qml/components/OverlayStyleEditor.qml">../qml/components/OverlayStyleEditor.qml</file>
+        <file alias="qml/components/BadgeTextEditor.qml">../qml/components/BadgeTextEditor.qml</file>
         <file alias="qml/components/PrimaryButton.qml">../qml/components/PrimaryButton.qml</file>
         <file alias="qml/components/SavedLayoutsPanel.qml">../qml/components/SavedLayoutsPanel.qml</file>
         <file alias="qml/components/SupportBundleExportPicker.qml">../qml/components/SupportBundleExportPicker.qml</file>

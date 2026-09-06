@@ -1,6 +1,7 @@
 #include "savedlayoutstore.h"
 
 #include "applicationpaths.h"
+#include "configurationformatbackup.h"
 #include "runtimeapplyrequestcodec.h"
 
 #include <QDir>
@@ -26,7 +27,7 @@
 
 namespace {
 
-using Layout = TryxRuntimeSavedLayoutV1;
+using Layout = TryxRuntimeSavedLayoutV2;
 using MediaRef = TryxRuntimeSavedMediaRefV1;
 using Store = tryx::SavedLayoutStore;
 
@@ -35,7 +36,7 @@ constexpr qsizetype kMaximumLayoutsPerDevice = 32;
 constexpr qsizetype kMaximumLayoutsTotal = 256;
 constexpr qsizetype kMaximumLayoutNameCharacters = 80;
 constexpr qsizetype kMaximumMediaNameCharacters = 128;
-constexpr int kFormatVersion = 1;
+constexpr int kFormatVersion = 2;
 constexpr char kIndexFileName[] = "index.json";
 
 class ScopedFileDescriptor final {
@@ -344,7 +345,12 @@ bool requestIsValid(
 }
 
 bool layoutIsValid(const Layout &layout) {
-    if (layout.schemaVersion != 1U ||
+    TryxRuntimeOverlayBadgesV1 normalized;
+    if (layout.schemaVersion != 2U ||
+        !tryxNormalizeOverlayBadgesV1(layout.badges, layout.request.settingsBadges,
+            layout.request.settingsBadges2, layout.request.screenMode == QStringLiteral("Screen Splitting"), &normalized) ||
+        normalized != layout.badges ||
+        (tryxOverlayBadgesHaveCustomText(layout.badges) && layout.productId != QStringLiteral("391a:1021")) ||
         !isCanonicalUuid(layout.layoutId) || layout.revision == 0 ||
         !tryxSavedLayoutDeviceIdentityIsCanonical(
             layout.deviceIdentity) ||
@@ -454,6 +460,7 @@ QJsonObject layoutToJson(const Layout &layout) {
     object.insert(QStringLiteral("productId"), layout.productId);
     object.insert(QStringLiteral("name"), layout.name);
     object.insert(QStringLiteral("media"), media);
+    object.insert(QStringLiteral("badgeChoices"), tryxOverlayBadgesV1ToJson(layout.badges));
     object.insert(
         QStringLiteral("request"),
         tryx::runtime_apply_request_codec::runtimeApplyRequestToJson(
@@ -573,8 +580,8 @@ bool mediaRefFromJson(const QJsonValue &value, MediaRef *media) {
     return true;
 }
 
-bool layoutFromJson(const QJsonValue &value, Layout *layout) {
-    static const QSet<QString> keys{
+bool layoutFromJson(const QJsonValue &value, quint64 version, Layout *layout) {
+    QSet<QString> keys{
         QStringLiteral("schemaVersion"),
         QStringLiteral("layoutId"),
         QStringLiteral("revision"),
@@ -583,6 +590,7 @@ bool layoutFromJson(const QJsonValue &value, Layout *layout) {
         QStringLiteral("name"),
         QStringLiteral("media"),
         QStringLiteral("request")};
+    if (version == 2) keys.insert(QStringLiteral("badgeChoices"));
     if (!layout || !value.isObject()) {
         return false;
     }
@@ -591,7 +599,7 @@ bool layoutFromJson(const QJsonValue &value, Layout *layout) {
     quint64 revision = 0;
     if (!objectHasExactKeys(object, keys) ||
         !parseJsonInteger(
-            object.value(QStringLiteral("schemaVersion")), 1, 1,
+            object.value(QStringLiteral("schemaVersion")), version, version,
             &schemaVersion) ||
         !object.value(QStringLiteral("layoutId")).isString() ||
         !parseCanonicalUnsigned(
@@ -610,7 +618,7 @@ bool layoutFromJson(const QJsonValue &value, Layout *layout) {
         return false;
     }
     Layout parsed;
-    parsed.schemaVersion = static_cast<quint32>(schemaVersion);
+    parsed.schemaVersion = 2;
     parsed.layoutId = object.value(QStringLiteral("layoutId")).toString();
     parsed.revision = revision;
     parsed.deviceIdentity =
@@ -625,7 +633,9 @@ bool layoutFromJson(const QJsonValue &value, Layout *layout) {
         }
         parsed.media.append(media);
     }
-    if (!requestFromJson(
+    if ((version == 2 && (!object.value(QStringLiteral("badgeChoices")).isObject()
+            || !tryxOverlayBadgesV1FromJson(object.value(QStringLiteral("badgeChoices")).toObject(), &parsed.badges)))
+        || !requestFromJson(
             object.value(QStringLiteral("request")).toObject(),
             &parsed.request) ||
         !layoutIsValid(parsed)) {
@@ -673,11 +683,21 @@ quint64 SavedLayoutStore::revision() const {
 }
 
 QList<TryxRuntimeSavedLayoutV1> SavedLayoutStore::layouts() const {
-    return layouts_;
+    QList<TryxRuntimeSavedLayoutV1> result;
+    for (const auto &layout : layouts_) {
+        TryxRuntimeSavedLayoutV1 legacy;
+        if (tryxSavedLayoutV2ToV1(layout, &legacy)) result.append(legacy);
+    }
+    return result;
 }
 
 bool SavedLayoutStore::layoutIsCanonical(
     const TryxRuntimeSavedLayoutV1 &layout, QString *detail) {
+    return layoutIsCanonical(tryxSavedLayoutV2FromV1(layout), detail);
+}
+
+bool SavedLayoutStore::layoutIsCanonical(
+    const TryxRuntimeSavedLayoutV2 &layout, QString *detail) {
     if (detail) {
         detail->clear();
     }
@@ -836,7 +856,7 @@ SavedLayoutStore::LoadResult SavedLayoutStore::load() {
             LoadStatus::IgnoredMalformed,
             QStringLiteral("Ignoring an invalid saved layouts version"));
     }
-    if (version != kFormatVersion) {
+    if (version != 1 && version != kFormatVersion) {
         return reject(
             version > kFormatVersion
                 ? LoadStatus::UnsupportedVersion
@@ -870,7 +890,7 @@ SavedLayoutStore::LoadResult SavedLayoutStore::load() {
     loadedLayouts.reserve(serializedLayouts.size());
     for (const QJsonValue &value : serializedLayouts) {
         Layout layout;
-        if (!layoutFromJson(value, &layout)) {
+        if (!layoutFromJson(value, version, &layout)) {
             return reject(
                 LoadStatus::IgnoredMalformed,
                 QStringLiteral("Ignoring an invalid saved layout record"));
@@ -915,13 +935,25 @@ SavedLayoutStore::LoadResult SavedLayoutStore::load() {
     layouts_ = loadedLayouts;
     result.status = LoadStatus::Loaded;
     result.revision = revision_;
-    result.layouts = layouts_;
+    result.layouts = layouts();
     return result;
 }
 
 TryxRuntimeSavedLayoutsSnapshotV1 SavedLayoutStore::snapshot(
     const QString &deviceIdentity, const QString &productId) const {
-    TryxRuntimeSavedLayoutsSnapshotV1 result;
+    const auto current = snapshotV2(deviceIdentity, productId);
+    TryxRuntimeSavedLayoutsSnapshotV1 result{1, current.revision, current.status, current.diagnostic,
+                                             current.deviceIdentity, current.productId, {}};
+    for (const auto &layout : current.layouts) {
+        TryxRuntimeSavedLayoutV1 legacy;
+        if (tryxSavedLayoutV2ToV1(layout, &legacy)) result.layouts.append(legacy);
+    }
+    return result;
+}
+
+TryxRuntimeSavedLayoutsSnapshotV2 SavedLayoutStore::snapshotV2(
+    const QString &deviceIdentity, const QString &productId) const {
+    TryxRuntimeSavedLayoutsSnapshotV2 result;
     result.revision = revision_;
     result.deviceIdentity = deviceIdentity;
     result.productId = productId;
@@ -1037,7 +1069,7 @@ bool SavedLayoutStore::destinationPathIsSafe(
 }
 
 SavedLayoutStore::PersistResult SavedLayoutStore::persist(
-    quint64 revision, const QList<TryxRuntimeSavedLayoutV1> &layouts) {
+    quint64 revision, const QList<TryxRuntimeSavedLayoutV2> &layouts) {
     if (!stateIsValid(revision, layouts)) {
         return {
             ErrorCode::InvalidInput,
@@ -1082,6 +1114,10 @@ SavedLayoutStore::PersistResult SavedLayoutStore::persist(
             directoryDescriptor.get(), &safetyError)) {
         disableWrites(safetyError);
         return {ErrorCode::UnsafePath, safetyError, false};
+    }
+    if (!preserveConfigurationBeforeUpgradeAt(directoryDescriptor.get(), QString::fromLatin1(kIndexFileName),
+            kMaximumStoreBytes, kFormatVersion, {1}, &safetyError)) {
+        return {ErrorCode::WriteFailed, safetyError, false};
     }
 
     const QString descriptorBoundPath = QStringLiteral(
@@ -1139,6 +1175,15 @@ SavedLayoutStore::PersistResult SavedLayoutStore::persist(
 SavedLayoutStore::MutationResult SavedLayoutStore::put(
     quint64 expectedRevision,
     const TryxRuntimeSavedLayoutV1 &sourceLayout) {
+    for (const auto &existing : layouts_) {
+        if (existing.layoutId == sourceLayout.layoutId && tryxOverlayBadgesHaveCustomText(existing.badges))
+            return mutationFailure(ErrorCode::InvalidInput, QStringLiteral("This saved layout requires the V2 interface"), revision_);
+    }
+    return putV2(expectedRevision, tryxSavedLayoutV2FromV1(sourceLayout));
+}
+
+SavedLayoutStore::MutationResult SavedLayoutStore::putV2(
+    quint64 expectedRevision, const TryxRuntimeSavedLayoutV2 &sourceLayout) {
     if (!writesEnabled_) {
         return mutationFailure(
             ErrorCode::WritesDisabled,
@@ -1279,11 +1324,22 @@ SavedLayoutStore::MutationResult SavedLayoutStore::put(
     layouts_ = candidateLayouts;
     MutationResult result;
     result.revision = revision_;
-    result.layout = candidate;
+    result.layoutV2 = candidate;
+    tryxSavedLayoutV2ToV1(candidate, &result.layout);
     return result;
 }
 
 SavedLayoutStore::MutationResult SavedLayoutStore::remove(
+    quint64 expectedRevision, const QString &deviceIdentity,
+    const QString &productId, const QString &layoutId) {
+    for (const auto &existing : layouts_) {
+        if (existing.layoutId == layoutId && tryxOverlayBadgesHaveCustomText(existing.badges))
+            return mutationFailure(ErrorCode::InvalidInput, QStringLiteral("This saved layout requires the V2 interface"), revision_);
+    }
+    return removeV2(expectedRevision, deviceIdentity, productId, layoutId);
+}
+
+SavedLayoutStore::MutationResult SavedLayoutStore::removeV2(
     quint64 expectedRevision, const QString &deviceIdentity,
     const QString &productId, const QString &layoutId) {
     if (!writesEnabled_) {
@@ -1354,7 +1410,8 @@ SavedLayoutStore::MutationResult SavedLayoutStore::remove(
     layouts_ = candidateLayouts;
     MutationResult result;
     result.revision = revision_;
-    result.layout = removedLayout;
+    result.layoutV2 = removedLayout;
+    tryxSavedLayoutV2ToV1(removedLayout, &result.layout);
     return result;
 }
 

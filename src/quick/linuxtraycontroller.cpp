@@ -685,10 +685,11 @@ void LinuxTrayController::showNotification(
         return;
     }
 
-    QDBusInterface notifications(
+    // A dynamic QDBusInterface performs blocking introspection in its
+    // constructor. The fixed freedesktop contract needs no introspection.
+    auto message = QDBusMessage::createMethodCall(
         kNotificationsService, kNotificationsPath,
-        kNotificationsInterface, bus_);
-    notifications.setTimeout(2000);
+        kNotificationsInterface, QStringLiteral("Notify"));
     QVariantMap hints;
     const QVariantList arguments = {
         QStringLiteral("TRYX Panorama Manager"),
@@ -700,9 +701,9 @@ void LinuxTrayController::showNotification(
         hints,
         qBound(0, timeoutMs, 60000),
     };
+    message.setArguments(arguments);
     auto *pending = new QDBusPendingCallWatcher(
-        notifications.asyncCallWithArgumentList(
-            QStringLiteral("Notify"), arguments),
+        bus_.asyncCall(message, 2000),
         this);
     connect(
         pending, &QDBusPendingCallWatcher::finished,

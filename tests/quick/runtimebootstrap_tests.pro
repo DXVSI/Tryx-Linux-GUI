@@ -16,6 +16,7 @@ HEADERS += \
     ../../src/quick/runtimebootstrap.h
 
 SOURCES += \
+    ../../src/runtimebadgetext.cpp \
     ../../src/runtimecontract.cpp \
     ../../src/quick/runtimebootstrap.cpp \
     runtimebootstrap_tests.cpp

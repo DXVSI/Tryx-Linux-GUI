@@ -518,6 +518,21 @@ const QDBusArgument &operator>>(
     return argument;
 }
 
+QDBusArgument &operator<<(QDBusArgument &argument, const TryxRuntimeDisplaySnapshotV1 &snapshot) {
+    argument.beginStructure();
+    argument << snapshot.schemaVersion << snapshot.revision << snapshot.connectionRevision << snapshot.physicalGeneration
+             << snapshot.productId << snapshot.status << snapshot.acceptedOperationId << snapshot.display << snapshot.badges;
+    argument.endStructure();
+    return argument;
+}
+const QDBusArgument &operator>>(const QDBusArgument &argument, TryxRuntimeDisplaySnapshotV1 &snapshot) {
+    argument.beginStructure();
+    argument >> snapshot.schemaVersion >> snapshot.revision >> snapshot.connectionRevision >> snapshot.physicalGeneration
+             >> snapshot.productId >> snapshot.status >> snapshot.acceptedOperationId >> snapshot.display >> snapshot.badges;
+    argument.endStructure();
+    return argument;
+}
+
 QDBusArgument &operator<<(QDBusArgument &argument,
                           const TryxRuntimeDisplayState &state) {
     argument.beginStructure();
@@ -714,6 +729,61 @@ QString tryxRuntimeSavedLayoutsV1Token() {
     return QStringLiteral("runtime.saved-layouts.v1");
 }
 
+QString tryxRuntimeSavedLayoutsV2Token() { return QStringLiteral("runtime.saved-layouts.v2"); }
+QString tryxRuntimeApplyWithBadgesV1Token() { return QStringLiteral("runtime.apply-with-badges.v1"); }
+QString tryxRuntimeDisplaySnapshotV1Token() { return QStringLiteral("runtime.display-snapshot.v1"); }
+QString tryxDeviceOverlayBadgeTextV1Token() { return QStringLiteral("device.overlay-badge-text.v1"); }
+
+bool tryxDisplaySnapshotV1IsValid(const TryxRuntimeDisplaySnapshotV1 &snapshot) {
+    if (snapshot.schemaVersion != 1) return false;
+    if (snapshot.status != QStringLiteral("HostAccepted")) {
+        return (snapshot.status == QStringLiteral("Unavailable") || snapshot.status == QStringLiteral("Pending")
+                || snapshot.status == QStringLiteral("Unresolved"))
+            && snapshot.display == TryxRuntimeDisplayState{} && snapshot.badges == TryxRuntimeOverlayBadgesV1{}
+            && snapshot.acceptedOperationId.isEmpty();
+    }
+    const auto &display = snapshot.display;
+    const bool dual = display.screenMode == QStringLiteral("Screen Splitting");
+    if (!snapshot.revision || !snapshot.physicalGeneration || display.revision != snapshot.revision
+        || !display.valid || !display.diagnostic.isEmpty()
+        || !tryxSavedLayoutDeviceIdentityIsCanonical(display.deviceSerial)
+        || !tryxSavedLayoutProductIdIsSupported(snapshot.productId)
+        || (tryxOverlayBadgesHaveCustomText(snapshot.badges) && snapshot.productId != QStringLiteral("391a:1021"))
+        || (!snapshot.acceptedOperationId.isEmpty() && !isCanonicalUuid(snapshot.acceptedOperationId))
+        || display.brightness < 0 || display.brightness > 100
+        || (!dual && display.screenMode != QStringLiteral("Full Screen"))
+        || (display.playMode != QStringLiteral("Single") && (dual
+            || (display.playMode != QStringLiteral("Loop") && display.playMode != QStringLiteral("Shuffle"))))) return false;
+    const auto selection = [](const QStringList &values, const QStringList &allowed, qsizetype limit) {
+        if (values.size() > limit) return false;
+        QStringList seen;
+        for (const auto &value : values) {
+            if (!allowed.contains(value) || seen.contains(value)) return false;
+            seen.append(value);
+        }
+        return true;
+    };
+    const auto style = [](const QString &position, const QString &color, const QString &align) {
+        if ((position != QStringLiteral("Top") && position != QStringLiteral("Bottom"))
+            || (align != QStringLiteral("Left") && align != QStringLiteral("Right") && align != QStringLiteral("Center"))
+            || color.size() != 7 || color.front() != QLatin1Char('#')) return false;
+        for (qsizetype i = 1; i < color.size(); ++i)
+            if (!QStringLiteral("0123456789abcdefABCDEF").contains(color.at(i))) return false;
+        return true;
+    };
+    const QStringList badgeIds{QStringLiteral("CPU Badge"), QStringLiteral("GPU Badge")};
+    if (!selection(display.sysinfoLabels, tryxMetricsCatalog(), 3) || !selection(display.settingsBadges, badgeIds, 2)
+        || !style(display.settingsPosition, display.settingsColor, display.settingsAlign)) return false;
+    if (dual) {
+        if (!selection(display.sysinfoLabels2, tryxMetricsCatalog(), 3) || !selection(display.settingsBadges2, badgeIds, 2)
+            || !style(display.settingsPosition2, display.settingsColor2, display.settingsAlign2)) return false;
+    } else if (!display.sysinfoLabels2.isEmpty() || !display.settingsBadges2.isEmpty()
+        || !display.settingsPosition2.isEmpty() || !display.settingsColor2.isEmpty() || !display.settingsAlign2.isEmpty()) return false;
+    TryxRuntimeOverlayBadgesV1 normalized;
+    return tryxNormalizeOverlayBadgesV1(snapshot.badges, display.settingsBadges, display.settingsBadges2, dual, &normalized)
+        && normalized == snapshot.badges;
+}
+
 QString tryxRuntimeCacheCleanupV1Token() {
     return QStringLiteral("runtime.cache-cleanup.v1");
 }
@@ -788,6 +858,9 @@ QStringList tryxRuntimeCapabilities() {
             tryxRuntimeDeviceSpecificationsV1Token(),
             tryxRuntimePresentationPreferencesV1Token(),
             tryxRuntimeSavedLayoutsV1Token(),
+            tryxRuntimeSavedLayoutsV2Token(),
+            tryxRuntimeApplyWithBadgesV1Token(),
+            tryxRuntimeDisplaySnapshotV1Token(),
             tryxRuntimeCacheCleanupV1Token(),
             tryxRuntimeSupportSnapshotV1Token(),
             tryxRuntimeDowngradeV10PreparationV1Token()};
@@ -808,6 +881,7 @@ QStringList tryxFilterDeviceCapabilities(
          tryxDeviceDisplayConfigurationV1Token(),
          tryxDeviceMediaSplitAreaV1Token(),
          tryxDeviceOverlayMetricsV1Token(),
+         tryxDeviceOverlayBadgeTextV1Token(),
          tryxDeviceFirmwareFlashV1Token()});
 }
 
@@ -966,7 +1040,68 @@ quint32 tryxRuntimeApiVersion() {
     return 8U;
 }
 
+QDBusArgument &operator<<(QDBusArgument &argument, const TryxRuntimeApplyWithBadgesV1 &request) {
+    argument.beginStructure();
+    argument << request.schemaVersion << request.request << request.badges;
+    argument.endStructure();
+    return argument;
+}
+
+const QDBusArgument &operator>>(const QDBusArgument &argument, TryxRuntimeApplyWithBadgesV1 &request) {
+    argument.beginStructure();
+    argument >> request.schemaVersion >> request.request >> request.badges;
+    argument.endStructure();
+    return argument;
+}
+
+TryxRuntimeSavedLayoutV2 tryxSavedLayoutV2FromV1(const TryxRuntimeSavedLayoutV1 &layout) {
+    return {layout.schemaVersion == 1U ? 2U : 0U, layout.layoutId, layout.revision,
+            layout.deviceIdentity, layout.productId, layout.name, layout.media, layout.request, {}};
+}
+
+bool tryxSavedLayoutV2ToV1(const TryxRuntimeSavedLayoutV2 &layout, TryxRuntimeSavedLayoutV1 *output) {
+    if (!output || layout.schemaVersion != 2 || layout.badges != TryxRuntimeOverlayBadgesV1()) return false;
+    *output = {1, layout.layoutId, layout.revision, layout.deviceIdentity, layout.productId,
+               layout.name, layout.media, layout.request};
+    return true;
+}
+
+QDBusArgument &operator<<(QDBusArgument &argument, const TryxRuntimeSavedLayoutV2 &layout) {
+    argument.beginStructure();
+    argument << layout.schemaVersion << layout.layoutId << layout.revision << layout.deviceIdentity
+             << layout.productId << layout.name << layout.media << layout.request << layout.badges;
+    argument.endStructure();
+    return argument;
+}
+const QDBusArgument &operator>>(const QDBusArgument &argument, TryxRuntimeSavedLayoutV2 &layout) {
+    argument.beginStructure();
+    argument >> layout.schemaVersion >> layout.layoutId >> layout.revision >> layout.deviceIdentity
+             >> layout.productId >> layout.name >> layout.media >> layout.request >> layout.badges;
+    argument.endStructure();
+    return argument;
+}
+QDBusArgument &operator<<(QDBusArgument &argument, const TryxRuntimeSavedLayoutsSnapshotV2 &snapshot) {
+    argument.beginStructure();
+    argument << snapshot.schemaVersion << snapshot.revision << snapshot.status << snapshot.diagnostic
+             << snapshot.deviceIdentity << snapshot.productId << snapshot.layouts;
+    argument.endStructure();
+    return argument;
+}
+const QDBusArgument &operator>>(const QDBusArgument &argument, TryxRuntimeSavedLayoutsSnapshotV2 &snapshot) {
+    argument.beginStructure();
+    argument >> snapshot.schemaVersion >> snapshot.revision >> snapshot.status >> snapshot.diagnostic
+             >> snapshot.deviceIdentity >> snapshot.productId >> snapshot.layouts;
+    argument.endStructure();
+    return argument;
+}
+
 void registerTryxRuntimeMetaTypes() {
+    qRegisterMetaType<TryxRuntimeBadgeTextV1>();
+    qRegisterMetaType<TryxRuntimeOverlayBadgesV1>();
+    qRegisterMetaType<TryxRuntimeApplyWithBadgesV1>();
+    qDBusRegisterMetaType<TryxRuntimeBadgeTextV1>();
+    qDBusRegisterMetaType<TryxRuntimeOverlayBadgesV1>();
+    qDBusRegisterMetaType<TryxRuntimeApplyWithBadgesV1>();
     qRegisterMetaType<TryxRuntimeDeviceInfo>();
     qRegisterMetaType<TryxRuntimeSnapshot>();
     qRegisterMetaType<TryxRuntimeMediaEntry>();
@@ -987,9 +1122,13 @@ void registerTryxRuntimeMetaTypes() {
     qRegisterMetaType<TryxRuntimeSavedLayoutV1>();
     qRegisterMetaType<QList<TryxRuntimeSavedLayoutV1>>();
     qRegisterMetaType<TryxRuntimeSavedLayoutsSnapshotV1>();
+    qRegisterMetaType<TryxRuntimeSavedLayoutV2>();
+    qRegisterMetaType<QList<TryxRuntimeSavedLayoutV2>>();
+    qRegisterMetaType<TryxRuntimeSavedLayoutsSnapshotV2>();
     qRegisterMetaType<TryxRuntimeMediaTransform>();
     qRegisterMetaType<TryxRuntimeMediaPreparationProfileV1>();
     qRegisterMetaType<TryxRuntimeDisplayState>();
+    qRegisterMetaType<TryxRuntimeDisplaySnapshotV1>();
     qRegisterMetaType<TryxRuntimeMetricsConfigRequest>();
     qRegisterMetaType<TryxRuntimeMetricsState>();
     qRegisterMetaType<TryxRuntimeOperationInfo>();
@@ -1015,9 +1154,13 @@ void registerTryxRuntimeMetaTypes() {
     qDBusRegisterMetaType<TryxRuntimeSavedLayoutV1>();
     qDBusRegisterMetaType<QList<TryxRuntimeSavedLayoutV1>>();
     qDBusRegisterMetaType<TryxRuntimeSavedLayoutsSnapshotV1>();
+    qDBusRegisterMetaType<TryxRuntimeSavedLayoutV2>();
+    qDBusRegisterMetaType<QList<TryxRuntimeSavedLayoutV2>>();
+    qDBusRegisterMetaType<TryxRuntimeSavedLayoutsSnapshotV2>();
     qDBusRegisterMetaType<TryxRuntimeMediaTransform>();
     qDBusRegisterMetaType<TryxRuntimeMediaPreparationProfileV1>();
     qDBusRegisterMetaType<TryxRuntimeDisplayState>();
+    qDBusRegisterMetaType<TryxRuntimeDisplaySnapshotV1>();
     qDBusRegisterMetaType<TryxRuntimeMetricsConfigRequest>();
     qDBusRegisterMetaType<TryxRuntimeMetricsState>();
     qDBusRegisterMetaType<TryxRuntimeOperationInfo>();

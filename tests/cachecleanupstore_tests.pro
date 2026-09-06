@@ -27,4 +27,5 @@ SOURCES += \
     $$PWD/../src/mediacatalogstore.cpp \
     $$PWD/../src/printermediafileintegrity.cpp \
     $$PWD/../src/privateruntimepaths.cpp \
+    $$PWD/../src/runtimebadgetext.cpp \
     $$PWD/../src/runtimecontract.cpp

@@ -237,6 +237,77 @@ TestCase {
         }
     }
 
+    Component {
+        id: releaseOpenSpyComponent
+        SignalSpy { signalName: "openReleaseRequested" }
+    }
+
+    function test_releaseUpdateIsConditionalAndKeyboardAccessible() {
+        const page = createTemporaryObject(
+            settingsComponent, testCase,
+            {"width": 760, "height": 720, "visible": true})
+        verify(page !== null)
+        const row = findChild(page, "releaseUpdateRow")
+        const label = findChild(page, "availableReleaseLabel")
+        const button = findChild(page, "openReleaseButton")
+        verify(row !== null)
+        verify(label !== null)
+        verify(button !== null)
+        verify(!row.visible)
+        verify(!button.enabled)
+        const opened = createTemporaryObject(releaseOpenSpyComponent, testCase,
+                                             {"target": page})
+        verify(opened !== null)
+        page.availableVersion = "2.10.0"
+        page.releaseUrl = "https://github.com/DXVSI/Tryx-Linux-GUI/releases/tag/v2.10.0"
+        page.updateAvailable = true
+        wait(0)
+        verify(row.visible)
+        compare(label.text, "Version 2.10.0 is available")
+        compare(button.text, "Open release")
+        compare(button.Accessible.name, button.text)
+        compare(button.Accessible.description, label.text)
+        compare(opened.count, 0) // A confirmed release never opens a browser itself.
+        const position = button.mapToItem(page, 0, 0)
+        page.contentItem.contentY += position.y - 200
+        button.forceActiveFocus()
+        tryVerify(function() { return button.activeFocus })
+        keyClick(Qt.Key_Space)
+        compare(opened.count, 1)
+        const content = findChild(page, "settingsContent")
+        for (const item of [label, button]) {
+            const location = item.mapToItem(content, 0, 0)
+            verify(location.x >= 0)
+            verify(location.x + item.width <= content.width + 1)
+        }
+        page.updateAvailable = false
+        wait(0)
+        verify(!row.visible)
+        verify(!button.enabled)
+        verify(findChild(page, "openGitHubButton").activeFocus)
+    }
+
+    function test_releaseUpdateRussian() {
+        const page = createTemporaryObject(
+            settingsComponent, testCase,
+            {"width": 760, "height": 720, "visible": true})
+        verify(page !== null)
+        const button = findChild(page, "openReleaseButton")
+        verify(button !== null)
+        if (button.text === "Open release") {
+            skip("Russian catalog is checked in the separate translated baseline run")
+            return
+        }
+        page.availableVersion = "2.10.0"
+        page.releaseUrl = "https://github.com/DXVSI/Tryx-Linux-GUI/releases/tag/2.10.0"
+        page.updateAvailable = true
+        wait(0)
+        compare(button.text, "Открыть релиз")
+        const label = findChild(page, "availableReleaseLabel")
+        compare(label.text, "Доступна версия 2.10.0")
+        compare(button.Accessible.description, label.text)
+    }
+
     function test_englishAndAutostartControlsAreFunctional() {
         runtimeMock.deviceModel = "PANORAMA SE"
         runtimeMock.productId = "391a:1021"

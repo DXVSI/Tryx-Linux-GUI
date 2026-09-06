@@ -1,5 +1,9 @@
 #pragma once
 
+#include "printerproductprofile.h"
+#include "printerframecodec.h"
+#include "runtimebadgetext.h"
+
 #include <QString>
 #include <QByteArray>
 #include <QStringList>
@@ -23,42 +27,10 @@ class UserConfiguration;
 }
 }
 
-enum class PrinterIdleMode {
-    OverlayLayout,
-    TransferOnly
-};
-
-struct PrinterProductProfile {
-    quint16 productId = 0;
-    int mediaWidth = 0;
-    int mediaHeight = 0;
-    PrinterIdleMode idleMode = PrinterIdleMode::TransferOnly;
-    bool mediaUploadSupported = false;
-    bool mediaCatalogSupported = false;
-    bool displayConfigurationSupported = false;
-    bool splitAreaMediaSupported = false;
-    bool overlayMetricsSupported = false;
-    bool firmwareFlashSupported = false;
-};
-
-std::optional<PrinterProductProfile> printerProductProfileForId(
-    quint16 productId);
-QString printerProductIdString(quint16 productId);
-
-class PrinterFrameCodec {
-public:
-    static constexpr qsizetype MaxPayloadSize = 1024 * 1024;
-
-    enum class DecodeStatus {
-        NeedMoreData,
-        FrameReady,
-        Malformed
-    };
-
-    static QByteArray encode(const QByteArray &payload);
-    static DecodeStatus takeFrame(QByteArray *buffer, QByteArray *payload,
-                                  QString *errorMessage = nullptr);
-};
+class PrinterTransactionChannel;
+class PaseConfigurationClient;
+class PaseMediaClient;
+class TurrisMediaClient;
 
 class PrinterProtocol {
 public:
@@ -241,6 +213,7 @@ public:
         bool waterfallMode = false;
         QString cpuBadgeText;
         QString gpuBadgeText;
+        TryxRuntimeOverlayBadgesV1 badgeChoices;
         QString temperatureUnit = QStringLiteral("Celsius");
         QString timeFormat = QStringLiteral("24H");
     };
@@ -462,26 +435,12 @@ public:
 #endif
 
 private:
-    bool sendUserConfigWithOutcome(
-        const QString &devicePath,
-        const panorama::wire::v1::UserConfiguration &userConfig,
-        QString *errorMessage,
-        const OperationContext &context,
-        MutationDetails *mutationDetails = nullptr);
-    bool activateAcceptedConfig(const QString &devicePath,
-                                QString *errorMessage,
-                                const OperationContext &context,
-                                MutationDetails *mutationDetails = nullptr,
-                                const PaseOverlayConfig *overlay = nullptr,
-                                bool *activationRejected = nullptr);
-    bool sendRunConfigTrigger(const QString &devicePath, QString *errorMessage,
-                              const OperationContext &context,
-                              const PaseOverlayConfig *overlay = nullptr,
-                              MutationDetails *mutationDetails = nullptr);
 
-    class Impl;
     const PrinterProductProfile productProfile_;
-    std::unique_ptr<Impl> impl_;
+    std::unique_ptr<PrinterTransactionChannel> channel_;
+    std::unique_ptr<PaseConfigurationClient> configuration_;
+    std::unique_ptr<PaseMediaClient> media_;
+    std::unique_ptr<TurrisMediaClient> turris_;
 };
 
 Q_DECLARE_METATYPE(PrinterProtocol::UsbPrinterDevice)
@@ -493,6 +452,7 @@ Q_DECLARE_METATYPE(PrinterProtocol::MutationOutcome)
 Q_DECLARE_METATYPE(PrinterProtocol::PaseOverlayAreaConfig)
 Q_DECLARE_METATYPE(PrinterProtocol::PaseOverlayConfig)
 Q_DECLARE_METATYPE(PrinterProtocol::PaseDisplayState)
+Q_DECLARE_METATYPE(PrinterProtocol::PaseDisplayStateResult)
 
 class PrinterDeviceMonitor : public QObject {
     Q_OBJECT

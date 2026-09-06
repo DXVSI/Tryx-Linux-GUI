@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtimecontract.h"
+
 #include <QByteArray>
 #include <QSet>
 #include <QString>
@@ -12,7 +14,7 @@ namespace tryx {
 
 class RetryCacheStore final {
 public:
-    static constexpr int FormatVersion = 11;
+    static constexpr int FormatVersion = 12;
     static constexpr qint64 MaximumManifestBytes =
         256LL * 1024LL;
 
@@ -132,6 +134,8 @@ public:
         PreparedArtifactInput prepared;
         std::optional<PreparedArtifactInput> thumbnail;
         std::optional<OriginIdentity> origin;
+        // Stored intent, never permission to replay Apply during recovery.
+        std::optional<TryxRuntimeApplyWithBadgesV1> applyWithBadges;
     };
 
     struct RetryPreparedInput {
@@ -170,6 +174,7 @@ public:
         StoredArtifact prepared;
         std::optional<StoredArtifact> thumbnail;
         std::optional<OriginIdentity> origin;
+        std::optional<TryxRuntimeApplyWithBadgesV1> applyWithBadges;
         QString retriesLineageId;
         OperationKind kind = OperationKind::Upload;
         quint32 attempt = 1;
@@ -202,6 +207,7 @@ public:
         StoredArtifact prepared;
         std::optional<StoredArtifact> thumbnail;
         std::optional<OriginIdentity> origin;
+        std::optional<TryxRuntimeApplyWithBadgesV1> applyWithBadges;
         QString retriesLineageId;
         OperationKind kind = OperationKind::Upload;
         quint32 attempt = 1;

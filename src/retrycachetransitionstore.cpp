@@ -1,6 +1,8 @@
 #include "retrycachetransitionstore.h"
 
 #include "printermediafileintegrity.h"
+#include "paseoverlayconfig.h"
+#include "runtimeapplyrequestcodec.h"
 #include "privateruntimepaths.h"
 
 #include <QDir>
@@ -114,6 +116,20 @@ std::optional<RetryCacheTransitionStore::Phase> phaseFromName(
     return std::nullopt;
 }
 
+bool badgeShadowIsValid(const QJsonObject &object) {
+    const auto payload = object.value(QStringLiteral("applyWithBadges"));
+    TryxRuntimeApplyWithBadgesV1 envelope;
+    const int product = object.value(QStringLiteral("productId")).toInt(-1);
+    return object.value(QStringLiteral("version")) == QJsonValue(12)
+        && payload.isObject() && product > 0 && product <= 0xffff
+        && object.value(QStringLiteral("applyAfterUpload")) == QJsonValue(false)
+        && object.value(QStringLiteral("updateMetrics")) == QJsonValue(false)
+        && runtime_apply_request_codec::runtimeApplyWithBadgesV1FromJson(payload.toObject(), &envelope)
+        && pase_overlay_config::paseBadgeUploadContinuationIsValid(envelope, static_cast<quint16>(product))
+        && object.value(QStringLiteral("applyWithBadgesFingerprint")) == QJsonValue(
+            runtime_apply_request_codec::runtimeApplyWithBadgesV1Fingerprint(envelope));
+}
+
 bool hardenedManifestMatchesBackup(
     const QJsonObject &hardened, const QJsonObject &backup) {
     if (backup.keys() != hardened.keys()) {
@@ -164,7 +180,8 @@ bool hardenedManifestMatchesBackup(
         }
         return normalizedHardened == normalizedBackup;
     }
-    if (backupVersion != 10 || hardenedVersion != 10) {
+    const bool versionedBadges = badgeShadowIsValid(backup) && badgeShadowIsValid(hardened);
+    if ((backupVersion != 10 || hardenedVersion != 10) && !versionedBadges) {
         return false;
     }
     const QString hardenedRemoteName =
@@ -2041,7 +2058,7 @@ RetryCacheTransitionStore::loadImpl(bool allowRecovery) {
         backupParseError.error != QJsonParseError::NoError ||
         !backupDocument.isObject() ||
         backupObject.value(QStringLiteral("version")).toInt(-1) < 1 ||
-        backupObject.value(QStringLiteral("version")).toInt(-1) > 10 ||
+        (backupObject.value(QStringLiteral("version")).toInt(-1) > 10 && !badgeShadowIsValid(backupObject)) ||
         backupObject.value(QStringLiteral("operationId")).toString() !=
             loaded.operationId ||
         !backupDeviceGenerationMatches ||

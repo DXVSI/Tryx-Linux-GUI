@@ -559,7 +559,7 @@ private slots:
     void mediaPreparationProfileDispatchIsCapabilityBound();
     void runtimeMediaTargetFollowsProductId();
     void runtimeDeviceSummaryFollowsLiveSnapshot();
-    void printerInactiveLifecycleEventsRequestSnapshotRefresh();
+    void offlinePrinterLifecycleEventsDoNotReadOwnerlessSnapshots();
     void capabilityLifecycleSignalsInvalidatePresentationGates();
     void savedLayoutModelUsesExactDecimalRevisionAndFullStateDto();
     void savedLayoutsSnapshotValidationFailsClosed();
@@ -567,6 +567,8 @@ private slots:
     void savedLayoutSaveQueuesOnlyCanonicalStoreCas();
     void savedLayoutDeleteQueuesOnlyStoreCas();
     void savedLayoutApplyKeepsProvenanceAndDisplayLifecycle();
+    void customSavedLayoutUsesVersionedContract_data();
+    void customSavedLayoutUsesVersionedContract();
     void nonCropFieldsAreNeutral();
     void cropRotationResetsViewport();
     void previewUsesCanonicalTransformFilter();
@@ -619,6 +621,8 @@ private slots:
     void applyRequestsUseExplicitValidatedOverlayStyles();
     void displayApplySubmissionIdentityIsSynchronousAndUnique();
     void modernDisplayApplyRequiresTerminalAndMatchingState();
+    void badgeDisplaySubmissionRequiresCoherentSnapshot_data();
+    void badgeDisplaySubmissionRequiresCoherentSnapshot();
     void modernDisplayApplyRequiresExactDeviceIdentity();
     void modernControlOnlyDisplayApplyPreservesLayoutAndOverlay();
     void modernDisplayApplyFailuresNeverSucceed();
@@ -703,6 +707,7 @@ void QuickClientTests::preparePaseDeviceMedia(
     const QString &deviceIdentity) {
     runtime->serviceAvailable_ = true;
     runtime->compatible_ = true;
+    runtime->capabilitiesReady_ = true;
     runtime->connection_.revision = 1;
     runtime->connection_.printerClassConnected = true;
     runtime->connection_.printerClassDevicePresent = true;
@@ -724,6 +729,7 @@ void QuickClientTests::prepareModernDisplay(
     RuntimeClient *runtime, const QString &deviceIdentity) {
     runtime->serviceAvailable_ = true;
     runtime->compatible_ = true;
+    runtime->capabilitiesReady_ = true;
     runtime->connection_.printerClassConnected = true;
     runtime->connection_.printerClassDevicePresent = true;
     runtime->connection_.displaySessionActive = true;
@@ -1247,7 +1253,7 @@ void QuickClientTests::runtimeDeviceSummaryFollowsLiveSnapshot() {
 }
 
 void QuickClientTests::
-    printerInactiveLifecycleEventsRequestSnapshotRefresh() {
+    offlinePrinterLifecycleEventsDoNotReadOwnerlessSnapshots() {
     RuntimeClient mediaRuntime(true);
     mediaRuntime.compatible_ = true;
     mediaRuntime.connection_.printerClassDevicePresent = true;
@@ -1255,7 +1261,7 @@ void QuickClientTests::
 
     mediaRuntime.onLegacyMediaListUpdated({}, 2);
     QCOMPARE(
-        mediaRuntime.findChildren<QDBusPendingCallWatcher *>().size(), 1);
+        mediaRuntime.findChildren<QDBusPendingCallWatcher *>().size(), 0);
 
     RuntimeClient statusRuntime(true);
     statusRuntime.compatible_ = true;
@@ -1265,7 +1271,7 @@ void QuickClientTests::
     statusRuntime.onLegacyUploadStatus(
         QStringLiteral("restricted recovery"), 3);
     QCOMPARE(
-        statusRuntime.findChildren<QDBusPendingCallWatcher *>().size(), 1);
+        statusRuntime.findChildren<QDBusPendingCallWatcher *>().size(), 0);
 
     RuntimeClient activeRuntime(true);
     activeRuntime.compatible_ = true;
@@ -1403,6 +1409,68 @@ void QuickClientTests::
         QStringLiteral("1.0"), &parsed));
     QVERIFY(!RuntimeClient::parseSavedLayoutRevision(
         QStringLiteral("18446744073709551616"), &parsed));
+}
+
+void QuickClientTests::customSavedLayoutUsesVersionedContract_data() {
+    QTest::addColumn<QString>("action");
+    for (const char *name : {"put", "delete", "apply", "invalid-snapshot"}) QTest::newRow(name) << QString::fromLatin1(name);
+}
+
+void QuickClientTests::customSavedLayoutUsesVersionedContract() {
+    QFETCH(QString, action);
+    const auto legacy = canonicalSavedLayoutForTest();
+    RuntimeClient runtime(true);
+    configureSavedLayoutRuntime(&runtime, legacy);
+    runtime.runtimeCapabilities_.append({tryxRuntimeSavedLayoutsV2Token(), tryxRuntimeApplyWithBadgesV1Token(), tryxRuntimeDisplaySnapshotV1Token()});
+    runtime.deviceCapabilities_.append(tryxDeviceOverlayBadgeTextV1Token());
+    runtime.deviceCapabilitiesSnapshot_ = {1, legacy.deviceIdentity, 17, 3, runtime.deviceCapabilities_};
+    auto layout = tryxSavedLayoutV2FromV1(legacy);
+    layout.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Saved text")};
+    TryxRuntimeSavedLayoutsSnapshotV2 snapshot{2, legacy.revision + 1, QStringLiteral("Ready"), {}, legacy.deviceIdentity, legacy.productId, {layout}};
+    if (action == QStringLiteral("invalid-snapshot")) {
+        snapshot.layouts[0].badges.secondaryCpu = {QStringLiteral("Custom"), QStringLiteral("hidden")};
+        QVERIFY(!runtime.applySavedLayoutsSnapshot(snapshot));
+        QVERIFY(runtime.offlineRequests_.isEmpty());
+        return;
+    }
+    QVERIFY(runtime.applySavedLayoutsSnapshot(snapshot));
+    auto fullDraft = savedLayoutFullStateForTest(runtime.savedLayoutDraft(layout.layoutId));
+    auto draft = fullDraft.value(QStringLiteral("layout")).toMap();
+    QCOMPARE(draft.value(QStringLiteral("badgeChoices")).toMap(), tryxOverlayBadgesV1ToJson(layout.badges).toVariantMap());
+    layout.badges.primaryCpu.text = QStringLiteral("Current draft");
+    draft.insert(QStringLiteral("badgeChoices"), tryxOverlayBadgesV1ToJson(layout.badges).toVariantMap());
+    fullDraft.insert(QStringLiteral("layout"), draft);
+    TryxRuntimeDisplaySnapshotV1 display;
+    display.revision = 41;
+    display.connectionRevision = 17;
+    display.physicalGeneration = 3;
+    display.productId = legacy.productId;
+    display.status = QStringLiteral("HostAccepted");
+    display.display = confirmedDisplayState(legacy.request, 41);
+    QVERIFY(runtime.applyDisplaySnapshotV1(display));
+    if (action == QStringLiteral("put")) {
+        runtime.putSavedLayout(legacy.name, legacy.layoutId, fullDraft);
+        QCOMPARE(runtime.offlineRequests_.size(), 1);
+        const auto call = runtime.offlineRequests_.first();
+        QCOMPARE(call.method, QStringLiteral("PutSavedLayoutV2"));
+        QCOMPARE(call.arguments.at(0).toULongLong(), snapshot.revision);
+        QCOMPARE(call.arguments.at(1).value<TryxRuntimeSavedLayoutV2>().badges, layout.badges);
+        QVERIFY(!runtime.displaySubmission_.active());
+    } else if (action == QStringLiteral("delete")) {
+        runtime.deleteSavedLayout(legacy.layoutId);
+        QCOMPARE(runtime.offlineRequests_.size(), 1);
+        QCOMPARE(runtime.offlineRequests_.first().method, QStringLiteral("DeleteSavedLayoutV2"));
+        QVERIFY(!runtime.displaySubmission_.active());
+    } else {
+        const auto id = runtime.submitSavedLayoutDraft(legacy.layoutId, QString::number(legacy.revision), fullDraft);
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(runtime.offlineRequests_.size(), 1);
+        const auto call = runtime.offlineRequests_.first();
+        QCOMPARE(call.method, QStringLiteral("QueueSavedLayoutApplyV2"));
+        QCOMPARE(call.arguments.at(3).value<TryxRuntimeApplyWithBadgesV1>().badges, layout.badges);
+        QCOMPARE(call.arguments.at(1).toString(), legacy.layoutId);
+        QCOMPARE(call.arguments.at(2).toULongLong(), legacy.revision);
+    }
 }
 
 void QuickClientTests::savedLayoutsSnapshotValidationFailsClosed() {
@@ -3532,6 +3600,7 @@ void QuickClientTests::operationsRejectStaleEvents() {
 void QuickClientTests::
     displayStateRequiresStrictlyIncreasingRevision() {
     RuntimeClient runtime(true);
+    runtime.capabilitiesReady_ = true; // Negotiated Auto-only runtime.
     runtime.compatible_ = true;
     runtime.connection_.printerClassConnected = true;
     runtime.connection_.printerClassDevicePresent = true;
@@ -3567,6 +3636,7 @@ void QuickClientTests::
 
     runtime.clearRuntimeState();
     runtime.compatible_ = true;
+    runtime.capabilitiesReady_ = true; // The restarted Auto-only runtime renegotiated.
     runtime.connection_.printerClassConnected = true;
     runtime.connection_.printerClassDevicePresent = true;
     runtime.connection_.serial = QStringLiteral("device-a");
@@ -4558,6 +4628,7 @@ void QuickClientTests::
 void QuickClientTests::
     applyRequestPreservesConfirmedOverlaySettings() {
     RuntimeClient runtime(true);
+    runtime.capabilitiesReady_ = true; // Negotiated Auto-only runtime.
     runtime.connection_.printerClassConnected = true;
     runtime.connection_.printerClassDevicePresent = true;
     runtime.connection_.serial = QStringLiteral("device-a");
@@ -4845,6 +4916,138 @@ void QuickClientTests::
     QCOMPARE(
         splitRuntime.offlineRequests_.constFirst().operationId,
         splitId);
+}
+
+void QuickClientTests::badgeDisplaySubmissionRequiresCoherentSnapshot_data() {
+    QTest::addColumn<QString>("scenario");
+    for (const char *name : {"snapshot-first", "operation-first", "legacy-state", "other-operation", "wrong-generation", "mismatch", "failed", "capability-loss", "replace-custom"})
+        QTest::newRow(name) << QString::fromLatin1(name);
+}
+
+void QuickClientTests::badgeDisplaySubmissionRequiresCoherentSnapshot() {
+    QFETCH(QString, scenario);
+    RuntimeClient runtime(true);
+    prepareModernDisplay(&runtime);
+    runtime.connection_.connected = true;
+    runtime.connection_.revision = 17;
+    runtime.connection_.productId = QStringLiteral("391a:1021");
+    runtime.capabilitiesReady_ = runtime.deviceCapabilitiesReady_ = true;
+    runtime.runtimeCapabilities_ = {tryxRuntimeApplyWithBadgesV1Token(), tryxRuntimeDisplaySnapshotV1Token(), tryxRuntimeSavedLayoutsV2Token()};
+    runtime.deviceCapabilities_ = {tryxDeviceOverlayBadgeTextV1Token()};
+    runtime.deviceCapabilitiesSnapshot_.deviceIdentity = runtime.connection_.serial;
+    runtime.deviceCapabilitiesSnapshot_.connectionRevision = 17;
+    runtime.deviceCapabilitiesSnapshot_.physicalGeneration = 3;
+    runtime.metricsCatalogReady_ = true;
+    runtime.metricsCatalog_ = tryxMetricsCatalog();
+    TryxRuntimeApplyRequest baseline;
+    baseline.screenMode = QStringLiteral("Full Screen");
+    baseline.playMode = QStringLiteral("Single");
+    baseline.media = {QStringLiteral("full.mp4.h264_2240x1080")};
+    baseline.settingsPosition = QStringLiteral("Top");
+    baseline.settingsColor = QStringLiteral("#dcdcdc");
+    baseline.settingsAlign = QStringLiteral("Left");
+    TryxRuntimeDisplaySnapshotV1 initial;
+    initial.revision = 41;
+    initial.connectionRevision = 17;
+    initial.physicalGeneration = 3;
+    initial.productId = runtime.connection_.productId;
+    initial.status = QStringLiteral("HostAccepted");
+    initial.display = confirmedDisplayState(baseline, initial.revision);
+    if (scenario == QStringLiteral("replace-custom")) {
+        initial.display.settingsBadges = {QStringLiteral("CPU Badge")};
+        initial.badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("Retain on Replace")};
+    }
+    QVERIFY(runtime.applyDisplaySnapshotV1(initial));
+    QVERIFY(runtime.customBadgeTextSupported());
+    if (scenario == QStringLiteral("replace-custom")) {
+        MediaEditorController editor(&runtime);
+        editor.beginRecoveredVideo(deviceMediaArtifact(QStringLiteral("stage"), QStringLiteral("artifact"),
+            QStringLiteral("media"), baseline.media.first(), runtime.connection_.serial));
+        QVERIFY(!editor.replaceAllowed());
+        QVERIFY(editor.replaceBlockReason().contains(QStringLiteral("badge"), Qt::CaseInsensitive));
+        runtime.offlineRequests_.clear();
+        QVERIFY(runtime.queueReplaceDeviceMedia(QStringLiteral("artifact"), QStringLiteral("lease"), QStringLiteral("media"),
+            runtime.currentDisplayApplyRequest(), tryxLegacyFitMediaTransform()).isEmpty());
+        QVERIFY(runtime.offlineRequests_.isEmpty());
+        return;
+    }
+    TryxRuntimeOverlayBadgesV1 badges;
+    badges.primaryCpu = {QStringLiteral("Custom"), QStringLiteral("  Exact text  ")};
+    auto draft = tryxOverlayBadgesV1ToJson(badges).toVariantMap();
+    QSignalSpy finished(&runtime, &RuntimeClient::displayApplyFinished);
+    const auto submit = [&]() {
+        return runtime.submitFullDisplayDraft(baseline.media, baseline.playMode, {}, {QStringLiteral("CPU Badge")},
+            baseline.settingsPosition, baseline.settingsColor, baseline.settingsAlign,
+            true, true, 80, false, false, false, draft);
+    };
+    if (scenario == QStringLiteral("capability-loss")) {
+        runtime.deviceCapabilities_.clear();
+        QVERIFY(submit().isEmpty());
+        QVERIFY(runtime.offlineRequests_.isEmpty());
+        return;
+    }
+    const QString id = submit();
+    QVERIFY(!id.isEmpty());
+    QCOMPARE(runtime.offlineRequests_.size(), 1);
+    QCOMPARE(runtime.offlineRequests_.first().method, QStringLiteral("QueueApplyWithBadgesV1"));
+    const auto sent = runtime.offlineRequests_.first().arguments.at(1).value<TryxRuntimeApplyWithBadgesV1>();
+    QCOMPARE(sent.badges.primaryCpu.text, QStringLiteral("Exact text"));
+    draft.clear();
+    auto accepted = initial;
+    accepted.revision = 43;
+    accepted.display = confirmedDisplayState(sent.request, 43);
+    accepted.badges = sent.badges;
+    accepted.acceptedOperationId = id;
+    TryxRuntimeOperationInfo operation;
+    operation.id = id;
+    operation.deviceGeneration = 3;
+    operation.state = QStringLiteral("Succeeded");
+    if (scenario == QStringLiteral("operation-first")) {
+        runtime.observeDisplaySubmissionOperation(operation);
+        QCOMPARE(finished.count(), 0);
+    }
+    TryxRuntimeDisplaySnapshotV1 pending;
+    pending.status = QStringLiteral("Pending");
+    pending.revision = 42;
+    pending.connectionRevision = 17;
+    pending.physicalGeneration = 3;
+    pending.productId = initial.productId;
+    QVERIFY(runtime.applyDisplaySnapshotV1(pending));
+    QCOMPARE(finished.count(), 0);
+    QVERIFY(!runtime.displayStateValid());
+    if (scenario == QStringLiteral("legacy-state")) {
+        runtime.applyDisplayState(accepted.display);
+        QCOMPARE(finished.count(), 0);
+        QVERIFY(!runtime.displayStateValid());
+    }
+    if (scenario == QStringLiteral("other-operation") || scenario == QStringLiteral("wrong-generation")) {
+        auto stale = accepted;
+        if (scenario == QStringLiteral("other-operation")) stale.acceptedOperationId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        else ++stale.physicalGeneration;
+        runtime.applyDisplaySnapshotV1(stale);
+        QCOMPARE(finished.count(), 0);
+        ++accepted.revision;
+        accepted.display.revision = accepted.revision;
+    }
+    if (scenario == QStringLiteral("mismatch")) accepted.badges.primaryCpu.text = QStringLiteral("Different");
+    if (scenario == QStringLiteral("failed")) {
+        operation.state = QStringLiteral("Failed");
+        operation.errorCategory = QStringLiteral("PersistenceFailed");
+        runtime.observeDisplaySubmissionOperation(operation);
+    }
+    QVERIFY(runtime.applyDisplaySnapshotV1(accepted));
+    if (scenario == QStringLiteral("snapshot-first")) QCOMPARE(finished.count(), 0);
+    runtime.observeDisplaySubmissionOperation(operation);
+    QCOMPARE(finished.count(), 1);
+    if (scenario == QStringLiteral("mismatch") || scenario == QStringLiteral("failed"))
+        QVERIFY(finished.first().at(1).toString() != QStringLiteral("Succeeded"));
+    else {
+        QCOMPARE(finished.first().at(1).toString(), QStringLiteral("Succeeded"));
+        QCOMPARE(runtime.displayBadgeChoices().value(QStringLiteral("primaryCpu")).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("Exact text"));
+    }
+    runtime.observeDisplaySubmissionOperation(operation);
+    runtime.applyDisplaySnapshotV1(accepted);
+    QCOMPARE(finished.count(), 1);
 }
 
 void QuickClientTests::

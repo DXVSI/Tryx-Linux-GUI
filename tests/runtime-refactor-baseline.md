@@ -10,6 +10,51 @@
 
 ## Автоматические проверки
 
+- `C16 custom badges`: строгий Unicode/JSON codec, frozen API 8 tuples и
+  additive Apply/Saved V2/coherent snapshot round trips. Проверяются независимые
+  Full/Left/Right choices, neutral Custom background, immutable operation/retry
+  identity, persistence-before-publication, owner/generation/revision fences,
+  pending/error handshake без Auto fallback и запрет lossy Replace. Рост
+  connection revision между чтениями capabilities и coherent snapshot запускает
+  не более трёх дополнительных чтений контекста без device mutations до
+  coherent HostAccepted либо нового явного refresh/handshake; Pending не
+  сбрасывает лимит. Ответы старого owner/handshake отбрасываются, восстановление
+  очищает только собственную диагностику. Непрерывный рост оставляет Apply
+  заблокированным. Ввод с клавиатуры меняет только draft, ошибка блокирует Apply, выключение slot
+  сбрасывает его в Auto. Overlay store v3, Saved store v2 и Retry v12 читают
+  legacy Auto без записи; version upgrade сохраняет точный private backup,
+  несовместимый downgrade не удаляет настройки. Retry после restart остаётся
+  manual-only. Проверка support snapshot и логов не допускает custom text;
+- `B5 release updates`: offline Qt Network fixture проверяет fixed endpoint,
+  request headers, строгий stable version parser, ETag/snapshot binding, 304,
+  silent failures, monotonic startup/hourly schedule без catch-up, один request,
+  абсолютный timeout, streaming cap, cancel/destructor и rate-limit cooldown.
+  Структурный guard удерживает checker после single-instance/QML startup, вне
+  smoke/runtime/CLI. EN/RU Settings tests проверяют условную строку, keyboard
+  activation и возврат фокуса после исчезновения обновления. Изолированный
+  notification service проверяет отказ без очистки availability; fresh-client
+  и slow-service processes защищают от блокирующего D-Bus Introspect и обхода
+  regression через Qt interface cache. Ни один fixture не обращается к GitHub;
+  реальная доставка desktop popup проверяется отдельно;
+- `A9 protocol layers`: façade сохраняет публичные типы и API 8; один
+  `PrinterTransactionChannel` владеет frame buffer, track IDs и outbound clock,
+  `UsbPrinterTransport` владеет native/scripted I/O и fd test seam. PASE
+  configuration/media и Turris clients заимствуют channel и не копируются;
+  общий upload helper сохраняет единственную ACK-последовательность. Прямые
+  owner-тесты проверяют close/destructor без закрытия borrowed cancellation fd,
+  persistent failure latch после close, сохранение уже прочитанного второго
+  кадра и track numbering после уничтожения clients. Structural guard требует
+  qmake wiring всех слоёв и запрещает второй transport/buffer/upload loop;
+- `A8 worker policies`: существующий QObject façade сохраняет slots/signals,
+  немедленные generation/cancellation gates и два разных eventfd; legacy и
+  printer sessions владеют своим transport/FSM/timers в одном I/O context.
+  PTY/socket fixtures проверяют legacy handshake и команды, закрытие обоих
+  transport до firmware ACK, отсутствие I/O из отложенного callback после
+  quiesce, один SystemMonitor, перенос всех QObject children вместе с worker
+  и уничтожение sessions до закрытия gates. Отмена из другого потока прерывает
+  уже ожидающий ответ foreground request; same-path generation и late
+  completion не возобновляют timers. Прежние cancel/drain, recovery, result
+  ordering и overlay checks сохранены;
 - `printer-protocol`: стабильные Manager1/Manager2 D-Bus контракты и API 8,
   точные product capabilities, generation fencing, отсутствие автоматического
   replay после неизвестного результата, firmware-exclusive ownership и
@@ -20,7 +65,9 @@
   inode/hash validation; typed delete-intent v2 с product identity,
   совместимым чтением legacy v1, монотонными crash-recovery transitions и
   запретом USB replay после неизвестного результата; canonical
-  `RetryCacheStore` v11 с compatibility root shadow, читаемым выпущенным v10,
+  `RetryCacheStore` v12 в прежнем canonical каталоге v11; compatibility root
+  shadow v12 не интерпретируется выпущенным v10 как Auto; legacy v10/v11 читается
+  новым runtime как Auto,
   двумя durable barriers перед единственным USB emit, fail-closed миграцией
   v1-v10, A+B/retry lineage, shadow-missing fences, exact cleanup tombstones,
   сохранением независимого retry candidate при успешной новой загрузке и
@@ -44,13 +91,14 @@
   Full/Left/Right slot до FFmpeg и journal. Шесть final cancellation gates
   стоят непосредственно перед каждым subprocess start, а production E2E
   проверяет реальные Full/Split H264, `yuv420p`, 30 FPS и exact geometry;
-- `C5 saved layouts`: runtime-owned v1 store сохраняет полный canonical
+- `C5 saved layouts`: runtime-owned store v2 с чтением v1 сохраняет полный canonical
   Full/Split draft только для exact устройства, использует snapshot CAS,
   runtime-generated UUID/revision, owner-only atomic persistence и fail-closed
   read-only состояние после unsafe, malformed, future-version или
   post-commit unknown результата. Save, Load и Delete не создают foreground
   device operation; загруженный draft сохраняет UUID/revision provenance после
-  редактирования и применяется только через `QueueSavedLayoutApplyV1`.
+  редактирования и применяется через `QueueSavedLayoutApplyV2`; старый
+  `QueueSavedLayoutApplyV1` остаётся Auto-only и не перезаписывает Custom UUID.
   DeviceManager повторно разрешает current draft через authoritative catalog,
   а worker выполняет один fresh FileList и exact tuple proof до первого
   mutating OUT. Quick принимает snapshot только после exact capability,

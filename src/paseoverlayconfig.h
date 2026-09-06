@@ -33,8 +33,12 @@ PrinterProtocol::PaseOverlayConfig paseOverlayFromMetricsRequest(
     const TryxRuntimeMetricsConfigRequest &request);
 bool paseUploadApplyRequestIsValid(
     const TryxRuntimeApplyRequest &request);
+bool paseBadgeUploadContinuationIsValid(const TryxRuntimeApplyWithBadgesV1 &envelope,
+                                       quint16 productId);
 bool paseOverlayRequestsBadge(
     const PrinterProtocol::PaseOverlayConfig &overlay,
     const QString &badge);
+bool paseBadgeChoicesAreValid(const PrinterProtocol::PaseOverlayConfig &overlay,
+                              quint16 productId, QString *error = nullptr);
 
 }  // namespace tryx::pase_overlay_config
