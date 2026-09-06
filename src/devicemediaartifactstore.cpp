@@ -414,12 +414,20 @@ DeviceMediaArtifactStore::finalize(const FinalizeInput &input) {
         S_ISREG(status.st_mode) && status.st_uid == ::geteuid() &&
         (status.st_mode & 07777) == (S_IRUSR | S_IWUSR) &&
         status.st_nlink == 1 && status.st_size == input.fileSize;
+    QDBusUnixFileDescriptor identityPin;
+    if (valid) {
+        identityPin.setFileDescriptor(descriptor);
+    }
     const int savedErrno = errno;
     ::close(descriptor);
     errno = savedErrno;
     if (!valid) {
         return makeResult(ErrorCode::IdentityChanged,
                           QStringLiteral("finalized artifact filesystem identity is invalid"));
+    }
+    if (!identityPin.isValid()) {
+        return makeResult(ErrorCode::IdentityChanged,
+                          systemErrorText("cannot retain finalized artifact identity"));
     }
 
     const TimePoint now = currentTime();
@@ -460,6 +468,8 @@ DeviceMediaArtifactStore::finalize(const FinalizeInput &input) {
         record.metadata.frameRateNumerator = 30U;
         record.metadata.frameRateDenominator = 1U;
     }
+    // Keep the inode allocated until record removal, including failed cleanup.
+    record.identityPin = identityPin;
     record.deviceNumber = static_cast<quint64>(status.st_dev);
     record.inodeNumber = static_cast<quint64>(status.st_ino);
     record.expiresUtcMs = now.utcMs + kUnclaimedTtlMs;
@@ -564,7 +574,8 @@ DeviceMediaArtifactStore::validate(
                           systemErrorText("cannot open artifact"));
     }
     struct stat status {};
-    const bool identityValid = ::fstat(descriptor, &status) == 0 &&
+    const bool identityValid = record.identityPin.isValid() &&
+        ::fstat(descriptor, &status) == 0 &&
         S_ISREG(status.st_mode) && status.st_uid == ::geteuid() &&
         (status.st_mode & 07777) == (S_IRUSR | S_IWUSR) &&
         status.st_nlink == 1 && status.st_size > 0 &&
@@ -1382,7 +1393,8 @@ DeviceMediaArtifactStore::removeRecord(const QString &artifactId) {
                 S_ISLNK(status.st_mode);
             if (status.st_uid == ::geteuid() && S_ISREG(status.st_mode)) {
                 mayRemove = !canonical || !found->ready ||
-                    (static_cast<quint64>(status.st_dev) ==
+                    (found->identityPin.isValid() &&
+                     static_cast<quint64>(status.st_dev) ==
                          found->deviceNumber &&
                      static_cast<quint64>(status.st_ino) ==
                          found->inodeNumber);

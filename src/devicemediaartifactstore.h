@@ -282,6 +282,7 @@ private:
         qint64 expiresUtcMs = 0;
         quint64 deviceNumber = 0;
         quint64 inodeNumber = 0;
+        QDBusUnixFileDescriptor identityPin;
         bool ready = false;
         bool claimed = false;
         bool revoked = false;

@@ -436,7 +436,11 @@ canonical или partial path. Удаление одного runtime artifact о
 к его exact canonical и `.part` path и не перечисляет весь outbox.
 
 Finalize открывает файл через `O_NOFOLLOW | O_NONBLOCK`, проверяет owner, mode
-`0600`, regular type, link count и size и фиксирует device/inode. Claim и
+`0600`, regular type, link count и size и фиксирует device/inode. Открытый
+read-only descriptor удерживается до удаления record или уничтожения store,
+включая отозванный lease и неудачный cleanup, чтобы unlink/recreate не мог
+повторно использовать зафиксированный inode. Если descriptor нельзя удержать,
+finalize оставляет reservation незавершённой и сообщает ошибку. Claim и
 operation hold повторно проверяют identity и SHA-256 через открытый descriptor,
 а expiry повторно проверяется после потенциально долгого hash до изменения
 state. Ошибка unlink не превращается в ложный success: lease отзывается,
