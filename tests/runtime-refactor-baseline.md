@@ -238,7 +238,9 @@
   single-instance launch intent с bounded framed ACK, pinned owner-only runtime
   directory, native descriptor listener и atomic listening-socket replacement
   для stale recovery, включая обратный exchange при позднем появлении живого
-  владельца, где ручной запуск показывает окно, а повторный
+  владельца. Stale socket удерживается через CLOEXEC O_PATH descriptor до конца
+  acquisition и rollback, чтобы unlink/rebind не мог повторно использовать inode.
+  Ручной запуск показывает окно, а повторный
   `--autostart` не раскрывает скрытый экземпляр;
 - `linux-tray`: lifecycle watcher, явный Quit, безопасная работа без watcher и
   production `StartupVisibilityController` с bounded ожиданием StatusNotifier

@@ -22,6 +22,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
 #include <memory>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -52,6 +53,8 @@ constexpr char kSiblingApiEnvironment[] = "TRYX_BOOTSTRAP_TEST_SIBLING_API";
 constexpr char kSiblingObjectDelayEnvironment[] =
     "TRYX_BOOTSTRAP_TEST_SIBLING_OBJECT_DELAY_MS";
 QLocalServer *gSocketCleanupRaceServer = nullptr;
+int gStaleSocketPin = -1;
+bool gStaleSocketPinCloseOnExec = false;
 QProcess *gLateLeaseOwnerProcess = nullptr;
 QString gLateLeaseReadyPath;
 bool gLateLeaseOwnerReady = false;
@@ -61,6 +64,32 @@ bool gRuntimeDirectoryReplaced = false;
 void bindLegacyServerBeforeSocketCleanup(const QString &path) {
     if (!gSocketCleanupRaceServer) {
         return;
+    }
+    gStaleSocketPin = -1;
+    gStaleSocketPinCloseOnExec = false;
+    struct stat staleStatus {};
+    if (::lstat(QFile::encodeName(path).constData(), &staleStatus) == 0) {
+        const auto entries = QDir(QStringLiteral("/proc/self/fd"))
+            .entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
+        for (const QString &entry : entries) {
+            bool valid = false;
+            const int descriptor = entry.toInt(&valid);
+            struct stat pinnedStatus {};
+            if (valid && ::fstat(descriptor, &pinnedStatus) == 0 &&
+                pinnedStatus.st_dev == staleStatus.st_dev &&
+                pinnedStatus.st_ino == staleStatus.st_ino) {
+                const int statusFlags = ::fcntl(descriptor, F_GETFL);
+                const int descriptorFlags = ::fcntl(descriptor, F_GETFD);
+                if (statusFlags < 0 || descriptorFlags < 0 ||
+                    (statusFlags & O_PATH) == 0) {
+                    continue;
+                }
+                gStaleSocketPin = descriptor;
+                gStaleSocketPinCloseOnExec =
+                    (descriptorFlags & FD_CLOEXEC) != 0;
+                break;
+            }
+        }
     }
     QLocalServer::removeServer(path);
     gSocketCleanupRaceServer->listen(path);
@@ -933,6 +962,9 @@ void RuntimeBootstrapTests::
         clearAfterLeaseAcquiredBeforeSocketCleanupHook();
     gSocketCleanupRaceServer = nullptr;
 
+    QVERIFY(gStaleSocketPin >= 0);
+    QVERIFY(gStaleSocketPinCloseOnExec);
+    QCOMPARE(::fcntl(gStaleSocketPin, F_GETFD), -1);
     QCOMPARE(result, SingleInstanceAcquireResult::Failed);
     QVERIFY(!error.isEmpty());
     QVERIFY(legacyWinner.isListening());
@@ -972,6 +1004,9 @@ void RuntimeBootstrapTests::
     quickbootstrap::testing::clearBeforeStaleSocketExchangeHook();
     gSocketCleanupRaceServer = nullptr;
 
+    QVERIFY(gStaleSocketPin >= 0);
+    QVERIFY(gStaleSocketPinCloseOnExec);
+    QCOMPARE(::fcntl(gStaleSocketPin, F_GETFD), -1);
     QCOMPARE(result, SingleInstanceAcquireResult::Failed);
     QVERIFY(!error.isEmpty());
     QVERIFY(legacyWinner.isListening());

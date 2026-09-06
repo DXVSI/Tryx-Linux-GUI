@@ -17,6 +17,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
@@ -1423,11 +1424,30 @@ SingleInstanceAcquireResult SingleInstanceGuard::acquire(
     }
 
     SocketIdentity staleCandidate;
+#if defined(Q_OS_LINUX)
+    const int staleDescriptor = ::openat(
+        private_->directoryDescriptor,
+        private_->socketLeafName.constData(),
+        O_PATH | O_NOFOLLOW | O_CLOEXEC);
+    const auto closeStaleDescriptor = qScopeGuard([staleDescriptor]() {
+        if (staleDescriptor >= 0) {
+            ::close(staleDescriptor);
+        }
+    });
+    struct stat staleStatus {};
     const bool observedSocketBeforeFinalProbe =
-        inspectSocketIdentityAt(
-            private_->directoryDescriptor,
-            private_->socketLeafName,
-            &staleCandidate);
+        staleDescriptor >= 0 &&
+        ::fstat(staleDescriptor, &staleStatus) == 0 &&
+        S_ISSOCK(staleStatus.st_mode) &&
+        staleStatus.st_uid == ::getuid();
+    if (observedSocketBeforeFinalProbe) {
+        // Retain the inode through recovery so unlink/rebind cannot reuse it.
+        staleCandidate.device = staleStatus.st_dev;
+        staleCandidate.inode = staleStatus.st_ino;
+    }
+#else
+    const bool observedSocketBeforeFinalProbe = false;
+#endif
 
     // A pre-lease process may have appeared between the first probe and our
     // lock acquisition. Never remove its socket when it can still answer.
