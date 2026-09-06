@@ -7594,6 +7594,8 @@ void PrinterOperationCoordinator::finishCacheCleanupOperation(
     found->info.retryMode.clear();
     found->info.resultName.clear();
     found->info.message = message;
+    found->cacheCatalogPlan = {};
+    found->cacheArtifactPlan = {};
     if (activeOperationId_ == operationId) {
         activeOperationId_.clear();
     }
@@ -7740,7 +7742,7 @@ QString PrinterOperationCoordinator::queueCacheCleanupOperation(
         releaseCacheCleanupLatch();
     };
 
-    const auto artifactAssessment =
+    auto artifactAssessment =
         deviceMediaArtifactStore_->cleanupAssessment();
     if (!artifactAssessment.ok()) {
         const auto code = artifactAssessment.result.code;
@@ -7778,9 +7780,10 @@ QString PrinterOperationCoordinator::queueCacheCleanupOperation(
         return operationId;
     }
 
-    const auto catalogPlan =
+    auto catalogPlan =
         mediaCatalogStore_->planThumbnailOrphanCleanup();
     if (!catalogPlan.ok()) {
+        artifactAssessment.plan = {};
         const bool boundedFailure =
             catalogPlan.result.code ==
             tryx::MediaCatalogStore::ErrorCode::PlanLimitExceeded;
@@ -7824,6 +7827,11 @@ QString PrinterOperationCoordinator::queueCacheCleanupOperation(
     record.cacheCatalogPlan = catalogPlan;
     record.cacheArtifactPlan = artifactAssessment.plan;
     operations_.insert(operationId, record);
+    // Only the stored record may own pins when operationChanged re-enters.
+    record.cacheCatalogPlan = {};
+    record.cacheArtifactPlan = {};
+    catalogPlan = {};
+    artifactAssessment.plan = {};
     operationOrder_.append(operationId);
     activeOperationId_ = operationId;
     publishOperation(operationId);

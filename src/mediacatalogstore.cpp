@@ -952,6 +952,15 @@ MediaCatalogStore::planThumbnailOrphanCleanup(
     plan.parentDevice = static_cast<quint64>(parentStatus.st_dev);
     plan.parentInode = static_cast<quint64>(parentStatus.st_ino);
 
+    const QDBusUnixFileDescriptor parentIdentityPin(directoryDescriptor);
+    if (!parentIdentityPin.isValid()) {
+        plan.result = failureResult(
+            ErrorCode::DirectoryUnavailable,
+            systemErrorText("cannot inspect media thumbnail directory"));
+        ::close(directoryDescriptor);
+        return plan;
+    }
+
     const int enumerationDescriptor = ::dup(directoryDescriptor);
     DIR *directory = enumerationDescriptor < 0
         ? nullptr
@@ -1000,10 +1009,20 @@ MediaCatalogStore::planThumbnailOrphanCleanup(
                     "A media thumbnail cleanup candidate has a non-canonical name"));
             break;
         }
+        CleanupCandidate candidate;
         struct stat status {};
         errno = 0;
-        if (::fstatat(directoryDescriptor, encodedName.constData(),
-                      &status, AT_SYMLINK_NOFOLLOW) != 0 ||
+        const int leafDescriptor = ::openat(
+            directoryDescriptor, encodedName.constData(),
+            O_PATH | O_CLOEXEC | O_NOFOLLOW);
+        if (leafDescriptor >= 0) {
+            candidate.identityPin.setFileDescriptor(leafDescriptor);
+            const int pinError = candidate.identityPin.isValid() ? 0 : errno;
+            ::close(leafDescriptor);
+            errno = pinError;
+        }
+        if (!candidate.identityPin.isValid() ||
+            ::fstat(candidate.identityPin.fileDescriptor(), &status) != 0 ||
             !S_ISREG(status.st_mode) || status.st_uid != ::geteuid() ||
             status.st_nlink != 1 || status.st_size < 0 ||
             status.st_size > kMaximumThumbnailBytes) {
@@ -1015,7 +1034,6 @@ MediaCatalogStore::planThumbnailOrphanCleanup(
                 ErrorCode::UnsafeCandidate, detail);
             break;
         }
-        CleanupCandidate candidate;
         candidate.name = name;
         candidate.device = static_cast<quint64>(status.st_dev);
         candidate.inode = static_cast<quint64>(status.st_ino);
@@ -1048,6 +1066,7 @@ MediaCatalogStore::planThumbnailOrphanCleanup(
             return left.name < right.name;
         });
     plan.plannedFiles = plan.candidates.size();
+    plan.parentIdentityPin = parentIdentityPin;
     plan.complete = true;
     return plan;
 }
@@ -1060,7 +1079,7 @@ MediaCatalogStore::cleanupThumbnailOrphanBatch(
     result.plannedFiles = plan.plannedFiles;
     result.nextIndex = qMax<qsizetype>(0, startIndex);
     if (!loadAccepted_ || !writesEnabled_ ||
-        !plan.ok() || !plan.complete ||
+        !plan.ok() || !plan.complete || !plan.parentIdentityPin.isValid() ||
         plan.plannedFiles != plan.candidates.size() ||
         plan.candidates.size() > kMaximumCleanupPlanEntries ||
         startIndex < 0 || startIndex > plan.candidates.size() ||
@@ -1078,7 +1097,7 @@ MediaCatalogStore::cleanupThumbnailOrphanBatch(
         const QString key = candidate.name.chopped(4);
         if (candidate.name != key + QStringLiteral(".jpg") ||
             !isSha256Hex(key) || entries_.contains(key) ||
-            candidate.logicalBytes < 0 ||
+            !candidate.identityPin.isValid() || candidate.logicalBytes < 0 ||
             candidate.logicalBytes > kMaximumThumbnailBytes ||
             plannedNames.contains(candidate.name) ||
             (!previousName.isEmpty() && previousName >= candidate.name)) {
@@ -1110,7 +1129,11 @@ MediaCatalogStore::cleanupThumbnailOrphanBatch(
     }
 
     struct stat parentStatus {};
+    struct stat pinnedParent {};
     if (::fstat(directoryDescriptor, &parentStatus) != 0 ||
+        ::fstat(plan.parentIdentityPin.fileDescriptor(), &pinnedParent) != 0 ||
+        pinnedParent.st_dev != parentStatus.st_dev ||
+        pinnedParent.st_ino != parentStatus.st_ino ||
         static_cast<quint64>(parentStatus.st_dev) != plan.parentDevice ||
         static_cast<quint64>(parentStatus.st_ino) != plan.parentInode) {
         result.result = failureResult(
@@ -1130,13 +1153,18 @@ MediaCatalogStore::cleanupThumbnailOrphanBatch(
         const QString key = candidate.name.chopped(4);
         const QByteArray encodedName = QFile::encodeName(candidate.name);
         struct stat status {};
+        struct stat pinnedStatus {};
         errno = 0;
         const bool identityMatches =
             isSha256Hex(key) && !entries_.contains(key) &&
+            ::fstat(candidate.identityPin.fileDescriptor(), &pinnedStatus) == 0 &&
             ::fstatat(directoryDescriptor, encodedName.constData(),
                       &status, AT_SYMLINK_NOFOLLOW) == 0 &&
             S_ISREG(status.st_mode) && status.st_uid == ::geteuid() &&
             status.st_nlink == 1 && status.st_size >= 0 &&
+            pinnedStatus.st_dev == status.st_dev &&
+            pinnedStatus.st_ino == status.st_ino &&
+            pinnedStatus.st_nlink == 1 &&
             static_cast<quint64>(status.st_dev) == candidate.device &&
             static_cast<quint64>(status.st_ino) == candidate.inode &&
             static_cast<qint64>(status.st_size) ==

@@ -2075,6 +2075,43 @@ void QuickClientTests::
 
     MediaPreviewController preview;
     int cleanupSyncCalls = 0;
+    bool identitiesPinnedDuringRemoval = true;
+    preview.cleanupUnlinkFunctionForTesting_ =
+        [&identitiesPinnedDuringRemoval](
+            int directoryDescriptor, const QByteArray &name) {
+            struct stat parent {};
+            struct stat leaf {};
+            if (::fstat(directoryDescriptor, &parent) != 0 ||
+                ::fstatat(directoryDescriptor, name.constData(), &leaf,
+                          AT_SYMLINK_NOFOLLOW) != 0) {
+                identitiesPinnedDuringRemoval = false;
+                return -1;
+            }
+            int parentPins = 0;
+            int leafPins = 0;
+            const auto descriptors = QDir(QStringLiteral("/proc/self/fd"))
+                .entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
+            for (const QString &descriptorName : descriptors) {
+                bool numeric = false;
+                const int descriptor = descriptorName.toInt(&numeric);
+                struct stat status {};
+                if (!numeric || ::fstat(descriptor, &status) != 0) {
+                    continue;
+                }
+                if (status.st_dev == parent.st_dev &&
+                    status.st_ino == parent.st_ino) {
+                    ++parentPins;
+                }
+                if (status.st_dev == leaf.st_dev &&
+                    status.st_ino == leaf.st_ino &&
+                    (::fcntl(descriptor, F_GETFD) & FD_CLOEXEC) != 0 &&
+                    (::fcntl(descriptor, F_GETFL) & O_PATH) != 0) {
+                    ++leafPins;
+                }
+            }
+            identitiesPinnedDuringRemoval &= parentPins >= 2 && leafPins >= 1;
+            return ::unlinkat(directoryDescriptor, name.constData(), 0);
+        };
     preview.cleanupFsyncFunctionForTesting_ =
         [&cleanupSyncCalls](int descriptor) {
             ++cleanupSyncCalls;
@@ -2102,6 +2139,7 @@ void QuickClientTests::
              static_cast<qint64>(
                  firstBytes.size() + secondBytes.size()));
     QCOMPARE(cleanupSyncCalls, 2);
+    QVERIFY(identitiesPinnedDuringRemoval);
     QVERIFY(!QFileInfo::exists(first));
     QVERIFY(!QFileInfo::exists(second));
     QVERIFY(QFileInfo::exists(unrelated));

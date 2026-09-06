@@ -4634,6 +4634,14 @@ device media, видимые catalog thumbnails, saved layouts, recovery state �
    directories, special и foreign-owned leaves сохраняются. Logical size
    symlink leaf равен нулю. Recursive remove и общий storage glob запрещены;
    successful unlink сопровождается parent fsync.
+7. Plan удерживает открытые parent и каждый candidate inode до окончания
+   cleanup. Leaf закрепляется через `O_PATH | O_NOFOLLOW | O_CLOEXEC`, поэтому
+   unlink/recreate не может пройти recheck за счёт повторного использования
+   номера inode. Копии plan разделяют владение descriptor; terminal operation
+   освобождает планы до публикации success/failure/cancel, включая reentrant
+   cancellation. Пустой план тоже закрепляет parent. Лимит 4096 leaves на
+   store сохраняется; нехватка descriptors прерывает весь plan без удаления
+   файлов и без повышения `RLIMIT_NOFILE` или незакреплённого fallback.
 
 `confirmedBytes` в public operation означает только сумму `st_size` успешно
 unlink-нутых fenced regular files. Open descriptor, sparse file, reflink,
@@ -4812,8 +4820,10 @@ Re-handshake replacement owner подтверждает только новый 
   methods имеют positive allowlist, а negative-preservation tests делают
   indexed/recovery files невыбираемыми даже при похожем имени.
 - Candidate scan и unlink не являются одной filesystem transaction. Exclusive
-  latch и per-leaf identity recheck предотвращают stale-plan deletion;
-  confirmed partial result не выдаётся за полный success.
+  latch, lifetime pins и per-leaf identity recheck защищают plan-to-batch
+  boundary, но не делают пару pathname check/unlink атомарной против
+  произвольного concurrent same-UID writer. Confirmed partial result не
+  выдаётся за полный success.
 - Runtime и Quick части не атомарны между процессами. Подтверждённая runtime
   часть не откатывается, local failure виден отдельно, automatic retry
   запрещён.

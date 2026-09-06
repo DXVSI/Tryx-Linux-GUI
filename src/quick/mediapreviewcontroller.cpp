@@ -4,6 +4,7 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDBusUnixFileDescriptor>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -51,6 +52,7 @@ struct PreviewCleanupCandidate {
     quint64 device = 0;
     quint64 inode = 0;
     qint64 logicalBytes = 0;
+    QDBusUnixFileDescriptor identityPin;
 };
 
 QString cleanupSystemError(const char *prefix) {
@@ -344,6 +346,13 @@ MediaPreviewController::cleanupInactivePreviews() {
             PreviewCleanupError::DirectoryUnavailable,
             tr("The private preview directory is unsafe"));
     }
+    const QDBusUnixFileDescriptor parentIdentityPin(planDescriptor);
+    if (!parentIdentityPin.isValid()) {
+        const QString detail = cleanupSystemError(
+            "cannot open preview directory");
+        ::close(planDescriptor);
+        return fail(PreviewCleanupError::DirectoryUnavailable, detail);
+    }
 
     const int enumerationDescriptor = ::dup(planDescriptor);
     DIR *directory = enumerationDescriptor < 0
@@ -410,11 +419,20 @@ MediaPreviewController::cleanupInactivePreviews() {
         if (path == currentOutputPath_ || path == pendingOutputPath_) {
             continue;
         }
+        PreviewCleanupCandidate candidate;
         struct stat status {};
         errno = 0;
-        if (::fstatat(
-                planDescriptor, encodedName.constData(), &status,
-                AT_SYMLINK_NOFOLLOW) != 0) {
+        const int leafDescriptor = ::openat(
+            planDescriptor, encodedName.constData(),
+            O_PATH | O_CLOEXEC | O_NOFOLLOW);
+        if (leafDescriptor >= 0) {
+            candidate.identityPin.setFileDescriptor(leafDescriptor);
+            const int pinError = candidate.identityPin.isValid() ? 0 : errno;
+            ::close(leafDescriptor);
+            errno = pinError;
+        }
+        if (!candidate.identityPin.isValid() ||
+            ::fstat(candidate.identityPin.fileDescriptor(), &status) != 0) {
             enumerationFailure =
                 PreviewCleanupError::UnsafeCandidate;
             enumerationDetail = cleanupSystemError(
@@ -435,7 +453,6 @@ MediaPreviewController::cleanupInactivePreviews() {
                 "A preview cleanup candidate is unsafe");
             break;
         }
-        PreviewCleanupCandidate candidate;
         candidate.name = name;
         candidate.device = static_cast<quint64>(status.st_dev);
         candidate.inode = static_cast<quint64>(status.st_ino);
@@ -459,7 +476,11 @@ MediaPreviewController::cleanupInactivePreviews() {
             cleanupSystemError("cannot reopen preview directory"));
     }
     struct stat cleanupParent {};
+    struct stat pinnedParent {};
     if (::fstat(cleanupDescriptor, &cleanupParent) != 0 ||
+        ::fstat(parentIdentityPin.fileDescriptor(), &pinnedParent) != 0 ||
+        pinnedParent.st_dev != cleanupParent.st_dev ||
+        pinnedParent.st_ino != cleanupParent.st_ino ||
         cleanupParent.st_dev != planParent.st_dev ||
         cleanupParent.st_ino != planParent.st_ino ||
         !S_ISDIR(cleanupParent.st_mode) ||
@@ -475,9 +496,14 @@ MediaPreviewController::cleanupInactivePreviews() {
          std::as_const(candidates)) {
         const QByteArray encodedName = QFile::encodeName(candidate.name);
         struct stat status {};
-        if (::fstatat(
+        struct stat pinnedStatus {};
+        if (::fstat(candidate.identityPin.fileDescriptor(), &pinnedStatus) != 0 ||
+            ::fstatat(
                 cleanupDescriptor, encodedName.constData(), &status,
                 AT_SYMLINK_NOFOLLOW) != 0 ||
+            pinnedStatus.st_dev != status.st_dev ||
+            pinnedStatus.st_ino != status.st_ino ||
+            pinnedStatus.st_nlink != 1 ||
             !S_ISREG(status.st_mode) ||
             status.st_uid != ::geteuid() ||
             status.st_nlink != 1 ||

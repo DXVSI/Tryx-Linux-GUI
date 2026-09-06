@@ -918,6 +918,16 @@ DeviceMediaArtifactStore::cleanupAssessment(
     assessment.plan.parentInode =
         static_cast<quint64>(parentStatus.st_ino);
 
+    const QDBusUnixFileDescriptor parentIdentityPin(directoryDescriptor);
+    if (!parentIdentityPin.isValid()) {
+        assessment.result = makeResult(
+            ErrorCode::OutboxUnavailable,
+            systemErrorText("cannot open artifact outbox for cleanup"));
+        assessment.plan.result = assessment.result;
+        ::close(directoryDescriptor);
+        return assessment;
+    }
+
     const TimePoint now = currentTime();
     QStringList artifactIds = records_.keys();
     std::sort(artifactIds.begin(), artifactIds.end());
@@ -977,13 +987,23 @@ DeviceMediaArtifactStore::cleanupAssessment(
                 ::close(directoryDescriptor);
                 return assessment;
             }
+            CleanupLeaf leaf;
             struct stat status {};
             errno = 0;
-            if (::fstatat(directoryDescriptor, encoded.constData(), &status,
-                          AT_SYMLINK_NOFOLLOW) != 0) {
-                if (errno == ENOENT) {
-                    continue;
-                }
+            const int leafDescriptor = ::openat(
+                directoryDescriptor, encoded.constData(),
+                O_PATH | O_CLOEXEC | O_NOFOLLOW);
+            if (leafDescriptor < 0 && errno == ENOENT) {
+                continue;
+            }
+            if (leafDescriptor >= 0) {
+                leaf.identityPin.setFileDescriptor(leafDescriptor);
+                const int pinError = leaf.identityPin.isValid() ? 0 : errno;
+                ::close(leafDescriptor);
+                errno = pinError;
+            }
+            if (!leaf.identityPin.isValid() ||
+                ::fstat(leaf.identityPin.fileDescriptor(), &status) != 0) {
                 assessment.result = makeResult(
                     ErrorCode::UnsafePath,
                     systemErrorText(
@@ -1027,7 +1047,6 @@ DeviceMediaArtifactStore::cleanupAssessment(
                 ::close(directoryDescriptor);
                 return assessment;
             }
-            CleanupLeaf leaf;
             leaf.name = name;
             leaf.device = static_cast<quint64>(status.st_dev);
             leaf.inode = static_cast<quint64>(status.st_ino);
@@ -1041,6 +1060,7 @@ DeviceMediaArtifactStore::cleanupAssessment(
         assessment.plan.candidates.append(candidate);
     }
     ::close(directoryDescriptor);
+    assessment.plan.parentIdentityPin = parentIdentityPin;
     assessment.plan.complete = true;
     return assessment;
 }
@@ -1052,7 +1072,8 @@ DeviceMediaArtifactStore::cleanupBatch(
     CleanupBatchResult result;
     result.plannedFiles = plan.plannedFiles;
     result.nextIndex = qMax<qsizetype>(0, startIndex);
-    if (!plan.ok() || !plan.complete || startIndex < 0 ||
+    if (!plan.ok() || !plan.complete || !plan.parentIdentityPin.isValid() ||
+        startIndex < 0 ||
         startIndex > plan.candidates.size() || maximumCandidates < 1 ||
         plan.candidates.size() > kMaximumCleanupPlanEntries ||
         plan.plannedFiles < 0 ||
@@ -1068,17 +1089,13 @@ DeviceMediaArtifactStore::cleanupBatch(
     qint64 verifiedBytes = 0;
     QString previousArtifactId;
     const TimePoint validationTime = currentTime();
-    for (const CleanupCandidate &candidate : plan.candidates) {
+    for (qsizetype index = 0; index < plan.candidates.size(); ++index) {
+        const CleanupCandidate &candidate = plan.candidates.at(index);
         const auto record = records_.constFind(candidate.artifactId);
         if (!canonicalArtifactId(candidate.artifactId) ||
             artifactIds.contains(candidate.artifactId) ||
             (!previousArtifactId.isEmpty() &&
              previousArtifactId >= candidate.artifactId) ||
-            record == records_.constEnd() ||
-            record->ownerUniqueName != candidate.ownerUniqueName ||
-            !record->inUseOperationId.isEmpty() ||
-            (!record->revoked &&
-             record->expiresUtcMs > validationTime.utcMs) ||
             candidate.leaves.size() > 2) {
             result.result = makeResult(
                 ErrorCode::InvalidInput,
@@ -1088,10 +1105,17 @@ DeviceMediaArtifactStore::cleanupBatch(
         artifactIds.insert(candidate.artifactId);
         previousArtifactId = candidate.artifactId;
         const QString canonicalName =
-            QFileInfo(record->canonicalPath).fileName();
-        if (canonicalName.isEmpty() ||
-            QDir(outboxDirectory_).filePath(canonicalName) !=
-                record->canonicalPath) {
+            candidate.artifactId + QStringLiteral(".h264");
+        const bool recordMatches = index < startIndex
+            ? record == records_.constEnd()
+            : record != records_.constEnd() &&
+                record->ownerUniqueName == candidate.ownerUniqueName &&
+                record->inUseOperationId.isEmpty() &&
+                (record->revoked ||
+                 record->expiresUtcMs <= validationTime.utcMs) &&
+                QDir(outboxDirectory_).filePath(canonicalName) ==
+                    record->canonicalPath;
+        if (!recordMatches) {
             result.result = makeResult(
                 ErrorCode::InvalidInput,
                 QStringLiteral("invalid artifact cleanup plan"));
@@ -1101,7 +1125,8 @@ DeviceMediaArtifactStore::cleanupBatch(
             canonicalName, canonicalName + QStringLiteral(".part")};
         QSet<QString> leafNames;
         for (const CleanupLeaf &leaf : candidate.leaves) {
-            if (!exactNames.contains(leaf.name) ||
+            if (!leaf.identityPin.isValid() ||
+                !exactNames.contains(leaf.name) ||
                 leafNames.contains(leaf.name) || leaf.logicalBytes < 0 ||
                 leaf.logicalBytes >
                     printer_media_file_integrity::kMaximumPreparedMediaBytes ||
@@ -1143,7 +1168,11 @@ DeviceMediaArtifactStore::cleanupBatch(
     }
 
     struct stat parentStatus {};
+    struct stat pinnedParent {};
     if (::fstat(directoryDescriptor, &parentStatus) != 0 ||
+        ::fstat(plan.parentIdentityPin.fileDescriptor(), &pinnedParent) != 0 ||
+        pinnedParent.st_dev != parentStatus.st_dev ||
+        pinnedParent.st_ino != parentStatus.st_ino ||
         !S_ISDIR(parentStatus.st_mode) ||
         parentStatus.st_uid != ::geteuid() ||
         (parentStatus.st_mode & 07777) != S_IRWXU ||
@@ -1205,13 +1234,19 @@ DeviceMediaArtifactStore::cleanupBatch(
             }
             const bool symbolicLink = S_ISLNK(status.st_mode);
             const bool regular = S_ISREG(status.st_mode);
+            struct stat pinnedStatus {};
             const bool storedIdentityMatches =
                 name != canonicalName || !record->ready || symbolicLink ||
                 (static_cast<quint64>(status.st_dev) ==
                      record->deviceNumber &&
                  static_cast<quint64>(status.st_ino) ==
                      record->inodeNumber);
-            if (status.st_uid != ::geteuid() || status.st_nlink != 1 ||
+            if (::fstat(expected->identityPin.fileDescriptor(),
+                        &pinnedStatus) != 0 ||
+                pinnedStatus.st_dev != status.st_dev ||
+                pinnedStatus.st_ino != status.st_ino ||
+                pinnedStatus.st_nlink != 1 ||
+                status.st_uid != ::geteuid() || status.st_nlink != 1 ||
                 (!regular && !symbolicLink) ||
                 symbolicLink != expected->symbolicLink ||
                 static_cast<quint64>(status.st_dev) != expected->device ||

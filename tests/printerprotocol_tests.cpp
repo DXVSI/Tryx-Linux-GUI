@@ -5990,6 +5990,12 @@ void PrinterProtocolTests::
     QCOMPARE(workerCancelSpy.count(), 0);
     QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
     QVERIFY(!manager->operationCoordinator_.cacheCleanupExclusiveActive_);
+    const auto &finishedRecord =
+        manager->operationCoordinator_.operations_[operationId];
+    QVERIFY(!finishedRecord.cacheCatalogPlan.complete);
+    QVERIFY(finishedRecord.cacheCatalogPlan.candidates.isEmpty());
+    QVERIFY(!finishedRecord.cacheArtifactPlan.complete);
+    QVERIFY(finishedRecord.cacheArtifactPlan.candidates.isEmpty());
 
     QCOMPARE(manager->queueCacheCleanupOperation(
                  operationId, &errorName, &errorMessage),
@@ -6031,6 +6037,10 @@ void PrinterProtocolTests::
     QCOMPARE(empty.total, 0);
     QCOMPARE(empty.completed, 0);
     QCOMPARE(empty.confirmedBytes, 0);
+    const auto &emptyRecord =
+        manager->operationCoordinator_.operations_[emptyId];
+    QVERIFY(!emptyRecord.cacheCatalogPlan.complete);
+    QVERIFY(!emptyRecord.cacheArtifactPlan.complete);
 }
 
 void PrinterProtocolTests::
@@ -6157,8 +6167,41 @@ void PrinterProtocolTests::
     QVERIFY(writeTextFile(orphanPath, QByteArrayLiteral("cancel-me")));
     const QString cancelId =
         QStringLiteral("54545454-5454-4454-8454-545454545454");
+    struct stat parentIdentity {};
+    QCOMPARE(::stat(QFile::encodeName(
+                        manager->operationCoordinator_.mediaCatalogStore_
+                            ->thumbnailDirectory()).constData(),
+                    &parentIdentity), 0);
+    int terminalParentDescriptors = -1;
+    bool cancelIssued = false;
+    const auto cancelConnection = QObject::connect(
+        manager.get(), &DeviceManager::operationChanged,
+        manager.get(),
+        [&](const TryxRuntimeOperationInfo &info, quint64) {
+            if (info.id != cancelId) {
+                return;
+            }
+            if (!cancelIssued && info.state == QStringLiteral("Running")) {
+                cancelIssued = true;
+                manager->cancelOperation(cancelId);
+            } else if (info.state == QStringLiteral("Cancelled")) {
+                terminalParentDescriptors = 0;
+                const auto descriptors = QDir(QStringLiteral("/proc/self/fd"))
+                    .entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
+                for (const QString &name : descriptors) {
+                    bool numeric = false;
+                    const int descriptor = name.toInt(&numeric);
+                    struct stat status {};
+                    if (numeric && ::fstat(descriptor, &status) == 0 &&
+                        status.st_dev == parentIdentity.st_dev &&
+                        status.st_ino == parentIdentity.st_ino) {
+                        ++terminalParentDescriptors;
+                    }
+                }
+            }
+        });
     QCOMPARE(manager->queueCacheCleanupOperation(cancelId), cancelId);
-    manager->cancelOperation(cancelId);
+    QObject::disconnect(cancelConnection);
     const TryxRuntimeOperationInfo cancelled =
         manager->operationInfo(cancelId);
     QCOMPARE(cancelled.state, QStringLiteral("Cancelled"));
@@ -6169,6 +6212,13 @@ void PrinterProtocolTests::
     QCOMPARE(cancelled.confirmedBytes, 0);
     QVERIFY(QFileInfo::exists(orphanPath));
     QVERIFY(!manager->operationCoordinator_.cacheCleanupExclusiveActive_);
+    const auto &cancelledRecord =
+        manager->operationCoordinator_.operations_[cancelId];
+    QVERIFY(!cancelledRecord.cacheCatalogPlan.complete);
+    QVERIFY(cancelledRecord.cacheCatalogPlan.candidates.isEmpty());
+    QVERIFY(!cancelledRecord.cacheArtifactPlan.complete);
+    QVERIFY(cancelledRecord.cacheArtifactPlan.candidates.isEmpty());
+    QCOMPARE(terminalParentDescriptors, 0);
 }
 
 void PrinterProtocolTests::
@@ -6223,6 +6273,10 @@ void PrinterProtocolTests::
         QCOMPARE(failed.completed, 0);
         QCOMPARE(failed.confirmedBytes, 0);
         QVERIFY(QFileInfo::exists(path));
+        QVERIFY(!manager->operationCoordinator_.operations_[operationId]
+                     .cacheCatalogPlan.complete);
+        QVERIFY(!manager->operationCoordinator_.operations_[operationId]
+                     .cacheArtifactPlan.complete);
     }
 
     {
@@ -6256,6 +6310,10 @@ void PrinterProtocolTests::
         QCOMPARE(partial.confirmedBytes,
                  static_cast<qint64>(payload.size()));
         QVERIFY(!QFileInfo::exists(path));
+        QVERIFY(!manager->operationCoordinator_.operations_[operationId]
+                     .cacheCatalogPlan.complete);
+        QVERIFY(!manager->operationCoordinator_.operations_[operationId]
+                     .cacheArtifactPlan.complete);
     }
 
     {
@@ -6331,6 +6389,10 @@ void PrinterProtocolTests::
         QCOMPARE(remaining, 1);
         QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
         QVERIFY(!manager->operationCoordinator_.cacheCleanupExclusiveActive_);
+        QVERIFY(!manager->operationCoordinator_.operations_[operationId]
+                     .cacheCatalogPlan.complete);
+        QVERIFY(!manager->operationCoordinator_.operations_[operationId]
+                     .cacheArtifactPlan.complete);
         QTRY_COMPARE_WITH_TIMEOUT(
             manager->operationCoordinator_.mediaCatalog_.revision,
             catalogRevisionBefore + 1, 2000);

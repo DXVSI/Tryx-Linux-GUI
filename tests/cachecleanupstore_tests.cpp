@@ -10,6 +10,8 @@
 #include <QtTest>
 
 #include <cerrno>
+#include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -33,6 +35,79 @@ QByteArray readFile(const QString &path) {
     QFile file(path);
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
 }
+
+QList<int> openDescriptors() {
+    QList<int> descriptors;
+    const QStringList names = QDir(QStringLiteral("/proc/self/fd"))
+                                  .entryList(QDir::AllEntries | QDir::System |
+                                             QDir::NoDotAndDotDot);
+    for (const QString &name : names) {
+        bool valid = false;
+        const int descriptor = name.toInt(&valid);
+        if (valid && ::fcntl(descriptor, F_GETFD) != -1) {
+            descriptors.append(descriptor);
+        }
+    }
+    return descriptors;
+}
+
+QList<int> descriptorsForIdentity(const struct stat &identity) {
+    QList<int> descriptors;
+    for (const int descriptor : openDescriptors()) {
+        struct stat status {};
+        if (::fstat(descriptor, &status) == 0 &&
+            status.st_dev == identity.st_dev &&
+            status.st_ino == identity.st_ino) {
+            descriptors.append(descriptor);
+        }
+    }
+    return descriptors;
+}
+
+class ScopedDescriptorLimit final {
+public:
+    ~ScopedDescriptorLimit() { restore(); }
+
+    bool activate() {
+        if (::getrlimit(RLIMIT_NOFILE, &previous_) != 0) {
+            return false;
+        }
+        const QList<int> descriptors = openDescriptors();
+        int descriptorLimit = 0;
+        int availableSlots = 0;
+        while (availableSlots < 7) {
+            if (!descriptors.contains(descriptorLimit)) {
+                ++availableSlots;
+            }
+            ++descriptorLimit;
+        }
+        if (static_cast<rlim_t>(descriptorLimit) > previous_.rlim_cur) {
+            return false;
+        }
+        struct rlimit limited = previous_;
+        limited.rlim_cur = static_cast<rlim_t>(descriptorLimit);
+        if (::setrlimit(RLIMIT_NOFILE, &limited) != 0) {
+            return false;
+        }
+        active_ = true;
+        return true;
+    }
+
+    bool restore() {
+        if (!active_) {
+            return true;
+        }
+        if (::setrlimit(RLIMIT_NOFILE, &previous_) != 0) {
+            return false;
+        }
+        active_ = false;
+        return true;
+    }
+
+private:
+    struct rlimit previous_ {};
+    bool active_ = false;
+};
 
 QString sha256(const QByteArray &payload) {
     return QString::fromLatin1(
@@ -126,6 +201,9 @@ private slots:
     void catalogCleanupRejectsHardlinkAndSpecialCandidates();
     void catalogCleanupRequiresAcceptedLoadAndPinsParentIdentity();
     void catalogCleanupRejectsChangedLeafIdentity();
+    void catalogCleanupPlanPinsIdentitiesUntilLastCopy_data();
+    void catalogCleanupPlanPinsIdentitiesUntilLastCopy();
+    void catalogCleanupDescriptorExhaustionPreservesFiles();
     void catalogCleanupReportsConfirmedMutationBeforeFsyncFailure();
     void artifactCleanupEmptySuccessIsExact();
     void artifactCleanupRequiresExpiryAndReportsExactBytes();
@@ -136,6 +214,10 @@ private slots:
     void artifactCleanupRejectsHardlinkAndSpecialLeaves_data();
     void artifactCleanupRejectsHardlinkAndSpecialLeaves();
     void artifactCleanupRejectsChangedLeafIdentity();
+    void artifactCleanupPlanPinsIdentitiesUntilLastCopy_data();
+    void artifactCleanupPlanPinsIdentitiesUntilLastCopy();
+    void artifactCleanupDescriptorExhaustionPreservesFiles();
+    void artifactCleanupContinuesAcrossBatches();
     void artifactCleanupBoundsPlanAndReportsRemovalFailures();
 };
 
@@ -379,6 +461,8 @@ void CacheCleanupStoreTests::
     QVERIFY(writeFile(orphanPath, original));
     const auto plan = store.planThumbnailOrphanCleanup();
     QVERIFY2(plan.ok(), qPrintable(plan.result.detail));
+    QCOMPARE(plan.plannedFiles, 1);
+    QCOMPARE(plan.candidates.size(), 1);
     QVERIFY(QFile::remove(orphanPath));
     QVERIFY(writeFile(orphanPath, replacement));
 
@@ -387,6 +471,84 @@ void CacheCleanupStoreTests::
     QCOMPARE(stale.result.code, CatalogStore::ErrorCode::IdentityChanged);
     QCOMPARE(stale.removedFiles, 0);
     QCOMPARE(readFile(orphanPath), replacement);
+}
+
+void CacheCleanupStoreTests::
+    catalogCleanupPlanPinsIdentitiesUntilLastCopy_data() {
+    QTest::addColumn<bool>("withCandidate");
+    QTest::newRow("empty-parent") << false;
+    QTest::newRow("parent-and-leaf") << true;
+}
+
+void CacheCleanupStoreTests::
+    catalogCleanupPlanPinsIdentitiesUntilLastCopy() {
+    QFETCH(bool, withCandidate);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    CatalogStore store(QDir(temporary.path()).filePath(QStringLiteral("catalog")));
+    QCOMPARE(store.load().status, CatalogStore::LoadStatus::Empty);
+    const QString orphanPath = QDir(store.thumbnailDirectory()).filePath(
+        QString(64, QLatin1Char('9')) + QStringLiteral(".jpg"));
+    struct stat leaf {};
+    if (withCandidate) {
+        QVERIFY(writeFile(orphanPath, QByteArrayLiteral("pinned-original")));
+        QCOMPARE(::lstat(QFile::encodeName(orphanPath).constData(), &leaf), 0);
+        QVERIFY(descriptorsForIdentity(leaf).isEmpty());
+    }
+    struct stat parent {};
+    QCOMPARE(::lstat(QFile::encodeName(store.thumbnailDirectory()).constData(),
+                     &parent), 0);
+    QVERIFY(descriptorsForIdentity(parent).isEmpty());
+
+    auto plan = store.planThumbnailOrphanCleanup();
+    QVERIFY2(plan.ok(), qPrintable(plan.result.detail));
+    QCOMPARE(plan.plannedFiles, withCandidate ? 1 : 0);
+    QCOMPARE(descriptorsForIdentity(parent).size(), 1);
+    if (withCandidate) {
+        const auto pins = descriptorsForIdentity(leaf);
+        QCOMPARE(pins.size(), 1);
+        QVERIFY(::fcntl(pins.first(), F_GETFD) & FD_CLOEXEC);
+        QVERIFY(::fcntl(pins.first(), F_GETFL) & O_PATH);
+    }
+    auto copy = plan;
+    plan = {};
+    QCOMPARE(descriptorsForIdentity(parent).size(), 1);
+    if (withCandidate) {
+        QCOMPARE(descriptorsForIdentity(leaf).size(), 1);
+    }
+    copy = {};
+    QVERIFY(descriptorsForIdentity(parent).isEmpty());
+    if (withCandidate) {
+        QVERIFY(descriptorsForIdentity(leaf).isEmpty());
+    }
+}
+
+void CacheCleanupStoreTests::
+    catalogCleanupDescriptorExhaustionPreservesFiles() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    CatalogStore store(QDir(temporary.path()).filePath(QStringLiteral("catalog")));
+    QCOMPARE(store.load().status, CatalogStore::LoadStatus::Empty);
+    QStringList paths;
+    for (int index = 0; index < 12; ++index) {
+        const QString name = QString::number(index, 16)
+                                 .rightJustified(64, QLatin1Char('0')) +
+            QStringLiteral(".jpg");
+        paths.append(QDir(store.thumbnailDirectory()).filePath(name));
+        QVERIFY(writeFile(paths.last(), QByteArrayLiteral("must-survive")));
+    }
+    const auto before = openDescriptors().size();
+    ScopedDescriptorLimit limit;
+    QVERIFY(limit.activate());
+    const auto plan = store.planThumbnailOrphanCleanup();
+    QVERIFY(limit.restore());
+    QVERIFY(!plan.ok());
+    QVERIFY(!plan.complete);
+    QVERIFY(plan.candidates.isEmpty());
+    QCOMPARE(openDescriptors().size(), before);
+    for (const QString &path : paths) {
+        QCOMPARE(readFile(path), QByteArrayLiteral("must-survive"));
+    }
 }
 
 void CacheCleanupStoreTests::
@@ -710,6 +872,9 @@ void CacheCleanupStoreTests::
     now += ArtifactStore::kUnclaimedTtlMs;
     const auto assessment = store.cleanupAssessment();
     QVERIFY2(assessment.ok(), qPrintable(assessment.result.detail));
+    QCOMPARE(assessment.plan.plannedFiles, 1);
+    QCOMPARE(assessment.plan.candidates.size(), 1);
+    QCOMPARE(assessment.plan.candidates.first().leaves.size(), 1);
     QVERIFY(QFile::remove(ready.artifact.canonicalPath));
     QVERIFY(writeFile(ready.artifact.canonicalPath, replacement));
 
@@ -731,6 +896,128 @@ void CacheCleanupStoreTests::
     QCOMPARE(unsafeParent.result.code,
              ArtifactStore::ErrorCode::OutboxUnavailable);
     QCOMPARE(readFile(ready.artifact.canonicalPath), replacement);
+}
+
+void CacheCleanupStoreTests::
+    artifactCleanupPlanPinsIdentitiesUntilLastCopy_data() {
+    QTest::addColumn<bool>("withCandidate");
+    QTest::newRow("empty-parent") << false;
+    QTest::newRow("parent-and-leaf") << true;
+}
+
+void CacheCleanupStoreTests::
+    artifactCleanupPlanPinsIdentitiesUntilLastCopy() {
+    QFETCH(bool, withCandidate);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    qint64 now = 1000;
+    ArtifactStore store(
+        QDir(temporary.path()).filePath(QStringLiteral("outbox")),
+        {}, [&now]() { return ArtifactStore::TimePoint{now}; });
+    QVERIFY(store.initialize().ok());
+    struct stat leaf {};
+    if (withCandidate) {
+        const auto ready = makeReadyArtifact(
+            store, canonicalId(8), QByteArrayLiteral("pinned-original"));
+        QVERIFY2(ready.ok(), qPrintable(ready.result.detail));
+        QCOMPARE(::lstat(QFile::encodeName(ready.artifact.canonicalPath).constData(),
+                         &leaf), 0);
+        QVERIFY(descriptorsForIdentity(leaf).isEmpty());
+    }
+    now += ArtifactStore::kUnclaimedTtlMs;
+    struct stat parent {};
+    QCOMPARE(::lstat(QFile::encodeName(store.outboxDirectory()).constData(),
+                     &parent), 0);
+    QVERIFY(descriptorsForIdentity(parent).isEmpty());
+
+    auto assessment = store.cleanupAssessment();
+    QVERIFY2(assessment.ok(), qPrintable(assessment.result.detail));
+    QCOMPARE(assessment.plan.plannedFiles, withCandidate ? 1 : 0);
+    QCOMPARE(descriptorsForIdentity(parent).size(), 1);
+    if (withCandidate) {
+        const auto pins = descriptorsForIdentity(leaf);
+        QCOMPARE(pins.size(), 1);
+        QVERIFY(::fcntl(pins.first(), F_GETFD) & FD_CLOEXEC);
+        QVERIFY(::fcntl(pins.first(), F_GETFL) & O_PATH);
+    }
+    auto copy = assessment.plan;
+    assessment = {};
+    QCOMPARE(descriptorsForIdentity(parent).size(), 1);
+    if (withCandidate) {
+        QCOMPARE(descriptorsForIdentity(leaf).size(), 1);
+    }
+    copy = {};
+    QVERIFY(descriptorsForIdentity(parent).isEmpty());
+    if (withCandidate) {
+        QVERIFY(descriptorsForIdentity(leaf).isEmpty());
+    }
+}
+
+void CacheCleanupStoreTests::
+    artifactCleanupDescriptorExhaustionPreservesFiles() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    qint64 now = 1000;
+    ArtifactStore store(
+        QDir(temporary.path()).filePath(QStringLiteral("outbox")),
+        {}, [&now]() { return ArtifactStore::TimePoint{now}; });
+    QVERIFY(store.initialize().ok());
+    QStringList paths;
+    for (int index = 0; index < 12; ++index) {
+        const auto ready = makeReadyArtifact(
+            store, canonicalId(index + 1), QByteArrayLiteral("must-survive"));
+        QVERIFY2(ready.ok(), qPrintable(ready.result.detail));
+        paths.append(ready.artifact.canonicalPath);
+    }
+    now += ArtifactStore::kUnclaimedTtlMs;
+    const auto before = openDescriptors().size();
+    ScopedDescriptorLimit limit;
+    QVERIFY(limit.activate());
+    const auto assessment = store.cleanupAssessment();
+    QVERIFY(limit.restore());
+    QVERIFY(!assessment.ok());
+    QVERIFY(!assessment.plan.complete);
+    QVERIFY(assessment.plan.candidates.isEmpty());
+    QCOMPARE(openDescriptors().size(), before);
+    QCOMPARE(store.size(), 12);
+    for (const QString &path : paths) {
+        QCOMPARE(readFile(path), QByteArrayLiteral("must-survive"));
+    }
+}
+
+void CacheCleanupStoreTests::artifactCleanupContinuesAcrossBatches() {
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    qint64 now = 1000;
+    ArtifactStore store(
+        QDir(temporary.path()).filePath(QStringLiteral("outbox")),
+        {}, [&now]() { return ArtifactStore::TimePoint{now}; });
+    QVERIFY(store.initialize().ok());
+    for (int index = 0; index < 17; ++index) {
+        QVERIFY(makeReadyArtifact(store, canonicalId(index + 1),
+                                  QByteArrayLiteral("expired")).ok());
+    }
+    now += ArtifactStore::kUnclaimedTtlMs;
+    const auto assessment = store.cleanupAssessment();
+    QVERIFY2(assessment.ok(), qPrintable(assessment.result.detail));
+    QCOMPARE(assessment.plan.plannedFiles, 17);
+
+    const auto skippedPrefix = store.cleanupBatch(assessment.plan, 1, 16);
+    QVERIFY(!skippedPrefix.ok());
+    QCOMPARE(skippedPrefix.removedFiles, 0);
+    QCOMPARE(store.size(), 17);
+
+    const auto first = store.cleanupBatch(assessment.plan, 0, 16);
+    QVERIFY2(first.ok(), qPrintable(first.result.detail));
+    QVERIFY(!first.complete);
+    QCOMPARE(first.removedFiles, 16);
+    QCOMPARE(first.nextIndex, 16);
+    const auto second = store.cleanupBatch(assessment.plan, first.nextIndex, 16);
+    QVERIFY2(second.ok(), qPrintable(second.result.detail));
+    QVERIFY(second.complete);
+    QCOMPARE(second.removedFiles, 1);
+    QCOMPARE(second.nextIndex, 17);
+    QCOMPARE(store.size(), 0);
 }
 
 void CacheCleanupStoreTests::

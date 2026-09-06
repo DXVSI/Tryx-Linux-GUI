@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDBusUnixFileDescriptor>
 #include <QHash>
 #include <QList>
 #include <QString>
@@ -172,6 +173,8 @@ public:
         quint64 inode = 0;
         qint64 logicalBytes = 0;
         bool symbolicLink = false;
+        // Keep the assessed inode alive across copies of the cleanup plan.
+        QDBusUnixFileDescriptor identityPin;
     };
 
     struct CleanupCandidate {
@@ -185,6 +188,7 @@ public:
         QList<CleanupCandidate> candidates;
         quint64 parentDevice = 0;
         quint64 parentInode = 0;
+        QDBusUnixFileDescriptor parentIdentityPin;
         qsizetype plannedFiles = 0;
         bool complete = false;
 
