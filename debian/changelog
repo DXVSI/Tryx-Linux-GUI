@@ -1,3 +1,15 @@
+tryx-panorama-manager (2.3.0-1) noble; urgency=medium
+
+  * Add per-badge custom text, saved layouts, and split-area media preparation.
+  * Add presentation preferences, device details, and grouped metric selection.
+  * Add local support reports, safe temporary-file cleanup, and the tryx CLI.
+  * Add quiet release notifications and independent desktop GUI autostart.
+  * Refactor runtime ownership while preserving API 8 and model capability gates.
+  * Recover GUI state when cached connection revisions advance between reads.
+  * Preserve versioned configuration backups and reject incompatible downgrade.
+
+ -- DXVSI <dxvsi123@gmail.com>  Sun, 06 Sep 2026 16:00:00 +0700
+
 tryx-panorama-manager (2.2.0-1) noble; urgency=medium
 
   * Add community-tested Panorama 391a:1011 printer-class support.

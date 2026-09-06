@@ -2,8 +2,9 @@
 
 ## Статус
 
-- Статус: active, выполняется небольшими последовательными изменениями.
-- Дата фиксации: 9 августа 2026 года; обновлено 5 сентября 2026 года.
+- Статус: feature freeze, подготовка релиза 2.3.0 после полного прогона
+  накопленных изменений от 2.2.0. Новые функции отложены до выпуска.
+- Дата фиксации: 9 августа 2026 года; обновлено 6 сентября 2026 года.
 - Базовая версия приложения: `2.2.0`.
 - Исходная база на момент составления:
   `feature/panorama-1011-support`, commit `1e93479`.
@@ -18,8 +19,25 @@
   выполняться отдельными небольшими изменениями. Один общий rewrite запрещён.
 - Предложение A8, A9 и B5 согласовано 5 сентября 2026 года с уточнённым B5:
   тихая проверка при запуске GUI и каждый час, без opt-in и self-update.
-  Implementation contract ниже также согласован; начата реализация A8.
-  Порядок сохраняется: A8, затем A9, затем B5.
+  Implementation contract ниже также согласован; A8, A9 и локальная реализация
+  B5 завершены 6 сентября. Desktop delivery B5 не выдается за доказанную
+  изолированными тестами. B6 research завершён отдельно 6 сентября:
+  публичные vendor sources проверены, но remote firmware updater остаётся
+  NO-GO до подтверждения authenticity, compatibility и recovery contract.
+- 6 сентября пользователь выбрал следующий feature: C16, пользовательский
+  текст существующих бейджей. Технический контракт «Автоматически / Свой текст»
+  ниже подтверждён запросом «делай бейдж»; software-реализация завершена.
+- Затем 6 сентября пользователь выбрал подготовку релиза текущего набора.
+  Приоритет: [UI-чек-лист и release gates 2.3.0](2026-09-06-release-2.3.0-ui-checklist.md),
+  исправление найденных дефектов, upgrade/rollback, version metadata и пакетный
+  прогон. Новый feature/research scope, дальнейшие крупные refactor и новые
+  модели до релиза не добавлять. Software/headless evidence не заменяет
+  desktop/device/installed acceptance; hardware разрешения остаются отдельными.
+  Исправленная локальная сборка установлена; пользователь подтвердил работу и
+  запросил релиз. `VERSION` и package metadata обновлены до 2.3.0 локально,
+  commit/push в production и тег v2.3.0 разрешены пользователем отдельно.
+  Публичная публикация draft остаётся отдельным шагом. 1815 software tests прошли;
+  exact-source distro CI и непроверенные hardware cases остаются отдельными gates.
 
 Этот документ является новым каноническим планом. Он заменяет
 `todo-next.md` как подробный источник задач и уточняет
@@ -1259,8 +1277,8 @@ download/flash features, schema/API migration, QML redesign, GIPHY и recorder.
 
 **Зависимости:** A7.
 
-**Статус:** документ согласован 5 сентября 2026 года; реализация начата.
-A8 не закрыт: вынос worker завершён, разделение policy ещё выполняется.
+**Статус:** документ согласован 5 сентября 2026 года; реализация и software
+acceptance завершены 6 сентября 2026 года. A8 закрыт без hardware qualification.
 
 #### Подтверждённая база и цель
 
@@ -1328,7 +1346,8 @@ thread-safe entry points не превращаются в queued calls: они �
    В focused matrix обязательны passive/foreground, cancel/drain, same-path
    generation, восстановление overlay и late firmware quiesce/release fence.
 
-Каждый проверенный срез сохраняется отдельно по уже данному запросу на commits.
+Каждый проверенный срез сохраняется отдельно; commit/push выполняются только
+по отдельному явному запросу пользователя.
 Адаптация private test fixtures допустима, ослабление assertions, deadlines
 или отключение тестов ради extraction запрещено. Закрытие A8 требует фактического
 переноса policy state, а не только forwarding к прежнему общему worker body.
@@ -1340,6 +1359,40 @@ method bodies. Runtime и test build прошли, полный protocol suite �
 отдельная source guard на worker module и qmake wiring; существующая проверка
 `VerifyingSavedLayout` перенесена вслед за реализацией без ослабления.
 Физический hardware I/O не выполнялся.
+
+Разделение policy завершено в следующем срезе:
+
+- `LegacyDeviceSession` владеет `panorama::Device` и legacy timer;
+  `PrinterClassSession` владеет единственным `PrinterProtocol`, printer FSM,
+  тремя timers, SystemMonitor, overlay и foreground state. В worker остаются
+  прежние public slots/signals, синхронный dispatch и общий quiesce.
+- `DeviceWorkerSessionContext` даёт printer policy только заимствованный доступ
+  к gates worker. Atomics, cancellation set/mutex, два различных eventfd и
+  published preferences не скопированы; cancel и generation publication
+  по-прежнему прерывают уже ожидающий ответ I/O из другого потока.
+- Legacy использует тот же SystemMonitor через borrowed reference; общий
+  formatter выделен в `deviceworkermetrics`, второго collector нет. Sessions
+  и все QObject children перемещаются с worker. Legacy уничтожается раньше
+  telemetry provider, обе sessions уничтожаются до закрытия cancellation fds.
+- Сравнение с `412efa0` подтвердило неизменность публичного façade и 61 method
+  body после нормализации нового владельца, signal emitter и borrowed access.
+  Остальные три метода изменены только на границах общего quiesce и двух gate
+  queries. Translation contexts сохранены явным `DeviceWorker::tr`;
+  существующие `QObject::tr` остались прежними.
+- Новые PTY/socket fixtures проверяют legacy handshake/commands, закрытие
+  обоих transports внутри firmware ACK callback, отсутствие записи из
+  отложенного legacy callback после quiesce, один I/O context, teardown до
+  закрытия gates, отмену blocked foreground response и stale completion без
+  перезапуска timers. Независимое read-only review не нашло замечаний и
+  подтвердило сохранение всех прежних test methods и assertions.
+- Чистые runtime/test builds, полный protocol suite и fresh `package-check`
+  прошли: 898 protocol cases, 0 failed, 0 skipped. Translation catalog и
+  structural baseline прошли. Пять RU-only QML cases пропускаются в общем
+  английском прогоне и отдельно успешно выполняются с русским каталогом.
+
+Изменения этого продолжения проверены в worktree, без commit/push, установки,
+перезапуска установленного runtime или обращений к физическому устройству.
+A9 и B5 остаются следующими отдельными задачами.
 
 Общий источник SystemMonitor уже использовался и legacy, и printer metrics.
 При выделении policy legacy сохраняет заимствованный доступ к тому же provider
@@ -1359,8 +1412,10 @@ protocol split A9, изменение runtime API, UI redesign и физичес
 **Зависимости:** A7; в согласованной последовательности выполняется после A8
 и остаётся последним архитектурным этапом.
 
-**Статус:** документ согласован 5 сентября 2026 года; реализация ожидает A8.
-A9 не закрыт.
+**Статус:** реализовано 6 сентября 2026 года. Чистые runtime/test builds,
+902 protocol tests, полный `package-check`, translation и structural baseline
+прошли. Независимое read-only review не выявило high/medium замечаний.
+A9 закрыт как software-only refactor; hardware qualification не выполнялась.
 
 #### Подтверждённая база и цель
 
@@ -1428,11 +1483,54 @@ InvalidResponse, SentOutcomeUnknown, Rejected и Acknowledged. Преобраз�
    translation/structural gates и полный `package-check`. Старые fixtures
    остаются обязательными; новые тесты проверяют реальные границы владения.
 
-Каждый слой фиксируется отдельным проверенным коммитом. Основные риски связаны
+Каждый слой проверяется отдельно до следующего переноса; commit/push требуют
+отдельного запроса пользователя и в этом продолжении не выполняются.
+Основные риски связаны
 с lifetime callbacks, потерей latched error или изменением ambiguous-outcome
 semantics. Для каждого переноса обязательны focused tests до следующего слоя.
-Откат выполняется в обратном порядке коммитов A9, сохраняя A8 и A6/A7;
+Откат выполняется в обратном порядке переносов A9, сохраняя A8 и A6/A7;
 on-disk migration не требуется.
+
+#### Реализованные границы, 6 сентября 2026 года
+
+- `printerproductprofile`, `printerdiscovery` и `printerframecodec` содержат
+  единственные реализации профилей, discovery/monitor и stateless framing.
+  Публичные nested types и `PrinterDeviceMonitor` остаются доступны через
+  прежний `printerprotocol.h`; второй набор wire/value types не создан.
+- `UsbPrinterTransport` владеет native/scripted backend, async callback state,
+  claim и fd test seam. Cancellation fd только заимствуется. Persistent latch
+  сохраняется при close; bounded cancellation drain и abandoned-callback
+  safety path перенесены без изменения policy.
+- `PrinterTransactionChannel` владеет transport, receive buffer, track counter,
+  deadlines, response matching/drain и outbound clock. PASE readiness/retry
+  state и media-pull limits из channel убраны; in-flight keepalive получает
+  frame через указатель на статическую функцию, без захвата lifetime клиента.
+- `PaseConfigurationClient`, `PaseMediaClient` и `TurrisMediaClient` заимствуют
+  один channel и уничтожаются раньше него. `printermediaupload` содержит один
+  model-neutral upload/ACK цикл; Turris передаёт MXHD validator и fixed track
+  ID, а capability/name preflight остаётся перед открытием source и USB I/O.
+- Добавлены прямые owner-boundary tests и structural guards. Existing wire,
+  outcome, cancellation, readiness, media и udev fixtures не ослаблялись.
+
+#### Итог проверки
+
+- `PrinterProtocol` сокращён с 7528 до 307 строк реализации; façade хранит
+  один channel и три borrowed-channel clients, без скрытого model `Impl`.
+- Focused gates выполнены после каждого переноса: codec/discovery, duplex
+  transport, fd ownership, response matching/deadlines, readiness/media и
+  Turris/PASE upload outcomes. Новая проверка non-copyable owners прошла
+  RED/GREEN; close/destructor и shared-buffer fixtures проходят напрямую
+  через новые классы.
+- После clean build полный `printerprotocol-tests`: 902 passed, 0 failed,
+  0 skipped. Все 488 исходных тестовых методов сохранены без изменения тела
+  после нормализации только A8 ownership access paths.
+- Runtime, CLI и Quick собраны; итоговый `make -j2 package-check` завершился
+  с кодом 0. Пять RU-only QML cases пропущены в английском запуске и отдельно
+  проверены русским baseline. Translation completeness и все structural
+  invariants прошли; `git diff --check` чист.
+- Предыдущие A8 edits сохранены. Установка, restart установленного service,
+  hardware I/O/qualification, commit и push не выполнялись. Следующий
+  согласованный пункт вне A9: B5; он этим срезом не реализуется.
 
 **Out of scope:** новая wire protocol revision, API 9, USB reset/retry redesign,
 новые model capabilities, второй transport writer, новые библиотеки/стек,
@@ -1950,14 +2048,17 @@ client, 23 runtime bootstrap и 13 tray. Hardware smoke не выполнялс�
 ### B5. Тихое уведомление о новой версии приложения
 
 **Статус:** документ согласован 5 сентября 2026 года после уточнения
-пользователем startup/hourly policy. B5 не закрыт; реализация ожидает A8/A9
-и выполняется отдельным feature change.
+пользователем startup/hourly policy. После завершения A8/A9 реализация B5
+завершена и локально проверена 6 сентября. Полный `package-check`, переводы,
+EN/RU QML и read-only review прошли. Реальная доставка popup на desktop не
+проверена; это отдельная граница квалификации, описанная ниже.
 
 #### Подтверждённая база и принятое решение
 
-В текущем GUI есть версия из `VERSION` через `TRYX_APP_VERSION`, Settings/About,
+До B5 в GUI уже были версия из `VERSION` через `TRYX_APP_VERSION`, Settings/About,
 проверенные project links, single-instance guard и системные уведомления через
-`LinuxTrayController`. Release checker и сетевые настройки B5 отсутствуют.
+`LinuxTrayController`. Release checker отсутствовал; сетевые настройки B5
+не добавляются и после реализации.
 `ConfigManager` перезаписывает общий `config.json`, который используют GUI и
 runtime; новый network state туда не добавляется.
 
@@ -2068,8 +2169,9 @@ application User-Agent и документированный `X-GitHub-Api-Versi
 
 Сетевые тесты не доказывают появление popup на реальном desktop. При закрытии
 B5 отдельно сообщаются результаты GUI/notification smoke и недоступные проверки;
-hardware traffic для этой функции не требуется. B5 сохраняется отдельными
-feature/test commits, не смешанными с архитектурными A8/A9; push не разрешён.
+hardware traffic для этой функции не требуется. Изменения B5 сохраняются отдельным
+feature/test diff, не смешанным с архитектурными A8/A9. Commit и push без
+отдельного запроса пользователя не выполняются.
 
 Риски: silent errors могут задержать уведомление; desktop policy может скрыть
 popup; publisher может выбрать latest tag, не превосходящий локальную версию.
@@ -2082,9 +2184,160 @@ popup; publisher может выбрать latest tag, не превосходя
 или runtime, firmware notification/update, changelog renderer, telemetry,
 проверка при закрытом GUI, opt-in/manual controls, GIPHY и recorder.
 
+#### Реализовано и проверено 6 сентября 2026 года
+
+- `ReleaseUpdateController` и чистый `ReleaseUpdates` parser находятся только
+  в Quick target. `main.cpp` создаёт их после single-instance guard и запускает
+  queued poll только после успешной загрузки QML, вне smoke branch. Quit
+  останавливает timer и request; скрытие окна не меняет расписание.
+- Строгий parser принимает только три ASCII numeric компонента без leading
+  zeroes и suffixes, с проверкой `quint32` overflow. ETag ограничен 1024 байтами,
+  проверяется как HTTP entity tag и хранится только с валидным snapshot.
+  Retry-After seconds/HTTP date и primary reset конвертируются один раз в
+  monotonic cooldown; HTTP `GMT` нормализуется для Qt RFC2822 parser.
+- Settings/About показывает условную EN/RU строку и обычную keyboard-accessible
+  кнопку. Browser handoff происходит только по её сигналу и использует URL
+  validated controller. Исчезновение строки возвращает фокус к Open GitHub.
+- `LinuxTrayController::showNotification` теперь отправляет фиксированный
+  `QDBusMessage` через `asyncCall(..., 2000)`. Review выявил синхронный Introspect
+  в прежнем `QDBusInterface` constructor; отдельный slow-service test сначала
+  воспроизвёл блокировку на 1008 ms, затем прошёл после исправления. Fresh client
+  process исключает ложный успех из-за Qt introspection cache. Отказ Notify не
+  удаляет Settings state, не раскрывает окно и не вызывает повторный popup.
+- Чистые GUI/runtime builds на локальном Qt 6.11.2, новая offline network suite
+  (77 passed), protocol suite (902 passed), полный `package-check` (exit 0),
+  translation completeness и structural/EN/RU baseline прошли. Основной QML
+  прогон: 155 passed, 0 failed; 6 RU-only сценариев проверены отдельными
+  translated baseline runs, а не объявлены покрытыми английским прогоном.
+- Дополнительный `strace` в отдельном user/network namespace подтвердил
+  отсутствие AF_INET/AF_INET6 calls для `--version`, `--smoke-test`, сочетания
+  smoke/autostart и обоих helper entry points с некорректными аргументами.
+  Smoke/version завершились с 0, helpers ожидаемо с 2. Ни runtime service,
+  ни USB, ни live GitHub endpoint для этих проверок не запускались.
+- В текущем Wayland computer-use provider screenshot недоступен. Проверен
+  offscreen GUI и изолированный freedesktop notification contract; внешний
+  браузер, реальный popup/DND и сборка на Qt 6.4 в этом срезе не проверялись.
+  API выбран совместимый с 6.4; это не подменяет сборку на минимальной версии.
+- Итоговый read-only review не оставил high/medium findings. Логи текущего
+  прогона: `/tmp/tryx-b5.WzJ1SM/package-check-final.log`; дополнительные entry
+  traces: `/tmp/tryx-b5-entry.9H9zVB/*-isolated.trace`. Commit, push, установка,
+  restart и переход к B6 не выполнялись. Предыдущие A8/A9 changes сохранены.
+
+Официальные API повторно проверены 6 сентября: [GitHub API versions](https://docs.github.com/en/rest/about-the-rest-api/api-versions#supported-api-versions),
+[GitHub rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api),
+[Qt Network request attributes](https://doc.qt.io/qt-6/qnetworkrequest.html#Attribute-enum)
+и [Qt reply streaming/lifecycle](https://doc.qt.io/qt-6/qnetworkreply.html).
+Анонимный ETag poll не обещает бесплатную quota: GitHub гарантирует исключение
+304 из primary limit только для корректно авторизованных запросов.
+
+### B6. Remote firmware availability research
+
+**Статус:** исследование завершено 6 сентября 2026 года. Найдены официальные
+публичные страницы TRYX, но supported machine-readable firmware source для
+целевых моделей и полный контракт безопасного обновления не подтверждены.
+Remote download, firmware availability badge и cloud updater остаются
+**NO-GO**. Завершение research не означает разрешение на их реализацию или
+на flash устройства.
+
+#### Проверенные публичные источники
+
+Проверка ограничена публичными HTML-страницами и встроенными данными страниц
+TRYX на указанную дату. Основные страницы ответили HTTP 200. ZIP/EXE, firmware
+и PDF manuals не скачивались; vendor JavaScript, KANALI, firmware API и
+оборудование не запускались и не опрашивались.
+
+| Источник | Подтверждено | Что этим не доказано |
+|---|---|---|
+| [Global Downloads](https://www.tryx.com/en/downloads), [CN Downloads](https://www.tryxzone.com/downloads) | KANALI для Windows 10/11, label `v2.4.0` / `2.4.0`, дата `2026-07-22`; есть ссылки на manuals PANORAMA, PANORAMA SE и TURRIS. Из проверенных записей категории firmware найден только ROTA Upgrade Tool `V8` от `2025-01-09` | ZIP установщика KANALI не является идентифицированным firmware payload. Пакеты обновления целевых моделей в текущем списке не найдены; ROTA вне этого scope |
+| [Offline Firmware Upgrade](https://www.tryx.com/en/support/help-documents/offline-firmware-upgrade) | Разные инструменты для SE и NON-SE: `PANORAMA SE - Firmware Upgrade Tool v1.0.3` и `PANORAMA - Firmware Upgrade Tool v1.0.11`; перед отдельным Windows updater требуется закрыть KANALI | Это версии в названиях tools, не доказанные revisions firmware. Ссылка ведёт на общий Downloads, где эти два инструмента сейчас не перечислены; прямой firmware URL и актуальность tools не подтверждены |
+| [KANALI 2.4.0 release notes](https://www.tryx.com/en/support/release-notes/kanali-2-4-0), [KANALI 2.2.0 release notes](https://www.tryx.com/en/about/news/kanali-release-notes) | Первый документ подтверждает дату приложения `2026-07-22`; второй от `2026-05-14` описывает unified application, backend overhaul и firmware flash при установке. Производитель запрещает прерывать flash, отключать устройство или выключать ПК | Общая поддержка семейства приложением не связывает конкретный payload с board revision, backend, регионом или допустимым переходом версий |
+| [Warranty, пункт 12](https://www.tryx.com/en/support/warranty) | Производитель отдельно предупреждает о последствиях прерывания питания, выключения и отключения кабелей во время обновления, а также неофициальной firmware | Предупреждение не является техническим power-loss/recovery/rollback contract; правовой вывод о конкретном гарантийном случае здесь не делается |
+
+Также сверены публичные страницы [PANORAMA ARGB](https://www.tryx.com/en/products/cooling/panorama/panorama-argb/white-240),
+[PANORAMA SE](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-se/white-360)
+и [TURRIS 620](https://www.tryx.com/en/products/liquid-cooling/turris/turris-620/white).
+Они подтверждают product names, но не hardware qualification или firmware
+compatibility manifest. В изученных материалах не подтверждён vendor alias
+`PASE`; в этом проекте он используется по существующему локальному evidence.
+
+В перечисленных источниках не найдены firmware checksum/signature,
+опубликованный trust anchor, подписанный manifest, mapping на hardware
+revision, min-version/backend/region constraints или процедура восстановления
+после прерванной записи. Это **граница проверки страниц**, а не утверждение,
+что внутри vendor archives или устройств таких механизмов нет. Offline guide
+советует проверить полноту загрузки/распаковки и обратиться в поддержку при
+ошибке; это не доказательство восстановления после потери питания.
+
+#### Исторические сведения не являются live distribution contract
+
+[Engineering brief, раздел 7](tryx-engineering-brief.md#7-firmware-archive-distribution-and-sm2-api)
+фиксирует прежнее изучение KANALI: обычные ZIP archives, application-level
+SM2 envelope для metadata/download-URL API и наблюдавшиеся catalog entries
+`36/PANO/V2.0.0`, `37/PAWB/V2.0.0`, `38/PASE/V2.0.1`. B6 не повторял запросы
+к этому API, загрузку или flash. Эти записи не объявляются текущими latest
+versions или разрешённым публичным API.
+
+SM2 envelope и signed download URL не доказывают publisher signature самого
+firmware payload. Они также не доказывают отсутствие другого официального
+способа распространения. Ключи, закрытые endpoints и vendor binaries не
+переносятся в проект. Версия KANALI, версия updater tool, API catalog version,
+firmware build и device app version имеют разный смысл: parser и сравнение
+`vX.Y.Z` из B5 нельзя автоматически применять к firmware availability.
+
+#### Что уже гарантирует локальный updater
+
+Сверены текущие [FirmwareBridge](../src/firmwarebridge.cpp),
+[FirmwareUpdater](../src/firmwareupdater.cpp) и
+[product profiles](../src/printerproductprofile.cpp), без запуска устройства.
+
+| Существующая проверка | Граница гарантии |
+|---|---|
+| Legacy OTA: `pre-device=cm01_se`, непустые build metadata; Rockchip: обязательные files, `RK3568`, product marker из `rootfs:/usr/bin/panorama` | Проверка формата и известных признаков пакета. Marker является эвристикой, не подписью; hardware revision и разрешённый upgrade/downgrade path этим не подтверждаются |
+| SHA-256 выбранного файла, повторная identity validation и private staging; для ADB также размер и SHA-256 скопированного ZIP | Approval связан с проверенными байтами. Hash вычислен локально, а не получен из доверенного vendor manifest, поэтому это не проверка издателя |
+| PASE-only Rockchip approval, firmware-capable device identity до Loader, повторная Loader identity fence перед writes | Среди текущих printer profiles firmware разрешён только `391a:1021`; `391a:1011` и `391a:2011` не получают firmware support. Cold unidentified Loader и Maskrom не превращаются в допустимую цель |
+| Recovery journal до dispatch, exclusive gate, сохранение журнала после irreversible failure и updater success | Journal удерживает runtime fail-closed. Он не сохраняет старые partition images, не выполняет rollback и не доказывает успешный boot; acknowledgement пользователя очищает journal и разрешает новую connection attempt |
+
+В проверенном host path нет проверки firmware signature по vendor trust
+anchor. Стандартная [AOSP OTA signing model](https://source.android.com/docs/core/ota/sign_builds)
+предусматривает проверку recovery package по ожидаемым публичным ключам.
+Это не доказывает конфигурацию конкретного TRYX recovery: используемые ключи,
+release/test trust и политика downgrade в B6 не проверены. Аналогично, порядок
+Rockchip writes и запрет отмены после irreversible boundary не доказывают
+атомарность обновления или устойчивость к потере питания.
+
+#### Что нужно до отдельного proposal
+
+1. Поддерживаемый TRYX способ получения metadata и пакетов без извлечения
+   внутренних ключей: публичный manifest/API или документированная публикация.
+   Нужны условия доступа; mirror и redistribution требуют отдельного разрешения.
+2. Проверяемая связь manifest, конкретных bytes/size/hash и издателя: формат
+   подписи, доверенный публичный ключ/certificate и способ его обновления или
+   отзыва. Наличие HTTPS URL само по себе этот контракт не определяет.
+3. Точное соответствие payload моделям и hardware revisions, boot/backend,
+   региональным вариантам и допустимым source/target versions. Неизвестные
+   поля не должны превращаться в разрешение обновлять устройство.
+4. Официальная процедура recovery после потери питания и условия rollback,
+   либо явное подтверждение его запрета; необходимые инструменты, доступ к
+   recovery package и критерии успешного boot/version verification. Сохранение
+   пользовательских media не считается backup firmware.
+5. Для Linux: поддерживаемый flasher и ясные права его распространения либо
+   разрешённая альтернатива. Наличие текущего внешнего `upgrade_tool` в PATH
+   не решает вопрос доверия к cloud packages или redistribution.
+
+Этот список уточняет существующий [запрос к TRYX](2026-06-10-kanali-firmware-request.md);
+сообщение производителю не отправлялось. Даже после получения данных будущий
+proposal должен отдельно определить bounded download/archive handling и
+trust/recovery tests. Hardware qualification и каждый flash требуют отдельного
+явного согласия для точной модели; B6 не расширяет текущие capabilities.
+
+В этом срезе изменена только документация. Runtime, GUI, API, firmware code и
+тесты сохранены без изменений; сборки и hardware checks для docs-only research
+не запускались. Предыдущие результаты A8/A9/B5 не являются доказательством
+подлинности удалённой firmware или power-loss recovery.
+
 ### B7. Legal/About links
 
-**Статус:** выполнено 26 августа 2026 года. About показывает ровно два
+**Статус:** выполнено 26 августа 2026 года. About показывает два постоянных
 project-owned внешних действия: главную страницу проекта и опубликованный MIT
 `LICENSE` из ветки `production`. Локальный `LICENSE` существует в source tree и
 также входит в native packages. Privacy Policy и User Agreement в проекте
@@ -3146,6 +3399,7 @@ mutation, service enablement/linger и обход desktop/user-session permissio
 | C13 | Display frame-rate control | B0, D1 | только allowlisted значения и exact readback на отдельно подтверждённом product profile; неподдерживаемая модель не получает generic write |
 | C14 | Linux display sleep policy | B4, D1 | отдельно исследуются GUI Quit, runtime stop, suspend и shutdown; политика opt-in и model-gated, не переписывает standby media и не обещает USB mutation после начала poweroff; resume не повторяет предыдущую mutation |
 | C15 | Extended telemetry and metric pages | C15.1: B0, C1, B9.1 software; 4+/pages: B9 hardware acceptance, D1 | Сначала расширяются подтверждённые host telemetry sources и явный selector с честным лимитом Full 3, Split 3+3; 4+ метрик, pages или rotation допускаются только через model-scoped versioned capability после hardware captures/readback, а старый API 8 сохраняет максимум 3 |
+| C16 | Пользовательский текст бейджей | B0, C1, C2, C5 | Для существующих CPU/GPU slots доступны Auto и Custom с bounded plain text; один явный Apply, сохранение и восстановление текста без подмены Auto; новые versioned API/types без изменения старых tuples; software acceptance отдельно от hardware glyph/placement проверки |
 
 ### C1. Per-side styling
 
@@ -4975,6 +5229,178 @@ silent eviction, automatic rotation, изменение существующег
 per-process telemetry, CPU/GPU voltage, Memory Frequency provider, новые
 device tokens и обещание полной RivaTuner parity.
 
+### C16. Пользовательский текст бейджей
+
+**Статус:** software-реализация завершена 6 сентября 2026 года по запросу
+«делай бейдж». Fresh `package-check`, translations, QML/baseline и итоговый
+независимый read-only review прошли. Hardware smoke, USB queries/writes,
+установка, перезапуск активного runtime и firmware в этот этап не входили.
+
+Реализованы value/codec, serializer, versioned Apply, Saved V2, Retry v12,
+согласованный display snapshot и EN/RU QML controls. Auto остаётся совместимым;
+Custom включается только для `391a:1021` после exact capability handshake.
+
+Проверка: все production binaries и test objects пересобраны с Qt 6.11.2 через
+`make -B -j3 package-check` в изолированном root, с синтетическим `/dev`, пустым
+`/sys`, отдельными XDG paths и D-Bus. Protocol: 936 pass; badge value/wire: 40;
+overlay store: 20; Saved store: 57; Quick: 141; handshake: 126; CLI: 88.
+Полный QML: 157 pass и 6 существующих translation-only skips; именованные RU
+проверки в baseline прошли отдельно. GUI headless smoke и `git diff --check`
+прошли. Итоговый review не обнаружил P0/P1/P2 в проверенном C16 scope.
+
+Execution log: `/tmp/tryx-c16-package-lO1O2o/package-check-synthetic.log`;
+review: `/tmp/c16-final-regression-review.md` (временные локальные evidence).
+Первый CLI-прогон был некорректен из-за UID 65534 у bind-mounted `/` внутри
+user namespace; исправлена только test isolation, существующий security guard
+не ослаблен. Смешанные Qt 6.11.1/6.11.2 objects исключены полной пересборкой.
+HostAccepted означает согласованную принятую host-конфигурацию, не firmware
+glyph readback. Backup конфигурации не восстанавливает удалённые media artifacts.
+
+#### Цель и подтверждённая база до C16
+
+Пользователь может заменить автоматически определённое название CPU/GPU
+своей короткой надписью в существующем бейдже. Это не редактор произвольного
+числа текстовых объектов и не расширение числа метрик.
+
+- [OverlayLabel](../protocol/wire-v1/overlay.proto) уже содержит `string text`;
+  [configurePaseBadge](../src/paseconfigurationclient.cpp) передаёт строку,
+  шрифт `roboto-regular`, размер и фон. Новый protobuf field или USB opcode для
+  подстановки текста не требуется по текущему host-коду.
+- [PrinterClassSession](../src/printerclasssession.cpp) заново вычисляет
+  `cpuBadgeText`/`gpuBadgeText` из выбранных hardware models.
+  [PaseMetricsConfigStore](../src/pasemetricsconfigstore.cpp) v2 намеренно
+  очищает эти transient fields и не сериализует их.
+- QML и runtime допускают только два identifiers: `CPU Badge`, `GPU Badge`.
+  [ApplyRequest и DisplayState](../src/runtimecontract.h), C5 saved layouts
+  и retry fingerprint не содержат пользовательского текста. Их старые
+  positional D-Bus shapes нельзя расширить новым полем внутри API 8.
+- Устройство не предоставляет подтверждённого query для `OverlayLayout`.
+  ACK активации и существующий UserConfiguration readback не являются
+  доказательством точного отображения glyphs или надписи.
+
+#### Согласованный пользовательский контракт
+
+1. Сохранить два существующих slots на область. У каждого включённого CPU/GPU
+   бейджа появляется источник надписи: «Автоматически» или «Свой текст».
+   Auto остаётся default и использует прежний выбор CPU/GPU model.
+2. В Full одна область, в Split независимые Left и Right. Предлагается
+   разрешить разные надписи одного slot на разных сторонах, в соответствии
+   с существующим per-side styling C1. Третий бейдж не добавляется.
+3. Custom представляет собой одну plain-text строку после удаления внешних
+   пробелов: от 1 до 32 Unicode scalar values и не больше 128 UTF-8 bytes.
+   Это предлагаемый **проектный лимит**, не измеренный лимит firmware и не
+   гарантия размещения любой строки на экране. Запрещены malformed Unicode,
+   NUL, переносы строк, управляющие и format characters, включая bidi controls.
+   Пустой Custom является ошибкой, а не скрытым переключением в Auto.
+4. Unicode допускается в software contract, но кириллица и другие glyphs
+   остаются непроверенными на устройстве до отдельного smoke. Не обещать
+   поддержку emoji, новых шрифтов или сложной письменности по одному факту
+   наличия protobuf string.
+5. Цвета Auto сохраняют текущую vendor-based логику. Custom использует
+   существующий нейтральный фон, без угадывания бренда по пользовательскому
+   тексту. Новые font/color/size controls и free-position layout вне scope.
+6. Редактирование меняет только draft. Apply отправляет media, metrics, style
+   и badge choices одной immutable foreground operation. Cancel, ошибка
+   валидации, потеря capabilities и неподтверждённый outcome не сохраняют draft
+   как успешно применённый. C2 dirty-state guard учитывает режим и текст.
+
+#### Архитектура и совместимость
+
+Рекомендуется явное расширение versioned request, а не второй независимый
+SetBadgeText перед Apply. Два вызова создадут промежуточную конфигурацию и риск
+применить текст к чужому layout. Подмена host model name тоже не подходит:
+она изменит Auto и не позволит задать независимый текст на сторонах.
+
+- Новый value type для slot: `mode = Auto|Custom`, `text`; у Auto text пустой.
+  Новый overlay-badge type хранит primary CPU/GPU и secondary CPU/GPU choices.
+  Disabled slot и неактивная secondary area канонизируются в Auto/empty;
+  потерянный Custom не восстанавливается из названия hardware.
+- Новый apply envelope содержит прежний `TryxRuntimeApplyRequest` неизменным
+  и отдельный versioned badge payload. Существующие Manager1/Manager2 methods,
+  signals и structs сохраняются. API major остаётся 8.
+- Добавить versioned apply entry points для обычного Apply, upload+Apply и
+  ensure-media+Apply, а также согласованный display snapshot с badge choices.
+  Они используют существующий coordinator, operation ID, cancellation,
+  owner/device/generation fences и единый worker-owned transport. Не вводить
+  второй writer, network service или отдельную очередь бейджей.
+- Feature включается через runtime/device capability handshake. Начальный
+  implementation target: printer-class PASE `391a:1021`. PANORAMA `1011`
+  требует отдельной qualification; TURRIS, legacy serial/ADB и неизвестные
+  профили не получают generic custom-text write.
+- Старый клиент/метод продолжает передавать только Auto semantics. Новая GUI
+  не отправляет Custom через старый метод и не делает silent fallback к Auto.
+  Вызов, заменяющий overlay старым request, имеет явную старую Auto-семантику;
+  brightness-only и другие mutations без replaceOverlay сохраняют текущий
+  custom overlay. Existing Auto-only workflows остаются без изменений.
+- Пока capability handshake не завершён или завершился transport error,
+  printer-class GUI не принимает старый display tuple как редактируемый
+  baseline и не разрешает Apply. Legacy путь выбирается только после
+  подтверждённого отсутствия нового token или предусмотренного UnknownMethod.
+- Recovered-media Replace не получает новый wire/journal в C16. При Custom
+  его кнопка и dispatch заблокированы с понятной причиной. Поддержанный путь:
+  Save as new, выбор новой копии и общий Apply с сохранённым draft. Auto-only
+  Replace не меняется; backend старого Replace сохраняет старую Auto-семантику.
+- Внутренний normalized request, operation equality и retry fingerprint
+  включают режим и текст каждой области. Retry восстанавливает именно
+  подтверждённый payload, не перечитывает текущий GUI draft и не повторяет
+  mutation автоматически после неизвестного результата.
+- Hydration обновляет только Auto slots. Custom передаётся как данные через
+  существующий serializer, не попадает в shell, rich text, файловые пути или
+  имена media. User text не пишется в qInfo/error messages, lifecycle events
+  или redacted support bundle; вместо содержимого допустимы режим и длина.
+
+#### Сохранение и восстановление
+
+- Хранить **пользовательский выбор** отдельно от transient resolved model text.
+  Развить существующий PaseMetricsConfigStore до нового versioned payload,
+  сохранив owner checks, atomic save, 64 KiB bound и device binding. Старые
+  v1/v2 records читаются как Auto; чтение само по себе не переписывает файл.
+  Будущий или malformed формат остаётся fail-closed.
+- Новый versioned display snapshot возвращает принятые badge choices вместе
+  с согласованными identity/revision. Это host-accepted configuration, не
+  firmware glyph readback. Перезапуск GUI не теряет Custom; существующее
+  восстановление подтверждённого overlay после bootstrap уважает Custom и
+  не превращается в replay неизвестного или неуспешного Apply.
+- C5 Save/Load/Apply должен сохранять эти choices. Нужны новые saved-layout
+  wire types/methods и versioned store format, а не расширение V1 tuple.
+  Существующие UUID, device binding и CAS revisions сохраняются; V1 records
+  имеют Auto defaults. Старый V1 client не получает custom layout с молча
+  выброшенным текстом и не может перезаписать такой record через V1.
+- Retry/apply codecs и persistent formats тоже получают явную поддержку
+  нового envelope. Старые записи читаются как Auto; новый формат не маскируется
+  под старый и не подвергается lossy downgrade.
+- Откат не удаляет настройки. До первого перехода формата нужен recoverable
+  pre-migration snapshot; старый runtime не запускается поверх нового формата
+  с надеждой на игнорирование fields. Возврат к Auto и старому формату является
+  отдельным явным действием, не compensating USB write при uninstall.
+
+#### Порядок реализации и acceptance
+
+1. RED tests для value validation, canonical Auto/Custom, legacy Auto defaults,
+   immutable frozen D-Bus signatures и нового typed round trip. Зафиксировать
+   точные новые method/type signatures перед реализацией client/UI.
+2. Реализовать normalized envelope, apply/coordinator/worker hydration и
+   serializer; fixtures должны проверять точные bytes надписи, slots/IDs,
+   Full/Split/Waterfall и отсутствие USB отправки при malformed input.
+3. Добавить versioned persistence, saved layouts, retry fingerprint и
+   display snapshot. Проверить restart/reconnect, старые records, rollback
+   snapshot, unknown outcome, stale generation и разные тексты по сторонам.
+4. Добавить EN/RU QML controls, validation, keyboard/accessibility, C2 guard
+   и восстановление drafts. Ввод и Save layout не выполняют Apply; одна
+   активация Apply создаёт ровно одну operation с точным payload.
+5. Выполнить focused suites, полный fresh `package-check`, translation/QML
+   baseline и независимый review перед отметкой software complete. B3 tests
+   должны доказывать отсутствие sentinel custom text в support output/logs.
+6. Отдельно, только после explicit consent, один bounded hardware smoke на
+   `1021`: латиница, кириллица, длинная строка и два разных Split texts,
+   размещение и возврат в Auto. Для `1011` отдельный capture и verdict.
+   Software GREEN не считается подтверждением glyph coverage или новой модели.
+
+**Out of scope:** третьи и дополнительные бейджи, произвольные overlay objects,
+изменение числа метрик, загрузка шрифтов, HTML/markup, templates или команды
+в тексте, анимация/бегущая строка, remote firmware update и автоматическая
+аппаратная проверка. Изменения не должны включать посторонние A8/A9/B5 правки.
+
 ## Workstream D: hardware-backed развитие моделей
 
 ### D1. Общий hardware evidence kit
@@ -5053,7 +5479,9 @@ detection, multi-screen modes и fonts не объединяются с PASE bac
 Следующие направления не входят в обычную parity-реализацию:
 
 - cloud firmware updater: нужен официальный источник, authenticity/signature,
-  compatibility manifest, power-loss contract и recovery/rollback;
+  compatibility manifest, power-loss contract и recovery/rollback; публичные
+  источники проверены в [B6](#b6-remote-firmware-availability-research),
+  execution gate остаётся закрытым;
 - vendor preset/cloud library: vendor assets, encrypted materials и закрытые
   endpoints не используются;
 - community media gallery или аналог TRYXZONE: отдельный product proposal с
@@ -5073,6 +5501,10 @@ detection, multi-screen modes и fonts не объединяются с PASE bac
 
 ## Порядок milestones
 
+С 6 сентября 2026 года очередь ниже описывает grouping backlog, а не указание
+продолжать разработку до релиза. Текущая задача: зафиксированный UI/package
+прогон 2.3.0; незакрытые новые возможности возвращаются после выпуска.
+
 ### M0. Architecture safety cleanup
 
 - A1-A5.
@@ -5085,7 +5517,7 @@ detection, multi-screen modes и fonts не объединяются с PASE bac
 - C1-C3 в пределах уже существующих API 8 полей.
 - D6 hardware acceptance отдельно от release build.
 
-Это рекомендуемый следующий пользовательский MINOR scope.
+Реализованные пункты вошли в MINOR-кандидат 2.3.0; B11 остаётся после релиза.
 
 ### M1B. Versioned contracts и telemetry
 
@@ -5101,10 +5533,17 @@ detection, multi-screen modes и fonts не объединяются с PASE bac
 
 - C4-C6.
 - Saved layouts и safe cache.
+- C16: пользовательский текст существующих бейджей; технический контракт
+  подтверждён 6 сентября, software-реализация завершена; физическая проверка
+  внесена в release checklist.
 
 ### M3. Network и desktop portals
 
-- В активном scope остаются B5 и B6 research.
+- B5 завершён локально 6 сентября 2026 года с отдельной оговоркой о desktop
+  notification delivery.
+- B6 research завершён 6 сентября 2026 года. Official public sources найдены,
+  но authenticity, точный compatibility manifest и power-loss/recovery contract
+  не подтверждены; remote firmware updater остаётся NO-GO до отдельного proposal.
 - C7 исключён из scope 5 сентября 2026 года.
 - C8 отложен 5 сентября 2026 года из-за неоднородной доступности PipeWire и
   portal backends в поддерживаемых Linux-средах. C9 ожидает отдельного

@@ -6,6 +6,33 @@
 Этот файл оставляет только верхнеуровневую очередь. При конфликте источником
 истины является полный feature proposal.
 
+## Сейчас: подготовка релиза 2.3.0
+
+6 сентября пользователь выбрал выпуск текущего набора после полной проверки
+изменений с последнего релиза 2.2.0. Новые функции и дальнейшие refactor
+заморожены до выпуска; допускаются только исправления, проверки и release
+metadata/documentation. Закрытый software checkbox ниже не означает physical
+или installed acceptance.
+
+- [x] Определить следующую версию: 2.3.0, совместимый MINOR при API 8.
+- [x] Составить [UI-чек-лист и release gates](2026-09-06-release-2.3.0-ui-checklist.md).
+- [x] Установить текущую сборку, исправить GUI context-revision race и получить
+  подтверждение пользователя «все работает». Полный isolated package-check:
+  1815 passed, 0 failed; это не финальная distro matrix и не 24-часовой прогон.
+- [x] Подготовить локальные metadata 2.3.0 и English release notes; Git-операции
+  для commit/push в production и тега v2.3.0 разрешены пользователем отдельным
+  подтверждением. CI и draft ожидаются; публичная публикация остаётся отдельной.
+- [ ] Пройти UI, основной `1021`, upgrade/rollback и зафиксировать решения по
+  conditional desktop/GPU/community-model cases. Hardware действия отдельно
+  согласуются для точного устройства.
+- [ ] Исправить release blockers, подготовить согласованную metadata 2.3.0 и
+  чистый кандидат; повторить software/package gates на exact release source.
+- [ ] После отдельных разрешений на commit/push/tag получить CI и draft;
+  проверить final installed artifact и только затем согласовать публикацию.
+
+Остальные незакрытые feature/research пункты ниже выполняются после релиза.
+Непроверенные уже реализованные функции остаются в release qualification.
+
 ## M0: Architecture safety cleanup
 
 - [x] A1. Зафиксировать characterization baseline.
@@ -113,12 +140,28 @@
   translation/baseline gates и три раздельных read-only review-прохода прошли.
   Открытых задач внутри C6 нет. C7 затем исключён из scope, C8 отложен, после
   чего выбран и завершён архитектурный этап A6.
+- [x] C16. Пользовательский текст CPU/GPU бейджей: «Автоматически / Свой
+  текст», независимые области, один Apply, versioned API и сохранение в
+  overlay/saved layouts/retry без потери текста. Технический контракт
+  подтверждён 6 сентября запросом «делай бейдж», software-реализация завершена.
+  Fresh `package-check`, translations/QML/baseline и независимое final review
+  прошли. Custom разрешён только для `391a:1021`; lossy Replace заблокирован,
+  доступен Save as new + Apply. Hardware glyph/placement acceptance остаётся
+  отдельным: устройство, установленный runtime и firmware не затрагивались.
 
 ## M3: Network и portals
 
-- [ ] B5. GitHub release notification без self-update.
-- [ ] B6. Только research официального firmware source, signatures,
-  compatibility и rollback, без remote update до отдельного proposal.
+- [x] B5. GitHub release notification без self-update. Реализовано 6 сентября:
+  startup/hourly primary-GUI polling, строгий parser, bounded Qt Network,
+  условный EN/RU Settings row и async desktop notification без introspection.
+  77 offline network/notification tests, полный `package-check` и read-only
+  review прошли. Реальный desktop popup/DND не проверен; runtime, CLI,
+  firmware и пользовательский `config.json` не менялись.
+- [x] B6. Research завершён 6 сентября 2026 года: официальные страницы
+  проверены, но publisher authenticity, точный compatibility manifest и
+  power-loss/recovery/rollback contract не подтверждены. Remote download,
+  firmware badge и cloud updater остаются NO-GO до отдельного proposal;
+  код, firmware archives и устройство не затрагивались.
 - [x] C7. Исключено из scope 5 сентября 2026 года: GIPHY API, встроенный search
   и внешний browser handoff не реализуются; существующий local media import
   сохраняется.
@@ -162,9 +205,20 @@
   structural baseline прошли. В QML-тесте стабилизирована готовность к клику
   через bounded render check; production UI не менялся. Hardware smoke
   не выполнялся.
-- [ ] A8. Разделить legacy и printer-class worker policy при одном I/O owner.
-- [ ] A9. Разделить transport, framing, discovery и model clients в
-  `PrinterProtocol`.
+- [x] A8. Legacy и printer-class worker policy разделены 6 сентября 2026 года:
+  собственные sessions/state/timers, один I/O owner и SystemMonitor,
+  неизменный public façade, borrowed gates и синхронный общий quiesce.
+  Проверены blocked cancellation, same-path generation, closure до firmware
+  ACK и teardown до закрытия eventfds. Чистые сборки, 898 protocol tests,
+  полный `package-check`, translations и structural baseline прошли.
+  Hardware smoke, установка, commit и push в этом продолжении не выполнялись.
+- [x] A9. `PrinterProtocol` разделён 6 сентября 2026 года: отдельные
+  profiles/discovery/codec, единственный USB transport и transaction channel,
+  borrowed-channel PASE config/media и Turris clients, общий upload/ACK цикл.
+  Façade сокращён до 307 строк; public API 8 и wire/outcome policy сохранены.
+  Чистые сборки, 902 protocol tests, полный `package-check`, translations,
+  structural baseline и независимое read-only review прошли. Hardware smoke,
+  установка, restart сервиса, commit и push не выполнялись.
 
 ## Backlog
 
@@ -177,7 +231,8 @@
 - [x] AMD telemetry и vendor-neutral NVIDIA/Intel model/badge resolution.
 - [x] Full и Split display modes, Mirror и Waterfall.
 - [x] До трёх метрик и CPU/GPU badges на каждую область.
-- [x] Per-device overlay persistence version 2.
+- [x] Per-device overlay persistence version 3 с совместимым чтением старого
+  Auto state и private pre-upgrade backup для C16.
 - [x] Device media catalog, FilePull, Export, Edit, Save as new, Replace и
   Delete для catalog-capable профилей.
 - [x] Turris `1280x720` image/GIF/video upload и immediate activation.

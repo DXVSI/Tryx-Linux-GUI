@@ -26,6 +26,19 @@
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.3.0" type="stable" date="2026-09-06">
+      <description>
+        <ul>
+          <li>Add independent custom CPU and GPU badge text on capable Panorama SE displays.</li>
+          <li>Add saved layouts, split-area media preparation, and independent left/right styling.</li>
+          <li>Add grouped metric selection, device specifications, temperature units, and clock preferences.</li>
+          <li>Add local support reports, safe temporary-file cleanup, and a local command-line client.</li>
+          <li>Add quiet release notifications and independent desktop GUI autostart.</li>
+          <li>Recover display controls when cached connection revisions advance during startup.</li>
+        </ul>
+        <p>New configuration formats require a backup before upgrading and cannot be rolled back by simply installing an older package.</p>
+      </description>
+    </release>
     <release version="2.2.0" type="stable" date="2026-08-09">
       <description>
         <ul>

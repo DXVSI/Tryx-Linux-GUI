@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.2.0
+Version:        2.3.0
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -120,6 +120,15 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
+* Sun Sep 06 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.3.0-1
+- Add per-badge custom text, saved layouts, and split-area media preparation
+- Add presentation preferences, device details, and grouped metric selection
+- Add local support reports, safe temporary-file cleanup, and the tryx CLI
+- Add quiet release notifications and independent desktop GUI autostart
+- Refactor runtime ownership while preserving API 8 and model capability gates
+- Recover GUI state when cached connection revisions advance between reads
+- Preserve versioned configuration backups and reject incompatible downgrade
+
 * Sun Aug 09 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.2.0-1
 - Add community-tested Panorama 391a:1011 printer-class support
 - Add Turris 620 391a:2011 media upload with 1280x720 MXHD preparation

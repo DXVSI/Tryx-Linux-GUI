@@ -110,6 +110,19 @@ confirmed pair and applies it consistently to the Dashboard and supported PASE
 overlays even after the GUI closes. Older API 8 runtimes keep the compatible
 Celsius and 24-hour defaults without exposing a writable setting.
 
+On `391a:1021`, a capable runtime also enables **Automatic / Custom text** for
+each enabled CPU/GPU badge in Panorama. Full uses one pair; Split keeps left and
+right choices independent. Custom is trimmed plain text, 1-32 Unicode scalars
+and at most 128 UTF-8 bytes, with a neutral background. Editing changes only the
+draft; Apply sends the text together with the layout. Saved layouts and manual
+Retry preserve the same choices. The accepted snapshot is host configuration,
+not proof that the device font renders every glyph; device qualification is
+still separate. Custom is not enabled on `1011`, TURRIS or legacy devices.
+Recovered-media Replace is blocked while Custom is active because its old
+contract cannot preserve text. Use Save as new, select the copy, then Apply.
+New overlay/Saved/Retry formats keep private pre-upgrade configuration backups
+and block incompatible downgrade; backups do not restore pruned media artifacts.
+
 Settings can also save a local redacted support report as a JSON file selected
 through a folder-only picker. The report contains an allowlisted host summary
 and, when supported by the active runtime, a bounded cached runtime snapshot;
@@ -169,6 +182,21 @@ media, an in-flight dispatch, pending cleanup or recovery, and an unverified
 store all block the downgrade. Success is reported only after the exact D-Bus
 owner has stopped.
 
+This is not a general rollback of newer configuration formats. An overlay
+store at version 3, a saved-layout store at version 2, or a retry carrying the
+versioned badge Apply continuation blocks preparation, even if all badges are
+Automatic. Switching Custom back to Automatic does not downgrade those files.
+Do not delete newer state to bypass the guard. Restoring a pre-upgrade backup
+requires a separately verified offline recovery plan; the private JSON backups
+do not restore media artifacts that have since been removed.
+
+The retry directory must also match an exact allowlist. Additional files,
+including pre-upgrade configuration backups there, prevent preparation even
+when no retry candidate remains. The marker protects the supported helper
+workflow; it cannot prevent an arbitrary package-manager downgrade. The v10,
+v11 and v12 labels in this section describe retry formats/implementation, not
+application release numbers.
+
 ```fish
 tryx prepare-downgrade-v10
 ```
@@ -211,6 +239,33 @@ to the user service. A separate Settings switch can create an owner-managed
 XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
+
+## What's new in 2.3.0
+
+- Independent **Automatic / Custom text** choices for each CPU/GPU badge on
+  capable `391a:1021` displays, including separate left/right choices in Split.
+- Saved layouts with explicit Load and Apply, independent left/right overlay
+  styling, and grouped metric search with up to three metrics per area.
+- Explicit Full-screen / Split-area media preparation and stricter Replace
+  checks that preserve the other display area and reject stale layouts.
+- Confirmed device specifications, Celsius/Fahrenheit and 12/24-hour settings,
+  optional NVIDIA telemetry, and independent GUI autostart and close behavior.
+- Local redacted support reports, safe unused temporary-file cleanup, and the
+  one-shot `tryx` command-line client for local session inspection.
+- Quiet startup/hourly release notifications with a link to GitHub. There is
+  no automatic download, installation, firmware update, or opt-in setting.
+- Runtime/session/protocol ownership refactoring with the existing API 8
+  contracts and model gates preserved. The GUI now recovers when connection
+  revisions advance between cached reads instead of leaving controls disabled.
+
+Back up the user profile before upgrading. New overlay, saved-layout, and retry
+formats are not a general round-trip to older packages; switching badges back
+to Automatic does not downgrade the stored format. See the
+[downgrade limitations](#controlled-runtime-downgrade-to-v10).
+
+Custom text remains limited to `1021`. Device font coverage is not guaranteed;
+Replace is unavailable while Custom is active, so use Save as new and then Apply.
+No additional model or NVIDIA hardware qualification is claimed by this release.
 
 ## What's new in 2.2.0
 
@@ -263,11 +318,9 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
   closes the GUI reliably while leaving the separate runtime active.
 - Legacy serial/ADB devices retain display, media, metrics, keepalive, and
   device-control support through the same Quick interface.
-- PASE user media can be prepared explicitly for the full 2240 x 1080 display
-  or one honest 1120 x 1080 split area, edited with Fit, Fill, Crop, Stretch,
-  zoom, pan, and rotation, exported as its exact raw H264 device copy, saved as
-  a new item, replaced through a crash-safe verified workflow, or deleted when
-  eligible.
+- PASE user media can be edited with Fit, Fill, Crop, Stretch, zoom, pan, and
+  rotation, exported as its exact raw H264 device copy, saved as a new item,
+  replaced through a crash-safe verified workflow, or deleted when eligible.
 - Quick Settings provides local firmware package selection and validation.
   The runtime obtains an exclusive device-transport gate before handing work
   to the existing updater backend and writes an owner-only recovery interlock
@@ -299,7 +352,7 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
   is shown as unavailable rather than zero; VRAM remains local to the host
   Dashboard, the four existing device GPU tokens and Manager2 API 8 are
   unchanged, and real NVIDIA hardware qualification is still pending.
-- Hardware name badges (auto-detected from system)
+- Hardware name badges, with optional custom text on capable `391a:1021` runtimes
 - Brightness control (0-100) on capable Panorama/PASE profiles
 - Display settings on capable Panorama/PASE profiles: position, alignment, color, filter
 - Runtime-owned keepalive for capable Panorama/PASE display sessions
@@ -309,6 +362,8 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
 - Settings persistence between sessions
 - Runtime-owned Celsius/Fahrenheit and 24-hour/12-hour presentation preferences
 - About shortcuts to the project home and its published MIT license
+- Quiet startup/hourly checks for new stable application releases, with a
+  desktop notification and a release link in Settings/About
 - Async device communication (non-blocking GUI)
 - Quick Settings firmware panel for locally selected packages, with validation and hardware work owned by the headless runtime
 - Device information and media list over the new KANALI USB printer-class protocol
@@ -320,6 +375,36 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
 - One shared Panorama operation banner with progress, cancellation, and one fail-closed manual retry candidate
 - Runtime-owned PASE metric configuration and one-second sampling that continue after the GUI closes
 - Runtime API compatibility check that prevents the GUI from silently using an outdated background runtime
+
+## Application release notifications
+
+While the primary desktop GUI is running, it checks the public GitHub latest
+release endpoint once after startup and then every 60 minutes, including when
+hidden in the tray or started at sign-in. A secondary launch does not trigger
+another check. Closing the GUI completely stops checking; the background runtime,
+CLI, firmware tools, export helpers and offline smoke tests never poll releases.
+
+Only a strictly newer stable `X.Y.Z` or `vX.Y.Z` tag produces a desktop
+notification and a version/link row in Settings/About. Each version is announced
+at most once per GUI process; a later, higher version can be announced again.
+Desktop notification settings, Do Not Disturb or an unavailable notification
+service may hide the popup; the Settings link remains available. Network errors,
+timeouts, rate limits and invalid responses are silent and preserve the last
+confirmed update. A successful equal/older release response clears the row.
+
+The GUI sends an unauthenticated HTTPS request to
+`https://api.github.com/repos/DXVSI/Tryx-Linux-GUI/releases/latest`, with a fixed
+application User-Agent and no GitHub token, cookies, device identifiers, logs or
+media metadata. GitHub receives the normal connection/HTTP information, including
+your public IP address. Each attempt has a 10-second deadline and a 1 MiB response
+limit; redirects are not followed. Server rate-limit hints can postpone the next
+hourly attempt. Validated release data and ETags stay in process memory only.
+There is no opt-in setting, manual check button or persistent network state.
+
+Choose **Open release** in Settings/About to open the validated project release
+page in your system browser, then update manually using the appropriate package.
+Nothing is downloaded, installed or restarted automatically. These notifications
+do not check or update device firmware.
 
 ## Media-free distribution
 
@@ -378,13 +463,13 @@ Install a downloaded package with the package manager for your distribution:
 ```fish
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.2.0-1.fc44.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.3.0-1.fc44.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.2.0-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.3.0-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.3.0-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
@@ -505,7 +590,7 @@ arbitrary package is safe for a different model.
 
 The local validator recognizes two Panorama SE package formats:
 
-- Legacy Android OTA `update.zip` for `cm01_se` devices. The runtime validates `META-INF/com/android/metadata`, copies an approved package to `/sdcard/update.zip` over ADB, verifies the copied size, and requests recovery reboot.
+- Legacy Android OTA `update.zip` for `cm01_se` devices. The runtime validates `META-INF/com/android/metadata`, copies an approved package to `/sdcard/update.zip` over ADB, verifies the copied size and SHA-256, and requests recovery reboot.
 - New KANALI Rockchip loader ZIP bundles for `PASE`. The runtime validates the required Rockchip files, checks `parameter.txt` for `RK3568`, and inspects `rootfs:/usr/bin/panorama` for the product marker. It can invoke an external Rockchip `upgrade_tool` only when the backend and device-state checks pass. If an identified firmware-capable device is present over ADB or the `391a:1021` printer interface, the authorized update may reboot it into Loader and continue there. A cold, unidentified Loader device and Maskrom mode are rejected because their original product profile cannot be proven.
 
 The `upgrade_tool` executable is not bundled in this open source repository because its redistribution rights are not clear. The app looks for it in `TRYX_UPGRADE_TOOL`, `PATH`, next to the app binary, `tools/upgrade_tool`, and `~/.local/bin/upgrade_tool`.
@@ -546,7 +631,16 @@ PASE media deletion is limited to one exact user-owned, writable, unreferenced c
 
 PASE display configuration uses one read-modify-write user-configuration update, one complete overlay-layout update, and a bounded configuration readback. The UI supports brightness, display backlight power, Mirror, Waterfall, Full Screen, and Screen Splitting with two existing media files. Firmware-controlled standby enablement and standby media remain read-only and are never rewritten by the display power control. Rapid brightness input keeps at most one active operation and one latest pending value; the pending value is dispatched only after the prior operation, exact readback, and a subsequent background keepalive all succeed. Each screen area can contain up to three metrics plus CPU and GPU badges with exact `#RRGGBB` text colors. The grouped metric selector keeps Full, Left, and Right counters independent, requires an explicit position when replacing a fourth choice, and keeps a selected unavailable sensor removable without silently rewriting the draft. Mirror uses `media_rotation=180`, Waterfall uses `ui_rotation=90`, and split mode uses the dual-media wire mode with independent left and right media. A display operation succeeds only when the requested fields match the fresh device readback. A matching explicit protocol error from the optional overlay response is treated as a logical rejection and is never discarded as stale. Direct printer-protocol firmware writes and loader reboot remain intentionally disabled.
 
-Automatic firmware download is not enabled yet. KANALI uses SM2-encrypted request/response bodies for its firmware version and download URL requests, so plain REST requests cannot retrieve official packages.
+Automatic firmware download remains disabled. The September 6, 2026
+[B6 source review](docs/2026-08-09-runtime-decomposition-and-feature-roadmap.md#b6-remote-firmware-availability-research)
+found official download and offline-upgrade pages, but did not establish a
+supported firmware manifest, publisher verification, exact hardware
+compatibility or power-loss recovery contract for the target models. KANALI
+installer and upgrade-tool version labels are not verified firmware revisions.
+Earlier research observed SM2-protected metadata/download-URL requests in a
+KANALI wrapper; this does not establish the current public distribution
+contract or authenticate the firmware itself. Local ZIP checks and SHA-256
+pin approved bytes, not vendor provenance; the recovery journal is not rollback.
 
 ## Build
 
