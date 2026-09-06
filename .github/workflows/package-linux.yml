@@ -427,6 +427,7 @@ jobs:
           pushd packaging/arch >/dev/null
           runuser -u builder -- env \
             TRYX_LOCAL_SOURCE_SHA256="$archive_sha256" \
+            MAKEFLAGS=-j2 \
             makepkg --cleanbuild --check --noconfirm
           popd >/dev/null
 
