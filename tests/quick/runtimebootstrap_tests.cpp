@@ -20,12 +20,15 @@
 #include <QThread>
 #include <QTimer>
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <memory>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace {
@@ -429,9 +432,36 @@ int runAcquireLateLeaseAndCrashProbe(
     ready.close();
 
     QThread::msleep(75);
-    QLocalServer server;
-    if (!server.listen(socketPath)) {
+    // Leave crash artifacts without briefly exposing an unacknowledged
+    // live owner between listen() and _Exit().
+    const QByteArray encodedPath = QFile::encodeName(socketPath);
+    struct sockaddr_un address {};
+    address.sun_family = AF_UNIX;
+    if (encodedPath.size() >=
+        static_cast<qsizetype>(sizeof(address.sun_path))) {
         return 83;
+    }
+    std::memcpy(address.sun_path, encodedPath.constData(),
+                static_cast<std::size_t>(encodedPath.size() + 1));
+    const int descriptor = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (descriptor < 0) {
+        return 83;
+    }
+    const auto addressLength = static_cast<socklen_t>(
+        offsetof(struct sockaddr_un, sun_path) + encodedPath.size() + 1);
+    if (::bind(descriptor,
+               reinterpret_cast<const struct sockaddr *>(&address),
+               addressLength) != 0) {
+        ::close(descriptor);
+        return 83;
+    }
+    // A connectable fixture would exercise fail-closed notification, not
+    // stale lease recovery. Keep this guard to catch that fixture regression.
+    QLocalSocket probe;
+    probe.connectToServer(socketPath);
+    if (probe.waitForConnected(100)) {
+        ::close(descriptor);
+        return 84;
     }
     std::_Exit(0);
 }

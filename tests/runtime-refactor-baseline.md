@@ -240,6 +240,8 @@
   для stale recovery, включая обратный exchange при позднем появлении живого
   владельца. Stale socket удерживается через CLOEXEC O_PATH descriptor до конца
   acquisition и rollback, чтобы unlink/rebind не мог повторно использовать inode.
+  Late-lease crash fixture оставляет bound socket без listen и проверяет, что
+  подключение невозможно: случайный живой endpoint не подменяет stale recovery.
   Ручной запуск показывает окно, а повторный
   `--autostart` не раскрывает скрытый экземпляр;
 - `linux-tray`: lifecycle watcher, явный Quit, безопасная работа без watcher и
