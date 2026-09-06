@@ -30,6 +30,7 @@ Build-Depends:
  qt6-declarative-dev,
  qt6-declarative-dev-tools,
  qt6-l10n-tools,
+ qt6-tools-dev-tools,
  systemd-dev
 Standards-Version: 4.6.2
 Rules-Requires-Root: no

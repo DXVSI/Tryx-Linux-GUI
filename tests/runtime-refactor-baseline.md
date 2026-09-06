@@ -263,6 +263,17 @@ Baseline выполняется после полных suites внутри `pac
 `DeviceManager` оформляются только как извлекаемые literal-вызовы, чтобы новые
 строки не обходили стандартный Qt catalog workflow.
 
+На Qt tools без обоих strict-флагов вход каждого compile stage проверяет
+`lconvert -no-finished`: допустим только пустой canonical QPH без diagnostics.
+Это fail-closed ограничение отвергает все non-Finished записи и duplicates,
+включая пустые obsolete plural forms, а не пропускает недоступные проверки.
+На новых tools сохраняются native strict-флаги. Отрицательные fixtures
+проверяют эту compatibility-ветку также на новых Qt; missing-current сценарий
+отдельно закрепляет повторное извлечение актуальных tuples после QM round-trip.
+Итоговый QM повторно читается и сверяется с текущими source tuples через
+`lupdate`; успешный parse пустого или усечённого QM недостаточен. Отрицательный
+fixture с одним 16-байтовым QM header закрепляет отказ при потере переводов.
+
 ## Только на реальном железе
 
 Эти проверки намеренно не входят в автоматический CI и выполняются отдельно

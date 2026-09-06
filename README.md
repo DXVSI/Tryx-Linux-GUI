@@ -548,7 +548,7 @@ sudo dnf install -y --allowerasing gcc-c++ git make dbus-daemon ffmpeg pkgconf-p
 Ubuntu 24.04 and Linux Mint 22 build dependencies:
 
 ```fish
-sudo apt install build-essential dbus-user-session ffmpeg git libprotobuf-dev libsystemd-dev libudev-dev libusb-1.0-0-dev pkg-config protobuf-compiler qmake6 qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-l10n-tools qml6-module-qt-labs-folderlistmodel qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-dialogs qml6-module-qtquick-layouts qml6-module-qtquick-shapes qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qttest systemd-dev
+sudo apt install build-essential dbus-user-session ffmpeg git libprotobuf-dev libsystemd-dev libudev-dev libusb-1.0-0-dev pkg-config protobuf-compiler qmake6 qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-l10n-tools qt6-tools-dev-tools qml6-module-qt-labs-folderlistmodel qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-dialogs qml6-module-qtquick-layouts qml6-module-qtquick-shapes qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qttest systemd-dev
 ```
 
 Arch Linux build dependencies:
