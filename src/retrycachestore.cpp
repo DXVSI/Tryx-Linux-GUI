@@ -1140,7 +1140,7 @@ ConditionalWriteStatus writePrivateFileIfAbsent(
     if (!file.open(QIODevice::WriteOnly) ||
         !file.setPermissions(
             QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-        file.write(payload) != payload.size()) {
+        file.write(payload) != payload.size() || !file.flush()) {
         if (detail) {
             *detail = file.errorString();
         }
@@ -1177,7 +1177,7 @@ ConditionalWriteStatus replacePrivateFileIfCurrent(
     if (!file.open(QIODevice::WriteOnly) ||
         !file.setPermissions(
             QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-        file.write(payload) != payload.size()) {
+        file.write(payload) != payload.size() || !file.flush()) {
         if (detail) {
             *detail = file.errorString();
         }
@@ -1221,7 +1221,7 @@ ConditionalWriteStatus replaceProtectedRootManifestIfCurrent(
     if (!file.open(QIODevice::WriteOnly) ||
         !file.setPermissions(
             QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-        file.write(payload) != payload.size()) {
+        file.write(payload) != payload.size() || !file.flush()) {
         if (detail) {
             *detail = file.errorString();
         }
@@ -1425,6 +1425,12 @@ bool copyPrivateArtifact(const QString &sourcePath,
             return false;
         }
         copied += chunk.size();
+    }
+    if (!destination.flush()) {
+        if (detail) {
+            *detail = destination.errorString();
+        }
+        return false;
     }
     struct stat after {};
     const bool unchanged = ::fstat(descriptor, &after) == 0 &&
@@ -10409,6 +10415,9 @@ RetryCacheStore::MutationResult RetryCacheStore::persistPrepared(
                            destination.errorString());
         }
         copiedBytes += chunk.size();
+    }
+    if (!destination.flush()) {
+        return failure(ErrorCode::IoError, destination.errorString());
     }
     struct stat after {};
     const QString actualHash =

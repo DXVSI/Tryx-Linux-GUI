@@ -291,7 +291,8 @@ MediaCatalogStore::MutationResult MediaCatalogStore::writeIndex() {
     if (!file.open(QIODevice::WriteOnly)) {
         return failureResult(ErrorCode::WriteFailed, file.errorString());
     }
-    if (file.write(payload) != payload.size() || !file.commit()) {
+    if (file.write(payload) != payload.size() ||
+        !file.flush() || !file.commit()) {
         return failureResult(ErrorCode::CommitFailed, file.errorString());
     }
     return successResult();
@@ -497,7 +498,7 @@ MediaCatalogStore::LoadResult MediaCatalogStore::load() {
             QSaveFile backup(backupPath);
             if (backup.open(QIODevice::WriteOnly) &&
                 backup.write(payload) == payload.size() &&
-                backup.commit()) {
+                backup.flush() && backup.commit()) {
                 backupReady = true;
             }
         }
@@ -728,7 +729,7 @@ MediaCatalogStore::ThumbnailResult MediaCatalogStore::commitThumbnail(
             return output;
         }
     }
-    if (!destination.commit()) {
+    if (!destination.flush() || !destination.commit()) {
         output.result = failureResult(ErrorCode::CommitFailed,
                                       destination.errorString());
         return output;
@@ -757,7 +758,7 @@ MediaCatalogStore::ThumbnailResult MediaCatalogStore::commitThumbnail(
             rollbackOk = rollback.open(QIODevice::WriteOnly) &&
                          rollback.write(previousBytes) ==
                              previousBytes.size() &&
-                         rollback.commit();
+                         rollback.flush() && rollback.commit();
             if (!rollbackOk) {
                 rollbackDetail = rollback.errorString();
                 rollback.cancelWriting();

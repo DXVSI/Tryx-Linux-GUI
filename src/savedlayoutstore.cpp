@@ -1131,7 +1131,7 @@ SavedLayoutStore::PersistResult SavedLayoutStore::persist(
     }
     if (!file.setPermissions(
             QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-        file.write(payload) != payload.size()) {
+        file.write(payload) != payload.size() || !file.flush()) {
         const QString error = file.errorString().isEmpty()
             ? QStringLiteral("Cannot write the saved layouts index")
             : file.errorString();

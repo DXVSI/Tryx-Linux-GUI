@@ -563,7 +563,7 @@ PaseMetricsConfigStore::persist(
         file.cancelWriting();
         return failureResult(ErrorCode::WriteFailed, QStringLiteral("Cannot protect the PASE configuration file."));
     }
-    if (file.write(payload) != payload.size()) {
+    if (file.write(payload) != payload.size() || !file.flush()) {
         const QString detail = file.errorString().isEmpty()
             ? tryx::DeviceManagerMessages::tr("Cannot write the PASE metrics configuration")
             : file.errorString();

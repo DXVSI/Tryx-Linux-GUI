@@ -319,7 +319,7 @@ WriteResult writeBlob(
         outputFile.cancelWriting();
         return result;
     }
-    if (!outputFile.commit()) {
+    if (!outputFile.flush() || !outputFile.commit()) {
         result.error = QObject::tr("Cannot commit Turris media blob: %1")
                            .arg(outputFile.errorString());
         return result;

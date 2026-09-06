@@ -624,7 +624,8 @@ RetryCacheTransitionStore::persistState() {
     if (!file.open(QIODevice::WriteOnly) ||
         !file.setPermissions(
             QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-        file.write(payload) != payload.size() || !file.commit()) {
+        file.write(payload) != payload.size() ||
+        !file.flush() || !file.commit()) {
         return {Code::IoError,
                 file.errorString().isEmpty()
                     ? QStringLiteral("cannot persist transition state")
@@ -1036,7 +1037,7 @@ RetryCacheTransitionStore::restoreRoot(
             !destination.setPermissions(
                 QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
             destination.write(payload) != payload.size() ||
-            !destination.commit()) {
+            !destination.flush() || !destination.commit()) {
             result = {Code::IoError, destination.errorString(),
                       state_, {}};
         }

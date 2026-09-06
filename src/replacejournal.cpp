@@ -816,7 +816,7 @@ bool TryxReplaceJournal::write(
     if (!file.setPermissions(
             QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
         file.write(payload) != payload.size() ||
-        !file.commit()) {
+        !file.flush() || !file.commit()) {
         file.cancelWriting();
         return setError(errorMessage, file.errorString());
     }

@@ -801,7 +801,7 @@ DeleteIntentStore::MutationResult DeleteIntentStore::write(
     }
     if (!file.setPermissions(
             QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-        file.write(payload) != payload.size()) {
+        file.write(payload) != payload.size() || !file.flush()) {
         const QString detail = file.errorString().isEmpty()
             ? tryx::DeviceManagerMessages::tr("Cannot write the delete intent")
             : file.errorString();

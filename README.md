@@ -331,7 +331,9 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
   release preparation did not physically flash a device and does not claim
   that hardware operation as verified.
 - The QML application and package checks remain compatible with Qt 6.4 for
-  Ubuntu 24.04 and Linux Mint 22.
+  Ubuntu 24.04 and Linux Mint 22. Atomic file writes explicitly check buffered
+  flush errors before commit to preserve the previous file on older Qt builds
+  affected by [QTBUG-132332](https://github.com/qt/qtbase/commit/92373d353cf090faa03cbc8aca505d1784b10b54).
 - The protocol implementation uses project-owned clean-room schemas. Release
   packages contain no extracted KANALI schemas, vendor firmware, or bundled
   media.

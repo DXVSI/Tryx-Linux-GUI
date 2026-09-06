@@ -440,7 +440,7 @@ int DeviceMediaWorkflowController::runExportHelper(
         destination.cancelWriting();
         return 3;
     }
-    if (!destination.commit()) {
+    if (!destination.flush() || !destination.commit()) {
         return 4;
     }
     if (!overwrite) {

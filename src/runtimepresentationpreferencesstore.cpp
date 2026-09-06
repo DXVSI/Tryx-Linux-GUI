@@ -412,7 +412,7 @@ RuntimePresentationPreferencesStore::persist(
     }
     if (!file.setPermissions(
             QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
-        file.write(payload) != payload.size()) {
+        file.write(payload) != payload.size() || !file.flush()) {
         file.cancelWriting();
         return failure(ErrorCode::WriteFailed, file.errorString());
     }
