@@ -14,20 +14,20 @@ Project home: [github.com/DXVSI/Tryx-Linux-GUI](https://github.com/DXVSI/Tryx-Li
 
 If TRYX Panorama Manager is useful to you, you can support continued development, protocol compatibility work, and testing on real hardware.
 
-### USDT on TON
+### Gram or USDT on TON
 
 | Detail | Value |
 |--------|-------|
 | TON DNS | `fedora.ton` |
 | Network | `TON Mainnet` |
-| Token | `USD₮ (USDT Jetton)` |
+| Accepted assets | Native Gram (`GRAM`, formerly Toncoin/TON) or `USD₮ (USDT Jetton)` |
 
 **Wallet address**
 
 `UQBO74LeYwNViA9MfdWPqfj4A5SkJ8vTcVG2uZzYzu9LFU-j`
 
 > [!IMPORTANT]
-> Send only USD₮ via TON Mainnet. Before confirming the transaction, verify that your wallet displays USD₮, not native TON. Do not use TRON, Ethereum, BNB Chain, or any other network.
+> Send only native Gram (GRAM) or USD₮ (USDT) via TON Mainnet. Before confirming the transaction, verify the selected asset, network, and destination address. Do not use TRON, Ethereum, BNB Chain, or any other network.
 
 ## Supported and Planned Models
 
