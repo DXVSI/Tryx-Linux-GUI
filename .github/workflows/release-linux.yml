@@ -83,10 +83,11 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.verify-release-source.outputs.version }}"
+          fedora_version="${{ needs.build-packages.outputs.fedora-version }}"
 
           mapfile -t rpm_files < <(
             find release-assets -maxdepth 1 -type f \
-              -name "tryx-panorama-manager-$version-1.fc*.x86_64.rpm" |
+              -name "tryx-panorama-manager-$version-1.fc$fedora_version.x86_64.rpm" |
               LC_ALL=C sort
           )
           mapfile -t deb_files < <(
@@ -105,11 +106,11 @@ jobs:
               LC_ALL=C sort
           )
 
-          test "${#rpm_files[@]}" -eq 2
+          test "${#rpm_files[@]}" -eq 1
           test "${#deb_files[@]}" -eq 1
           test "${#arch_files[@]}" -eq 1
           test "${#source_files[@]}" -eq 1
-          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 5
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 4
 
           checksum_file="$RUNNER_TEMP/SHA256SUMS"
           (
@@ -118,7 +119,7 @@ jobs:
               LC_ALL=C sort -z |
               xargs -0 sha256sum > "$checksum_file"
           )
-          test "$(wc -l < "$checksum_file")" -eq 5
+          test "$(wc -l < "$checksum_file")" -eq 4
           mv "$checksum_file" release-assets/SHA256SUMS
           (
             cd release-assets
@@ -161,6 +162,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_VERSION: ${{ needs.verify-release-source.outputs.version }}
+          FEDORA_VERSION: ${{ needs.build-packages.outputs.fedora-version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -172,7 +174,7 @@ jobs:
           notes_file="$RUNNER_TEMP/release-notes.md"
           {
             printf '# TRYX Panorama Manager %s\n\n' "$RELEASE_VERSION"
-            printf 'Native packages for Fedora 43/44, Ubuntu 24.04 and Linux Mint 22, and current Arch Linux.\n\n'
+            printf 'Native packages for Fedora %s, Ubuntu 24.04 and Linux Mint 22, and current Arch Linux.\n\n' "$FEDORA_VERSION"
             printf 'This release is intentionally a draft. Publish it only after the documented hardware smoke tests pass on a physical PASE device.\n'
           } > "$notes_file"
 

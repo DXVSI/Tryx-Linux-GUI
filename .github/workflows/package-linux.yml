@@ -11,6 +11,10 @@ on:
       - "maintenance/**"
   workflow_dispatch:
   workflow_call:
+    outputs:
+      fedora-version:
+        description: Stable Fedora release used for the RPM
+        value: ${{ jobs.fedora-release.outputs.version }}
 
 permissions:
   contents: read
@@ -23,20 +27,65 @@ env:
   LC_ALL: C.UTF-8
 
 jobs:
+  fedora-release:
+    name: Resolve current Fedora
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      image: ${{ steps.release.outputs.image }}
+    steps:
+      - name: Resolve latest stable Fedora
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_metadata=$(curl --fail --silent --show-error --location \
+            --retry 3 --connect-timeout 15 --max-time 60 \
+            https://fedoraproject.org/releases.json)
+          fedora_version=$(jq -er '
+            if type != "array" then error("Expected Fedora releases array") else . end
+            | [
+                .[]
+                | select(.version | type == "string")
+                | select(.version | test("^[1-9][0-9]*$"))
+                | .version as $version
+                | select(.link | type == "string")
+                | select(.link | startswith(
+                    "https://download.fedoraproject.org/pub/fedora/linux/releases/"
+                    + $version + "/"))
+                | $version | tonumber
+              ]
+            | if length == 0 then error("No stable Fedora release found")
+              else max | tostring end
+          ' <<< "$release_metadata")
+
+          # Resolve once so build and clean-runtime verification share one image.
+          image_tag="registry.fedoraproject.org/fedora:$fedora_version"
+          docker pull "$image_tag"
+          image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image_tag")
+          if [[ ! "$image" =~ ^registry\.fedoraproject\.org/fedora@sha256:[0-9a-f]{64}$ ]]; then
+            echo "Fedora image did not resolve to an immutable registry digest" >&2
+            exit 1
+          fi
+          actual_version=$(docker run --rm --read-only --network none \
+            --entrypoint /bin/sh "$image" -eu -c \
+            '. /etc/os-release; test "$ID" = fedora; printf "%s\n" "$VERSION_ID"')
+          if [[ "$actual_version" != "$fedora_version" ]]; then
+            echo "Fedora image version $actual_version does not match release $fedora_version" >&2
+            exit 1
+          fi
+          printf 'version=%s\nimage=%s\n' "$fedora_version" "$image" >> "$GITHUB_OUTPUT"
+
   rpm:
-    name: RPM / Fedora ${{ matrix.fedora }}
+    name: RPM / Fedora ${{ needs.fedora-release.outputs.version }}
+    needs: fedora-release
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - fedora: "43"
-            image: registry.fedoraproject.org/fedora@sha256:b1df059ba84f5ed169e245ee8dfd086925a8eba8e502994840cfe17ed75c6079
-          - fedora: "44"
-            image: registry.fedoraproject.org/fedora@sha256:a2383763c3f25bb4fd4f806d5d2d004ca02589c331e5e94235da1289eb7de633
+    env:
+      FEDORA_VERSION: ${{ needs.fedora-release.outputs.version }}
     container:
-      image: ${{ matrix.image }}
+      image: ${{ needs.fedora-release.outputs.image }}
     defaults:
       run:
         shell: bash
@@ -45,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           dnf install -y \
-            "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-${{ matrix.fedora }}.noarch.rpm"
+            "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$FEDORA_VERSION.noarch.rpm"
           dnf install -y --allowerasing \
             appstream \
             cpio \
@@ -117,10 +166,10 @@ jobs:
               packaging/rpm/tryx-panorama-manager.spec
 
           rpm_file=$(find "$rpm_topdir/RPMS/x86_64" -maxdepth 1 -type f \
-            -name "tryx-panorama-manager-$version-1.fc${{ matrix.fedora }}.x86_64.rpm" \
+            -name "tryx-panorama-manager-$version-1.fc$FEDORA_VERSION.x86_64.rpm" \
             -print -quit)
           srpm_file=$(find "$rpm_topdir/SRPMS" -maxdepth 1 -type f \
-            -name "tryx-panorama-manager-$version-1.fc${{ matrix.fedora }}.src.rpm" \
+            -name "tryx-panorama-manager-$version-1.fc$FEDORA_VERSION.src.rpm" \
             -print -quit)
           test -n "$rpm_file"
           test -n "$srpm_file"
@@ -144,18 +193,16 @@ jobs:
 
           mkdir -p dist
           install -m 0644 "$rpm_file" "dist/$(basename "$rpm_file")"
-          if [[ "${{ matrix.fedora }}" == "44" ]]; then
-            install -m 0644 \
-              "$rpm_topdir/SOURCES/tryx-panorama-manager-$version.tar.xz" \
-              "dist/tryx-panorama-manager-$version.tar.xz"
-          fi
+          install -m 0644 \
+            "$rpm_topdir/SOURCES/tryx-panorama-manager-$version.tar.xz" \
+            "dist/tryx-panorama-manager-$version.tar.xz"
           echo "file=dist/$(basename "$rpm_file")" >> "$GITHUB_OUTPUT"
 
       - name: Install and smoke-test RPM
         run: |
           set -euo pipefail
           dnf install -y \
-            "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-${{ matrix.fedora }}.noarch.rpm"
+            "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$FEDORA_VERSION.noarch.rpm"
           dnf install -y --allowerasing "${{ steps.package.outputs.file }}"
           rpm -V tryx-panorama-manager
           test "$(tryx-panorama-manager --version)" = \
@@ -190,7 +237,7 @@ jobs:
       - name: Upload Fedora package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tryx-rpm-f${{ matrix.fedora }}-${{ github.run_id }}
+          name: tryx-rpm-f${{ env.FEDORA_VERSION }}-${{ github.run_id }}
           path: |
             dist/*.rpm
             dist/*.tar.xz
@@ -496,20 +543,16 @@ jobs:
           retention-days: 7
 
   rpm-runtime-smoke:
-    name: Clean RPM runtime / Fedora ${{ matrix.fedora }}
-    needs: rpm
+    name: Clean RPM runtime / Fedora ${{ needs.fedora-release.outputs.version }}
+    needs:
+      - fedora-release
+      - rpm
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - fedora: "43"
-            image: registry.fedoraproject.org/fedora@sha256:b1df059ba84f5ed169e245ee8dfd086925a8eba8e502994840cfe17ed75c6079
-          - fedora: "44"
-            image: registry.fedoraproject.org/fedora@sha256:a2383763c3f25bb4fd4f806d5d2d004ca02589c331e5e94235da1289eb7de633
+    env:
+      FEDORA_VERSION: ${{ needs.fedora-release.outputs.version }}
     container:
-      image: ${{ matrix.image }}
+      image: ${{ needs.fedora-release.outputs.image }}
     defaults:
       run:
         shell: bash
@@ -517,7 +560,7 @@ jobs:
       - name: Download RPM built in this workflow
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: tryx-rpm-f${{ matrix.fedora }}-${{ github.run_id }}
+          name: tryx-rpm-f${{ env.FEDORA_VERSION }}-${{ github.run_id }}
           path: dist
 
       - name: Install only declared runtime dependencies and smoke-test
@@ -526,7 +569,7 @@ jobs:
           rpm_file=$(find dist -maxdepth 1 -type f -name '*.rpm' -print -quit)
           test -n "$rpm_file"
           dnf install -y \
-            "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-${{ matrix.fedora }}.noarch.rpm"
+            "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$FEDORA_VERSION.noarch.rpm"
           dnf install -y --allowerasing "$rpm_file"
           version=$(rpm -q --qf '%{VERSION}' tryx-panorama-manager)
           test "$(tryx-panorama-manager --version)" = \

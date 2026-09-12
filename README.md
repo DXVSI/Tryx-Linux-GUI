@@ -447,13 +447,18 @@ also proves that the exact verified replacement copy still exists.
 
 ## Native Linux packages
 
-TRYX Panorama Manager supports Linux only. Native packaging targets Fedora 43
-and 44, Ubuntu 24.04, Linux Mint 22, and current Arch Linux. A binary package
-built for one distribution is not reused on another distribution.
+TRYX Panorama Manager supports Linux only. Native packaging targets the latest
+stable Fedora release, Ubuntu 24.04, Linux Mint 22, and current Arch Linux. A
+binary package built for one distribution is not reused on another distribution.
+
+Each CI run selects the latest stable Fedora release from the
+[official release metadata](https://fedoraproject.org/releases.json) and pins one
+container image digest for both RPM builds and clean runtime checks. Older
+Fedora releases, Beta, and Rawhide are not build targets.
 
 Release assets use these formats:
 
-- RPM `x86_64` for Fedora 43 and Fedora 44
+- RPM `x86_64` for the latest stable Fedora release at build time
 - DEB `amd64` for Ubuntu 24.04 and Linux Mint 22
 - `.pkg.tar.zst` `x86_64` for current Arch Linux
 - `SHA256SUMS` for artifact verification
@@ -467,7 +472,8 @@ Install a downloaded package with the package manager for your distribution:
 ```fish
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.3.0-1.fc44.x86_64.rpm
+set tryx_fedora_release (rpm -E %fedora)
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.3.0-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
 sudo apt install ./tryx-panorama-manager_2.3.0-1_amd64.deb
