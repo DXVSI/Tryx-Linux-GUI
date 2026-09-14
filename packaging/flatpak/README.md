@@ -53,11 +53,15 @@ flatpak run --command=tryx io.github.dxvsi.tryx_panorama_manager//experimental s
 
 The manifest runs `check-in-sdk.sh` before export: portal lifecycle/FD and startup
 tests, a server-side firmware prohibition test, private FFmpeg artifact checks,
-native protocol and Qt Quick regressions, translation completeness, CLI checks,
+native protocol and Qt Quick regressions, strict translation compilation, CLI checks,
 and an offscreen GUI smoke test. Tests use private D-Bus sessions and require USB
 nodes to be absent. Root CI runs drop filesystem-permission bypass capabilities
 for the test process tree so write-denial fixtures remain meaningful. The
 test-only D-Bus tools are removed from the final package.
+
+Full C++/QML translation-source completeness and its negative tests run in the
+native RPM/DEB/Arch CI for the same commit. The KDE SDK's `lupdate` is built
+without QML parsing, so it cannot perform that source-extraction check.
 
 `tests/flatpak/documentportal_probe.cpp` additionally provides an explicit
 `--portal-fixture` integration probe. It grants only a newly-created synthetic

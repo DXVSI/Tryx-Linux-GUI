@@ -35,8 +35,11 @@ test_jobs=${FLATPAK_BUILDER_N_JOBS:-2}
 case "$test_jobs" in ''|*[!0-9]*|0) exit 2 ;; esac
 project_root=$(pwd)
 
-# Keep the same complete, finished translation requirement as native packages.
-sh tests/check_translation_catalog.sh
+# SDK lupdate lacks QML parsing. Native package CI checks source completeness;
+# here require the tracked catalogue to compile without unfinished/invalid text.
+lrelease -silent -fail-on-unfinished -fail-on-invalid \
+    translations/tryx-panorama_ru.ts -qm build/flatpak-test-ru.qm
+test -s build/flatpak-test-ru.qm
 
 # No test below can contact the host bus or a real USB endpoint.
 for suite in portalusb runtimeownership runtimebootstrap filechooser; do
