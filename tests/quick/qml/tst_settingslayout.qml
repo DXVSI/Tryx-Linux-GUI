@@ -423,12 +423,14 @@ TestCase {
         wait(0)
         verify(!autostart.checked)
         verify(autostart.enabled)
-        verify(waitForPolish(content))
+        tryVerify(() => !testCase.isPolishScheduled(content), 5000,
+                  "Settings layout did not settle")
         const autostartPosition = autostart.mapToItem(page, 0, 0)
         page.contentItem.contentY = Math.max(
             0,
             page.contentItem.contentY + autostartPosition.y - 200)
-        verify(waitForPolish(content))
+        tryVerify(() => !testCase.isPolishScheduled(content), 5000,
+                  "Settings layout did not settle after scrolling")
         const autostartBounds = autostart.mapToItem(content, 0, 0)
         verify(autostartBounds.x >= 0)
         verify(autostartBounds.x + autostart.width <= content.width + 1)

@@ -23,6 +23,12 @@ Popup {
         selectedName = ""
     }
 
+    function scheduleBegin(source) {
+        // Qt 6.4 exposes callLater as a callable QJSValue property.
+        const defer = Qt.callLater
+        defer(() => root.editor.begin(source))
+    }
+
     function openPicker() {
         if (portalChooser && portalChooser.busy)
             return
@@ -76,7 +82,7 @@ Popup {
         pendingSource = ""
         clearSelection()
         if (String(source).length > 0)
-            Qt.callLater(() => root.editor.begin(source))
+            root.scheduleBegin(source)
     }
 
     background: Rectangle {
@@ -108,7 +114,7 @@ Popup {
     Connections {
         target: root.portalChooser
         function onSelected(url) {
-            Qt.callLater(() => root.editor.begin(url))
+            root.scheduleBegin(url)
         }
     }
     PortalChooserError { chooser: root.portalChooser }

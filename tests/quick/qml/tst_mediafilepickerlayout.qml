@@ -81,6 +81,7 @@ TestCase {
         picker.portalChooser = chooser
         picker.openPicker()
         chooser.accept(Qt.resolvedUrl("portal.png"))
+        compare(controller.lastOpened, "")
         tryCompare(controller, "lastOpened", Qt.resolvedUrl("portal.png"))
         verify(!controller.pickerWasOpenWhenBegin)
     }

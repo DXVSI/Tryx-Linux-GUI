@@ -33,6 +33,16 @@ TestCase {
             }
         }
 
+        QtObject {
+            id: chooser
+            property bool busy: false
+            signal selected(url folder)
+            signal cancelled()
+            signal failed(string message)
+            function open(title, folder) { busy = true }
+            function cancel() { busy = false; cancelled() }
+        }
+
         Components.SupportBundleExportPicker {
             id: picker
             controller: controller
@@ -42,6 +52,8 @@ TestCase {
     }
 
     function init() {
+        chooser.cancel()
+        picker.portalChooser = null
         host.requestActivate()
         tryVerify(() => host.active)
         controller.busy = false
@@ -50,6 +62,19 @@ TestCase {
         picker.close()
         picker.currentFolder = picker.homeFolder
         wait(0)
+    }
+
+    function test_portalExportDefersAndPreservesSelectedFolder() {
+        picker.portalChooser = chooser
+        picker.openForExport()
+        verify(chooser.busy)
+        const selectedFolder = Qt.resolvedUrl(".")
+        chooser.busy = false
+        chooser.selected(selectedFolder)
+        compare(controller.exportCount, 0)
+        picker.currentFolder = picker.homeFolder
+        tryCompare(controller, "exportCount", 1)
+        compare(controller.exportedFolder, selectedFolder)
     }
 
     function test_folderOnlyExportAndAccessibility() {

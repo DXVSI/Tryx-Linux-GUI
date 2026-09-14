@@ -18,6 +18,12 @@ Popup {
     readonly property bool currentFolderReady:
         folderModel.status === FolderListModel.Ready
 
+    function scheduleExport(folder) {
+        // Qt 6.4 exposes callLater as a callable QJSValue property.
+        const defer = Qt.callLater
+        defer(() => root.controller.exportToFolder(folder))
+    }
+
     function openForExport() {
         if (controller.busy || (portalChooser && portalChooser.busy))
             return
@@ -38,7 +44,7 @@ Popup {
             return
         const folder = currentFolder
         close()
-        Qt.callLater(() => root.controller.exportToFolder(folder))
+        root.scheduleExport(folder)
     }
 
     parent: Overlay.overlay
@@ -86,7 +92,7 @@ Popup {
         target: root.portalChooser
         function onSelected(url) {
             root.currentFolder = url
-            Qt.callLater(() => root.controller.exportToFolder(url))
+            root.scheduleExport(url)
         }
         function onCancelled() {
             if (root.focusReturnItem)
