@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.3.0
+Version:        2.4.0
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -120,6 +120,13 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
+* Mon Sep 14 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.4.0-1
+- Add experimental Flatpak packaging with USB and file chooser portals
+- Load device media automatically after the display session becomes ready
+- Keep generated media private and revalidate retry artifact path identity
+- Preserve Qt 6.4 compatibility and complete Russian translations
+- Build the RPM only for the current stable Fedora release
+
 * Sun Sep 06 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.3.0-1
 - Add per-badge custom text, saved layouts, and split-area media preparation
 - Add presentation preferences, device details, and grouped metric selection

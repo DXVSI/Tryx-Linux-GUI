@@ -51,17 +51,25 @@ jobs:
           fi
 
   build-packages:
-    name: Rebuild release packages
+    name: Rebuild native release packages
     needs: verify-release-source
     permissions:
       contents: read
     uses: ./.github/workflows/package-linux.yml
+
+  build-flatpak:
+    name: Rebuild experimental Flatpak
+    needs: verify-release-source
+    permissions:
+      contents: read
+    uses: ./.github/workflows/flatpak.yml
 
   draft-release:
     name: Attest assets and create draft
     needs:
       - verify-release-source
       - build-packages
+      - build-flatpak
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -105,12 +113,18 @@ jobs:
               -name "tryx-panorama-manager-$version.tar.xz" |
               LC_ALL=C sort
           )
+          mapfile -t flatpak_files < <(
+            find release-assets -maxdepth 1 -type f \
+              -name "tryx-panorama-manager-$version-experimental-x86_64.flatpak" |
+              LC_ALL=C sort
+          )
 
           test "${#rpm_files[@]}" -eq 1
           test "${#deb_files[@]}" -eq 1
           test "${#arch_files[@]}" -eq 1
           test "${#source_files[@]}" -eq 1
-          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 4
+          test "${#flatpak_files[@]}" -eq 1
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 5
 
           checksum_file="$RUNNER_TEMP/SHA256SUMS"
           (
@@ -119,7 +133,7 @@ jobs:
               LC_ALL=C sort -z |
               xargs -0 sha256sum > "$checksum_file"
           )
-          test "$(wc -l < "$checksum_file")" -eq 4
+          test "$(wc -l < "$checksum_file")" -eq 5
           mv "$checksum_file" release-assets/SHA256SUMS
           (
             cd release-assets
@@ -146,6 +160,7 @@ jobs:
             release-assets/*.deb
             release-assets/*.pkg.tar.zst
             release-assets/*.tar.xz
+            release-assets/*.flatpak
             release-assets/SHA256SUMS
 
       - name: Preserve aggregated release assets
@@ -175,6 +190,7 @@ jobs:
           {
             printf '# TRYX Panorama Manager %s\n\n' "$RELEASE_VERSION"
             printf 'Native packages for Fedora %s, Ubuntu 24.04 and Linux Mint 22, and current Arch Linux.\n\n' "$FEDORA_VERSION"
+            printf 'An experimental x86_64 Flatpak is included for immutable-desktop testing. It requires a working USB portal and does not claim Bazzite, SteamOS or GNOME hardware qualification.\n\n'
             printf 'This release is intentionally a draft. Publish it only after the documented hardware smoke tests pass on a physical PASE device.\n'
           } > "$notes_file"
 
