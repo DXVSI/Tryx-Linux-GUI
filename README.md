@@ -240,6 +240,25 @@ XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
 
+## What's new in 2.4.0
+
+- Experimental x86_64 Flatpak with an isolated background runtime and CLI,
+  printer-class USB access, and file dialogs through desktop portals.
+- Automatic media-library loading after the device session becomes ready,
+  including permission grants and reconnects.
+- Private permissions for converted media and a final path-identity check for
+  retry artifacts, including replaced files and symbolic links.
+- Qt 6.4-compatible deferred file dialogs and completed Russian translations
+  for the Flatpak workflows.
+- Fedora RPM builds follow the current stable release only. Experimental
+  Flatpak bundles join the release assets and their checksum/provenance checks.
+
+The Flatpak remains experimental, is not a Flathub publication, and requires a
+working USB portal. Bazzite, SteamOS, and GNOME hardware qualification is not
+claimed. Model capabilities are unchanged; TURRIS playback looping is not
+implemented by this release. Native data is not automatically migrated into the
+Flatpak profile. See the [Flatpak limitations](packaging/flatpak/README.md).
+
 ## What's new in 2.3.0
 
 - Independent **Automatic / Custom text** choices for each CPU/GPU badge on
@@ -447,12 +466,23 @@ also proves that the exact verified replacement copy still exists.
 
 ## Experimental Flatpak for immutable desktops
 
-An experimental Flatpak build is available from source for Bazzite and SteamOS
-Desktop Mode. It includes the GUI, background runtime, and CLI, with file dialogs
+An experimental Flatpak bundle is provided alongside the native release assets
+for testing on immutable desktops such as Bazzite and SteamOS Desktop Mode.
+It includes the GUI, background runtime, and CLI, with file dialogs
 and printer-class USB access through desktop portals. Firmware flashing,
 autostart, and legacy serial/ADB devices are not supported by this package.
 Physical-device testing on Bazzite and SteamOS is still required; this is not a
 Flathub release. See the [Flatpak build instructions and limitations](packaging/flatpak/README.md).
+
+After downloading the bundle and verifying it against the release's
+`SHA256SUMS`, install it for your user. Flatpak 1.15.11 or newer, the Flathub
+runtime remote, and a working USB portal backend are required. Stop any other
+TRYX runtime before starting this build.
+
+```fish
+flatpak install --user ./tryx-panorama-manager-2.4.0-experimental-x86_64.flatpak
+flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
+```
 
 ## Native Linux packages
 
@@ -482,13 +512,13 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.3.0-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.4.0-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.3.0-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.4.0-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.4.0-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download

@@ -26,6 +26,18 @@
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.4.0" type="stable" date="2026-09-14">
+      <description>
+        <ul>
+          <li>Add an experimental Flatpak with isolated runtime state, USB access, and file dialogs through desktop portals.</li>
+          <li>Load device media automatically after the display session becomes ready.</li>
+          <li>Keep converted media private and reject retry artifacts whose paths change while hashing.</li>
+          <li>Preserve Qt 6.4 compatibility and complete Russian translations for Flatpak workflows.</li>
+          <li>Build Fedora packages only for the current stable Fedora release.</li>
+        </ul>
+        <p>The Flatpak supports printer-class devices only. Bazzite, SteamOS, and GNOME hardware qualification is not claimed, and TURRIS playback looping is not fixed by this release.</p>
+      </description>
+    </release>
     <release version="2.3.0" type="stable" date="2026-09-06">
       <description>
         <ul>

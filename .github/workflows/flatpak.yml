@@ -6,6 +6,7 @@ on:
   push:
     branches: [development, production]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -71,6 +72,8 @@ jobs:
           capsh --drop=all --user=flatbld --inh= --noamb -- -c '
             set -eu
             test "$(id -u)" -eq 1001
+            packaging/scripts/check-release-contract.sh
+            version=$(tr -d "\r\n" < VERSION)
             flatpak remote-add --user --if-not-exists flathub \
               https://dl.flathub.org/repo/flathub.flatpakrepo
             flatpak-builder --user --install-deps-from=flathub \
@@ -82,7 +85,7 @@ jobs:
             flatpak build-bundle \
               --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
               --arch=x86_64 build/flatpak-repo \
-              build/tryx-panorama-manager-x86_64.flatpak \
+              "build/tryx-panorama-manager-$version-experimental-x86_64.flatpak" \
               io.github.dxvsi.tryx_panorama_manager experimental
           '
 
@@ -90,7 +93,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: tryx-flatpak-x86_64-${{ github.run_id }}
-          path: build/tryx-panorama-manager-x86_64.flatpak
+          path: build/tryx-panorama-manager-*-experimental-x86_64.flatpak
           if-no-files-found: error
+          overwrite: true
           compression-level: 0
           retention-days: 7

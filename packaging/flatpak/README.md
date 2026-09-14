@@ -70,8 +70,11 @@ without QML parsing, so it cannot perform that source-extraction check.
 file and output folder, exercises the real file helpers, and revokes its own
 document IDs on exit. It must not be confused with physical-device qualification.
 
-CI produces a downloadable experimental artifact only; it does not publish to
-Flathub or modify the native release workflow.
+CI produces a downloadable experimental artifact. Tagged releases call the same
+workflow and include the versioned `.flatpak` alongside native packages in the
+draft GitHub Release, with checksums and build-provenance attestations. The
+Flatpak remains experimental; this does not publish it to Flathub or establish
+hardware acceptance on additional systems.
 
 The Flatpak CI container uses an Ubuntu 22.04 runner host because Ubuntu 24.04's
 default AppArmor user-namespace restrictions prevent its non-root bubblewrap
