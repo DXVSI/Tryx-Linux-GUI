@@ -5515,6 +5515,10 @@
 <context>
     <name>MediaExportPicker</name>
     <message>
+        <source>Choose export folder</source>
+        <translation>Выберите папку для экспорта</translation>
+    </message>
+    <message>
         <location filename="../qml/components/MediaExportPicker.qml" line="100"/>
         <source>Export device media copy</source>
         <translation>Экспорт копии медиафайла с устройства</translation>
@@ -6825,6 +6829,50 @@
 </context>
 <context>
     <name>QObject</name>
+    <message>
+        <source>The USB portal has not granted access to this device epoch.</source>
+        <translation>USB-портал не предоставил доступ для текущего подключения устройства.</translation>
+    </message>
+    <message>
+        <source>Cannot use the USB portal descriptor: %1</source>
+        <translation>Не удалось использовать дескриптор USB-портала: %1</translation>
+    </message>
+    <message>
+        <source>The USB portal descriptor does not match the expected TRYX printer interface.</source>
+        <translation>Дескриптор USB-портала не соответствует ожидаемому интерфейсу TRYX класса принтера.</translation>
+    </message>
+    <message>
+        <source>USB portal access was revoked or the device epoch changed.</source>
+        <translation>Доступ через USB-портал отозван или контекст подключения устройства изменился.</translation>
+    </message>
+    <message>
+        <source>Another TRYX runtime is running. Finish or cancel its operations and stop it before opening the Flatpak. It was not stopped automatically.</source>
+        <translation>Уже запущена другая фоновая служба TRYX. Завершите или отмените её операции и остановите её перед запуском Flatpak. Автоматическая остановка не выполнялась.</translation>
+    </message>
+    <message>
+        <source>The Flatpak background runtime exited during startup</source>
+        <translation>Фоновая служба Flatpak завершилась при запуске</translation>
+    </message>
+    <message>
+        <source>No supported TRYX printer-class device is visible through the USB portal. Legacy serial/ADB devices are not supported by this Flatpak.</source>
+        <translation>USB-портал не обнаружил поддерживаемое устройство TRYX класса принтера. Устаревшие устройства с последовательным интерфейсом или ADB не поддерживаются этой сборкой Flatpak.</translation>
+    </message>
+    <message>
+        <source>Waiting for read/write access through the USB portal. The host must also allow access to the device.</source>
+        <translation>Ожидание доступа для чтения и записи через USB-портал. Основная система также должна разрешать доступ к устройству.</translation>
+    </message>
+    <message>
+        <source>TRYX USB portal access is ready</source>
+        <translation>Доступ к TRYX через USB-портал готов</translation>
+    </message>
+    <message>
+        <source>Firmware flashing is disabled in the experimental Flatpak. Use the native application for firmware updates.</source>
+        <translation>Прошивка отключена в экспериментальной сборке Flatpak. Для обновления прошивки используйте нативное приложение.</translation>
+    </message>
+    <message>
+        <source>Desktop autostart is not supported in this experimental Flatpak.</source>
+        <translation>Автозапуск при входе в систему не поддерживается в этой экспериментальной сборке Flatpak.</translation>
+    </message>
     <message>
         <location filename="../src/printermediavalidator.cpp" line="386"/>
         <source>Recovered device media is not H264 at %1x%2</source>
@@ -10073,6 +10121,174 @@
         <location filename="../src/runtimebridge.cpp" line="695"/>
         <source>The recovered media artifact is unavailable for replacement</source>
         <translation>Артефакт восстановленного медиафайла недоступен для замены</translation>
+    </message>
+</context>
+<context>
+    <name>FlatpakRuntimeOwnership</name>
+    <message>
+        <source>Another TRYX runtime is running or the global D-Bus exclusion is unavailable. Finish its work and stop it before starting the Flatpak.</source>
+        <translation>Уже запущена другая фоновая служба TRYX или недоступна общая блокировка D-Bus. Дождитесь завершения её операций и остановите её перед запуском Flatpak.</translation>
+    </message>
+    <message>
+        <source>Another Flatpak runtime already owns the application D-Bus name.</source>
+        <translation>Другая фоновая служба Flatpak уже заняла имя приложения в D-Bus.</translation>
+    </message>
+</context>
+<context>
+    <name>PortalChooserError</name>
+    <message>
+        <source>System file chooser</source>
+        <translation>Системный диалог выбора файлов</translation>
+    </message>
+    <message>
+        <source>Complete the selection in the system file chooser, or cancel here.</source>
+        <translation>Завершите выбор в системном диалоге или отмените его здесь.</translation>
+    </message>
+</context>
+<context>
+    <name>PortalFileChooser</name>
+    <message>
+        <source>The desktop file chooser timed out. Please try again.</source>
+        <translation>Истекло время ожидания системного диалога выбора файлов. Повторите попытку.</translation>
+    </message>
+    <message>
+        <source>The desktop file portal is unavailable: no session bus.</source>
+        <translation>Файловый портал рабочего стола недоступен: отсутствует шина сеанса D-Bus.</translation>
+    </message>
+    <message>
+        <source>A compatible desktop FileChooser portal is unavailable: %1</source>
+        <translation>Совместимый портал FileChooser рабочего стола недоступен: %1</translation>
+    </message>
+    <message>
+        <source>unsupported portal version</source>
+        <translation>неподдерживаемая версия портала</translation>
+    </message>
+    <message>
+        <source>The desktop file portal exited during startup.</source>
+        <translation>Файловый портал рабочего стола завершился при запуске.</translation>
+    </message>
+    <message>
+        <source>The desktop file portal restarted. Please select the file again.</source>
+        <translation>Файловый портал рабочего стола перезапустился. Выберите файл ещё раз.</translation>
+    </message>
+    <message>
+        <source>A compatible desktop FileChooser portal is unavailable.</source>
+        <translation>Совместимый портал FileChooser рабочего стола недоступен.</translation>
+    </message>
+    <message>
+        <source>Could not subscribe to the desktop file chooser response.</source>
+        <translation>Не удалось подписаться на ответ системного диалога выбора файлов.</translation>
+    </message>
+    <message>
+        <source>The desktop file chooser could not be opened: %1</source>
+        <translation>Не удалось открыть системный диалог выбора файлов: %1</translation>
+    </message>
+    <message>
+        <source>unexpected request identity</source>
+        <translation>неожиданный идентификатор запроса</translation>
+    </message>
+    <message>
+        <source>The desktop file chooser could not complete the request.</source>
+        <translation>Системный диалог выбора файлов не смог завершить запрос.</translation>
+    </message>
+    <message>
+        <source>The desktop file chooser did not return exactly one local file or folder.</source>
+        <translation>Системный диалог выбора файлов должен вернуть ровно один локальный файл или папку.</translation>
+    </message>
+    <message>
+        <source>The desktop file portal changed before the selection was accepted.</source>
+        <translation>Файловый портал рабочего стола изменился до подтверждения выбора.</translation>
+    </message>
+</context>
+<context>
+    <name>tryx::portal_usb::Access</name>
+    <message>
+        <source>The USB permission request timed out. Restart the Flatpak background runtime to try again.</source>
+        <translation>Истекло время ожидания разрешения на доступ к USB. Перезапустите фоновую службу Flatpak, чтобы повторить попытку.</translation>
+    </message>
+    <message>
+        <source>The USB portal connection was lost; device access has stopped.</source>
+        <translation>Соединение с USB-порталом потеряно; доступ к устройству прекращён.</translation>
+    </message>
+    <message>
+        <source>The USB portal requires a local D-Bus connection with file descriptor passing.</source>
+        <translation>USB-порталу требуется локальное соединение D-Bus с передачей файловых дескрипторов.</translation>
+    </message>
+    <message>
+        <source>The USB portal owner changed; device access has stopped.</source>
+        <translation>Владелец USB-портала в D-Bus изменился; доступ к устройству прекращён.</translation>
+    </message>
+    <message>
+        <source>USB portal is unavailable: %1</source>
+        <translation>USB-портал недоступен: %1</translation>
+    </message>
+    <message>
+        <source>The USB portal returned an invalid D-Bus owner.</source>
+        <translation>USB-портал вернул недопустимое имя владельца D-Bus.</translation>
+    </message>
+    <message>
+        <source>Cannot subscribe to USB portal device events.</source>
+        <translation>Не удалось подписаться на события устройств USB-портала.</translation>
+    </message>
+    <message>
+        <source>USB portal monitoring is unavailable: %1</source>
+        <translation>Отслеживание устройств через USB-портал недоступно: %1</translation>
+    </message>
+    <message>
+        <source>The USB portal returned an unexpected session.</source>
+        <translation>USB-портал вернул неожиданный сеанс.</translation>
+    </message>
+    <message>
+        <source>The USB portal returned too many device events.</source>
+        <translation>USB-портал вернул слишком много событий устройств.</translation>
+    </message>
+    <message>
+        <source>The USB portal returned too many devices.</source>
+        <translation>USB-портал вернул слишком много устройств.</translation>
+    </message>
+    <message>
+        <source>Cannot subscribe to the USB permission response.</source>
+        <translation>Не удалось подписаться на ответ с разрешением доступа к USB.</translation>
+    </message>
+    <message>
+        <source>Cannot request USB access: %1</source>
+        <translation>Не удалось запросить доступ к USB: %1</translation>
+    </message>
+    <message>
+        <source>The USB portal returned an unexpected permission request.</source>
+        <translation>USB-портал вернул неожиданный запрос разрешения.</translation>
+    </message>
+    <message>
+        <source>USB access was not granted. Allow access and restart the Flatpak background runtime to try again.</source>
+        <translation>Доступ к USB не предоставлен. Разрешите доступ и перезапустите фоновую службу Flatpak, чтобы повторить попытку.</translation>
+    </message>
+    <message>
+        <source>The USB portal did not finish returning device descriptors.</source>
+        <translation>USB-портал не завершил передачу дескрипторов устройств.</translation>
+    </message>
+    <message>
+        <source>Cannot acquire the USB device: %1</source>
+        <translation>Не удалось получить доступ к USB-устройству: %1</translation>
+    </message>
+    <message>
+        <source>The USB portal returned an unexpected device descriptor.</source>
+        <translation>USB-портал вернул неожиданный дескриптор устройства.</translation>
+    </message>
+    <message>
+        <source>The USB portal did not return a writable device descriptor: %1</source>
+        <translation>USB-портал не вернул дескриптор устройства с правом записи: %1</translation>
+    </message>
+    <message>
+        <source>The USB portal omitted the requested device descriptor.</source>
+        <translation>USB-портал не вернул запрошенный дескриптор устройства.</translation>
+    </message>
+    <message>
+        <source>The USB portal could not release an obsolete device grant.</source>
+        <translation>USB-портал не смог завершить устаревший сеанс доступа к устройству.</translation>
+    </message>
+    <message>
+        <source>The USB portal session closed; device access has stopped.</source>
+        <translation>Сеанс USB-портала закрыт; доступ к устройству прекращён.</translation>
     </message>
 </context>
 </TS>
