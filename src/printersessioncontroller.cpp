@@ -1,4 +1,5 @@
 #include "printersessioncontroller.h"
+#include "packagingcontext.h"
 #include "configurationformatbackup.h"
 #include "devicemanagermessages.h"
 #include "paseoverlayconfig.h"
@@ -912,6 +913,11 @@ bool PrinterSessionController::currentPrinterSupportsOverlayMetrics() const {
 
 bool PrinterSessionController::firmwareFlashAllowedForCurrentDevice(
     QString *errorMessage) const {
+    if (tryx::packaging::isFlatpak()) {
+        if (errorMessage)
+            *errorMessage = tryx::packaging::flatpakFirmwareUnavailableReason();
+        return false;
+    }
     const auto profile = currentPrinterProductProfile();
     if (profile && profile->firmwareFlashSupported) {
         return true;
@@ -1298,7 +1304,7 @@ TryxRuntimeDeviceCapabilitiesV1 PrinterSessionController::deviceCapabilitiesV1(
     }
     if (profile->productId == 0x1021 && profile->overlayMetricsSupported && profile->displayConfigurationSupported)
         snapshot.capabilities.append(tryxDeviceOverlayBadgeTextV1Token());
-    if (profile->firmwareFlashSupported) {
+    if (profile->firmwareFlashSupported && !tryx::packaging::isFlatpak()) {
         snapshot.capabilities.append(tryxDeviceFirmwareFlashV1Token());
     }
     return snapshot;

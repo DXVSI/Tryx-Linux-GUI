@@ -11,6 +11,7 @@ Popup {
     objectName: "mediaFilePicker"
 
     required property var editor
+    property var portalChooser: null
 
     property url currentFolder: editor.homeFolder
     property url selectedFile: ""
@@ -22,12 +23,23 @@ Popup {
         selectedName = ""
     }
 
+    function scheduleBegin(source) {
+        // Qt 6.4 exposes callLater as a callable QJSValue property.
+        const defer = Qt.callLater
+        defer(() => root.editor.begin(source))
+    }
+
     function openPicker() {
+        if (portalChooser && portalChooser.busy)
+            return
         clearSelection()
         pendingSource = ""
         if (String(currentFolder).length === 0)
             currentFolder = editor.homeFolder
-        open()
+        if (portalChooser)
+            portalChooser.open(qsTr("Select media file"), currentFolder)
+        else
+            open()
     }
 
     function navigate(folderUrl) {
@@ -70,7 +82,7 @@ Popup {
         pendingSource = ""
         clearSelection()
         if (String(source).length > 0)
-            Qt.callLater(() => root.editor.begin(source))
+            root.scheduleBegin(source)
     }
 
     background: Rectangle {
@@ -98,6 +110,14 @@ Popup {
         sortField: FolderListModel.Name
         sortCaseSensitive: false
     }
+
+    Connections {
+        target: root.portalChooser
+        function onSelected(url) {
+            root.scheduleBegin(url)
+        }
+    }
+    PortalChooserError { chooser: root.portalChooser }
 
     contentItem: ColumnLayout {
         spacing: 14

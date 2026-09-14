@@ -4,6 +4,7 @@
 #include "supportbundlecontroller.h"
 #include "supportsnapshot.h"
 
+#include <QDBusAbstractAdaptor>
 #include <QDBusConnectionInterface>
 #include <QDBusContext>
 #include <QDBusError>
@@ -20,6 +21,7 @@
 #include <QUuid>
 
 #include <atomic>
+#include <functional>
 #include <utility>
 
 namespace {
@@ -235,6 +237,21 @@ public slots:
     }
 };
 
+class MediaRefreshAdaptor final : public QDBusAbstractAdaptor {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.tryx.Panorama.Manager1")
+
+public:
+    MediaRefreshAdaptor(QObject *parent, std::function<void()> refresh)
+        : QDBusAbstractAdaptor(parent), refresh_(std::move(refresh)) {}
+
+public slots:
+    void RefreshMediaList() { refresh_(); }
+
+private:
+    std::function<void()> refresh_;
+};
+
 class CapabilityRuntimeObject final
     : public QObject,
       protected QDBusContext {
@@ -242,6 +259,16 @@ class CapabilityRuntimeObject final
     Q_CLASSINFO("D-Bus Interface", "org.tryx.Panorama.Manager2")
 
 public:
+    CapabilityRuntimeObject() {
+        new MediaRefreshAdaptor(this, [this]() {
+            mediaRefreshCalls.fetch_add(1, std::memory_order_release);
+            if (connection.connected && connection.displaySessionActive &&
+                operations.activeOperationId.isEmpty()) {
+                mediaCatalogLoaded = true;
+            }
+        });
+    }
+
     enum class ApiReplyMode {
         Normal,
         Delayed,
@@ -306,6 +333,11 @@ public:
 
     TryxRuntimeSnapshot connection = connectedSnapshot();
     TryxRuntimeMediaCatalogSnapshot mediaCatalog;
+    bool mediaCatalogRequiresRefresh = false;
+    bool mediaCatalogLoaded = false;
+    TryxRuntimeOperationsSnapshot operations;
+    bool delayOperationsSnapshot = false;
+    QDBusMessage delayedOperationsSnapshotMessage;
     TryxRuntimeMetricsState metrics;
     TryxRuntimeDisplayState display;
     QStringList metricsCatalog = {
@@ -395,6 +427,9 @@ public:
     QString supportSnapshot = validSupportSnapshot();
     std::atomic_int apiCalls{0};
     std::atomic_int connectionSnapshotCalls{0};
+    std::atomic_int mediaRefreshCalls{0};
+    std::atomic_int mediaCatalogCalls{0};
+    std::atomic_int operationsSnapshotCalls{0};
     std::atomic_int runtimeCapabilityCalls{0};
     std::atomic_int metricsCatalogCalls{0};
     std::atomic_int deviceCapabilityCalls{0};
@@ -634,7 +669,12 @@ public slots:
     }
 
     TryxRuntimeOperationsSnapshot GetOperations() {
-        return {};
+        if (delayOperationsSnapshot) {
+            setDelayedReply(true);
+            delayedOperationsSnapshotMessage = message();
+        }
+        operationsSnapshotCalls.fetch_add(1, std::memory_order_release);
+        return operations;
     }
 
     TryxRuntimeOperationInfo GetOperation(
@@ -647,7 +687,9 @@ public slots:
     }
 
     TryxRuntimeMediaCatalogSnapshot GetMediaCatalog() {
-        return mediaCatalog;
+        mediaCatalogCalls.fetch_add(1, std::memory_order_release);
+        return !mediaCatalogRequiresRefresh || mediaCatalogLoaded
+            ? mediaCatalog : TryxRuntimeMediaCatalogSnapshot{};
     }
 
     TryxRuntimeMetricsState GetMetricsState() {
@@ -1130,7 +1172,7 @@ public:
         }
         objectRegistered_ = connection_.registerObject(
             tryxRuntimeObjectPath(), object_,
-            QDBusConnection::ExportAllSlots);
+            QDBusConnection::ExportAllSlots | QDBusConnection::ExportAdaptors);
         if (!objectRegistered_) {
             return false;
         }
@@ -1179,6 +1221,16 @@ public:
         signal.setArguments(
             QVariantList{QVariant::fromValue(active),
                          QVariant::fromValue(revision)});
+        return connection_.send(signal);
+    }
+
+    bool sendOperationChanged(const TryxRuntimeOperationInfo &operation,
+                              quint64 revision) {
+        QDBusMessage signal = QDBusMessage::createSignal(
+            tryxRuntimeObjectPath(), tryxRuntimeOperationsInterfaceName(),
+            QStringLiteral("OperationChanged"));
+        signal.setArguments(QVariantList{
+            QVariant::fromValue(operation), QVariant::fromValue(revision)});
         return connection_.send(signal);
     }
 
@@ -1258,6 +1310,15 @@ private slots:
     void recoveredConnectionClearsOnlyItsOwnDiagnostic();
     void exhaustedReconciliationClearsLastDiagnosticAfterRefresh();
     void printerInactiveLifecycleEventsRequestSnapshotRefresh();
+    void mediaCatalogLoadsAfterPermissionGrantAndReconnect();
+    void mediaCatalogStartupRespectsDeviceCapabilities_data();
+    void mediaCatalogStartupRespectsDeviceCapabilities();
+    void mediaCatalogWaitsForOperationsSnapshotAndIdle();
+    void mediaCatalogReconcilesStaleOperationsSnapshot();
+    void mediaCatalogOperationsReconciliationIsBounded();
+    void mediaCatalogIgnoresPreviousOwnerOperationsReply();
+    void mediaCatalogDetectsMissedReconnectAndDeviceChange();
+    void mediaCatalogPendingRefreshDoesNotSurviveDisconnect();
     void fullMetricsCatalogUsesExactUniqueOwner();
     void metricsCatalogIsSeparateFromLiveAvailability();
     void missingMetricsCatalogMethodUsesBoundedFallback();
@@ -1540,6 +1601,341 @@ void RuntimeClientHandshakeTests::exhaustedReconciliationClearsLastDiagnosticAft
     client.refreshConnection();
     QTRY_VERIFY_WITH_TIMEOUT(client.displayStateValid(), 3000);
     QCOMPARE(client.diagnostic(), QString());
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogLoadsAfterPermissionGrantAndReconnect() {
+    CapabilityRuntimeObject runtime;
+    runtime.connection = {};
+    runtime.connection.revision = 1;
+    runtime.connection.productId = QStringLiteral("0000");
+    runtime.mediaCatalogRequiresRefresh = true;
+    runtime.mediaCatalog = savedLayoutMediaCatalog();
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.capabilitiesReady(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(runtime.mediaCatalogCalls.load() > 0, 3000);
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 0);
+    QCOMPARE(client.mediaModel_.rowCount(), 0);
+
+    QVERIFY(service.invoke([&]() {
+        runtime.connection = connectedSnapshot(2);
+        runtime.deviceCapabilities.connectionRevision = 2;
+    }));
+    QVERIFY(service.sendDisplaySessionChanged(true, 2));
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.rowCount(), 1, 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 1);
+
+    // A newer status revision is not a new physical session.
+    QVERIFY(service.invoke([&]() {
+        runtime.connection.revision = 3;
+        runtime.deviceCapabilities.connectionRevision = 3;
+    }));
+    QVERIFY(service.sendDisplaySessionChanged(true, 3));
+    QTRY_COMPARE_WITH_TIMEOUT(client.deviceCapabilitiesSnapshot_.connectionRevision, 3u, 3000);
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 1);
+    client.refreshMedia();
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.mediaRefreshCalls.load(), 2, 3000);
+
+    QVERIFY(service.invoke([&]() {
+        runtime.connection = {};
+        runtime.connection.revision = 4;
+        runtime.mediaCatalogLoaded = false;
+    }));
+    QVERIFY(service.sendDisplaySessionChanged(false, 4));
+    QTRY_COMPARE_WITH_TIMEOUT(client.connection_.revision, 4u, 3000);
+    QCOMPARE(client.mediaModel_.rowCount(), 0);
+    QVERIFY(service.invoke([&]() {
+        runtime.connection = connectedSnapshot(5);
+        runtime.deviceCapabilities.connectionRevision = 5;
+        ++runtime.deviceCapabilities.physicalGeneration;
+    }));
+    QVERIFY(service.sendDisplaySessionChanged(true, 5));
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.rowCount(), 1, 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 3);
+    client.applyConnectionSnapshot(connectedSnapshot(4));
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 3);
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogStartupRespectsDeviceCapabilities_data() {
+    QTest::addColumn<QString>("productId");
+    QTest::addColumn<bool>("deviceCapabilityContract");
+    QTest::addColumn<bool>("catalogSupported");
+    QTest::addColumn<int>("expectedRefreshes");
+    QTest::newRow("ready-catalog") << QStringLiteral("1021") << true << true << 1;
+    QTest::newRow("no-catalog") << QStringLiteral("1021") << true << false << 0;
+    QTest::newRow("turris") << QStringLiteral("2011") << true << false << 0;
+    QTest::newRow("api8-baseline") << QStringLiteral("1021") << false << false << 1;
+    QTest::newRow("api8-turris") << QStringLiteral("2011") << false << false << 0;
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogStartupRespectsDeviceCapabilities() {
+    QFETCH(QString, productId);
+    QFETCH(bool, deviceCapabilityContract);
+    QFETCH(bool, catalogSupported);
+    QFETCH(int, expectedRefreshes);
+    CapabilityRuntimeObject runtime;
+    runtime.connection.productId = productId;
+    runtime.mediaCatalogRequiresRefresh = true;
+    runtime.mediaCatalog = savedLayoutMediaCatalog();
+    if (!deviceCapabilityContract) runtime.runtimeCapabilities.clear();
+    if (!catalogSupported) runtime.deviceCapabilities.capabilities.clear();
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.capabilitiesReady(), 3000);
+    if (deviceCapabilityContract) {
+        QTRY_VERIFY_WITH_TIMEOUT(client.deviceCapabilitiesReady(), 3000);
+    }
+    QTRY_VERIFY_WITH_TIMEOUT(runtime.operationsSnapshotCalls.load() > 0, 3000);
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), expectedRefreshes);
+    QCOMPARE(client.mediaModel_.rowCount(), expectedRefreshes);
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogWaitsForOperationsSnapshotAndIdle() {
+    CapabilityRuntimeObject runtime;
+    runtime.mediaCatalogRequiresRefresh = true;
+    runtime.mediaCatalog = savedLayoutMediaCatalog();
+    runtime.delayOperationsSnapshot = true;
+    TryxRuntimeOperationInfo upload;
+    upload.id = QStringLiteral("restored-upload");
+    upload.kind = QStringLiteral("Upload");
+    upload.state = QStringLiteral("Running");
+    runtime.operations.revision = 1;
+    runtime.operations.activeOperationId = upload.id;
+    runtime.operations.operations = {upload};
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.deviceCapabilitiesReady(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.operationsSnapshotCalls.load(), 1, 3000);
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 0);
+
+    bool replied = false;
+    QVERIFY(service.invoke([&]() {
+        replied = service.connection().send(
+            runtime.delayedOperationsSnapshotMessage.createReply(
+                QVariantList{QVariant::fromValue(runtime.operations)}));
+        runtime.delayedOperationsSnapshotMessage = {};
+        runtime.delayOperationsSnapshot = false;
+    }));
+    QVERIFY(replied);
+    QTRY_VERIFY_WITH_TIMEOUT(client.operationBusy(), 3000);
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 0);
+
+    upload.state = QStringLiteral("Succeeded");
+    QVERIFY(service.invoke([&]() {
+        runtime.operations.activeOperationId.clear();
+        runtime.operations.operations = {upload};
+        runtime.operations.revision = 2;
+    }));
+    QVERIFY(service.sendOperationChanged(upload, 2));
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.rowCount(), 1, 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 1);
+    QVERIFY(service.sendOperationChanged(upload, 3));
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 1);
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogReconcilesStaleOperationsSnapshot() {
+    CapabilityRuntimeObject runtime;
+    runtime.mediaCatalogRequiresRefresh = true;
+    runtime.mediaCatalog = savedLayoutMediaCatalog();
+    runtime.delayOperationsSnapshot = true;
+    runtime.operations.revision = 1;
+    runtime.operations.activeOperationId = QStringLiteral("upload-b");
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.deviceCapabilitiesReady(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.operationsSnapshotCalls.load(), 1, 3000);
+    TryxRuntimeOperationInfo completed;
+    completed.id = QStringLiteral("upload-a");
+    completed.state = QStringLiteral("Succeeded");
+    QVERIFY(service.sendOperationChanged(completed, 2));
+    QTRY_COMPARE_WITH_TIMEOUT(client.operationModel_.revision(), 2u, 3000);
+    bool replied = false;
+    QVERIFY(service.invoke([&]() {
+        replied = service.connection().send(
+            runtime.delayedOperationsSnapshotMessage.createReply(
+                QVariantList{QVariant::fromValue(runtime.operations)}));
+        runtime.delayedOperationsSnapshotMessage = {};
+        runtime.delayOperationsSnapshot = false;
+        runtime.operations.revision = 2;
+    }));
+    QVERIFY(replied);
+    // A terminal signal for A cannot establish that the still-active B is idle.
+    // The full snapshot at the same revision as that signal establishes B.
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.operationsSnapshotCalls.load(), 2, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(client.activeOperationId_, QStringLiteral("upload-b"), 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 0);
+    QVERIFY(service.invoke([&]() {
+        runtime.operations.activeOperationId.clear();
+        runtime.operations.revision = 3;
+    }));
+    completed.id = QStringLiteral("upload-b");
+    QVERIFY(service.sendOperationChanged(completed, 3));
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.rowCount(), 1, 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 1);
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogOperationsReconciliationIsBounded() {
+    CapabilityRuntimeObject runtime;
+    runtime.mediaCatalogRequiresRefresh = true;
+    runtime.mediaCatalog = savedLayoutMediaCatalog();
+    runtime.delayOperationsSnapshot = true;
+    runtime.operations.revision = 1;
+    runtime.operations.activeOperationId = QStringLiteral("busy-upload");
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.deviceCapabilitiesReady(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.operationsSnapshotCalls.load(), 1, 3000);
+    TryxRuntimeOperationInfo completed;
+    completed.id = QStringLiteral("previous-upload");
+    completed.state = QStringLiteral("Succeeded");
+    QVERIFY(service.sendOperationChanged(completed, 3));
+    QTRY_COMPARE_WITH_TIMEOUT(client.operationModel_.revision(), 3u, 3000);
+    auto replyToOperations = [&]() {
+        bool replied = false;
+        const bool invoked = service.invoke([&]() {
+            replied = service.connection().send(
+                runtime.delayedOperationsSnapshotMessage.createReply(
+                    QVariantList{QVariant::fromValue(runtime.operations)}));
+            runtime.delayedOperationsSnapshotMessage = {};
+        });
+        return invoked && replied;
+    };
+    QVERIFY(replyToOperations());
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.operationsSnapshotCalls.load(), 2, 3000);
+    QVERIFY(replyToOperations());
+    processEventsFor(150);
+    QCOMPARE(runtime.operationsSnapshotCalls.load(), 2);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 0);
+    QVERIFY(!client.operationsSnapshotReady_);
+    QVERIFY(client.mediaRefreshPending_);
+
+    QVERIFY(service.invoke([&]() {
+        runtime.delayOperationsSnapshot = false;
+        runtime.operations.activeOperationId.clear();
+        runtime.operations.revision = 4;
+    }));
+    completed.id = QStringLiteral("busy-upload");
+    QVERIFY(service.sendOperationChanged(completed, 4));
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.rowCount(), 1, 3000);
+    QCOMPARE(runtime.operationsSnapshotCalls.load(), 3);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 1);
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogIgnoresPreviousOwnerOperationsReply() {
+    CapabilityRuntimeObject oldRuntime;
+    oldRuntime.delayOperationsSnapshot = true;
+    ScopedRuntimeService oldService(&oldRuntime);
+    QVERIFY(oldService.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.deviceCapabilitiesReady(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(oldRuntime.operationsSnapshotCalls.load(), 1, 3000);
+    QVERIFY(oldService.releaseServiceName());
+    QTRY_VERIFY_WITH_TIMEOUT(!client.serviceAvailable(), 3000);
+    QVERIFY(!client.mediaRefreshPending_);
+    QVERIFY(!client.operationsSnapshotReady_);
+
+    CapabilityRuntimeObject runtime;
+    runtime.delayOperationsSnapshot = true;
+    runtime.mediaCatalogRequiresRefresh = true;
+    runtime.mediaCatalog = savedLayoutMediaCatalog();
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    QTRY_VERIFY_WITH_TIMEOUT(client.deviceCapabilitiesReady(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(runtime.operationsSnapshotCalls.load(), 1, 3000);
+    bool replied = false;
+    QVERIFY(oldService.invoke([&]() {
+        replied = oldService.connection().send(
+            oldRuntime.delayedOperationsSnapshotMessage.createReply(
+                QVariantList{QVariant::fromValue(oldRuntime.operations)}));
+        oldRuntime.delayedOperationsSnapshotMessage = {};
+    }));
+    QVERIFY(replied);
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 0);
+    QVERIFY(!client.operationsSnapshotReady_);
+    QVERIFY(service.invoke([&]() {
+        replied = service.connection().send(
+            runtime.delayedOperationsSnapshotMessage.createReply(
+                QVariantList{QVariant::fromValue(runtime.operations)}));
+        runtime.delayedOperationsSnapshotMessage = {};
+    }));
+    QVERIFY(replied);
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.rowCount(), 1, 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 1);
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogDetectsMissedReconnectAndDeviceChange() {
+    CapabilityRuntimeObject runtime;
+    runtime.mediaCatalogRequiresRefresh = true;
+    runtime.mediaCatalog = savedLayoutMediaCatalog();
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.rowCount(), 1, 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 1);
+    QVERIFY(service.invoke([&]() {
+        // The reconnect has finished before the GUI reads the inactive state.
+        runtime.connection.revision = 2;
+        runtime.deviceCapabilities.connectionRevision = 2;
+        ++runtime.deviceCapabilities.physicalGeneration;
+        runtime.mediaCatalogLoaded = false;
+        runtime.mediaCatalog = savedLayoutMediaCatalog(
+            QStringLiteral("device-a"), QStringLiteral("after-reconnect.mp4"), 2);
+    }));
+    QVERIFY(service.sendDisplaySessionChanged(true, 2));
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.revision(), 2u, 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 2);
+    QVERIFY(service.invoke([&]() {
+        runtime.connection = connectedSnapshot(3, QStringLiteral("device-b"));
+        runtime.deviceCapabilities.connectionRevision = 3;
+        runtime.deviceCapabilities.deviceIdentity = QStringLiteral("device-b");
+        ++runtime.deviceCapabilities.physicalGeneration;
+        runtime.mediaCatalogLoaded = false;
+        runtime.mediaCatalog = savedLayoutMediaCatalog(
+            QStringLiteral("device-b"), QStringLiteral("other-device.mp4"), 3);
+    }));
+    QVERIFY(service.sendDisplaySessionChanged(true, 3));
+    QTRY_COMPARE_WITH_TIMEOUT(client.mediaModel_.deviceIdentity(), QStringLiteral("device-b"), 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 3);
+    QVERIFY(service.sendDisplaySessionChanged(true, 3));
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 3);
+}
+
+void RuntimeClientHandshakeTests::mediaCatalogPendingRefreshDoesNotSurviveDisconnect() {
+    CapabilityRuntimeObject runtime;
+    runtime.operations.revision = 1;
+    runtime.operations.activeOperationId = QStringLiteral("busy-upload");
+    ScopedRuntimeService service(&runtime);
+    QVERIFY(service.start());
+    RuntimeClient client;
+    QTRY_VERIFY_WITH_TIMEOUT(client.deviceCapabilitiesReady() && client.operationBusy(), 3000);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 0);
+    QVERIFY(service.invoke([&]() {
+        runtime.connection = {};
+        runtime.connection.revision = 2;
+    }));
+    QVERIFY(service.sendDisplaySessionChanged(false, 2));
+    QTRY_COMPARE_WITH_TIMEOUT(client.connection_.revision, 2u, 3000);
+    TryxRuntimeOperationInfo completed;
+    completed.id = QStringLiteral("busy-upload");
+    completed.state = QStringLiteral("Succeeded");
+    QVERIFY(service.sendOperationChanged(completed, 2));
+    QTRY_VERIFY_WITH_TIMEOUT(!client.operationBusy(), 3000);
+    processEventsFor(75);
+    QCOMPARE(runtime.mediaRefreshCalls.load(), 0);
 }
 
 void RuntimeClientHandshakeTests::printerInactiveLifecycleEventsRequestSnapshotRefresh() {

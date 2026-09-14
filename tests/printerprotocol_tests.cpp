@@ -2261,6 +2261,8 @@ private slots:
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
     void pasePreparationProfilesProduceExactGeometry();
+    void mediaPreparationKeepsRetryArtifactsPrivate_data();
+    void mediaPreparationKeepsRetryArtifactsPrivate();
     void recoveredMediaDiagnosticTailIsBounded();
     void recoveredMediaValidatorIsStrictAndCancellable();
     void sha256ValidationRequiresLowercaseAscii();
@@ -2318,6 +2320,7 @@ private slots:
     void restoredGpuOverlayKeepsExactIdentityAfterDelayedUuid();
     void raplPowerUsesMonotonicBoundedInterval();
     void hardwareBadgeModelsResolve();
+    void hostAmdBadgeModelResolves();
     void paseMetricsConfigStoreRoundTripsAndScopesToDevice();
     void paseMetricsConfigStoreRejectsUnsafePersistentState_data();
     void paseMetricsConfigStoreRejectsUnsafePersistentState();
@@ -2525,8 +2528,10 @@ private slots:
     void retryCacheArtifactValidationRejectsUnsafeFile();
     void retryCacheArtifactValidationHonorsPreStartCancellation();
     void retryCacheArtifactValidationReturnsActualReplacementIdentity();
+    void retryCacheArtifactHashRejectsPathReplacementAfterOpen_data();
     void retryCacheArtifactHashRejectsPathReplacementAfterOpen();
     void retryCacheArtifactHashHonorsMidReadCancellation();
+    void retryCacheArtifactHashRejectsInPlaceMutation_data();
     void retryCacheArtifactHashRejectsInPlaceMutation();
     void retryCancellationRetainsOwnershipOnManifestRemovalFailure();
     void acknowledgedTurrisUploadIsNotRetryableWhenCleanupFails();
@@ -2578,6 +2583,9 @@ private slots:
     void unidentifiedFirmwareTargetIsRejectedBeforeQuiesce();
     void identifiedLegacyFirmwareTargetCanBeQuiesced();
     void identifiedLegacyFirmwareRequestPassesPreflight();
+#ifdef TRYX_FLATPAK
+    void flatpakFirmwareIsBlockedBeforeValidationOrQuiesce();
+#endif
     void firmwareExclusiveGateRejectsDeviceWork();
     void firmwareExclusiveGateRejectsUnresolvedDeviceState();
     void firmwareExclusiveGateSuppressesReconnectUntilRelease();
@@ -11408,6 +11416,112 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
                 .toHex()));
 }
 
+void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate_data() {
+    QTest::addColumn<uint>("parentMask");
+    QTest::newRow("permissive") << uint{0000};
+    QTest::newRow("default") << uint{0022};
+    QTest::newRow("private") << uint{0077};
+}
+
+void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate() {
+    QFETCH(uint, parentMask);
+    const mode_t previousMask = ::umask(parentMask);
+    const auto restoreMask = qScopeGuard([previousMask]() {
+        ::umask(previousMask);
+    });
+
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    QVERIFY2(!ffmpeg.isEmpty(), "ffmpeg is required for the preparation test");
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath = temporaryDirectory.filePath(
+        QStringLiteral("private-source.mp4"));
+    QProcess generator;
+    generator.setProcessChannelMode(QProcess::MergedChannels);
+    generator.start(
+        ffmpeg,
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("lavfi"),
+         QStringLiteral("-i"),
+         QStringLiteral("color=c=#315d84:s=64x64:r=2:d=1"),
+         QStringLiteral("-frames:v"), QStringLiteral("2"),
+         QStringLiteral("-an"), QStringLiteral("-c:v"),
+         QStringLiteral("libx264"), QStringLiteral("-pix_fmt"),
+         QStringLiteral("yuv420p"), QStringLiteral("-y"), sourcePath});
+    const bool generatorFinished = generator.waitForFinished(60000);
+    const QByteArray generatorOutput = generator.readAll();
+    QVERIFY2(generatorFinished, generatorOutput.constData());
+    QCOMPARE(generator.exitStatus(), QProcess::NormalExit);
+    QVERIFY2(generator.exitCode() == 0, generatorOutput.constData());
+    QVERIFY(QFile::setPermissions(
+        sourcePath, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    const QString sourceSha256 =
+        tryx::printer_media_file_integrity::sha256File(sourcePath);
+    QVERIFY(!sourceSha256.isEmpty());
+
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    const QString operationId = QUuid::createUuid().toString(
+        QUuid::WithoutBraces);
+    preparer.prepare(operationId, QStringLiteral("synthetic:no-usb"),
+                     sourcePath, sourceSha256, 1,
+                     TryxRuntimeMediaTransform{}, 0x1021);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 120000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    QCOMPARE(preparedSpy.count(), 1);
+    const QList<QVariant> prepared = preparedSpy.first();
+    const QString outputPath = prepared.at(3).toString();
+    const QString thumbnailPath = prepared.at(6).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(thumbnailPath);
+    });
+    QVERIFY(!thumbnailPath.isEmpty());
+    // Only the converter's creation mask may change, never the parent's.
+    QCOMPARE(::umask(parentMask), static_cast<mode_t>(parentMask));
+    for (const QString &path : {sourcePath, outputPath, thumbnailPath}) {
+        struct stat status {};
+        QVERIFY2(::lstat(QFile::encodeName(path).constData(), &status) == 0,
+                 qPrintable(path));
+        QVERIFY(S_ISREG(status.st_mode));
+        QCOMPARE(status.st_mode & 07777, mode_t{0600});
+        QCOMPARE(status.st_uid, ::geteuid());
+        QCOMPARE(status.st_nlink, nlink_t{1});
+        QVERIFY(status.st_size > 0);
+    }
+
+    const auto profile = printerProductProfileForId(0x1021);
+    QVERIFY(profile.has_value());
+    tryx::RetryCacheStore store(temporaryDirectory.filePath(
+        QStringLiteral("retry-cache")));
+    tryx::RetryCacheStore::PersistPreparedInput input;
+    input.lineageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    input.dispatchId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    input.operationId = operationId;
+    input.productId = profile->productId;
+    input.conversion =
+        tryx::printer_media_identity::printerMediaConversionIdentity(*profile);
+    input.deviceIdentity = QStringLiteral("pase:synthetic-no-usb");
+    input.deviceGeneration = 1;
+    input.originalRemoteName = prepared.at(4).toString();
+    input.retryRemoteName = input.originalRemoteName;
+    input.subject = QFileInfo(sourcePath).fileName();
+    input.prepared = {outputPath, QFileInfo(outputPath).size(),
+                      prepared.at(5).toString()};
+    input.thumbnail = tryx::RetryCacheStore::PreparedArtifactInput{
+        thumbnailPath, QFileInfo(thumbnailPath).size(),
+        prepared.at(7).toString()};
+    const auto persisted = store.persistPrepared(input);
+    QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
+    QVERIFY(persisted.snapshot.has_value());
+    QVERIFY(persisted.snapshot->inFlightDispatch.has_value());
+}
+
 void PrinterProtocolTests::pasePreparationProfilesProduceExactGeometry() {
     namespace validator = tryx::printer_media_validator;
 
@@ -16108,7 +16222,14 @@ void PrinterProtocolTests::hardwareBadgeModelsResolve() {
         fixtureMonitor.primaryGpuModelNameFromDrmRoot(
             drmFixture.path()),
         QStringLiteral("NVIDIA GeForce RTX 5090"));
+}
 
+void PrinterProtocolTests::hostAmdBadgeModelResolves() {
+    // This is an optional native host acceptance probe, not a deterministic
+    // protocol test. Sandbox builds deliberately lack the host's udev database
+    // and /usr/share/libdrm/amdgpu.ids; an unavailable name is not fabricated.
+    if (QFile::exists(QStringLiteral("/.flatpak-info")))
+        QSKIP("Native AMD model lookup requires host identity data; GPU fixtures remain mandatory");
     bool amdMetricsCardPresent = false;
     QDir drmDirectory(QStringLiteral("/sys/class/drm"));
     for (const QString &entry : drmDirectory.entryList(
@@ -16124,17 +16245,14 @@ void PrinterProtocolTests::hardwareBadgeModelsResolve() {
             break;
         }
     }
-    if (amdMetricsCardPresent) {
-        SystemMonitor monitor;
-        const QString gpuModel =
-            monitor.primaryGpuModelName().trimmed();
-        QVERIFY(!gpuModel.isEmpty());
-        QVERIFY(!QRegularExpression(
-                     QStringLiteral("^GPU\\s*\\d*$"),
-                     QRegularExpression::CaseInsensitiveOption)
-                     .match(gpuModel)
-                     .hasMatch());
-    }
+    if (!amdMetricsCardPresent)
+        QSKIP("No AMD metrics card is visible on this native test host");
+    SystemMonitor monitor;
+    const QString gpuModel = monitor.primaryGpuModelName().trimmed();
+    QVERIFY(!gpuModel.isEmpty());
+    QVERIFY(!QRegularExpression(QStringLiteral("^GPU\\s*\\d*$"),
+                                QRegularExpression::CaseInsensitiveOption)
+                 .match(gpuModel).hasMatch());
 }
 
 void PrinterProtocolTests::
@@ -33043,7 +33161,22 @@ void PrinterProtocolTests::
 }
 
 void PrinterProtocolTests::
+    retryCacheArtifactHashRejectsPathReplacementAfterOpen_data() {
+    QTest::addColumn<int>("replacementCheck");
+    QTest::addColumn<QString>("replacementKind");
+    QTest::newRow("during-hash-regular") << 2 << QStringLiteral("regular");
+    QTest::newRow("during-hash-symlink") << 2 << QStringLiteral("symlink");
+    QTest::newRow("during-hash-missing") << 2 << QStringLiteral("missing");
+    // A 512 KiB file takes two 256 KiB reads: check 4 is after hashing.
+    QTest::newRow("after-hash-regular") << 4 << QStringLiteral("regular");
+    QTest::newRow("after-hash-symlink") << 4 << QStringLiteral("symlink");
+    QTest::newRow("after-hash-missing") << 4 << QStringLiteral("missing");
+}
+
+void PrinterProtocolTests::
     retryCacheArtifactHashRejectsPathReplacementAfterOpen() {
+    QFETCH(int, replacementCheck);
+    QFETCH(QString, replacementKind);
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
     const QString artifactPath =
@@ -33071,13 +33204,18 @@ void PrinterProtocolTests::
             hashPrivateRegularFile(
                 artifactPath, originalBytes.size(), [&]() {
                     ++cancellationChecks;
-                    if (cancellationChecks == 2) {
-                        replaced = QFile::rename(
-                                       artifactPath,
-                                       displacedPath) &&
-                            QFile::rename(
-                                       replacementPath,
-                                       artifactPath);
+                    if (cancellationChecks == replacementCheck &&
+                        QFile::rename(artifactPath, displacedPath)) {
+                        if (replacementKind == QStringLiteral("regular")) {
+                            replaced = QFile::rename(
+                                replacementPath, artifactPath);
+                        } else if (replacementKind == QStringLiteral("symlink")) {
+                            replaced = ::symlink(
+                                QFile::encodeName(displacedPath).constData(),
+                                QFile::encodeName(artifactPath).constData()) == 0;
+                        } else {
+                            replaced = true;
+                        }
                     }
                     return false;
                 });
@@ -33086,10 +33224,17 @@ void PrinterProtocolTests::
     QVERIFY(result.sha256.isEmpty());
     QVERIFY(!result.error.isEmpty());
     struct stat currentIdentity {};
-    QCOMPARE(::stat(
-                 QFile::encodeName(artifactPath).constData(),
-                 &currentIdentity),
-             0);
+    const int currentStatus = ::lstat(
+        QFile::encodeName(artifactPath).constData(), &currentIdentity);
+    const int currentError = errno;
+    if (replacementKind == QStringLiteral("missing")) {
+        QCOMPARE(currentStatus, -1);
+        QCOMPARE(currentError, ENOENT);
+        return;
+    }
+    QCOMPARE(currentStatus, 0);
+    QCOMPARE(bool(S_ISLNK(currentIdentity.st_mode)),
+             replacementKind == QStringLiteral("symlink"));
     QVERIFY(static_cast<quint64>(originalIdentity.st_dev) !=
                 static_cast<quint64>(currentIdentity.st_dev) ||
             static_cast<quint64>(originalIdentity.st_ino) !=
@@ -33120,7 +33265,15 @@ void PrinterProtocolTests::
 }
 
 void PrinterProtocolTests::
+    retryCacheArtifactHashRejectsInPlaceMutation_data() {
+    QTest::addColumn<int>("mutationCheck");
+    QTest::newRow("during-hash") << 2;
+    QTest::newRow("after-hash") << 4;
+}
+
+void PrinterProtocolTests::
     retryCacheArtifactHashRejectsInPlaceMutation() {
+    QFETCH(int, mutationCheck);
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
     const QString artifactPath =
@@ -33128,6 +33281,12 @@ void PrinterProtocolTests::
             QStringLiteral("in-place-mutation.bin"));
     const QByteArray artifactBytes(512 * 1024, '\x51');
     QVERIFY(writeAtomicOwnerFile(artifactPath, artifactBytes));
+    // Make the later write observable even on coarse-timestamp filesystems.
+    const timespec oldTimes[2] = {{1, 0}, {1, 0}};
+    QCOMPARE(::utimensat(
+                 AT_FDCWD, QFile::encodeName(artifactPath).constData(),
+                 oldTimes, 0),
+             0);
     int cancellationChecks = 0;
     bool mutated = false;
     const auto result =
@@ -33135,7 +33294,7 @@ void PrinterProtocolTests::
             hashPrivateRegularFile(
                 artifactPath, artifactBytes.size(), [&]() {
                     ++cancellationChecks;
-                    if (cancellationChecks == 2) {
+                    if (cancellationChecks == mutationCheck) {
                         QFile file(artifactPath);
                         if (file.open(QIODevice::ReadWrite) &&
                             file.seek(0) &&
@@ -45738,6 +45897,33 @@ mediaReferencePreflightRejectsUnsafeCatalog() {
     }
     ::close(sockets[1]);
 }
+
+#ifdef TRYX_FLATPAK
+void PrinterProtocolTests::flatpakFirmwareIsBlockedBeforeValidationOrQuiesce() {
+    QTemporaryDir directory;
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(
+        directory.filePath("sys"), directory.filePath("dev")));
+    manager->worker_->connected(QStringLiteral("cm01"), QStringLiteral("synthetic"),
+                                QStringLiteral("firmware"), QStringLiteral("app"));
+    FirmwareBridge bridge(manager.get(), nullptr, directory.filePath("recovery/journal.json"));
+    QTRY_VERIFY(bridge.workerReady_);
+    QSignalSpy quiesce(manager.get(), &DeviceManager::requestFirmwareTransportQuiesce);
+    const QString caller = QStringLiteral(":1.70");
+    const auto before = bridge.stateForCaller(caller);
+    QVERIFY(!before.value(QStringLiteral("ready")).toBool());
+    QVERIFY(before.value(QStringLiteral("status")).toString().contains(QStringLiteral("Flatpak")));
+    QVERIFY(!bridge.requestValidation(directory.filePath("never-opened.zip"), caller));
+    QVERIFY(!bridge.validationBusy_);
+    QVERIFY(!bridge.approval_);
+    QVERIFY(!bridge.requestFlash(QStringLiteral("untrusted-token"), caller));
+    QString error;
+    QVERIFY(!manager->firmwareFlashAllowedForCurrentDevice(&error));
+    QVERIFY(error.contains(QStringLiteral("Flatpak")));
+    QVERIFY(!bridge.shutdownInhibited());
+    QCOMPARE(quiesce.count(), 0);
+    QVERIFY(!QFileInfo::exists(directory.filePath("recovery/journal.json")));
+}
+#endif
 
 int main(int argc, char **argv) {
     if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {

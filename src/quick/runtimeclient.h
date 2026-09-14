@@ -622,7 +622,10 @@ private:
         const TryxRuntimeDeviceSpecificationsV1 &specifications = {});
     void clearRuntimeState();
     void refreshConnection();
-    void refreshOperations();
+    void refreshOperations(int remainingReconciliations = 1);
+    bool mediaSessionReady() const;
+    bool refreshMediaIfReady();
+    void refreshMediaSnapshot();
     void refreshMetrics();
     void refreshDisplay();
     void refreshDisplaySnapshotV1();
@@ -657,7 +660,8 @@ private:
         const TryxRuntimeOperationInfo &observedOperation);
     void sendVoidCall(const QString &interfaceName,
                       const QString &method,
-                      const QVariantList &arguments = {});
+                      const QVariantList &arguments = {},
+                      const QString &owner = {});
     void sendLegacyScreenConfig(
         const TryxRuntimeApplyRequest &request);
     void sendLegacyDisplaySubmission(
@@ -807,6 +811,10 @@ private:
     bool legacyBrightnessConfirmed_ = false;
     MediaCatalogModel mediaModel_;
     OperationListModel operationModel_;
+    bool mediaRefreshPending_ = false;
+    quint64 mediaSessionGeneration_ = 0;
+    bool operationsSnapshotReady_ = false;
+    bool operationsSnapshotPending_ = false;
     QString activeOperationId_;
     TryxRuntimeOperationInfo activeOperation_;
     LegacyUploadState legacyUpload_;

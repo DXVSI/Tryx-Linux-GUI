@@ -3,6 +3,7 @@ QT += concurrent core dbus gui network qml quick quickcontrols2
 CONFIG += c++17 lrelease embed_translations
 TARGET = tryx-panorama-manager
 TEMPLATE = app
+contains(CONFIG, flatpak): DEFINES += TRYX_FLATPAK
 
 !versionAtLeast(QT_VERSION, 6.4.0) {
     error("tryx-panorama-manager requires Qt 6.4 or newer")
@@ -46,6 +47,7 @@ HEADERS += \
     src/quick/mediaeditorcontroller.h \
     src/quick/mediapreviewcontroller.h \
     src/quick/operationlistmodel.h \
+    src/quick/portalfilechooser.h \
     src/quick/releaseinfo.h \
     src/quick/releaseupdatecontroller.h \
     src/quick/runtimebootstrap.h \
@@ -79,6 +81,7 @@ SOURCES += \
     src/quick/mediaeditorcontroller.cpp \
     src/quick/mediapreviewcontroller.cpp \
     src/quick/operationlistmodel.cpp \
+    src/quick/portalfilechooser.cpp \
     src/quick/releaseinfo.cpp \
     src/quick/releaseupdatecontroller.cpp \
     src/quick/runtimebootstrap.cpp \
@@ -103,6 +106,7 @@ QML_FILES = \
     qml/components/MetricSelector.qml \
     qml/components/NavButton.qml \
     qml/components/OperationBanner.qml \
+    qml/components/PortalChooserError.qml \
     qml/components/OverlayStyleEditor.qml \
     qml/components/PrimaryButton.qml \
     qml/components/SavedLayoutsPanel.qml \
@@ -201,5 +205,6 @@ QMAKE_EXTRA_TARGETS += quick_tests
 
 unix {
     target.path = /usr/bin
+    contains(CONFIG, flatpak): target.path = /app/bin
     INSTALLS += target
 }

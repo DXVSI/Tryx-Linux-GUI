@@ -2,6 +2,10 @@
 #include "printerdiscovery_p.h"
 #include "printeroperation_p.h"
 #include "printerprotocolconstants_p.h"
+#ifdef TRYX_FLATPAK
+#include "portalusb.h"
+#include <QScopeGuard>
+#endif
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -143,23 +147,33 @@ class ScriptedLibusbEventBackend final : public LibusbEventBackend {
         if (!transfer) {
             return LIBUSB_ERROR_INVALID_PARAM;
         }
-        if (transfer == activeInput_) {
-            activeInput_ = nullptr;
-            currentConcurrentInputs_ = 0;
-        } else if (transfer == activeOutput_) {
-            activeOutput_ = nullptr;
-        } else {
+        if (transfer != activeInput_ && transfer != activeOutput_) {
             return LIBUSB_ERROR_NOT_FOUND;
         }
-        transfer->status = LIBUSB_TRANSFER_CANCELLED;
-        transfer->actual_length = 0;
-        if (transfer->callback) {
-            transfer->callback(transfer);
-        }
+        // libusb cancellation is asynchronous: completion is only dispatched
+        // by handleEvents(), including while a device grant is being revoked.
+        if (!pendingCancellations_.contains(transfer))
+            pendingCancellations_.append(transfer);
         return LIBUSB_SUCCESS;
     }
 
     int handleEvents(int timeoutMs, int *completed) override {
+        if (!pendingCancellations_.isEmpty()) {
+            libusb_transfer *transfer = pendingCancellations_.takeFirst();
+            if (transfer == activeInput_) {
+                activeInput_ = nullptr;
+                currentConcurrentInputs_ = 0;
+            } else if (transfer == activeOutput_) {
+                activeOutput_ = nullptr;
+            }
+            transfer->status = LIBUSB_TRANSFER_CANCELLED;
+            transfer->actual_length = 0;
+            if (transfer->callback)
+                transfer->callback(transfer);
+            if (completed)
+                *completed = 1;
+            return LIBUSB_SUCCESS;
+        }
         return handleEventsWithTimeout(timeoutMs, completed);
     }
 
@@ -220,6 +234,7 @@ class ScriptedLibusbEventBackend final : public LibusbEventBackend {
 
   private:
     QList<PrinterProtocol::DuplexTestEvent> events_;
+    QList<libusb_transfer *> pendingCancellations_;
     qsizetype eventIndex_ = 0;
     libusb_transfer *activeInput_ = nullptr;
     libusb_transfer *activeOutput_ = nullptr;
@@ -259,7 +274,12 @@ class UsbPrinterTransport::Impl {
     using WriteResult = UsbPrinterTransport::WriteResult;
 
     Impl() {
+#ifdef TRYX_FLATPAK
+        const libusb_init_option option{LIBUSB_OPTION_NO_DEVICE_DISCOVERY, {}};
+        initializationError_ = libusb_init_context(&context_, &option, 1);
+#else
         initializationError_ = libusb_init(&context_);
+#endif
         if (initializationError_ != LIBUSB_SUCCESS) {
             context_ = nullptr;
         }
@@ -277,8 +297,7 @@ class UsbPrinterTransport::Impl {
 
     bool open(const QString &deviceId, quint16 expectedProductId,
               QString *errorMessage) {
-        if (sessionOpen_ && deviceId_ == deviceId && productId_ == expectedProductId &&
-            fatalError_.isEmpty()) {
+        if (isOpenFor(deviceId, expectedProductId)) {
             return true;
         }
         close();
@@ -290,6 +309,41 @@ class UsbPrinterTransport::Impl {
             return false;
         }
 
+        libusb_device_handle *openedHandle = nullptr;
+        LibusbPrinterInterface openedInterface;
+#ifdef TRYX_FLATPAK
+        const auto grant = tryx::portal_usb::Registry::instance().descriptorFor(
+            deviceId, expectedProductId);
+        int candidateFd = grant.isValid()
+            ? ::fcntl(grant.fileDescriptor(), F_DUPFD_CLOEXEC, 3) : -1;
+        const auto closeCandidate = qScopeGuard([&candidateFd]() {
+            if (candidateFd >= 0)
+                ::close(candidateFd);
+        });
+        if (candidateFd < 0) {
+            if (errorMessage)
+                *errorMessage = QObject::tr("The USB portal has not granted access to this device epoch.");
+            return false;
+        }
+        const int wrapped = libusb_wrap_sys_device(context_, candidateFd, &openedHandle);
+        if (wrapped != LIBUSB_SUCCESS || !openedHandle) {
+            if (errorMessage)
+                *errorMessage = QObject::tr("Cannot use the USB portal descriptor: %1")
+                                    .arg(libusbErrorText(wrapped));
+            return false;
+        }
+        libusb_device *device = libusb_get_device(openedHandle);
+        libusb_device_descriptor descriptor{};
+        if (libusb_get_device_descriptor(device, &descriptor) != LIBUSB_SUCCESS ||
+            descriptor.idVendor != kTryxVendorId || descriptor.idProduct != expectedProductId ||
+            !isSupportedPrinterProductId(descriptor.idProduct) ||
+            !findLibusbPrinterInterface(device, &openedInterface)) {
+            libusb_close(openedHandle);
+            if (errorMessage)
+                *errorMessage = QObject::tr("The USB portal descriptor does not match the expected TRYX printer interface.");
+            return false;
+        }
+#else
         libusb_device **devices = nullptr;
         const ssize_t count = libusb_get_device_list(context_, &devices);
         if (count < 0 || !devices) {
@@ -300,8 +354,6 @@ class UsbPrinterTransport::Impl {
             return false;
         }
 
-        libusb_device_handle *openedHandle = nullptr;
-        LibusbPrinterInterface openedInterface;
         for (ssize_t index = 0; index < count; ++index) {
             libusb_device *device = devices[index];
             libusb_device_descriptor descriptor{};
@@ -336,6 +388,7 @@ class UsbPrinterTransport::Impl {
             }
             return false;
         }
+#endif
 
         const int kernelActive =
             libusb_kernel_driver_active(openedHandle, openedInterface.interfaceNumber);
@@ -420,6 +473,9 @@ class UsbPrinterTransport::Impl {
         }
 
         handle_ = openedHandle;
+#ifdef TRYX_FLATPAK
+        portalFd_ = std::exchange(candidateFd, -1);
+#endif
         sessionOpen_ = true;
         deviceId_ = deviceId;
         productId_ = expectedProductId;
@@ -494,6 +550,11 @@ class UsbPrinterTransport::Impl {
             }
             context_ = nullptr;
             handle_ = nullptr;
+#ifdef TRYX_FLATPAK
+            // Retain this FD with the abandoned libusb handle until process
+            // exit. Closing it while transfers are owned by libusb is unsafe.
+            portalFd_ = -1;
+#endif
             sessionOpen_ = false;
             inputState_ = nullptr;
             outputState_ = nullptr;
@@ -548,6 +609,12 @@ class UsbPrinterTransport::Impl {
         } else {
             handle_ = nullptr;
         }
+#ifdef TRYX_FLATPAK
+        if (portalFd_ >= 0) {
+            ::close(portalFd_);
+            portalFd_ = -1;
+        }
+#endif
         sessionOpen_ = false;
         deviceId_.clear();
         productId_ = 0;
@@ -566,6 +633,10 @@ class UsbPrinterTransport::Impl {
     }
 
     bool isOpenFor(const QString &deviceId, quint16 expectedProductId) const {
+#ifdef TRYX_FLATPAK
+        if (!tryx::portal_usb::Registry::instance().hasGrant(deviceId, expectedProductId))
+            return false;
+#endif
         return sessionOpen_ && deviceId_ == deviceId &&
                productId_ == expectedProductId && fatalError_.isEmpty();
     }
@@ -579,7 +650,7 @@ class UsbPrinterTransport::Impl {
 #ifdef TRYX_PROTOCOL_TESTING
     ScriptedLibusbEventBackend *adoptScriptedSessionForTesting(
         const QList<PrinterProtocol::DuplexTestEvent> &events, const QString &deviceId,
-        QString *errorMessage) {
+        quint16 productId, QString *errorMessage) {
         close();
         auto backend = std::make_unique<ScriptedLibusbEventBackend>(events);
         ScriptedLibusbEventBackend *backendPointer = backend.get();
@@ -588,6 +659,7 @@ class UsbPrinterTransport::Impl {
         testingSession_ = true;
         sessionOpen_ = true;
         deviceId_ = deviceId;
+        productId_ = productId;
         interface_.interfaceNumber = 0;
         interface_.bulkInEndpoint = 0x81;
         interface_.bulkOutEndpoint = 0x01;
@@ -627,6 +699,10 @@ class UsbPrinterTransport::Impl {
     WriteResult write(const QByteArray &data, int timeoutMs,
                       const PrinterProtocol::OperationContext &context) {
         WriteResult result;
+        if (!grantIsCurrent(&result.error)) {
+            result.cancelled = true;
+            return result;
+        }
         if (!sessionOpen_) {
             result.error = QObject::tr("TRYX libusb transport is not open");
             return result;
@@ -684,6 +760,12 @@ class UsbPrinterTransport::Impl {
             static_cast<int>(state->payload.size()), &Impl::outputTransferCompleted,
             state, static_cast<unsigned int>(qMax(1, timeoutMs)));
 
+        if (!grantIsCurrent(&result.error)) {
+            result.cancelled = true;
+            state->completed = true; // Nothing was submitted.
+            releaseOutputState();
+            return result;
+        }
         const int submitResult = eventBackend_->submitTransfer(state->transfer);
         if (submitResult != LIBUSB_SUCCESS) {
             result.submitError = submitResult;
@@ -717,7 +799,8 @@ class UsbPrinterTransport::Impl {
             }
         };
         while (!state->completed) {
-            if (!cancellationRequested && operationIsCancelled(context)) {
+            if (!cancellationRequested &&
+                (operationIsCancelled(context) || !grantIsCurrent(&result.error))) {
                 result.cancelled = true;
                 requestCancellation();
             }
@@ -826,6 +909,8 @@ class UsbPrinterTransport::Impl {
         if (bytes) {
             bytes->clear();
         }
+        if (!grantIsCurrent(errorMessage))
+            return ReadResult::Error;
         if (persistentInputFailureLatched_) {
             if (errorMessage) {
                 *errorMessage = QObject::tr(
@@ -843,6 +928,8 @@ class UsbPrinterTransport::Impl {
                 }
                 return ReadResult::Cancelled;
             }
+            if (!grantIsCurrent(errorMessage))
+                return ReadResult::Error;
             if (!receiveQueue_.isEmpty()) {
                 if (bytes) {
                     *bytes = std::move(receiveQueue_);
@@ -910,6 +997,8 @@ class UsbPrinterTransport::Impl {
         if (bytes) {
             bytes->clear();
         }
+        if (!grantIsCurrent(errorMessage))
+            return false;
         if (persistentInputFailureLatched_) {
             if (errorMessage) {
                 *errorMessage = QObject::tr(
@@ -1078,6 +1167,8 @@ class UsbPrinterTransport::Impl {
     }
 
     bool ensureInputActive(QString *errorMessage) {
+        if (!grantIsCurrent(errorMessage))
+            return false;
         if (!sessionOpen_ || !inputState_ || !inputState_->transfer) {
             if (errorMessage) {
                 *errorMessage =
@@ -1117,6 +1208,8 @@ class UsbPrinterTransport::Impl {
     }
 
     bool serviceEvents(int timeoutMs, QString *errorMessage) {
+        // A revoked grant forbids new submissions, not dispatching callbacks
+        // for existing transfers. libusb cancellation completes asynchronously.
         if (!eventBackend_) {
             if (errorMessage) {
                 *errorMessage = QObject::tr("libusb event backend is not available");
@@ -1137,7 +1230,24 @@ class UsbPrinterTransport::Impl {
         return false;
     }
 
+    bool grantIsCurrent(QString *errorMessage) const {
+#ifdef TRYX_FLATPAK
+        if (sessionOpen_ &&
+            !tryx::portal_usb::Registry::instance().hasGrant(deviceId_, productId_)) {
+            if (errorMessage)
+                *errorMessage = QObject::tr("USB portal access was revoked or the device epoch changed.");
+            return false;
+        }
+#else
+        Q_UNUSED(errorMessage);
+#endif
+        return true;
+    }
+
     libusb_context *context_ = nullptr;
+#ifdef TRYX_FLATPAK
+    int portalFd_ = -1;
+#endif
     int initializationError_ = LIBUSB_SUCCESS;
     libusb_device_handle *handle_ = nullptr;
     bool sessionOpen_ = false;
@@ -1382,21 +1492,25 @@ bool UsbPrinterTransport::takeAvailable(QByteArray *bytes, QString *errorMessage
 #ifdef TRYX_PROTOCOL_TESTING
 PrinterProtocol::DuplexTestResult UsbPrinterTransport::runScenarioForTesting(
     const QList<PrinterProtocol::DuplexTestEvent> &events, const QByteArray &request,
-    int writeTimeoutMs, int readTimeoutMs) {
+    int writeTimeoutMs, int readTimeoutMs, const QString &deviceId,
+    quint16 productId, const std::function<bool()> &isCancelled) {
     PrinterProtocol::DuplexTestResult result;
     Impl transport;
     QString transportError;
     ScriptedLibusbEventBackend *backend = transport.adoptScriptedSessionForTesting(
-        events, QStringLiteral("scripted-usb"), &transportError);
+        events, deviceId, productId, &transportError);
     if (!backend) {
         result.error = transportError;
         return result;
     }
 
-    const PrinterProtocol::OperationContext context;
+    PrinterProtocol::OperationContext context;
+    context.isCancelled = isCancelled;
     const Impl::WriteResult writeResult =
         transport.write(request, qMax(1, writeTimeoutMs), context);
     result.writeSucceeded = writeResult.success;
+    result.writeCancelled = writeResult.cancelled;
+    result.writeCompletionKnown = writeResult.completionKnown;
     result.error = writeResult.error;
     if (writeResult.success) {
         QByteArray response;

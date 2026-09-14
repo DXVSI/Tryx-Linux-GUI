@@ -12,15 +12,27 @@ Popup {
 
     required property var controller
     required property url homeFolder
+    property var portalChooser: null
     property Item focusReturnItem: null
     property url currentFolder: homeFolder
     readonly property bool currentFolderReady:
         folderModel.status === FolderListModel.Ready
 
+    function scheduleExport(folder) {
+        // Qt 6.4 exposes callLater as a callable QJSValue property.
+        const defer = Qt.callLater
+        defer(() => root.controller.exportToFolder(folder))
+    }
+
     function openForExport() {
+        if (controller.busy || (portalChooser && portalChooser.busy))
+            return
         if (String(currentFolder).length === 0)
             currentFolder = homeFolder
-        open()
+        if (portalChooser)
+            portalChooser.open(qsTr("Export support report"), currentFolder)
+        else
+            open()
     }
 
     function navigate(folderUrl) {
@@ -32,7 +44,7 @@ Popup {
             return
         const folder = currentFolder
         close()
-        Qt.callLater(() => root.controller.exportToFolder(folder))
+        root.scheduleExport(folder)
     }
 
     parent: Overlay.overlay
@@ -75,6 +87,19 @@ Popup {
         sortField: FolderListModel.Name
         sortCaseSensitive: false
     }
+
+    Connections {
+        target: root.portalChooser
+        function onSelected(url) {
+            root.currentFolder = url
+            root.scheduleExport(url)
+        }
+        function onCancelled() {
+            if (root.focusReturnItem)
+                root.focusReturnItem.forceActiveFocus()
+        }
+    }
+    PortalChooserError { chooser: root.portalChooser }
 
     contentItem: ColumnLayout {
         objectName: "supportBundleDialogContent"

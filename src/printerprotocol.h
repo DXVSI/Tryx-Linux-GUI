@@ -19,6 +19,9 @@
 class QSocketNotifier;
 struct udev;
 struct udev_monitor;
+#ifdef TRYX_FLATPAK
+namespace tryx::portal_usb { class Access; }
+#endif
 namespace panorama {
 namespace wire {
 namespace v1 {
@@ -386,6 +389,8 @@ public:
 
     struct DuplexTestResult {
         bool writeSucceeded = false;
+        bool writeCancelled = false;
+        bool writeCompletionKnown = false;
         bool responseReceived = false;
         QString error;
         QByteArray response;
@@ -504,6 +509,9 @@ private:
     QString devRoot_ = QStringLiteral("/dev");
     PrinterProtocol::DiscoverySnapshot snapshot_;
     bool hasSnapshot_ = false;
+#ifdef TRYX_FLATPAK
+    tryx::portal_usb::Access *portalAccess_ = nullptr;
+#endif
 #ifdef TRYX_PROTOCOL_TESTING
     bool forceStartFailureForTesting_ = false;
 #endif

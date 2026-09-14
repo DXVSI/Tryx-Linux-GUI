@@ -445,6 +445,15 @@ owner-only journal without automatically repeating an uncertain Apply or
 Delete command. Reconciliation becomes terminal only when a fresh FileList
 also proves that the exact verified replacement copy still exists.
 
+## Experimental Flatpak for immutable desktops
+
+An experimental Flatpak build is available from source for Bazzite and SteamOS
+Desktop Mode. It includes the GUI, background runtime, and CLI, with file dialogs
+and printer-class USB access through desktop portals. Firmware flashing,
+autostart, and legacy serial/ADB devices are not supported by this package.
+Physical-device testing on Bazzite and SteamOS is still required; this is not a
+Flathub release. See the [Flatpak build instructions and limitations](packaging/flatpak/README.md).
+
 ## Native Linux packages
 
 TRYX Panorama Manager supports Linux only. Native packaging targets the latest

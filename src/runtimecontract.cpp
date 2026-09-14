@@ -1,4 +1,5 @@
 #include "runtimecontract.h"
+#include "packagingcontext.h"
 
 #include <QDBusMetaType>
 #include <QDir>
@@ -660,7 +661,9 @@ const QDBusArgument &operator>>(const QDBusArgument &argument,
 }
 
 QString tryxRuntimeServiceName() {
-    return QStringLiteral("org.tryx.Panorama");
+    return tryx::packaging::isFlatpak()
+        ? tryx::packaging::flatpakRuntimeService()
+        : tryx::packaging::nativeRuntimeService();
 }
 
 QString tryxRuntimeObjectPath() {
@@ -676,8 +679,7 @@ QString tryxRuntimeOperationsInterfaceName() {
 }
 
 QString tryxRuntimeMediaInboxPath() {
-    const QString runtimePath = QStandardPaths::writableLocation(
-        QStandardPaths::RuntimeLocation);
+    const QString runtimePath = tryx::packaging::runtimeDirectory();
     if (runtimePath.isEmpty()) {
         return {};
     }
@@ -686,8 +688,7 @@ QString tryxRuntimeMediaInboxPath() {
 }
 
 QString tryxRuntimeMediaSpoolPath() {
-    const QString runtimePath = QStandardPaths::writableLocation(
-        QStandardPaths::RuntimeLocation);
+    const QString runtimePath = tryx::packaging::runtimeDirectory();
     if (runtimePath.isEmpty()) {
         return {};
     }
@@ -696,8 +697,7 @@ QString tryxRuntimeMediaSpoolPath() {
 }
 
 QString tryxRuntimeDeviceMediaOutboxPath() {
-    const QString runtimePath = QStandardPaths::writableLocation(
-        QStandardPaths::RuntimeLocation);
+    const QString runtimePath = tryx::packaging::runtimeDirectory();
     if (runtimePath.isEmpty()) {
         return {};
     }

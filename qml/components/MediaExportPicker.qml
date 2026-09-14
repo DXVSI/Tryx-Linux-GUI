@@ -12,6 +12,7 @@ Popup {
 
     required property var workflow
     required property url homeFolder
+    property var portalChooser: null
 
     property url currentFolder: homeFolder
     property string mediaId: ""
@@ -19,12 +20,17 @@ Popup {
     property alias fileName: fileNameField.text
 
     function openFor(targetMediaId, targetMediaName) {
+        if (portalChooser && portalChooser.busy)
+            return
         mediaId = targetMediaId
         mediaName = targetMediaName
         fileName = workflow.suggestedExportFileName(targetMediaName)
         if (String(currentFolder).length === 0)
             currentFolder = homeFolder
-        open()
+        if (portalChooser)
+            portalChooser.open(qsTr("Choose export folder"), currentFolder)
+        else
+            open()
     }
 
     function navigate(folderUrl) {
@@ -83,6 +89,23 @@ Popup {
         sortField: FolderListModel.Name
         sortCaseSensitive: false
     }
+
+    Connections {
+        target: root.portalChooser
+        function onSelected(url) {
+            root.currentFolder = url
+            root.open()
+        }
+        function onCancelled() {
+            root.mediaId = ""
+            root.mediaName = ""
+        }
+        function onFailed(message) {
+            root.mediaId = ""
+            root.mediaName = ""
+        }
+    }
+    PortalChooserError { chooser: root.portalChooser }
 
     contentItem: ColumnLayout {
         spacing: 14
@@ -143,6 +166,7 @@ Popup {
         RowLayout {
             Layout.fillWidth: true
             spacing: 10
+            visible: !root.portalChooser
 
             Button {
                 text: qsTr("Home")
@@ -168,6 +192,7 @@ Popup {
         Frame {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            visible: !root.portalChooser
 
             background: Rectangle {
                 radius: 8
