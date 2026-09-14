@@ -17,7 +17,10 @@ concurrency:
 jobs:
   flatpak:
     name: Flatpak / Qt 6.11 / x86_64
-    runs-on: ubuntu-24.04
+    # Ubuntu 24.04's AppArmor userns restriction blocks non-root bwrap loopback
+    # setup inside this container. Keep isolation on a supported 22.04 host;
+    # application libraries still come from the pinned container and KDE SDK.
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     # Nested bubblewrap requires this on the disposable GitHub-hosted runner.
     # Do not move this untrusted-source build onto a persistent self-hosted host.

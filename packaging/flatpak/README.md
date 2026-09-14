@@ -72,3 +72,8 @@ document IDs on exit. It must not be confused with physical-device qualification
 
 CI produces a downloadable experimental artifact only; it does not publish to
 Flathub or modify the native release workflow.
+
+The Flatpak CI container uses an Ubuntu 22.04 runner host because Ubuntu 24.04's
+default AppArmor user-namespace restrictions prevent its non-root bubblewrap
+network setup. The SDK remains KDE 6.11; no host security settings are disabled.
+Native DEB packaging continues to use Ubuntu 24.04.
