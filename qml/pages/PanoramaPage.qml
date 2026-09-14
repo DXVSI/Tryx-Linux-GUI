@@ -12,6 +12,8 @@ ScrollView {
     required property var runtime
     required property var editor
     required property var deviceMedia
+    property var mediaSourceChooser: null
+    property var mediaExportChooser: null
 
     clip: true
 
@@ -1122,7 +1124,8 @@ ScrollView {
                     DropArea {
                         id: dropArea
                         anchors.fill: parent
-                        enabled: !root.runtime.operationBusy
+                        enabled: !root.runtime.operationBusy &&
+                                 !(root.mediaSourceChooser && root.mediaSourceChooser.busy)
                         onDropped: drop => {
                             root.editor.beginDropped(drop.urls)
                             drop.acceptProposedAction()
@@ -2101,12 +2104,14 @@ ScrollView {
     MediaFilePicker {
         id: mediaPicker
         editor: root.editor
+        portalChooser: root.mediaSourceChooser
     }
 
     MediaExportPicker {
         id: exportPicker
         workflow: root.deviceMedia
         homeFolder: root.editor.homeFolder
+        portalChooser: root.mediaExportChooser
     }
 
     Connections {

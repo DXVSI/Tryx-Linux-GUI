@@ -34,13 +34,55 @@ TestCase {
             id: picker
             editor: controller
         }
+        QtObject {
+            id: chooser
+            property bool busy: false
+            property int opens: 0
+            signal selected(url source)
+            signal cancelled()
+            signal failed(string message)
+            function open(title, folder) { ++opens; busy = true }
+            function cancel() { busy = false; cancelled() }
+            function accept(source) {
+                if (busy) { busy = false; selected(source) }
+            }
+        }
     }
 
     function init() {
+        chooser.cancel()
+        chooser.opens = 0
+        picker.portalChooser = null
         controller.lastOpened = ""
         controller.pickerWasOpenWhenBegin = false
         picker.close()
         wait(0)
+    }
+
+    function test_portalIsModalAndCancelRejectsLateSelection() {
+        picker.portalChooser = chooser
+        picker.openPicker()
+        compare(chooser.opens, 1)
+        const guard = findChild(picker, "portalChooserGuard")
+        verify(guard !== null)
+        tryVerify(() => guard.opened)
+        verify(guard.modal)
+        verify(!picker.opened)
+        guard.reject()
+        tryVerify(() => !chooser.busy)
+        tryVerify(() => !guard.opened)
+        controller.begin(Qt.resolvedUrl("newer.png"))
+        chooser.accept(Qt.resolvedUrl("old.png"))
+        wait(0)
+        compare(controller.lastOpened, Qt.resolvedUrl("newer.png"))
+    }
+
+    function test_portalSelectionStartsExistingEditorFlow() {
+        picker.portalChooser = chooser
+        picker.openPicker()
+        chooser.accept(Qt.resolvedUrl("portal.png"))
+        tryCompare(controller, "lastOpened", Qt.resolvedUrl("portal.png"))
+        verify(!controller.pickerWasOpenWhenBegin)
     }
 
     function test_pickerHasVisibleBoundedContent() {

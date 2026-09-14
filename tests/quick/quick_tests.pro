@@ -65,3 +65,15 @@ SOURCES += \
     ../../src/quick/systemmetricsmodel.cpp \
     ../../src/quick/windowchromecontroller.cpp \
     tst_quickmodels.cpp
+
+# The opt-in probe only exercises file helpers on synthetic fixtures. It never
+# constructs a runtime client, starts discovery, or accesses a physical device.
+contains(CONFIG, document_portal_probe) {
+    SOURCES -= tst_quickmodels.cpp
+    SOURCES += $$PWD/../flatpak/documentportal_probe.cpp
+    DEFINES += TRYX_FLATPAK
+    TARGET = documentportal-probe
+    DESTDIR = $$PWD/../../build/documentportal-probe
+    OBJECTS_DIR = $$DESTDIR/obj
+    MOC_DIR = $$DESTDIR/moc
+}

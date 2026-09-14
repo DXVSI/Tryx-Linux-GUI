@@ -11,6 +11,7 @@ Popup {
     objectName: "mediaFilePicker"
 
     required property var editor
+    property var portalChooser: null
 
     property url currentFolder: editor.homeFolder
     property url selectedFile: ""
@@ -23,11 +24,16 @@ Popup {
     }
 
     function openPicker() {
+        if (portalChooser && portalChooser.busy)
+            return
         clearSelection()
         pendingSource = ""
         if (String(currentFolder).length === 0)
             currentFolder = editor.homeFolder
-        open()
+        if (portalChooser)
+            portalChooser.open(qsTr("Select media file"), currentFolder)
+        else
+            open()
     }
 
     function navigate(folderUrl) {
@@ -98,6 +104,14 @@ Popup {
         sortField: FolderListModel.Name
         sortCaseSensitive: false
     }
+
+    Connections {
+        target: root.portalChooser
+        function onSelected(url) {
+            Qt.callLater(() => root.editor.begin(url))
+        }
+    }
+    PortalChooserError { chooser: root.portalChooser }
 
     contentItem: ColumnLayout {
         spacing: 14

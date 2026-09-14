@@ -422,11 +422,16 @@ TestCase {
         settingsMock.autostartEnabled = false
         wait(0)
         verify(!autostart.checked)
+        verify(autostart.enabled)
+        verify(waitForPolish(content))
         const autostartPosition = autostart.mapToItem(page, 0, 0)
         page.contentItem.contentY = Math.max(
             0,
             page.contentItem.contentY + autostartPosition.y - 200)
-        wait(0)
+        verify(waitForPolish(content))
+        const autostartBounds = autostart.mapToItem(content, 0, 0)
+        verify(autostartBounds.x >= 0)
+        verify(autostartBounds.x + autostart.width <= content.width + 1)
         mouseClick(
             autostart,
             Math.floor(autostart.width / 2),

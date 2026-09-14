@@ -4,6 +4,7 @@ CONFIG += c++17 console
 CONFIG -= app_bundle
 TEMPLATE = app
 TARGET = tryx
+contains(CONFIG, flatpak): DEFINES += TRYX_FLATPAK
 
 !versionAtLeast(QT_VERSION, 6.4.0) {
     error("tryx requires Qt 6.4 or newer")
@@ -56,6 +57,10 @@ DISTFILES += \
 unix {
     target.path = /usr/bin
     tryx_cli_manpage.path = /usr/share/man/man1
+    contains(CONFIG, flatpak) {
+        target.path = /app/bin
+        tryx_cli_manpage.path = /app/share/man/man1
+    }
     tryx_cli_manpage.files = packaging/tryx.1
     INSTALLS += target tryx_cli_manpage
 }

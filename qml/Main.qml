@@ -21,6 +21,9 @@ ApplicationWindow {
     required property var releaseUpdates
     required property bool quickSmokeTest
     required property bool autostartRequested
+    property var mediaSourceChooser: null
+    property var mediaExportChooser: null
+    property var supportExportChooser: null
 
     width: 1420
     height: 900
@@ -477,6 +480,8 @@ ApplicationWindow {
                         runtime: window.runtime
                         editor: window.mediaEditor
                         deviceMedia: window.deviceMedia
+                        mediaSourceChooser: window.mediaSourceChooser
+                        mediaExportChooser: window.mediaExportChooser
                         onApplyFinished: (outcome, message) =>
                             window.finishGuardedApply(outcome, message)
                     }
@@ -488,6 +493,7 @@ ApplicationWindow {
                         windowChrome: window.windowChrome
                         supportBundle: window.supportBundle
                         cacheManagement: window.cacheManagement
+                        supportExportChooser: window.supportExportChooser
                         updateAvailable: window.releaseUpdates.updateAvailable
                         availableVersion: window.releaseUpdates.availableVersion
                         releaseUrl: window.releaseUpdates.releaseUrl

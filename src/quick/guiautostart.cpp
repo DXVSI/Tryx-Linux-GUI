@@ -1,4 +1,5 @@
 #include "guiautostart.h"
+#include "packagingcontext.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -1689,11 +1690,19 @@ bool changeAutostartState(bool enabled, QString *error) {
 }  // namespace
 
 State query() {
+    if (tryx::packaging::isFlatpak())
+        return {false, false, QObject::tr(
+            "Desktop autostart is not supported in this experimental Flatpak.")};
     const AutostartState state = queryAutostartState();
     return {state.available, state.enabled, state.error};
 }
 
 bool setEnabled(bool enabled, QString *error) {
+    if (tryx::packaging::isFlatpak()) {
+        if (error)
+            *error = query().error;
+        return false;
+    }
     return changeAutostartState(enabled, error);
 }
 

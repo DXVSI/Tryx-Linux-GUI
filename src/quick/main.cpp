@@ -12,6 +12,8 @@
 #include "supportbundlecontroller.h"
 #include "systemmetricsmodel.h"
 #include "windowchromecontroller.h"
+#include "packagingcontext.h"
+#include "portalfilechooser.h"
 
 #include <QCoreApplication>
 #include <QGuiApplication>
@@ -119,7 +121,8 @@ int main(int argc, char *argv[]) {
     app.setWindowIcon(
         QIcon(QStringLiteral(":/icons/tryx-panorama.png")));
     app.setDesktopFileName(
-        QStringLiteral("tryx-panorama-manager"));
+        tryx::packaging::isFlatpak() ? tryx::packaging::appId()
+                                   : QStringLiteral("tryx-panorama-manager"));
 
     const QStringList arguments = app.arguments();
     const bool smokeTest =
@@ -237,6 +240,14 @@ int main(int argc, char *argv[]) {
         &runtime, &RuntimeClient::connectionChanged,
         &tray, updateTrayPresentation);
 
+    std::unique_ptr<PortalFileChooser> mediaSourceChooser;
+    std::unique_ptr<PortalFileChooser> mediaExportChooser;
+    std::unique_ptr<PortalFileChooser> supportExportChooser;
+    if (tryx::packaging::isFlatpak()) {
+        mediaSourceChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::MediaFile);
+        mediaExportChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::Directory);
+        supportExportChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::Directory);
+    }
     QQmlApplicationEngine engine;
     QObject::connect(
         &settings, &AppSettingsController::languageChanged,
@@ -254,6 +265,12 @@ int main(int argc, char *argv[]) {
             updateTrayPresentation();
         });
     engine.setInitialProperties({
+        {QStringLiteral("mediaSourceChooser"),
+         QVariant::fromValue(static_cast<QObject *>(mediaSourceChooser.get()))},
+        {QStringLiteral("mediaExportChooser"),
+         QVariant::fromValue(static_cast<QObject *>(mediaExportChooser.get()))},
+        {QStringLiteral("supportExportChooser"),
+         QVariant::fromValue(static_cast<QObject *>(supportExportChooser.get()))},
         {QStringLiteral("runtime"),
          QVariant::fromValue(static_cast<QObject *>(&runtime))},
         {QStringLiteral("mediaEditor"),

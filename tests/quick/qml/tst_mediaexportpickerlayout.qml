@@ -41,14 +41,40 @@ TestCase {
             workflow: workflow
             homeFolder: Qt.resolvedUrl(".")
         }
+        QtObject {
+            id: chooser
+            property bool busy: false
+            signal selected(url folder)
+            signal cancelled()
+            signal failed(string message)
+            function open(title, folder) { busy = true }
+            function cancel() { busy = false; cancelled() }
+        }
     }
 
     function init() {
+        chooser.cancel()
+        picker.portalChooser = null
         workflow.exportedMediaId = ""
         workflow.exportedMediaName = ""
         workflow.exportedFileName = ""
         picker.close()
         wait(0)
+    }
+
+    function test_portalFolderPreservesExportIdentityAndNeedsConfirmation() {
+        picker.portalChooser = chooser
+        picker.openFor("original-id", "original-media")
+        picker.openFor("newer-id", "newer-media")
+        compare(picker.mediaId, "original-id")
+        verify(!picker.opened)
+        chooser.busy = false
+        chooser.selected(Qt.resolvedUrl("."))
+        tryVerify(() => picker.opened)
+        compare(workflow.exportedMediaId, "")
+        picker.exportCopy()
+        tryCompare(workflow, "exportedMediaId", "original-id")
+        compare(workflow.exportedMediaName, "original-media")
     }
 
     function test_suggestedNameAndExplicitExport() {

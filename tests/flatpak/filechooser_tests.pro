@@ -1,0 +1,11 @@
+QT += core dbus testlib
+CONFIG += c++17 console testcase
+CONFIG -= app_bundle
+TEMPLATE = app
+TARGET = flatpak-filechooser-tests
+DESTDIR = $$PWD/../../build/flatpak-filechooser-tests
+OBJECTS_DIR = $$DESTDIR/obj
+MOC_DIR = $$DESTDIR/moc
+INCLUDEPATH += $$PWD/../../src/quick
+HEADERS += $$PWD/../../src/quick/portalfilechooser.h
+SOURCES += $$PWD/filechooser_tests.cpp $$PWD/../../src/quick/portalfilechooser.cpp
