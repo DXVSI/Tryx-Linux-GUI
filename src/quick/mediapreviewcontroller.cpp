@@ -1,4 +1,5 @@
 #include "mediapreviewcontroller.h"
+#include "packagingcontext.h"
 
 #include "mediatransform.h"
 
@@ -75,8 +76,7 @@ const QRegularExpression kPreviewFileName(
         "[0-9a-f]{4}-[0-9a-f]{12}-[0-9]+\\.png$"));
 
 QString previewDirectoryPath() {
-    const QString runtimePath = QStandardPaths::writableLocation(
-        QStandardPaths::RuntimeLocation);
+    const QString runtimePath = tryx::packaging::runtimeDirectory();
     if (runtimePath.isEmpty()) {
         return {};
     }
@@ -1008,9 +1008,7 @@ bool MediaPreviewController::ensurePrivateDirectory(
 
 bool MediaPreviewController::ensurePrivateDirectoryTree(
     const QString &leafPath, QString *errorMessage) {
-    const QString runtimeRoot =
-        QStandardPaths::writableLocation(
-            QStandardPaths::RuntimeLocation);
+    const QString runtimeRoot = tryx::packaging::runtimeDirectory();
     const QString applicationRoot =
         QFileInfo(leafPath).absolutePath();
     if (runtimeRoot.isEmpty() || leafPath.isEmpty() ||
@@ -1033,9 +1031,7 @@ bool MediaPreviewController::ensurePrivateDirectoryTree(
 
 bool MediaPreviewController::privateDirectoryTreeIsSafe(
     const QString &leafPath) {
-    const QString runtimeRoot =
-        QStandardPaths::writableLocation(
-            QStandardPaths::RuntimeLocation);
+    const QString runtimeRoot = tryx::packaging::runtimeDirectory();
     const QString applicationRoot =
         QFileInfo(leafPath).absolutePath();
     return !runtimeRoot.isEmpty() && !leafPath.isEmpty() &&

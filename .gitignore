@@ -2,6 +2,7 @@
 build/
 build.tar.xz
 .cache/
+.flatpak-builder/
 *.o
 *.a
 *.so
@@ -12,6 +13,11 @@ Makefile.quick
 Makefile.runtime
 tests/cli/target_wrapper.sh
 tests/quick/target_wrapper.sh
+tests/flatpak/target_wrapper.sh
+tests/flatpak/Makefile.*
+tests/Makefile.*
+tests/quick/Makefile.*
+tests/cli/Makefile.*
 .qmake.stash
 moc_*.cpp
 moc_predefs.h
