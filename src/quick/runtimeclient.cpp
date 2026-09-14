@@ -648,6 +648,8 @@ RuntimeClient::RuntimeClient(bool offline, QObject *parent)
     displayApplyDeadline_.setInterval(kDisplayApplyTimeoutMs);
     connect(&displayApplyDeadline_, &QTimer::timeout,
             this, &RuntimeClient::onDisplayApplyTimeout);
+    connect(this, &RuntimeClient::operationChanged, this,
+            [this]() { refreshMediaIfReady(); });
     connect(
         this, &RuntimeClient::operationRequestRejected,
         this,
@@ -2599,32 +2601,87 @@ void RuntimeClient::refreshMedia() {
     if (!compatible_) {
         return;
     }
+    mediaRefreshPending_ = true;
+    if (!refreshMediaIfReady()) {
+        refreshMediaSnapshot();
+    }
+}
+
+bool RuntimeClient::mediaSessionReady() const {
+    return connection_.connected &&
+        (legacyConnected() ||
+         (connection_.printerClassConnected &&
+          connection_.printerClassDevicePresent &&
+          connection_.displaySessionActive));
+}
+
+bool RuntimeClient::refreshMediaIfReady() {
+    if (offline_ || !compatible_ || !mediaRefreshPending_ ||
+        !mediaSessionReady() || !capabilitiesReady_ ||
+        !handshakeContextIsCurrent(
+            serviceEpoch_, handshakeAttempt_, runtimeOwner_)) {
+        return false;
+    }
+    if (!legacyConnected()) {
+        if (hasRuntimeCapability(tryxRuntimeDeviceCapabilitiesV1Token())) {
+            if (!deviceCapabilitiesReady_) return false;
+            if (!hasDeviceCapability(tryxDeviceMediaCatalogV1Token())) {
+                mediaRefreshPending_ = false;
+                return false;
+            }
+        } else if (isTurrisProductId(connection_.productId)) {
+            // API 8 runtimes without the optional capability getter retain
+            // their baseline catalog support, except for Turris.
+            mediaRefreshPending_ = false;
+            return false;
+        }
+    }
+    if (!operationsSnapshotReady_) {
+        refreshOperations();
+        return false;
+    }
+    if (operationBusy()) return false;
+    // The runtime drops a catalog request while disconnected or busy. Keep a
+    // single pending request until both the session and operation state allow it.
+    mediaRefreshPending_ = false;
     sendVoidCall(tryxRuntimeInterfaceName(),
-                 QStringLiteral("RefreshMediaList"));
-    if (legacyConnected()) {
+                 QStringLiteral("RefreshMediaList"), {}, runtimeOwner_);
+    refreshMediaSnapshot();
+    return true;
+}
+
+void RuntimeClient::refreshMediaSnapshot() {
+    const quint64 epoch = serviceEpoch_, handshake = handshakeAttempt_;
+    const QString owner = runtimeOwner_;
+    if (legacyConnected() ||
+        !handshakeContextIsCurrent(epoch, handshake, owner)) {
         return;
     }
-
+    const QString identity = connection_.serial.trimmed();
+    const QString productId = connection_.productId;
     QDBusInterface runtime(
-        tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
+        owner, tryxRuntimeObjectPath(),
         tryxRuntimeOperationsInterfaceName(), bus_);
     runtime.setTimeout(kRuntimeCallTimeoutMs);
-    const quint64 epoch = serviceEpoch_;
     auto *watcher = new QDBusPendingCallWatcher(
         runtime.asyncCall(QStringLiteral("GetMediaCatalog")), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, epoch]() {
+            [this, watcher, epoch, handshake, owner, identity, productId]() {
                 QDBusPendingReply<TryxRuntimeMediaCatalogSnapshot> reply =
                     *watcher;
                 watcher->deleteLater();
-                if (epoch != serviceEpoch_) {
+                if (!handshakeContextIsCurrent(epoch, handshake, owner) ||
+                    identity != connection_.serial.trimmed() ||
+                    productId != connection_.productId) {
                     return;
                 }
                 if (!reply.isValid()) {
                     setDiagnostic(reply.error().message());
                     return;
                 }
-                mediaModel_.applySnapshot(reply.value());
+                if (reply.value().deviceIdentity == identity) {
+                    mediaModel_.applySnapshot(reply.value());
+                }
             });
 }
 
@@ -3355,6 +3412,7 @@ void RuntimeClient::onOperationRemoved(
             tr("The display apply operation disappeared before a terminal result was observed"),
             true);
     }
+    refreshMediaIfReady();
 }
 
 void RuntimeClient::onMediaCatalogUpdated(
@@ -3868,7 +3926,10 @@ void RuntimeClient::startRuntimeCapabilitiesHandshake(
                     emit capabilitiesChanged();
                 }
                 emit displayChanged();
-                if (legacyRuntime) refreshDisplay();
+                if (legacyRuntime) {
+                    refreshDisplay();
+                    refreshMediaIfReady();
+                }
                 return;
             }
 
@@ -3906,6 +3967,7 @@ void RuntimeClient::startRuntimeCapabilitiesHandshake(
             } else {
                 clearSavedLayoutsState();
             }
+            refreshMediaIfReady();
         });
 }
 
@@ -4074,6 +4136,10 @@ void RuntimeClient::requestDeviceCapabilities(
             deviceCapabilitiesSnapshot_.capabilities = filtered;
             deviceCapabilities_ = filtered;
             deviceCapabilitiesReady_ = true;
+            if (mediaSessionGeneration_ != value.physicalGeneration) {
+                mediaSessionGeneration_ = value.physicalGeneration;
+                if (mediaSessionReady()) mediaRefreshPending_ = true;
+            }
             if (!usesDisplaySnapshotV1()) {
                 completeConnectionRevisionReconciliation();
             }
@@ -4088,6 +4154,7 @@ void RuntimeClient::requestDeviceCapabilities(
             } else {
                 clearDeviceSpecificationsState();
             }
+            refreshMediaIfReady();
         });
 }
 
@@ -5057,6 +5124,10 @@ void RuntimeClient::clearRuntimeState() {
     legacyBrightnessConfirmed_ = false;
     activeOperationId_.clear();
     activeOperation_ = {};
+    operationsSnapshotReady_ = false;
+    operationsSnapshotPending_ = false;
+    mediaRefreshPending_ = false;
+    mediaSessionGeneration_ = 0;
     pendingLegacyScreenConfig_ = {};
     pendingLegacyScreenConfigValid_ = false;
     mediaModel_.clear();
@@ -5098,24 +5169,38 @@ void RuntimeClient::refreshConnection() {
             });
 }
 
-void RuntimeClient::refreshOperations() {
+void RuntimeClient::refreshOperations(int remainingReconciliations) {
+    const quint64 epoch = serviceEpoch_, handshake = handshakeAttempt_;
+    const QString owner = runtimeOwner_;
+    if (operationsSnapshotPending_ ||
+        !handshakeContextIsCurrent(epoch, handshake, owner)) return;
+    operationsSnapshotPending_ = true;
     QDBusInterface runtime(
-        tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
+        owner, tryxRuntimeObjectPath(),
         tryxRuntimeOperationsInterfaceName(), bus_);
     runtime.setTimeout(kRuntimeCallTimeoutMs);
-    const quint64 epoch = serviceEpoch_;
     auto *watcher = new QDBusPendingCallWatcher(
         runtime.asyncCall(QStringLiteral("GetOperations")), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, epoch]() {
+            [this, watcher, epoch, handshake, owner, remainingReconciliations]() {
                 QDBusPendingReply<TryxRuntimeOperationsSnapshot> reply =
                     *watcher;
                 watcher->deleteLater();
-                if (epoch != serviceEpoch_) {
+                if (!handshakeContextIsCurrent(epoch, handshake, owner)) {
                     return;
                 }
+                operationsSnapshotPending_ = false;
                 if (!reply.isValid()) {
                     setDiagnostic(reply.error().message());
+                    return;
+                }
+                if (!operationsSnapshotReady_ &&
+                    reply.value().revision < operationModel_.revision()) {
+                    // A signal for another operation cannot establish idle.
+                    // Re-read once; further attempts need a new external event.
+                    if (remainingReconciliations > 0) {
+                        refreshOperations(remainingReconciliations - 1);
+                    }
                     return;
                 }
                 applyOperationsSnapshot(reply.value());
@@ -5336,7 +5421,7 @@ void RuntimeClient::sendOperation(
                     tr("%1 operation accepted").arg(kind), false);
                 if (kind != QStringLiteral("CacheCleanup")) {
                     QTimer::singleShot(
-                        0, this, &RuntimeClient::refreshOperations);
+                        0, this, [this]() { refreshOperations(); });
                 }
             });
 }
@@ -5391,7 +5476,7 @@ void RuntimeClient::reconcileOperationAcknowledgement(
                     emit operationUpdated(reply.value());
                 } else {
                     QTimer::singleShot(
-                        0, this, &RuntimeClient::refreshOperations);
+                        0, this, [this]() { refreshOperations(); });
                 }
                 return;
             }
@@ -5445,19 +5530,24 @@ bool RuntimeClient::operationAcknowledgementMatches(
 
 void RuntimeClient::sendVoidCall(
     const QString &interfaceName, const QString &method,
-    const QVariantList &arguments) {
+    const QVariantList &arguments, const QString &owner) {
+    const quint64 epoch = serviceEpoch_, handshake = handshakeAttempt_;
+    if (!owner.isEmpty() &&
+        !handshakeContextIsCurrent(epoch, handshake, owner)) return;
     QDBusMessage message = QDBusMessage::createMethodCall(
-        tryxRuntimeServiceName(), tryxRuntimeObjectPath(),
+        owner.isEmpty() ? tryxRuntimeServiceName() : owner,
+        tryxRuntimeObjectPath(),
         interfaceName, method);
     message.setArguments(arguments);
-    const quint64 epoch = serviceEpoch_;
     auto *watcher = new QDBusPendingCallWatcher(
         bus_.asyncCall(message, kRuntimeCallTimeoutMs), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, watcher, epoch]() {
+            [this, watcher, epoch, handshake, owner]() {
                 QDBusPendingReply<> reply = *watcher;
                 watcher->deleteLater();
-                if (epoch != serviceEpoch_) {
+                if (epoch != serviceEpoch_ ||
+                    (!owner.isEmpty() &&
+                     !handshakeContextIsCurrent(epoch, handshake, owner))) {
                     return;
                 }
                 if (!reply.isValid()) {
@@ -6466,11 +6556,13 @@ void RuntimeClient::onDisplayApplyTimeout() {
 
 void RuntimeClient::applyOperationsSnapshot(
     const TryxRuntimeOperationsSnapshot &snapshot) {
-    if (!operationModel_.applySnapshot(snapshot)) {
+    if (!operationModel_.applySnapshot(snapshot) &&
+        (operationsSnapshotReady_ || snapshot.revision != operationModel_.revision())) {
         return;
     }
     activeOperationId_ = snapshot.activeOperationId;
     activeOperation_ = {};
+    operationsSnapshotReady_ = true;
     for (const TryxRuntimeOperationInfo &info : snapshot.operations) {
         emit operationUpdated(info);
         observeDisplaySubmissionOperation(info);
@@ -6491,6 +6583,7 @@ void RuntimeClient::applyConnectionSnapshot(
         displayDeviceIdentity();
     const bool wasConnected = connection_.connected;
     const bool wasLegacy = legacyConnected();
+    const bool wasMediaSessionReady = mediaSessionReady();
     const QString oldSavedIdentity =
         savedLayoutConnectionIdentity();
     const QString oldSavedProduct = connection_.productId;
@@ -6519,6 +6612,14 @@ void RuntimeClient::applyConnectionSnapshot(
     const QString newConnectionIdentity = isLegacy
         ? legacyDisplayIdentity()
         : connection_.serial.trimmed();
+    if (!mediaSessionReady()) {
+        mediaRefreshPending_ = false;
+        mediaSessionGeneration_ = 0;
+    } else if (!wasMediaSessionReady ||
+               oldConnectionIdentity != newConnectionIdentity ||
+               oldSavedProduct != connection_.productId) {
+        mediaRefreshPending_ = true;
+    }
     const bool displayBoundaryChanged =
         wasConnected != snapshot.connected ||
         wasLegacy != isLegacy ||
@@ -6560,6 +6661,8 @@ void RuntimeClient::applyConnectionSnapshot(
     }
     if (wasLegacy != isLegacy ||
         (isLegacy && oldMediaIdentity != newMediaIdentity) ||
+        (!isLegacy && (oldConnectionIdentity != newConnectionIdentity ||
+                       oldSavedProduct != connection_.productId)) ||
         !snapshot.connected) {
         mediaModel_.clear();
     }
@@ -6594,6 +6697,7 @@ void RuntimeClient::applyConnectionSnapshot(
         QTimer::singleShot(
             0, this, &RuntimeClient::refreshSavedLayouts);
     }
+    refreshMediaIfReady();
 }
 
 void RuntimeClient::applyMetricsState(
