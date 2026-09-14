@@ -1,5 +1,8 @@
 #include "printerprotocol.h"
 #include "printerdiscovery_p.h"
+#ifdef TRYX_FLATPAK
+#include "portalusb.h"
+#endif
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -399,6 +402,21 @@ bool PrinterProtocol::DiscoverySnapshot::blocksLegacyTransport() const {
 }
 
 QString PrinterProtocol::DiscoverySnapshot::statusText() const {
+#ifdef TRYX_FLATPAK
+    if (state == DiscoveryState::MonitoringUnavailable || state == DiscoveryState::PermissionDenied) {
+        const QString error = tryx::portal_usb::Registry::instance().snapshot().error;
+        if (!error.isEmpty())
+            return error;
+    }
+    if (state == DiscoveryState::EnumeratingPrinterClass)
+        return QObject::tr("No supported TRYX printer-class device is visible through the USB portal. "
+                           "Legacy serial/ADB devices are not supported by this Flatpak.");
+    if (state == DiscoveryState::PermissionDenied)
+        return QObject::tr("Waiting for read/write access through the USB portal. "
+                           "The host must also allow access to the device.");
+    if (state == DiscoveryState::Ready)
+        return QObject::tr("TRYX USB portal access is ready");
+#endif
     switch (state) {
     case DiscoveryState::Absent:
         return QObject::tr("TRYX printer-class device is absent");
@@ -427,6 +445,26 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
     if (QDir::cleanPath(sysfsRoot) == QStringLiteral("/sys") &&
         QDir::cleanPath(devRoot) == QStringLiteral("/dev")) {
         DiscoverySnapshot snapshot;
+#ifdef TRYX_FLATPAK
+        const auto portal = tryx::portal_usb::Registry::instance().snapshot();
+        for (const auto &device : portal.devices) {
+            snapshot.devices.append({device.endpoint, QString(), device.productId,
+                                     device.manufacturer, device.product, device.serial,
+                                     device.granted});
+        }
+        snapshot.workingUsbDeviceCount = snapshot.devices.size();
+        if (!portal.monitoring)
+            snapshot.state = DiscoveryState::MonitoringUnavailable;
+        else if (snapshot.devices.size() > 1)
+            snapshot.state = DiscoveryState::Ambiguous;
+        else if (snapshot.devices.size() == 1)
+            snapshot.state = snapshot.devices.first().accessible
+                ? DiscoveryState::Ready : DiscoveryState::PermissionDenied;
+        else
+            // No legacy serial/ADB fallback inside this printer-class Flatpak.
+            snapshot.state = DiscoveryState::EnumeratingPrinterClass;
+        return snapshot;
+#else
         libusb_context *context = nullptr;
         const int initializationResult = libusb_init(&context);
         if (initializationResult != LIBUSB_SUCCESS || !context) {
@@ -463,6 +501,7 @@ PrinterProtocol::DiscoverySnapshot PrinterProtocol::discover(const QString &sysf
             snapshot.state = DiscoveryState::RockchipGadget391a0006;
         }
         return snapshot;
+#endif
     }
 
     // Custom roots are retained only for deterministic offline fixtures. The
@@ -590,6 +629,19 @@ PrinterDeviceMonitor::PrinterDeviceMonitor(QObject *parent) : QObject(parent) {}
 PrinterDeviceMonitor::~PrinterDeviceMonitor() { stop(); }
 
 bool PrinterDeviceMonitor::start() {
+#ifdef TRYX_FLATPAK
+    if (!portalAccess_) {
+        portalAccess_ = new tryx::portal_usb::Access(
+            tryx::portal_usb::Registry::instance(), this);
+        connect(portalAccess_, &tryx::portal_usb::Access::changed,
+                this, [this]() { rescan(true); });
+        connect(portalAccess_, &tryx::portal_usb::Access::endpointRevoked,
+                this, &PrinterDeviceMonitor::currentEndpointRemoved);
+        connect(portalAccess_, &tryx::portal_usb::Access::errorOccurred,
+                this, &PrinterDeviceMonitor::monitorError);
+    }
+    return portalAccess_->start();
+#else
     if (monitor_) {
         return true;
     }
@@ -636,6 +688,7 @@ bool PrinterDeviceMonitor::start() {
     // lost between monitor activation and the initial state scan.
     rescan(true);
     return true;
+#endif
 }
 
 PrinterProtocol::DiscoverySnapshot PrinterDeviceMonitor::snapshot() const {
@@ -766,6 +819,12 @@ void PrinterDeviceMonitor::rescan(bool forceSignal) {
 }
 
 void PrinterDeviceMonitor::stop() {
+#ifdef TRYX_FLATPAK
+    if (portalAccess_)
+        disconnect(portalAccess_, nullptr, this, nullptr);
+    delete portalAccess_;
+    portalAccess_ = nullptr;
+#endif
     if (notifier_) {
         delete notifier_;
         notifier_ = nullptr;

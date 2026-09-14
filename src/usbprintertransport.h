@@ -65,7 +65,10 @@ public:
     static PrinterProtocol::DuplexTestResult
     runScenarioForTesting(const QList<PrinterProtocol::DuplexTestEvent> &events,
                           const QByteArray &request, int writeTimeoutMs,
-                          int readTimeoutMs);
+                          int readTimeoutMs,
+                          const QString &deviceId = QStringLiteral("scripted-usb"),
+                          quint16 productId = 0,
+                          const std::function<bool()> &isCancelled = {});
 #endif
 
 private:
