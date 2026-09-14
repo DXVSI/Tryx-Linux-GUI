@@ -1,0 +1,11 @@
+QT += core dbus testlib
+CONFIG += c++17 console testcase
+TEMPLATE = app
+TARGET = flatpak-runtimeownership-tests
+DEFINES += TRYX_FLATPAK
+INCLUDEPATH += $$PWD/../../src
+DESTDIR = $$PWD/../../build/flatpak-runtimeownership-tests
+OBJECTS_DIR = $$DESTDIR/obj
+MOC_DIR = $$DESTDIR/moc
+HEADERS += ../../src/flatpakruntimeownership.h
+SOURCES += runtimeownership_tests.cpp ../../src/flatpakruntimeownership.cpp

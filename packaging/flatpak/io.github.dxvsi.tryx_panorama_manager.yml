@@ -1,0 +1,107 @@
+app-id: io.github.dxvsi.tryx_panorama_manager
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+command: tryx-panorama-manager
+branch: experimental
+rename-desktop-file: tryx-panorama-manager.desktop
+rename-icon: tryx-panorama
+finish-args:
+  - --require-version=1.15.11
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Release notifications and host network counters; never host command execution.
+  - --share=network
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+  # Global exclusion only. The Flatpak API has its own app-scoped bus name.
+  - --own-name=org.tryx.Panorama
+  # Enumeration only: actual access is requested from the USB portal.
+  - --usb=vnd:391a+dev:1011
+  - --usb=vnd:391a+dev:1021
+  - --usb=vnd:391a+dev:2011
+modules:
+  # Test-only private session bus. Removed completely before export.
+  - name: dbus-test-tools
+    buildsystem: meson
+    build-options:
+      prefix: /app/test-tools
+      libdir: lib
+    config-opts:
+      - -Dapparmor=disabled
+      - -Dselinux=disabled
+      - -Dsystemd=disabled
+      - -Dx11_autolaunch=disabled
+      - -Dmodular_tests=disabled
+      - -Ddoxygen_docs=disabled
+      - -Dxml_docs=disabled
+      - -Dducktype_docs=disabled
+      - -Dqt_help=disabled
+    sources:
+      - type: archive
+        url: https://dbus.freedesktop.org/releases/dbus/dbus-1.16.2.tar.xz
+        sha256: 0ba2a1a4b16afe7bceb2c07e9ce99a8c2c3508e5dec290dbb643384bd6beb7e2
+    cleanup:
+      - '*'
+  - name: protobuf
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_CXX_STANDARD=17
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -Dprotobuf_BUILD_SHARED_LIBS=ON
+      - -Dprotobuf_LOCAL_DEPENDENCIES_ONLY=ON
+    post-install:
+      - install -Dm644 third_party/utf8_range/LICENSE /app/share/licenses/io.github.dxvsi.tryx_panorama_manager/protobuf/utf8_range-LICENSE
+    sources:
+      - type: archive
+        url: https://github.com/protocolbuffers/protobuf/releases/download/v36.1/protobuf-36.1.tar.gz
+        sha256: dc74fa582f559cbd31614ddfefb4868f43c919d7184bde514bb47f90c6025eb8
+    cleanup:
+      - /bin/protoc*
+      - /include
+      - /lib/cmake
+      - /lib/pkgconfig
+      - /lib/libprotoc*
+      - /lib/libupb*
+      - /lib/*.a
+  - name: tryx-panorama
+    buildsystem: simple
+    build-commands:
+      - qmake tryx-panorama.pro CONFIG+=flatpak -o Makefile.runtime
+      - make -f Makefile.runtime -j${FLATPAK_BUILDER_N_JOBS}
+      - make -f Makefile.runtime install
+      - qmake tryx-panorama-quick.pro CONFIG+=flatpak -o Makefile.quick
+      - make -f Makefile.quick -j${FLATPAK_BUILDER_N_JOBS}
+      - make -f Makefile.quick install
+      - qmake tryx-cli.pro CONFIG+=flatpak -o Makefile.cli
+      - make -f Makefile.cli -j${FLATPAK_BUILDER_N_JOBS}
+      - make -f Makefile.cli install
+      - install -Dm644 packaging/tryx-panorama-manager.desktop /app/share/applications/tryx-panorama-manager.desktop
+      - install -Dm644 resources/tryx-panorama.png /app/share/icons/hicolor/256x256/apps/tryx-panorama.png
+      - install -Dm644 packaging/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml /app/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
+      - install -Dm644 LICENSE /app/share/licenses/tryx-panorama-manager/LICENSE
+      - install -Dm644 LICENSES/picojson-BSD-2-Clause.txt /app/share/licenses/tryx-panorama-manager/picojson-BSD-2-Clause.txt
+      - sh packaging/flatpak/check-in-sdk.sh
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - .flatpak-builder
+          - .qmake.stash
+          - tests/.qmake.stash
+          - tests/quick/.qmake.stash
+          - tests/cli/.qmake.stash
+          - tests/flatpak/.qmake.stash
+          - .cache
+          - 'Makefile*'
+          - build
+          - build.tar.xz
+          - docs
+          - tools
+          - media
+          - proto
+          - demo.mp4

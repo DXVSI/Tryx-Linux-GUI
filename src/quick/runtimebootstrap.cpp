@@ -1,6 +1,7 @@
 #include "runtimebootstrap.h"
 
 #include "runtimecontract.h"
+#include "packagingcontext.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
@@ -32,6 +33,7 @@
 #if defined(Q_OS_LINUX)
 #include <fcntl.h>
 #include <linux/fs.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -1053,6 +1055,61 @@ bool startFallbackRuntime(const RuntimeBootstrapOptions &options,
     return true;
 }
 
+bool ensureFlatpakRuntime(QString *errorMessage,
+                          const RuntimeBootstrapOptions &options) {
+    const auto bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected() || !bus.interface()) {
+        if (errorMessage)
+            *errorMessage = QObject::tr("The user D-Bus session is unavailable");
+        return false;
+    }
+    const QString existingOwner = runtimeServiceOwner();
+    if (!existingOwner.isEmpty()) {
+        // Only the app-scoped API is compatible with the sandbox's paths.
+        // Never restart an existing process, even for an API mismatch.
+        return waitForRuntimeApi(existingOwner, options, errorMessage) ==
+               RuntimeApiStatus::Compatible;
+    }
+    const QDBusReply<QString> nativeOwner = bus.interface()->serviceOwner(
+        tryx::packaging::nativeRuntimeService());
+    if (nativeOwner.isValid() && !nativeOwner.value().isEmpty()) {
+        if (errorMessage)
+            *errorMessage = QObject::tr(
+                "Another TRYX runtime is running. Finish or cancel its operations "
+                "and stop it before opening the Flatpak. It was not stopped automatically.");
+        return false;
+    }
+    // This is only a preflight. The child atomically acquires the global
+    // exclusion name before discovery, on a connection without exported APIs.
+    const QString executable = verifiedExecutable(
+        options.installedRuntimeFallbackProgram.isEmpty()
+            ? QStringLiteral("/app/lib/tryx-panorama-manager/tryx-panorama-runtime")
+            : options.installedRuntimeFallbackProgram);
+    StartedRuntimeProcess child;
+    if (!startRuntimeExecutable(executable, options.installedRuntimeFallbackArguments,
+                                &child, errorMessage))
+        return false;
+    bool ready = false;
+    const auto cleanup = qScopeGuard([&]() {
+        if (!ready) {
+            // D-Bus reports the proxy PID, not the sandbox child PID. Terminate
+            // only our captured process identity, never a name's current owner.
+            child.requestTermination();
+        }
+    });
+    if (!waitForRuntimeService(options.startupTimeoutMs, errorMessage))
+        return false;
+    const QString startedOwner = runtimeServiceOwner();
+    if (startedOwner.isEmpty()) {
+        if (errorMessage)
+            *errorMessage = QObject::tr("The Flatpak background runtime exited during startup");
+        return false;
+    }
+    ready = waitForRuntimeApi(startedOwner, options, errorMessage) ==
+            RuntimeApiStatus::Compatible;
+    return ready;
+}
+
 }  // namespace
 
 namespace {
@@ -1128,6 +1185,98 @@ QString descriptorRelativePath(int directoryDescriptor,
         .arg(QString::fromLocal8Bit(leafName));
 }
 
+class InstanceLease final {
+public:
+    InstanceLease(int directory, const QByteArray &socketLeaf, const QString &nativePath)
+        : directory_(directory), leaf_(socketLeaf + QByteArrayLiteral(".flock")) {
+        if (!tryx::packaging::isFlatpak()) {
+            native_ = std::make_unique<QLockFile>(nativePath);
+            native_->setStaleLockTime(0);
+            return;
+        }
+        // Sandbox PIDs repeat between launches. A kernel lifetime lock does not
+        // depend on PID lookup, and CLOEXEC keeps runtime/helpers from owning it.
+        // https://man7.org/linux/man-pages/man2/flock.2.html
+        descriptor_ = ::openat(directory_, leaf_.constData(),
+            O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
+        if (descriptor_ < 0 && errno == EEXIST) {
+            previous_ = true;
+            descriptor_ = ::openat(directory_, leaf_.constData(),
+                O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+        }
+    }
+
+    ~InstanceLease() {
+        if (descriptor_ >= 0)
+            ::close(descriptor_);
+        // Never unlink the flock inode: concurrent launchers must lock the
+        // same object. The containing app-private runtime directory owns it.
+    }
+
+    bool identityMatches() const {
+        if (native_)
+            return true;
+        struct stat held {}, named {};
+        const auto safe = [](const struct stat &status) {
+            return S_ISREG(status.st_mode) && status.st_uid == ::getuid() &&
+                   (status.st_mode & 07777) == 0600 && status.st_nlink == 1;
+        };
+        return descriptor_ >= 0 && ::fstat(descriptor_, &held) == 0 &&
+               ::fstatat(directory_, leaf_.constData(), &named, AT_SYMLINK_NOFOLLOW) == 0 &&
+               safe(held) && safe(named) && held.st_dev == named.st_dev && held.st_ino == named.st_ino;
+    }
+
+    bool isLocked() const { return native_ ? native_->isLocked() : locked_; }
+    QLockFile::LockError error() const { return native_ ? native_->error() : error_; }
+
+    bool getLockInfo(qint64 *pid, QString *host, QString *application) const {
+        if (native_)
+            return native_->getLockInfo(pid, host, application);
+        return previous_ && identityMatches();
+    }
+
+    bool tryLock(int timeout) {
+        if (native_)
+            return native_->tryLock(timeout);
+        if (locked_ || !identityMatches()) {
+            error_ = QLockFile::UnknownError;
+            return false;
+        }
+        if (::flock(descriptor_, LOCK_EX | LOCK_NB) != 0) {
+            const bool busy = errno == EWOULDBLOCK || errno == EAGAIN;
+            previous_ = previous_ || busy;
+            error_ = busy ? QLockFile::LockFailedError : QLockFile::UnknownError;
+            return false;
+        }
+        locked_ = true;
+        if (!identityMatches()) {
+            unlock();
+            error_ = QLockFile::UnknownError;
+            return false;
+        }
+        error_ = QLockFile::NoError;
+        return true;
+    }
+
+    void unlock() {
+        if (native_) {
+            native_->unlock();
+        } else if (locked_) {
+            ::flock(descriptor_, LOCK_UN);
+            locked_ = false;
+        }
+    }
+
+private:
+    std::unique_ptr<QLockFile> native_;
+    int directory_ = -1;
+    QByteArray leaf_;
+    int descriptor_ = -1;
+    bool previous_ = false;
+    bool locked_ = false;
+    QLockFile::LockError error_ = QLockFile::NoError;
+};
+
 }  // namespace
 
 struct SingleInstanceGuard::Private {
@@ -1146,7 +1295,7 @@ struct SingleInstanceGuard::Private {
     QString operationalSocketPath;
     dev_t directoryDevice = 0;
     ino_t directoryInode = 0;
-    std::unique_ptr<QLockFile> lock;
+    std::unique_ptr<InstanceLease> lock;
     bool published = false;
     SocketIdentity publishedIdentity;
 };
@@ -1155,8 +1304,7 @@ QString instanceSocketPath() {
     const QString configuredRuntimeDirectory =
         gRuntimeDirectoryOverrideSet
             ? gRuntimeDirectoryOverride
-            : QStandardPaths::writableLocation(
-                  QStandardPaths::RuntimeLocation);
+            : tryx::packaging::runtimeDirectory();
     if (configuredRuntimeDirectory.isEmpty() ||
         !QDir::isAbsolutePath(configuredRuntimeDirectory)) {
         return {};
@@ -1267,12 +1415,11 @@ SingleInstanceGuard::SingleInstanceGuard(QString socketPath)
     private_->operationalSocketPath = descriptorRelativePath(
         private_->directoryDescriptor,
         private_->socketLeafName);
-    private_->lock = std::make_unique<QLockFile>(
+    private_->lock = std::make_unique<InstanceLease>(
+        private_->directoryDescriptor, private_->socketLeafName,
         private_->operationalSocketPath + QStringLiteral(".lock"));
-    // This lock protects the socket for the whole GUI lifetime. Time-based
-    // expiry could otherwise let a second process steal a healthy long-lived
-    // owner; QLockFile still detects a crashed local owner by PID.
-    private_->lock->setStaleLockTime(0);
+    // Protect the whole GUI lifetime without time-based expiry. Native builds
+    // retain QLockFile PID recovery; Flatpak uses the namespace-independent FD.
     if (gAfterRuntimeDirectoryPinnedHook) {
         gAfterRuntimeDirectoryPinnedHook(private_->directoryPath);
     }
@@ -1297,6 +1444,7 @@ SingleInstanceAcquireResult SingleInstanceGuard::acquire(
         errorMessage->clear();
     }
     if (!server || !private_ || !private_->lock ||
+        !private_->lock->identityMatches() ||
         private_->directoryDescriptor < 0 ||
         socketPath_.isEmpty() || server->isListening() ||
         private_->lock->isLocked() ||
@@ -1412,7 +1560,7 @@ SingleInstanceAcquireResult SingleInstanceGuard::acquire(
         private_->lock->unlock();
         return SingleInstanceAcquireResult::Failed;
     };
-    if (!pinnedRuntimeDirectoryStillMatches(
+    if (!private_->lock->identityMatches() || !pinnedRuntimeDirectoryStillMatches(
             private_->directoryPath,
             private_->directoryDevice,
             private_->directoryInode)) {
@@ -1481,7 +1629,7 @@ SingleInstanceAcquireResult SingleInstanceGuard::acquire(
             !sameSocketIdentity(
                 nativeSocket.identity, publishedIdentity) ||
             publishedPermissions != (S_IRUSR | S_IWUSR) ||
-            !pinnedRuntimeDirectoryStillMatches(
+            !private_->lock->identityMatches() || !pinnedRuntimeDirectoryStillMatches(
                 private_->directoryPath,
                 private_->directoryDevice,
                 private_->directoryInode) ||
@@ -1519,7 +1667,11 @@ SingleInstanceAcquireResult SingleInstanceGuard::acquire(
         gAfterLeaseAcquiredBeforeSocketCleanupHook(socketPath_);
     }
     SocketIdentity currentStaleCandidate;
-    if (!inspectSocketIdentityAt(
+    if (!private_->lock->identityMatches() ||
+        !pinnedRuntimeDirectoryStillMatches(private_->directoryPath,
+                                           private_->directoryDevice,
+                                           private_->directoryInode) ||
+        !inspectSocketIdentityAt(
             private_->directoryDescriptor,
             private_->socketLeafName,
             &currentStaleCandidate) ||
@@ -1559,13 +1711,21 @@ SingleInstanceAcquireResult SingleInstanceGuard::acquire(
     if (replacementBind != NativeSocketBindResult::Bound) {
         return unlockAndFail();
     }
-    if (!exchangeInReplacementSocket(
+    if (!private_->lock->identityMatches() ||
+        !pinnedRuntimeDirectoryStillMatches(private_->directoryPath,
+                                           private_->directoryDevice,
+                                           private_->directoryInode) ||
+        !exchangeInReplacementSocket(
             private_->directoryDescriptor,
             private_->socketLeafName,
             replacementLeafName,
             staleCandidate,
             nativeSocket.identity,
             socketPath_, errorMessage)) {
+        if (errorMessage && errorMessage->isEmpty()) {
+            *errorMessage = QStringLiteral(
+                "The single-instance lease changed before stale recovery");
+        }
         closeNativeBoundSocket(&nativeSocket);
         unlinkSocketIfMatchesAt(
             private_->directoryDescriptor,
@@ -1590,7 +1750,7 @@ SingleInstanceAcquireResult SingleInstanceGuard::acquire(
         !sameSocketIdentity(
             nativeSocket.identity, publishedIdentity) ||
         publishedPermissions != (S_IRUSR | S_IWUSR) ||
-        !pinnedRuntimeDirectoryStillMatches(
+        !private_->lock->identityMatches() || !pinnedRuntimeDirectoryStillMatches(
             private_->directoryPath,
             private_->directoryDevice,
             private_->directoryInode) ||
@@ -1747,6 +1907,8 @@ bool ensureRuntimeService(
     QString *errorMessage,
     const RuntimeBootstrapOptions &options) {
     registerTryxRuntimeMetaTypes();
+    if (tryx::packaging::isFlatpak())
+        return ensureFlatpakRuntime(errorMessage, options);
     const DevelopmentRuntimeSelection developmentRuntime =
         selectDevelopmentRuntime(options);
     const QString existingOwner = runtimeServiceOwner();

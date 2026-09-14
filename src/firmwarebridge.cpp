@@ -1,4 +1,5 @@
 #include "firmwarebridge.h"
+#include "packagingcontext.h"
 
 #include "devicemanager.h"
 #include "firmwareupdater.h"
@@ -566,6 +567,10 @@ QVariantMap FirmwareBridge::stateForCaller(
 bool FirmwareBridge::requestValidation(
     const QString &packagePath,
     const QString &callerUniqueName) {
+    if (tryx::packaging::isFlatpak()) {
+        setFailure(tryx::packaging::flatpakFirmwareUnavailableReason());
+        return false;
+    }
     if (shutdownRequested_) {
         setFailure(tr(
             "The runtime is shutting down; firmware actions are no longer accepted"));
@@ -631,6 +636,10 @@ bool FirmwareBridge::requestValidation(
 bool FirmwareBridge::requestFlash(
     const QString &approvalToken,
     const QString &callerUniqueName) {
+    if (tryx::packaging::isFlatpak()) {
+        setFailure(tryx::packaging::flatpakFirmwareUnavailableReason());
+        return false;
+    }
     if (shutdownRequested_) {
         setFailure(tr(
             "The runtime is shutting down; firmware actions are no longer accepted"));
@@ -1763,6 +1772,11 @@ QVariantMap FirmwareBridge::publicState() const {
     state.insert(QStringLiteral("status"), status_);
     state.insert(QStringLiteral("approvalAvailable"),
                  false);
+    if (tryx::packaging::isFlatpak()) {
+        state.insert(QStringLiteral("ready"), false);
+        state.insert(QStringLiteral("phase"), QStringLiteral("Unavailable"));
+        state.insert(QStringLiteral("status"), tryx::packaging::flatpakFirmwareUnavailableReason());
+    }
     return state;
 }
 

@@ -13,13 +13,15 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
-#include <QStorageInfo>
+#include <QScopeGuard>
 #include <QUuid>
 
 #include <cerrno>
 #include <fcntl.h>
 #include <linux/fs.h>
+#include <limits>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -375,17 +377,18 @@ int DeviceMediaWorkflowController::runExportHelper(
          destinationInfo.isSymLink())) {
         return 3;
     }
-    QStorageInfo destinationStorage(
-        destinationInfo.absolutePath());
-    destinationStorage.refresh();
-    const qint64 availableBytes =
-        destinationStorage.bytesAvailable();
-    if (!destinationStorage.isValid() ||
-        !destinationStorage.isReady() ||
-        availableBytes < 0 ||
-        static_cast<quint64>(availableBytes) <
-            expectedSize +
-                kExportFreeSpaceReserveBytes) {
+    // Query the selected directory itself. QStorageInfo::refresh() switches to
+    // the mount root, whose statfs is intentionally empty in Documents FUSE.
+    // Pin the directory while measuring it and retain the same space reserve.
+    const int directoryFd = ::open(QFile::encodeName(destinationInfo.absolutePath()).constData(),
+                                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (directoryFd < 0)
+        return 4;
+    const auto closeDirectory = qScopeGuard([directoryFd]() { ::close(directoryFd); });
+    struct statvfs storage {};
+    if (::fstatvfs(directoryFd, &storage) != 0 || storage.f_frsize == 0 ||
+        storage.f_bavail > std::numeric_limits<quint64>::max() / storage.f_frsize ||
+        quint64(storage.f_bavail) * storage.f_frsize < expectedSize + kExportFreeSpaceReserveBytes) {
         return 4;
     }
 

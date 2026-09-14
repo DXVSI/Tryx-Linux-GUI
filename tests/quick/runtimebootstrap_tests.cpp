@@ -727,6 +727,19 @@ void RuntimeBootstrapTests::
         quickbootstrap::instanceSocketPath(),
         QDir(nestedRuntime).filePath(
             QStringLiteral("tryx-panorama-manager.instance")));
+
+    const QString symlinkLeaf = QDir(stateDirectory_->path()).filePath(
+        QStringLiteral("runtime-symlink"));
+    QVERIFY(QFile::link(nestedRuntime, symlinkLeaf));
+    quickbootstrap::testing::setRuntimeDirectoryOverride(symlinkLeaf);
+    QVERIFY(quickbootstrap::instanceSocketPath().isEmpty());
+
+    const QString symlinkParent = QDir(stateDirectory_->path()).filePath(
+        QStringLiteral("parent-symlink"));
+    QVERIFY(QFile::link(replaceableParent, symlinkParent));
+    quickbootstrap::testing::setRuntimeDirectoryOverride(
+        QDir(symlinkParent).filePath(QStringLiteral("runtime")));
+    QVERIFY(quickbootstrap::instanceSocketPath().isEmpty());
     quickbootstrap::testing::clearRuntimeDirectoryOverride();
 }
 

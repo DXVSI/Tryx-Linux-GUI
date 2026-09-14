@@ -13,6 +13,7 @@ ScrollView {
     required property var windowChrome
     required property var supportBundle
     required property var cacheManagement
+    property var supportExportChooser: null
 
     property bool updateAvailable: false
     property string availableVersion: ""
@@ -395,14 +396,19 @@ ScrollView {
                         Label {
                             id: autostartTitleLabel
 
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             objectName: "autostartTitle"
                             text: qsTr("Start TRYX Panorama Manager when you sign in")
                             color: "#f4f6f7"
                             font.bold: true
+                            wrapMode: Text.WordWrap
                         }
                         Label {
                             id: autostartDescriptionLabel
 
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             objectName: "autostartDescription"
                             text: root.settings.busy
                                   ? qsTr("Updating GUI autostart…")
@@ -410,6 +416,7 @@ ScrollView {
                                      ? qsTr("Starts hidden only when Hide to tray is selected and a system tray is available. The background service is unchanged.")
                                      : qsTr("GUI autostart state is unavailable. The background service is unchanged."))
                             color: "#9ca4ac"
+                            wrapMode: Text.WordWrap
                         }
                     }
 
@@ -1368,5 +1375,6 @@ ScrollView {
         controller: root.supportBundle
         homeFolder: root.supportBundle.homeFolder
         focusReturnItem: supportBundleExportButton
+        portalChooser: root.supportExportChooser
     }
 }

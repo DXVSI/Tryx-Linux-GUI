@@ -1,4 +1,5 @@
 #include "linuxtraycontroller.h"
+#include "packagingcontext.h"
 
 #include <QDBusConnectionInterface>
 #include <QDBusError>
@@ -360,7 +361,8 @@ public:
         return 0;
     }
     QString iconName() const {
-        return QStringLiteral("tryx-panorama");
+        return tryx::packaging::isFlatpak() ? tryx::packaging::appId()
+                                           : QStringLiteral("tryx-panorama");
     }
     linuxtray::IconPixmapList iconPixmap() const {
         return {};

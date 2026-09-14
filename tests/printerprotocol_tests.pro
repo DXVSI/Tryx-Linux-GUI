@@ -25,8 +25,18 @@ DESTDIR = $$PWD/../build/tests
 OBJECTS_DIR = $$PWD/../build/tests/obj
 MOC_DIR = $$PWD/../build/tests/moc
 
+contains(CONFIG, flatpak) {
+    DEFINES += TRYX_FLATPAK
+    DESTDIR = $$PWD/../build/flatpak-protocol-tests
+    OBJECTS_DIR = $$DESTDIR/obj
+    MOC_DIR = $$DESTDIR/moc
+    HEADERS += $$PWD/../src/portalusb.h
+    SOURCES += $$PWD/../src/portalusb.cpp
+}
+
 PROTO_DIR = $$PWD/../protocol/wire-v1
 PROTO_GEN_DIR = $$PWD/../build/tests/generated/proto
+contains(CONFIG, flatpak): PROTO_GEN_DIR = $$DESTDIR/generated/proto
 PROTO_FILES = \
     $$PROTO_DIR/configuration.proto \
     $$PROTO_DIR/overlay.proto \

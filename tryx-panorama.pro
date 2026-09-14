@@ -3,6 +3,11 @@ QT += core dbus gui
 CONFIG += c++17 lrelease embed_translations link_pkgconfig
 TARGET = tryx-panorama-runtime
 TEMPLATE = app
+contains(CONFIG, flatpak): DEFINES += TRYX_FLATPAK
+contains(CONFIG, flatpak) {
+    HEADERS += src/portalusb.h src/flatpakruntimeownership.h src/packagingcontext.h
+    SOURCES += src/portalusb.cpp src/flatpakruntimeownership.cpp
+}
 
 VERSION = $$cat($$PWD/VERSION, lines)
 isEmpty(VERSION): error("VERSION is empty or missing")
@@ -238,7 +243,12 @@ DISTFILES += \
     tests/cachecleanupstore_tests.pro \
     tests/check_no_bundled_video.sh
 
-unix {
+unix:contains(CONFIG, flatpak) {
+    target.path = /app/lib/tryx-panorama-manager
+    INSTALLS += target
+}
+
+unix:!contains(CONFIG, flatpak) {
     SYSTEMD_USER_UNIT_DIR = $$system(pkg-config --variable=systemduserunitdir systemd)
     isEmpty(SYSTEMD_USER_UNIT_DIR): error("systemd user unit directory was not found")
     SYSTEMD_USER_PRESET_DIR = $$system(pkg-config --variable=systemduserpresetdir systemd)

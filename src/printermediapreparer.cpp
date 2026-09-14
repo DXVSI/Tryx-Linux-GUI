@@ -19,6 +19,10 @@
 #include <optional>
 #include <utility>
 
+#ifdef Q_OS_UNIX
+#include <sys/stat.h>
+#endif
+
 namespace {
 
 constexpr int kMediaPreparationDeadlineMs = 15 * 60 * 1000;
@@ -54,6 +58,14 @@ PrinterMediaPreparer::PrinterMediaPreparer(QObject *parent)
     : QObject(parent),
       process_(new QProcess(this)),
       processDeadlineTimer_(new QTimer(this)) {
+#ifdef Q_OS_UNIX
+    // FFmpeg creates new media and thumbnails, so source permissions do not
+    // carry over. Keep them private from creation without changing the
+    // runtime's process-wide mask or weakening the retry-cache checks.
+    process_->setChildProcessModifier([]() {
+        ::umask(S_IRWXG | S_IRWXO);
+    });
+#endif
     processDeadlineTimer_->setSingleShot(true);
     connect(processDeadlineTimer_, &QTimer::timeout, this, [this]() {
         if (!active_ || process_->state() == QProcess::NotRunning) {

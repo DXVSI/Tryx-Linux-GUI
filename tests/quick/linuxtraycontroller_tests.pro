@@ -5,7 +5,7 @@ CONFIG -= app_bundle
 TEMPLATE = app
 TARGET = linuxtraycontroller-tests
 
-INCLUDEPATH += $$PWD/../../src/quick
+INCLUDEPATH += $$PWD/../../src $$PWD/../../src/quick
 
 DESTDIR = $$PWD/../../build/linuxtray-tests
 OBJECTS_DIR = $$PWD/../../build/linuxtray-tests/obj

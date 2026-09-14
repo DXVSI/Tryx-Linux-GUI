@@ -5,7 +5,7 @@ CONFIG -= app_bundle
 TEMPLATE = app
 TARGET = releaseupdatecontroller-tests
 
-INCLUDEPATH += $$PWD/../../src/quick
+INCLUDEPATH += $$PWD/../../src $$PWD/../../src/quick
 DESTDIR = $$PWD/../../build/releaseupdate-tests
 OBJECTS_DIR = $$PWD/../../build/releaseupdate-tests/obj
 MOC_DIR = $$PWD/../../build/releaseupdate-tests/moc

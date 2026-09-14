@@ -20,6 +20,12 @@ DEFINES += TRYX_CLI_BINARY=\\\"$$clean_path($$PWD/../../build/cli/tryx)\\\"
 DESTDIR = $$PWD/../../build/cli-tests
 OBJECTS_DIR = $$PWD/../../build/cli-tests/obj
 MOC_DIR = $$PWD/../../build/cli-tests/moc
+contains(CONFIG, flatpak) {
+    DEFINES += TRYX_FLATPAK
+    DESTDIR = $$PWD/../../build/flatpak-cli-tests
+    OBJECTS_DIR = $$DESTDIR/obj
+    MOC_DIR = $$DESTDIR/moc
+}
 
 SOURCES += \
     ../../src/runtimebadgetext.cpp \

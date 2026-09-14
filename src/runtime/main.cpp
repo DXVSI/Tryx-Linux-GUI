@@ -2,6 +2,9 @@
 #include "firmwarebridge.h"
 #include "runtimebridge.h"
 #include "runtimedowngradestore.h"
+#ifdef TRYX_FLATPAK
+#include "flatpakruntimeownership.h"
+#endif
 
 #include <panorama/config.hpp>
 
@@ -236,11 +239,28 @@ int main(int argc, char *argv[]) {
     // Acquire the singleton name before DeviceManager construction. Its
     // constructor owns local runtime cleanup and starts device discovery, so a
     // second process must fail before it can touch the device or spool.
+#ifdef TRYX_FLATPAK
+    // The exclusion owner must outlive manager, all workers and their USB claim.
+    FlatpakRuntimeOwnership ownership(bus);
+    QString ownershipError;
+    if (!ownership.acquire(&ownershipError)) {
+        qCritical().noquote() << ownershipError;
+        return 4;
+    }
+    QObject::connect(&ownership, &FlatpakRuntimeOwnership::ownershipLost,
+                     &app, []() {
+        qCritical() << "TRYX sandbox D-Bus ownership was lost; stopping the runtime";
+        QCoreApplication::quit();
+    }, Qt::QueuedConnection);
+    QObject::connect(&app, &QCoreApplication::aboutToQuit,
+                     &ownership, &FlatpakRuntimeOwnership::stopServing);
+#else
     if (!bus.registerService(tryxRuntimeServiceName())) {
         qCritical() << "Failed to acquire TRYX D-Bus service name:"
                     << bus.lastError().message();
         return 4;
     }
+#endif
 
     // Keep the async-signal-safe pipe alive until all objects that own worker
     // threads have been destroyed.
