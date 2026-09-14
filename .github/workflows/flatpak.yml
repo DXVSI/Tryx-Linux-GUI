@@ -1,0 +1,69 @@
+---
+name: Experimental Flatpak
+
+on:
+  pull_request:
+  push:
+    branches: [development, production]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flatpak-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flatpak:
+    name: KDE 6.11 / x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # Nested bubblewrap requires this on the disposable GitHub-hosted runner.
+    # Do not move this untrusted-source build onto a persistent self-hosted host.
+    container:
+      image: ghcr.io/flathub-infra/flatpak-builder-lint@sha256:1dd5df1747ba8691a456a05074627b889fe2fd4487e24151b7face37b6434322
+      options: --privileged
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify builder and configure runtime source
+        run: |
+          set -euo pipefail
+          flatpak --version
+          flatpak-builder --version
+          flatpak_version=$(flatpak --version)
+          flatpak_version=${flatpak_version#Flatpak }
+          [[ "$flatpak_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]
+          test "$(printf '%s\n' 1.15.11 "$flatpak_version" | sort -V | head -n 1)" = 1.15.11
+          flatpak remote-add --system --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          mkdir -p build
+
+      - name: Build and test experimental bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
+        with:
+          manifest-path: packaging/flatpak/io.github.dxvsi.tryx_panorama_manager.yml
+          arch: x86_64
+          branch: experimental
+          build-dir: build/flatpak
+          repo-dir: build/flatpak-repo
+          bundle: build/tryx-panorama-manager-x86_64.flatpak
+          cache: true
+          cache-key: flatpak-x86_64-kde-6.11-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
+          upload-artifact: false
+
+      - name: Upload test bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tryx-flatpak-x86_64-${{ github.run_id }}
+          path: build/tryx-panorama-manager-x86_64.flatpak
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
