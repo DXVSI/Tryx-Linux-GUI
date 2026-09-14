@@ -2528,8 +2528,10 @@ private slots:
     void retryCacheArtifactValidationRejectsUnsafeFile();
     void retryCacheArtifactValidationHonorsPreStartCancellation();
     void retryCacheArtifactValidationReturnsActualReplacementIdentity();
+    void retryCacheArtifactHashRejectsPathReplacementAfterOpen_data();
     void retryCacheArtifactHashRejectsPathReplacementAfterOpen();
     void retryCacheArtifactHashHonorsMidReadCancellation();
+    void retryCacheArtifactHashRejectsInPlaceMutation_data();
     void retryCacheArtifactHashRejectsInPlaceMutation();
     void retryCancellationRetainsOwnershipOnManifestRemovalFailure();
     void acknowledgedTurrisUploadIsNotRetryableWhenCleanupFails();
@@ -33159,7 +33161,22 @@ void PrinterProtocolTests::
 }
 
 void PrinterProtocolTests::
+    retryCacheArtifactHashRejectsPathReplacementAfterOpen_data() {
+    QTest::addColumn<int>("replacementCheck");
+    QTest::addColumn<QString>("replacementKind");
+    QTest::newRow("during-hash-regular") << 2 << QStringLiteral("regular");
+    QTest::newRow("during-hash-symlink") << 2 << QStringLiteral("symlink");
+    QTest::newRow("during-hash-missing") << 2 << QStringLiteral("missing");
+    // A 512 KiB file takes two 256 KiB reads: check 4 is after hashing.
+    QTest::newRow("after-hash-regular") << 4 << QStringLiteral("regular");
+    QTest::newRow("after-hash-symlink") << 4 << QStringLiteral("symlink");
+    QTest::newRow("after-hash-missing") << 4 << QStringLiteral("missing");
+}
+
+void PrinterProtocolTests::
     retryCacheArtifactHashRejectsPathReplacementAfterOpen() {
+    QFETCH(int, replacementCheck);
+    QFETCH(QString, replacementKind);
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
     const QString artifactPath =
@@ -33187,13 +33204,18 @@ void PrinterProtocolTests::
             hashPrivateRegularFile(
                 artifactPath, originalBytes.size(), [&]() {
                     ++cancellationChecks;
-                    if (cancellationChecks == 2) {
-                        replaced = QFile::rename(
-                                       artifactPath,
-                                       displacedPath) &&
-                            QFile::rename(
-                                       replacementPath,
-                                       artifactPath);
+                    if (cancellationChecks == replacementCheck &&
+                        QFile::rename(artifactPath, displacedPath)) {
+                        if (replacementKind == QStringLiteral("regular")) {
+                            replaced = QFile::rename(
+                                replacementPath, artifactPath);
+                        } else if (replacementKind == QStringLiteral("symlink")) {
+                            replaced = ::symlink(
+                                QFile::encodeName(displacedPath).constData(),
+                                QFile::encodeName(artifactPath).constData()) == 0;
+                        } else {
+                            replaced = true;
+                        }
                     }
                     return false;
                 });
@@ -33202,10 +33224,17 @@ void PrinterProtocolTests::
     QVERIFY(result.sha256.isEmpty());
     QVERIFY(!result.error.isEmpty());
     struct stat currentIdentity {};
-    QCOMPARE(::stat(
-                 QFile::encodeName(artifactPath).constData(),
-                 &currentIdentity),
-             0);
+    const int currentStatus = ::lstat(
+        QFile::encodeName(artifactPath).constData(), &currentIdentity);
+    const int currentError = errno;
+    if (replacementKind == QStringLiteral("missing")) {
+        QCOMPARE(currentStatus, -1);
+        QCOMPARE(currentError, ENOENT);
+        return;
+    }
+    QCOMPARE(currentStatus, 0);
+    QCOMPARE(bool(S_ISLNK(currentIdentity.st_mode)),
+             replacementKind == QStringLiteral("symlink"));
     QVERIFY(static_cast<quint64>(originalIdentity.st_dev) !=
                 static_cast<quint64>(currentIdentity.st_dev) ||
             static_cast<quint64>(originalIdentity.st_ino) !=
@@ -33236,7 +33265,15 @@ void PrinterProtocolTests::
 }
 
 void PrinterProtocolTests::
+    retryCacheArtifactHashRejectsInPlaceMutation_data() {
+    QTest::addColumn<int>("mutationCheck");
+    QTest::newRow("during-hash") << 2;
+    QTest::newRow("after-hash") << 4;
+}
+
+void PrinterProtocolTests::
     retryCacheArtifactHashRejectsInPlaceMutation() {
+    QFETCH(int, mutationCheck);
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
     const QString artifactPath =
@@ -33244,6 +33281,12 @@ void PrinterProtocolTests::
             QStringLiteral("in-place-mutation.bin"));
     const QByteArray artifactBytes(512 * 1024, '\x51');
     QVERIFY(writeAtomicOwnerFile(artifactPath, artifactBytes));
+    // Make the later write observable even on coarse-timestamp filesystems.
+    const timespec oldTimes[2] = {{1, 0}, {1, 0}};
+    QCOMPARE(::utimensat(
+                 AT_FDCWD, QFile::encodeName(artifactPath).constData(),
+                 oldTimes, 0),
+             0);
     int cancellationChecks = 0;
     bool mutated = false;
     const auto result =
@@ -33251,7 +33294,7 @@ void PrinterProtocolTests::
             hashPrivateRegularFile(
                 artifactPath, artifactBytes.size(), [&]() {
                     ++cancellationChecks;
-                    if (cancellationChecks == 2) {
+                    if (cancellationChecks == mutationCheck) {
                         QFile file(artifactPath);
                         if (file.open(QIODevice::ReadWrite) &&
                             file.seek(0) &&

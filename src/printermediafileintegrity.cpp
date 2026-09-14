@@ -180,7 +180,13 @@ SafePrivateFileHashResult hashPrivateRegularFile(
         hash.addData(chunk);
     }
 
+    // Finish callbacks before checking both the descriptor and its pathname.
+    if (isCancelled && isCancelled()) {
+        result.cancelled = true;
+        return result;
+    }
     struct stat after {};
+    struct stat named {};
     if (::fstat(descriptor, &after) != 0 ||
         before.st_dev != after.st_dev ||
         before.st_ino != after.st_ino ||
@@ -189,13 +195,12 @@ SafePrivateFileHashResult hashPrivateRegularFile(
         before.st_uid != after.st_uid ||
         before.st_nlink != after.st_nlink ||
         !sameFileTimestamp(before.st_mtim, after.st_mtim) ||
-        !sameFileTimestamp(before.st_ctim, after.st_ctim)) {
+        !sameFileTimestamp(before.st_ctim, after.st_ctim) ||
+        ::lstat(encodedPath.constData(), &named) != 0 ||
+        !S_ISREG(named.st_mode) ||
+        named.st_dev != after.st_dev || named.st_ino != after.st_ino) {
         result.error = QObject::tr(
             "Retry-cache artifact changed while its content hash was calculated");
-        return result;
-    }
-    if (isCancelled && isCancelled()) {
-        result.cancelled = true;
         return result;
     }
 
