@@ -55,9 +55,11 @@ The manifest runs `check-in-sdk.sh` before export: portal lifecycle/FD and start
 tests, a server-side firmware prohibition test, private FFmpeg artifact checks,
 native protocol and Qt Quick regressions, strict translation compilation, CLI checks,
 and an offscreen GUI smoke test. Tests use private D-Bus sessions and require USB
-nodes to be absent. Root CI runs drop filesystem-permission bypass capabilities
-for the test process tree so write-denial fixtures remain meaningful. The
-test-only D-Bus tools are removed from the final package.
+nodes to be absent. Run the builder as a regular user. CI changes to a dedicated
+unprivileged builder before entering the SDK; checks reject root or effective
+filesystem-permission bypass capabilities. The CLI's root-session-bus rejection
+and write-denial fixtures remain unchanged. The test-only D-Bus tools are removed
+from the final package.
 
 Full C++/QML translation-source completeness and its negative tests run in the
 native RPM/DEB/Arch CI for the same commit. The KDE SDK's `lupdate` is built

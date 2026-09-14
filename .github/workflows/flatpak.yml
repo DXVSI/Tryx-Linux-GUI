@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   flatpak:
-    name: KDE 6.11 / x86_64
+    name: Flatpak / Qt 6.11 / x86_64
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # Nested bubblewrap requires this on the disposable GitHub-hosted runner.
@@ -33,7 +33,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify builder and configure runtime source
+      - name: Verify tools and prepare an unprivileged builder
         run: |
           set -euo pipefail
           flatpak --version
@@ -42,22 +42,46 @@ jobs:
           flatpak_version=${flatpak_version#Flatpak }
           [[ "$flatpak_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]
           test "$(printf '%s\n' 1.15.11 "$flatpak_version" | sort -V | head -n 1)" = 1.15.11
-          flatpak remote-add --system --if-not-exists flathub \
-            https://dl.flathub.org/repo/flathub.flatpakrepo
-          mkdir -p build
+          # The pinned SDK image has only root and no useradd/runuser tools.
+          # Match its initial accounts before adding our CI-only identity.
+          test "$(getent passwd)" = 'root:x:0:0:root:/root:/bin/bash'
+          test "$(getent group)" = 'root:x:0:'
+          install -m644 .github/flatpak-ci.passwd /etc/passwd
+          install -m644 .github/flatpak-ci.group /etc/group
+          install -d -m755 -o 1001 -g 1001 /home/flatbld build build/flatpak-state
+
+      - name: Cache unprivileged builder state
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/flatpak-state
+          key: flatpak-nonroot-x86_64-kde-6.11-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
+          restore-keys: |
+            flatpak-nonroot-x86_64-kde-6.11-${{ hashFiles('packaging/flatpak/*.yml') }}-
 
       - name: Build and test experimental bundle
-        uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
-        with:
-          manifest-path: packaging/flatpak/io.github.dxvsi.tryx_panorama_manager.yml
-          arch: x86_64
-          branch: experimental
-          build-dir: build/flatpak
-          repo-dir: build/flatpak-repo
-          bundle: build/tryx-panorama-manager-x86_64.flatpak
-          cache: true
-          cache-key: flatpak-x86_64-kde-6.11-${{ hashFiles('packaging/flatpak/*.yml') }}-${{ github.sha }}
-          upload-artifact: false
+        run: |
+          set -euo pipefail
+          # Drop UID and capabilities before Flatpak creates its one-UID sandbox.
+          # The CLI intentionally rejects root-owned session buses.
+          # Variables in the command are expanded by the unprivileged child shell.
+          # shellcheck disable=SC2016
+          capsh --drop=all --user=flatbld --inh= --noamb -- -c '
+            set -eu
+            test "$(id -u)" -eq 1001
+            flatpak remote-add --user --if-not-exists flathub \
+              https://dl.flathub.org/repo/flathub.flatpakrepo
+            flatpak-builder --user --install-deps-from=flathub \
+              --disable-rofiles-fuse --ccache --jobs=2 \
+              --state-dir=build/flatpak-state --repo=build/flatpak-repo \
+              --subject="Built from $GITHUB_SHA" \
+              --default-branch=experimental --arch=x86_64 \
+              build/flatpak packaging/flatpak/io.github.dxvsi.tryx_panorama_manager.yml
+            flatpak build-bundle \
+              --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+              --arch=x86_64 build/flatpak-repo \
+              build/tryx-panorama-manager-x86_64.flatpak \
+              io.github.dxvsi.tryx_panorama_manager experimental
+          '
 
       - name: Upload test bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

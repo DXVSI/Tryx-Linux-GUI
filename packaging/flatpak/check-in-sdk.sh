@@ -7,18 +7,11 @@ test ! -e /dev/bus/usb
 test ! -e /run/host/dev/bus/usb
 test -x /app/test-tools/bin/dbus-run-session
 
-# CI's root build sandbox can otherwise write through chmod-based fixtures.
-# Keep the build UID/ownership, but remove DAC bypass for this test process tree.
-# Non-root builds can have these bounding bits without any effective privilege.
-cap_bounding=$(awk '$1 == "CapBnd:" { print $2 }' /proc/self/status)
-test -n "$cap_bounding"
-if [ "$(id -u)" -eq 0 ] && [ "$((0x$cap_bounding & 6))" -ne 0 ]; then
-    command -v capsh >/dev/null || {
-        echo "Flatpak SDK checks require capsh to drop root DAC bypass" >&2
-        exit 1
-    }
-    exec capsh --drop=cap_dac_override,cap_dac_read_search --inh= --noamb \
-        -- -c 'exec /bin/sh "$@"' tryx-sdk-check "$0" "$@"
+# Permission-denial fixtures and the CLI require a real unprivileged identity.
+# Change the builder UID before entering Flatpak's single-UID user namespace.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "Flatpak SDK checks require a non-root flatpak-builder process" >&2
+    exit 1
 fi
 cap_effective=$(awk '$1 == "CapEff:" { print $2 }' /proc/self/status)
 test -n "$cap_effective"
