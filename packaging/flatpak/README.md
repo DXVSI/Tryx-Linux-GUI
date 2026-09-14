@@ -53,8 +53,10 @@ flatpak run --command=tryx io.github.dxvsi.tryx_panorama_manager//experimental s
 
 The manifest runs `check-in-sdk.sh` before export: portal lifecycle/FD and startup
 tests, a server-side firmware prohibition test, private FFmpeg artifact checks,
-native protocol and Qt Quick regressions, CLI checks, and an offscreen GUI smoke
-test. Tests use private D-Bus sessions and require USB nodes to be absent. The
+native protocol and Qt Quick regressions, translation completeness, CLI checks,
+and an offscreen GUI smoke test. Tests use private D-Bus sessions and require USB
+nodes to be absent. Root CI runs drop filesystem-permission bypass capabilities
+for the test process tree so write-denial fixtures remain meaningful. The
 test-only D-Bus tools are removed from the final package.
 
 `tests/flatpak/documentportal_probe.cpp` additionally provides an explicit
