@@ -11359,6 +11359,18 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
     const QString outputPath = prepared.at(3).toString();
     const QString remoteName = prepared.at(4).toString();
     const QString expectedSha256 = prepared.at(5).toString();
+    const QString thumbnailPath = prepared.at(6).toString();
+    const QString thumbnailSha256 = prepared.at(7).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(thumbnailPath);
+    });
+    QVERIFY(!thumbnailPath.isEmpty());
+    QVERIFY(QFileInfo(thumbnailPath).size() > 0);
+    QCOMPARE(thumbnailSha256.size(), 64);
+    QCOMPARE(thumbnailSha256,
+             tryx::printer_media_file_integrity::sha256File(thumbnailPath));
+    QCOMPARE(prepared.at(8).toULongLong(), quint64{11});
     QVERIFY(remoteName.endsWith(
         QStringLiteral(".png.h264_1280x720")));
 
@@ -11418,13 +11430,18 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
 
 void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate_data() {
     QTest::addColumn<uint>("parentMask");
-    QTest::newRow("permissive") << uint{0000};
-    QTest::newRow("default") << uint{0022};
-    QTest::newRow("private") << uint{0077};
+    QTest::addColumn<quint16>("productId");
+    QTest::newRow("permissive") << uint{0000} << quint16{0x1021};
+    QTest::newRow("default") << uint{0022} << quint16{0x1021};
+    QTest::newRow("private") << uint{0077} << quint16{0x1021};
+    QTest::newRow("turris-permissive") << uint{0000} << quint16{0x2011};
+    QTest::newRow("turris-default") << uint{0022} << quint16{0x2011};
+    QTest::newRow("turris-private") << uint{0077} << quint16{0x2011};
 }
 
 void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate() {
     QFETCH(uint, parentMask);
+    QFETCH(quint16, productId);
     const mode_t previousMask = ::umask(parentMask);
     const auto restoreMask = qScopeGuard([previousMask]() {
         ::umask(previousMask);
@@ -11467,7 +11484,7 @@ void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate() {
         QUuid::WithoutBraces);
     preparer.prepare(operationId, QStringLiteral("synthetic:no-usb"),
                      sourcePath, sourceSha256, 1,
-                     TryxRuntimeMediaTransform{}, 0x1021);
+                     TryxRuntimeMediaTransform{}, productId);
     QTRY_VERIFY_WITH_TIMEOUT(
         preparedSpy.count() + failedSpy.count() > 0, 120000);
     if (!failedSpy.isEmpty()) {
@@ -11482,6 +11499,9 @@ void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate() {
         preparer.releasePreparedFile(thumbnailPath);
     });
     QVERIFY(!thumbnailPath.isEmpty());
+    QCOMPARE(prepared.at(7).toString().size(), 64);
+    QCOMPARE(prepared.at(7).toString(),
+             tryx::printer_media_file_integrity::sha256File(thumbnailPath));
     // Only the converter's creation mask may change, never the parent's.
     QCOMPARE(::umask(parentMask), static_cast<mode_t>(parentMask));
     for (const QString &path : {sourcePath, outputPath, thumbnailPath}) {
@@ -11495,7 +11515,7 @@ void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate() {
         QVERIFY(status.st_size > 0);
     }
 
-    const auto profile = printerProductProfileForId(0x1021);
+    const auto profile = printerProductProfileForId(productId);
     QVERIFY(profile.has_value());
     tryx::RetryCacheStore store(temporaryDirectory.filePath(
         QStringLiteral("retry-cache")));
@@ -11506,7 +11526,7 @@ void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate() {
     input.productId = profile->productId;
     input.conversion =
         tryx::printer_media_identity::printerMediaConversionIdentity(*profile);
-    input.deviceIdentity = QStringLiteral("pase:synthetic-no-usb");
+    input.deviceIdentity = QStringLiteral("synthetic-no-usb:%1").arg(productId);
     input.deviceGeneration = 1;
     input.originalRemoteName = prepared.at(4).toString();
     input.retryRemoteName = input.originalRemoteName;
@@ -11516,6 +11536,10 @@ void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate() {
     input.thumbnail = tryx::RetryCacheStore::PreparedArtifactInput{
         thumbnailPath, QFileInfo(thumbnailPath).size(),
         prepared.at(7).toString()};
+    input.origin = tryx::RetryCacheStore::OriginIdentity{
+        sourceSha256, QFileInfo(sourcePath).size(),
+        tryx::printer_media_identity::printerConversionProfile(
+            sourcePath, TryxRuntimeMediaTransform{}, productId)};
     const auto persisted = store.persistPrepared(input);
     QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
     QVERIFY(persisted.snapshot.has_value());

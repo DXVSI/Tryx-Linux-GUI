@@ -827,7 +827,9 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
 }
 
 void PrinterMediaPreparer::completePreparation(
-    const QString &thumbnailSha256) {
+    QString thumbnailSha256) {
+    // Keep an owned value: TURRIS passes stagedThumbnailSha256_, which the
+    // state reset below clears before the prepared signal is delivered.
     const QString operationId = operationId_;
     const QString devicePath = devicePath_;
     const QString sourcePath = sourcePath_;

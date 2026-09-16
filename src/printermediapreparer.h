@@ -137,7 +137,7 @@ private:
     void startTurrisFrameCountPreparation(
         const QString &thumbnailSha256);
     void finishTurrisFrameCountPreparation(int exitCode, bool normalExit);
-    void completePreparation(const QString &thumbnailSha256);
+    void completePreparation(QString thumbnailSha256);
     void failPreparation(const QString &message, bool cancelled);
     bool startProcessIfCurrent();
     void resetPreparationState();
