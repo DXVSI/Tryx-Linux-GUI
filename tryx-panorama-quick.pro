@@ -139,6 +139,7 @@ for(qml_file, QML_ALL_FILES) {
 DISTFILES += \
     $$QML_FILES \
     resources/tryx-panorama.png \
+    resources/devices/README.md \
     tests/quick/quick_tests.pro \
     tests/quick/runtimebootstrap_tests.pro \
     tests/quick/runtimebootstrap_tests.cpp \

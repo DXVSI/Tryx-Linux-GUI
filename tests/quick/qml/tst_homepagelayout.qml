@@ -9,6 +9,7 @@ TestCase {
     id: testCase
     name: "HomePageLayout"
     when: windowShown
+    visible: true
     width: 1250
     height: 850
 
@@ -16,6 +17,7 @@ TestCase {
         id: runtimeMock
 
         property bool displaySessionActive: true
+        property string deviceModel: "PANORAMA SE"
         property string connectionStatus: "Ready"
         property string currentScreenMode: "Full Screen"
         property string currentPlayMode: "Single"
@@ -75,6 +77,127 @@ TestCase {
             systemMetrics: metricsMock
             deviceIconSource: ""
         }
+    }
+
+    Component {
+        id: illustratedHomeComponent
+
+        Pages.HomePage {
+            runtime: runtimeMock
+            systemMetrics: metricsMock
+        }
+    }
+
+    function init() {
+        runtimeMock.deviceModel = "PANORAMA SE"
+    }
+
+    function test_deviceModelFollowsRuntime_data() {
+        return [
+            {tag: "panorama", model: "PANORAMA", title: "PANORAMA"},
+            {tag: "panorama-se", model: "PANORAMA SE", title: "PANORAMA SE"},
+            {tag: "turris", model: "TURRIS 620", title: "TURRIS 620"},
+            {tag: "unknown", model: "", title: "TRYX device"}
+        ]
+    }
+
+    function test_deviceModelFollowsRuntime(data) {
+        runtimeMock.deviceModel = data.model
+        const page = createTemporaryObject(
+            homeComponent, testCase,
+            {"width": 900, "height": 800})
+        verify(page !== null)
+        const title = findChild(page, "dashboardDeviceModel")
+        verify(title !== null)
+        compare(title.text, data.title)
+    }
+
+    function test_deviceModelChangesOnExistingPage() {
+        const page = createTemporaryObject(
+            homeComponent, testCase,
+            {"width": 900, "height": 800})
+        verify(page !== null)
+        const title = findChild(page, "dashboardDeviceModel")
+        verify(title !== null)
+        compare(title.text, "PANORAMA SE")
+
+        runtimeMock.deviceModel = "TURRIS 620"
+        compare(title.text, "TURRIS 620")
+        runtimeMock.deviceModel = ""
+        compare(title.text, "TRYX device")
+        runtimeMock.deviceModel = "PANORAMA"
+        compare(title.text, "PANORAMA")
+    }
+
+    function test_deviceIllustrationFollowsFamily_data() {
+        return [
+            {tag: "panorama", model: "PANORAMA", asset: "panorama.png"},
+            {tag: "panorama-se", model: "PANORAMA SE", asset: "panorama-se.png"},
+            {tag: "turris", model: "TURRIS 620", asset: "turris-620.png"}
+        ]
+    }
+
+    function test_deviceIllustrationFollowsFamily(data) {
+        runtimeMock.deviceModel = data.model
+        const page = createTemporaryObject(
+            illustratedHomeComponent, testCase,
+            {"width": 900, "height": 800})
+        verify(page !== null)
+        verify(String(page.deviceIconSource).endsWith(
+                   "/resources/devices/" + data.asset))
+        const picture = findChild(page, "dashboardDeviceImage")
+        verify(picture !== null)
+        tryCompare(picture, "status", Image.Ready)
+        verify(picture.visible)
+        verify(picture.paintedWidth > 0)
+        verify(picture.paintedHeight > 0)
+        const fallback = findChild(page, "dashboardDeviceFallback")
+        verify(fallback !== null)
+        verify(!fallback.visible)
+    }
+
+    function test_deviceIllustrationChangesAndClearsOnDisconnect() {
+        const page = createTemporaryObject(
+            illustratedHomeComponent, testCase,
+            {"width": 900, "height": 800})
+        verify(page !== null)
+        const picture = findChild(page, "dashboardDeviceImage")
+        const fallback = findChild(page, "dashboardDeviceFallback")
+        verify(picture !== null)
+        verify(fallback !== null)
+
+        for (const entry of test_deviceIllustrationFollowsFamily_data()) {
+            runtimeMock.deviceModel = entry.model
+            verify(String(picture.source).endsWith("/" + entry.asset))
+            tryCompare(picture, "status", Image.Ready)
+        }
+
+        runtimeMock.deviceModel = ""
+        compare(String(picture.source), "")
+        verify(!picture.visible)
+        verify(fallback.visible)
+        runtimeMock.deviceModel = "Unrecognized model"
+        compare(String(picture.source), "")
+        verify(fallback.visible)
+    }
+
+    function test_missingIllustrationUsesNeutralFallback() {
+        const page = createTemporaryObject(
+            homeComponent, testCase,
+            {"width": 900, "height": 800})
+        verify(page !== null)
+        const picture = findChild(page, "dashboardDeviceImage")
+        const fallback = findChild(page, "dashboardDeviceFallback")
+        verify(picture !== null)
+        verify(fallback !== null)
+        verify(fallback.visible)
+        ignoreWarning(/.*Cannot open.*missing-device\.png/)
+        page.deviceIconSource = Qt.resolvedUrl("missing-device.png")
+        tryCompare(picture, "status", Image.Error)
+        verify(!picture.visible)
+        verify(fallback.visible)
+        compare(findChild(page, "dashboardDeviceModel").text,
+                "PANORAMA SE")
     }
 
     function test_metricsGridUsesResponsiveColumns() {

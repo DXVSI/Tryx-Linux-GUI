@@ -4884,8 +4884,8 @@
     </message>
     <message>
         <location filename="../qml/pages/HomePage.qml" line="125"/>
-        <source>PANORAMA SE</source>
-        <translation>PANORAMA SE</translation>
+        <source>TRYX device</source>
+        <translation>Устройство TRYX</translation>
     </message>
     <message>
         <location filename="../qml/pages/HomePage.qml" line="153"/>

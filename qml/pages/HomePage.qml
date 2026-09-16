@@ -9,8 +9,25 @@ ScrollView {
 
     required property var runtime
     required property var systemMetrics
-    property url deviceIconSource:
-        "qrc:/icons/tryx-panorama.png"
+    readonly property string deviceModel: root.runtime.deviceModel || ""
+    // Crops remove only the transparent padding of the original product PNGs,
+    // after scaling the full image to 680 x 680. They are family illustrations,
+    // not evidence of a particular color, radiator size, or ARGB configuration.
+    readonly property var deviceArtwork: {
+        switch (root.deviceModel) {
+        case "PANORAMA":
+            return {file: "panorama.png", crop: Qt.rect(21, 196, 644, 263)}
+        case "PANORAMA SE":
+            return {file: "panorama-se.png", crop: Qt.rect(21, 203, 642, 324)}
+        case "TURRIS 620":
+            return {file: "turris-620.png", crop: Qt.rect(114, 106, 452, 468)}
+        default:
+            return null
+        }
+    }
+    property url deviceIconSource: root.deviceArtwork
+        ? Qt.resolvedUrl("../../resources/devices/" + root.deviceArtwork.file)
+        : ""
 
     signal openDisplayRequested()
 
@@ -101,19 +118,39 @@ ScrollView {
                 spacing: 24
 
                 Rectangle {
-                    Layout.preferredWidth: 138
-                    Layout.preferredHeight: 138
+                    Layout.preferredWidth: root.availableWidth >= 1000 ? 218 : 188
+                    Layout.preferredHeight: 160
                     radius: 18
                     color: "#171a1e"
                     border.width: 1
                     border.color: "#343b42"
 
                     Image {
+                        id: deviceImage
+                        objectName: "dashboardDeviceImage"
                         anchors.centerIn: parent
-                        width: 92
-                        height: 92
+                        width: parent.width - 16
+                        height: parent.height - 16
+                        sourceSize.width: 680
+                        sourceSize.height: 680
+                        sourceClipRect: root.deviceArtwork
+                            ? root.deviceArtwork.crop : Qt.rect(0, 0, 0, 0)
                         source: root.deviceIconSource
                         fillMode: Image.PreserveAspectFit
+                        mipmap: true
+                        visible: status === Image.Ready
+                        Accessible.ignored: true
+                    }
+
+                    Label {
+                        objectName: "dashboardDeviceFallback"
+                        anchors.centerIn: parent
+                        text: "TRYX"
+                        color: "#aab3bb"
+                        font.pixelSize: 23
+                        font.letterSpacing: 3
+                        visible: deviceImage.status !== Image.Ready
+                        Accessible.ignored: true
                     }
                 }
 
@@ -122,10 +159,13 @@ ScrollView {
                     spacing: 8
 
                     Label {
-                        text: qsTr("PANORAMA SE")
+                        objectName: "dashboardDeviceModel"
+                        Layout.fillWidth: true
+                        text: root.deviceModel || qsTr("TRYX device")
                         color: "#f4f6f7"
                         font.pixelSize: 25
                         font.bold: true
+                        elide: Text.ElideRight
                     }
 
                     RowLayout {
