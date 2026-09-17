@@ -323,6 +323,7 @@ private slots:
         QTRY_COMPARE(portal.acquisitions, 1);
         QTRY_VERIFY(!registry.snapshot().error.isEmpty());
         QTRY_VERIFY(portal.request.closed);
+        QVERIFY(!registry.snapshot().acquisitionPending);
         emit portal.request.Response(0, {});
         QTest::qWait(25);
         QCOMPARE(portal.finishes, 0);
@@ -461,6 +462,156 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(portal.releases, 1, 1000);
         QCOMPARE(portal.releasedIds, QStringList{"device-1"});
         QCOMPARE(portal.acquisitions, 1);
+    }
+
+    void pendingAcquisitionIsPublishedUntilTheResponse() {
+        FakePortal portal;
+        portal.replyAutomatically = false;
+        QVERIFY(portal.install());
+        Registry registry;
+        // Declared before the Access so the destructor's final publish()
+        // cannot touch an already destroyed list.
+        QList<bool> publishedPending;
+        Access access(registry);
+        connect(&access, &Access::changed, &access, [&]() {
+            publishedPending.append(registry.snapshot().acquisitionPending);
+        });
+        QVERIFY(!registry.snapshot().acquisitionPending);
+        QVERIFY(access.start());
+        QTRY_COMPARE(portal.acquisitions, 1);
+        QVERIFY(registry.snapshot().acquisitionPending);
+        QVERIFY(registry.snapshot().error.isEmpty());
+        // The open request is published so the discovery status can show it.
+        QVERIFY(publishedPending.contains(true));
+        emit portal.request.Response(0, {});
+        QTRY_VERIFY(registry.snapshot().devices.size() == 1 &&
+                    registry.snapshot().devices.first().granted);
+        QVERIFY(!registry.snapshot().acquisitionPending);
+        QVERIFY(!publishedPending.isEmpty() && !publishedPending.last());
+    }
+
+    void deniedAcquisitionClearsThePendingFlag() {
+        FakePortal portal;
+        portal.response = 1;
+        QVERIFY(portal.install());
+        Registry registry;
+        Access access(registry);
+        QVERIFY(access.start());
+        QTRY_VERIFY(!registry.snapshot().error.isEmpty());
+        QVERIFY(!registry.snapshot().acquisitionPending);
+        QVERIFY(registry.snapshot().monitoring);
+    }
+
+    void journalRecordsTheAcquisitionLifecycle() {
+        for (const QString &pattern : {
+                 QStringLiteral("^tryx_usb_portal event=\"started\"$"),
+                 QStringLiteral("^tryx_usb_portal event=\"session_created\"$"),
+                 QStringLiteral("^tryx_usb_portal event=\"device_event\" action=\"add\" "
+                                "product=\"391a:1021\" readable=\"true\" writable=\"true\" "
+                                "same_identity=\"false\" granted=\"false\"$"),
+                 QStringLiteral("^tryx_usb_portal event=\"acquire_requested\" "
+                                "product=\"391a:1021\" timeout_ms=\"[0-9]+\"$"),
+                 QStringLiteral("^tryx_usb_portal event=\"acquire_acknowledged\"$"),
+                 QStringLiteral("^tryx_usb_portal event=\"acquire_response\" code=\"0\"$"),
+                 QStringLiteral("^tryx_usb_portal event=\"acquire_granted\"$"),
+                 QStringLiteral("^tryx_usb_portal event=\"stopped\"$"),
+             }) {
+            QTest::ignoreMessage(QtInfoMsg, QRegularExpression(pattern));
+        }
+        FakePortal portal;
+        QVERIFY(portal.install());
+        Registry registry;
+        Access access(registry);
+        QVERIFY(access.start());
+        QTRY_VERIFY(registry.snapshot().devices.size() == 1 &&
+                    registry.snapshot().devices.first().granted);
+        access.stop();
+    }
+
+    void pendingRequestIsExplainedInTheDiscoveryStatus() {
+        FakePortal portal;
+        portal.replyAutomatically = false;
+        QVERIFY(portal.install());
+        Access access(Registry::instance());
+        QVERIFY(access.start());
+        QTRY_COMPARE(portal.acquisitions, 1);
+        auto discovery = PrinterProtocol::discover();
+        QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::PermissionDenied);
+        QVERIFY2(discovery.statusText().contains(QStringLiteral("waiting in the desktop portal")),
+                 qPrintable(discovery.statusText()));
+        emit portal.request.Response(0, {});
+        QTRY_VERIFY(Registry::instance().snapshot().devices.size() == 1 &&
+                    Registry::instance().snapshot().devices.first().granted);
+        discovery = PrinterProtocol::discover();
+        QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::Ready);
+        access.stop();
+    }
+
+    void hostInaccessibleDeviceIsExplainedInTheDiscoveryStatus() {
+        FakePortal portal;
+        auto readOnly = properties();
+        readOnly.insert("writable", false);
+        portal.devices = {{"read-only", readOnly}};
+        QVERIFY(portal.install());
+        Access access(Registry::instance());
+        QVERIFY(access.start());
+        QTRY_VERIFY(Registry::instance().snapshot().monitoring);
+        QTRY_COMPARE(Registry::instance().snapshot().devices.size(), 1);
+        QCOMPARE(portal.acquisitions, 0);
+        const auto discovery = PrinterProtocol::discover();
+        QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::PermissionDenied);
+        QVERIFY2(discovery.statusText().contains(QStringLiteral("not readable and writable")),
+                 qPrintable(discovery.statusText()));
+        QVERIFY(!Registry::instance().snapshot().acquisitionPending);
+        access.stop();
+    }
+
+    void replacementRequestAfterDenialSupersedesTheDenialText() {
+        FakePortal portal;
+        portal.replyAutomatically = false;
+        QVERIFY(portal.install());
+        Access access(Registry::instance());
+        QVERIFY(access.start());
+        QTRY_COMPARE(portal.acquisitions, 1);
+        emit portal.request.Response(1, {});
+        QTRY_VERIFY(!Registry::instance().snapshot().error.isEmpty());
+        QVERIFY(!Registry::instance().snapshot().acquisitionPending);
+        QVERIFY(PrinterProtocol::discover().statusText().contains(
+            QStringLiteral("not granted")));
+        // A replugged device gets one new request; its open dialog must not
+        // be hidden behind the stale denial text.
+        portal.sendEvent("remove", portal.devices.first());
+        const Device replacement{"replacement", properties()};
+        portal.sendEvent("add", replacement);
+        QTRY_COMPARE_WITH_TIMEOUT(portal.acquisitions, 2, 1000);
+        QVERIFY(Registry::instance().snapshot().acquisitionPending);
+        QVERIFY(Registry::instance().snapshot().error.isEmpty());
+        const auto discovery = PrinterProtocol::discover();
+        QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::PermissionDenied);
+        QVERIFY2(discovery.statusText().contains(QStringLiteral("waiting in the desktop portal")),
+                 qPrintable(discovery.statusText()));
+        emit portal.request.Response(1, {});
+        QTRY_VERIFY(!Registry::instance().snapshot().error.isEmpty());
+        QVERIFY(!Registry::instance().snapshot().acquisitionPending);
+        access.stop();
+    }
+
+    void requestPublishesTheRegistryExactlyOnce() {
+        FakePortal portal;
+        portal.replyAutomatically = false;
+        QVERIFY(portal.install());
+        Registry registry;
+        int publishes = 0;
+        Access access(registry);
+        connect(&access, &Access::changed, &access, [&]() { ++publishes; });
+        QVERIFY(access.start());
+        QTRY_COMPARE(portal.acquisitions, 1);
+        QTest::qWait(50);
+        // Session creation with the initial device event: the device is
+        // registered and the request is sent within one publish, plus the
+        // separate session-ready publish.
+        QCOMPARE(publishes, 2);
+        QVERIFY(registry.snapshot().acquisitionPending);
     }
 
     void staleSessionClosedCannotStopNewSession() {

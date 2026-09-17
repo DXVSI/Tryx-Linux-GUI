@@ -5,11 +5,13 @@
 #include <QDBusMetaType>
 #include <QDBusPendingCallWatcher>
 #include <QDBusServiceWatcher>
+#include <QDebug>
 #include <QMutexLocker>
 #include <QRegularExpression>
 #include <QUuid>
 
 #include <algorithm>
+#include <initializer_list>
 #include <fcntl.h>
 #include <sys/stat.h>
 
@@ -22,6 +24,30 @@ const QString kSessionInterface = QStringLiteral("org.freedesktop.portal.Session
 const QString kBusService = QStringLiteral("org.freedesktop.DBus");
 const QString kBusPath = QStringLiteral("/org/freedesktop/DBus");
 constexpr qsizetype kMaximumDevices = 64;
+
+QString structuredValue(QString value) {
+    value.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    value.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    value.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
+    value.replace(QLatin1Char('\r'), QStringLiteral("\\r"));
+    return QStringLiteral("\"") + value + QStringLiteral("\"");
+}
+
+QString boolText(bool value) {
+    return value ? QStringLiteral("true") : QStringLiteral("false");
+}
+
+// Journal-only trace of the portal access lifecycle for remote diagnosis.
+// Device ids, serials and object paths are never logged; product ids are
+// public USB identities.
+void logPortalEvent(const QString &event,
+                    std::initializer_list<QPair<QString, QString>> fields = {}) {
+    QStringList parts{QStringLiteral("tryx_usb_portal"),
+                      QStringLiteral("event=") + structuredValue(event)};
+    for (const auto &field : fields)
+        parts.append(field.first + QLatin1Char('=') + structuredValue(field.second));
+    qInfo().noquote() << parts.join(QLatin1Char(' '));
+}
 
 QString token() {
     return QUuid::createUuid().toString(QUuid::Id128);
@@ -102,7 +128,7 @@ Registry &Registry::instance() { static Registry registry; return registry; }
 
 Snapshot Registry::snapshot() const {
     QMutexLocker lock(&mutex_);
-    Snapshot snapshot{monitoring_, {}, error_};
+    Snapshot snapshot{monitoring_, {}, error_, acquisitionPending_};
     for (const Entry &entry : entries_)
         snapshot.devices.append(entry.info);
     std::sort(snapshot.devices.begin(), snapshot.devices.end(),
@@ -133,6 +159,7 @@ Access::Access(Registry &registry, const Options &options, QObject *parent)
     registerTypes();
     permissionDeadline_.setSingleShot(true);
     connect(&permissionDeadline_, &QTimer::timeout, this, [this]() {
+        logPortalEvent(QStringLiteral("acquire_timeout"));
         fail(tr("The USB permission request timed out. Restart the Flatpak background runtime to try again."));
     });
     connectionCheck_.setInterval(250);
@@ -155,8 +182,10 @@ bool Access::start() {
         QMutexLocker lock(&registry_.mutex_);
         registry_.entries_.clear();
         registry_.monitoring_ = false;
+        registry_.acquisitionPending_ = false;
         registry_.error_.clear();
     }
+    logPortalEvent(QStringLiteral("started"));
     if (!bus_.isConnected() ||
         !(bus_.connectionCapabilities() & QDBusConnection::UnixFileDescriptorPassing)) {
         fail(tr("The USB portal requires a local D-Bus connection with file descriptor passing."));
@@ -249,12 +278,13 @@ void Access::createSession() {
         }
         verifyOwner([this]() {
             sessionReady_ = true;
+            logPortalEvent(QStringLiteral("session_created"));
             {
                 QMutexLocker lock(&registry_.mutex_);
                 registry_.monitoring_ = true;
             }
-            publish();
-            maybeAcquire();
+            if (!maybeAcquire())
+                publish();
         });
     });
 }
@@ -290,6 +320,12 @@ void Access::deviceEvents(const QDBusObjectPath &session, const Events &events,
                 continue;
             auto existing = registry_.entries_.find(event.id);
             if (event.action == QStringLiteral("remove")) {
+                logPortalEvent(QStringLiteral("device_removed"),
+                               {{QStringLiteral("known"),
+                                 boolText(existing != registry_.entries_.end())},
+                                {QStringLiteral("granted"),
+                                 boolText(existing != registry_.entries_.end() &&
+                                          existing->info.granted)}});
                 if (existing != registry_.entries_.end()) {
                     revoked = revoked || existing->info.granted;
                     if (existing->info.granted)
@@ -305,6 +341,12 @@ void Access::deviceEvents(const QDBusObjectPath &session, const Events &events,
             const quint16 productId = hexId(udev, QStringLiteral("ID_MODEL_ID"));
             if (hexId(udev, QStringLiteral("ID_VENDOR_ID")) != 0x391a ||
                 !printerProductProfileForId(productId)) {
+                logPortalEvent(QStringLiteral("device_ignored"),
+                               {{QStringLiteral("action"), event.action},
+                                {QStringLiteral("vendor_id"),
+                                 textProperty(udev, QStringLiteral("ID_VENDOR_ID"))},
+                                {QStringLiteral("model_id"),
+                                 textProperty(udev, QStringLiteral("ID_MODEL_ID"))}});
                 if (existing != registry_.entries_.end()) {
                     revoked = revoked || existing->info.granted;
                     if (existing->info.granted)
@@ -332,6 +374,8 @@ void Access::deviceEvents(const QDBusObjectPath &session, const Events &events,
                 entry.info.endpoint = QStringLiteral("portal-usb:") + token();
             }
             if ((!readable || !writable) && entry.info.granted) {
+                logPortalEvent(QStringLiteral("grant_revoked"),
+                               {{QStringLiteral("reason"), QStringLiteral("access-lost")}});
                 revoked = true;
                 revokedIds.append(event.id);
                 attempted_.remove(entry.info.endpoint);
@@ -346,6 +390,13 @@ void Access::deviceEvents(const QDBusObjectPath &session, const Events &events,
             entry.info.product = textProperty(udev, QStringLiteral("ID_MODEL_FROM_DATABASE"));
             entry.info.readable = readable;
             entry.info.writable = writable;
+            logPortalEvent(QStringLiteral("device_event"),
+                           {{QStringLiteral("action"), event.action},
+                            {QStringLiteral("product"), printerProductIdString(productId)},
+                            {QStringLiteral("readable"), boolText(readable)},
+                            {QStringLiteral("writable"), boolText(writable)},
+                            {QStringLiteral("same_identity"), boolText(sameIdentity)},
+                            {QStringLiteral("granted"), boolText(entry.info.granted)}});
             registry_.entries_.insert(event.id, std::move(entry));
             if (registry_.entries_.size() > kMaximumDevices) {
                 tooMany = true;
@@ -360,19 +411,19 @@ void Access::deviceEvents(const QDBusObjectPath &session, const Events &events,
         return;
     }
     releaseDevices(revokedIds);
-    publish();
-    maybeAcquire();
+    if (!maybeAcquire())
+        publish();
 }
 
-void Access::maybeAcquire() {
+bool Access::maybeAcquire() {
     if (!running_ || !sessionReady_ || !requestPath_.isEmpty() || releasesInFlight_ != 0)
-        return;
+        return false;
     const Snapshot snapshot = registry_.snapshot();
     if (snapshot.devices.size() != 1)
-        return;
+        return false;
     const DeviceInfo device = snapshot.devices.first();
     if (device.granted || !device.readable || !device.writable || attempted_.contains(device.endpoint))
-        return;
+        return false;
     attempted_.insert(device.endpoint);
     pendingId_ = device.id;
     pendingEndpoint_ = device.endpoint;
@@ -386,9 +437,20 @@ void Access::maybeAcquire() {
     if (!bus_.connect(owner_, requestPath_, kRequestInterface, QStringLiteral("Response"),
                       this, SLOT(acquisitionResponse(uint,QVariantMap,QDBusMessage)))) {
         fail(tr("Cannot subscribe to the USB permission response."));
-        return;
+        // fail() already published the terminal state.
+        return true;
     }
     permissionDeadline_.start(qMax(1, options_.permissionTimeoutMs));
+    {
+        QMutexLocker lock(&registry_.mutex_);
+        // A new open request supersedes an earlier denial text.
+        registry_.acquisitionPending_ = true;
+        registry_.error_.clear();
+    }
+    logPortalEvent(QStringLiteral("acquire_requested"),
+                   {{QStringLiteral("product"), printerProductIdString(device.productId)},
+                    {QStringLiteral("timeout_ms"),
+                     QString::number(qMax(1, options_.permissionTimeoutMs))}});
     const QString request = requestPath_;
     call(owner_, kDesktopPath, kUsbInterface, QStringLiteral("AcquireDevices"),
          {QString(), QVariant::fromValue(Devices{{device.id, {{QStringLiteral("writable"), true}}}}),
@@ -406,12 +468,17 @@ void Access::maybeAcquire() {
             return;
         }
         acquisitionAcknowledged_ = true;
+        logPortalEvent(QStringLiteral("acquire_acknowledged"));
         if (earlyResponse_) {
             const uint response = *earlyResponse_;
             earlyResponse_.reset();
             processAcquisitionResponse(response);
         }
     });
+    // Let the discovery status report the open request while the host
+    // dialog is pending. Callers skip their own publish() for this path.
+    publish();
+    return true;
 }
 
 void Access::acquisitionResponse(uint response, const QVariantMap &,
@@ -429,6 +496,8 @@ void Access::acquisitionResponse(uint response, const QVariantMap &,
 }
 
 void Access::processAcquisitionResponse(uint response) {
+    logPortalEvent(QStringLiteral("acquire_response"),
+                   {{QStringLiteral("code"), QString::number(response)}});
     if (response != 0) {
         permissionDeadline_.stop();
         requestPath_.clear();
@@ -436,12 +505,13 @@ void Access::processAcquisitionResponse(uint response) {
         pendingEndpoint_.clear();
         {
             QMutexLocker lock(&registry_.mutex_);
+            registry_.acquisitionPending_ = false;
             registry_.error_ = tr("USB access was not granted. Allow access and restart the Flatpak background runtime to try again.");
         }
-        publish();
         // A different endpoint may have appeared while this request was open.
         // The attempted-endpoint set still prevents retrying the denied device.
-        maybeAcquire();
+        if (!maybeAcquire())
+            publish();
         return;
     }
     finishAcquire();
@@ -495,6 +565,7 @@ void Access::finishAcquire() {
             bool accepted = false;
             {
                 QMutexLocker lock(&registry_.mutex_);
+                registry_.acquisitionPending_ = false;
                 auto entry = registry_.entries_.find(pendingId_);
                 if (entry != registry_.entries_.end() && entry->info.endpoint == pendingEndpoint_ &&
                     entry->info.readable && entry->info.writable) {
@@ -504,6 +575,8 @@ void Access::finishAcquire() {
                     accepted = true;
                 }
             }
+            logPortalEvent(accepted ? QStringLiteral("acquire_granted")
+                                    : QStringLiteral("acquire_discarded"));
             if (!accepted)
                 releaseDevices({pendingId_});
             permissionDeadline_.stop();
@@ -511,8 +584,8 @@ void Access::finishAcquire() {
             pendingId_.clear();
             pendingEndpoint_.clear();
             pendingDescriptor_ = {};
-            publish();
-            maybeAcquire();
+            if (!maybeAcquire())
+                publish();
         });
     });
 }
@@ -520,6 +593,8 @@ void Access::finishAcquire() {
 void Access::releaseDevices(const QStringList &ids) {
     if (ids.isEmpty() || !running_)
         return;
+    logPortalEvent(QStringLiteral("release_requested"),
+                   {{QStringLiteral("count"), QString::number(ids.size())}});
     ++releasesInFlight_;
     call(owner_, kDesktopPath, kUsbInterface, QStringLiteral("ReleaseDevices"),
          {ids, QVariantMap{}}, [this](const QDBusMessage &reply) {
@@ -549,6 +624,7 @@ void Access::sessionClosed(const QVariantMap &, const QDBusMessage &message) {
 }
 
 void Access::fail(const QString &message) {
+    logPortalEvent(QStringLiteral("failed"), {{QStringLiteral("message"), message}});
     stop();
     {
         QMutexLocker lock(&registry_.mutex_);
@@ -561,6 +637,7 @@ void Access::fail(const QString &message) {
 void Access::stop() {
     if (!running_ && connectionName_.isEmpty())
         return;
+    logPortalEvent(QStringLiteral("stopped"));
     running_ = false;
     ++generation_;
     sessionReady_ = false;
@@ -594,6 +671,7 @@ void Access::stop() {
             hadGrant = hadGrant || entry.info.granted;
         registry_.entries_.clear();
         registry_.monitoring_ = false;
+        registry_.acquisitionPending_ = false;
     }
     if (hadGrant)
         emit endpointRevoked();

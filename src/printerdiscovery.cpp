@@ -411,9 +411,18 @@ QString PrinterProtocol::DiscoverySnapshot::statusText() const {
     if (state == DiscoveryState::EnumeratingPrinterClass)
         return QObject::tr("No supported TRYX printer-class device is visible through the USB portal. "
                            "Legacy serial/ADB devices are not supported by this Flatpak.");
-    if (state == DiscoveryState::PermissionDenied)
+    if (state == DiscoveryState::PermissionDenied) {
+        const auto portal = tryx::portal_usb::Registry::instance().snapshot();
+        if (portal.acquisitionPending)
+            return QObject::tr("A USB access request is waiting in the desktop portal. "
+                               "Allow access in the dialog to continue.");
+        if (portal.devices.size() == 1 &&
+            (!portal.devices.first().readable || !portal.devices.first().writable))
+            return QObject::tr("The USB portal reports that the TRYX device is not readable "
+                               "and writable on the host.");
         return QObject::tr("Waiting for read/write access through the USB portal. "
                            "The host must also allow access to the device.");
+    }
     if (state == DiscoveryState::Ready)
         return QObject::tr("TRYX USB portal access is ready");
 #endif

@@ -6862,6 +6862,14 @@
         <translation>Ожидание доступа для чтения и записи через USB-портал. Основная система также должна разрешать доступ к устройству.</translation>
     </message>
     <message>
+        <source>A USB access request is waiting in the desktop portal. Allow access in the dialog to continue.</source>
+        <translation>Запрос доступа к USB ожидает подтверждения в портале рабочего стола. Разрешите доступ в диалоге, чтобы продолжить.</translation>
+    </message>
+    <message>
+        <source>The USB portal reports that the TRYX device is not readable and writable on the host.</source>
+        <translation>USB-портал сообщает, что устройство TRYX недоступно для чтения и записи в основной системе.</translation>
+    </message>
+    <message>
         <source>TRYX USB portal access is ready</source>
         <translation>Доступ к TRYX через USB-портал готов</translation>
     </message>
