@@ -64,5 +64,8 @@ bool printerConversionProfileMatchesConversion(
     const QString &conversionProfile,
     const PrinterProductProfile &profile,
     const QString &conversion);
+// Whether durable retry state for this product must carry the source origin
+// identity (content hash, size, and conversion profile) before dispatch.
+bool printerMediaOriginRequired(const PrinterProductProfile &profile);
 
 }  // namespace tryx::printer_media_identity

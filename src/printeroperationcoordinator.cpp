@@ -4739,6 +4739,13 @@ QString PrinterOperationCoordinator::queueUploadOperation(
                 "This media workflow is not supported for USB product %1")
                 .arg(printerProductIdString(productProfile->productId)));
     }
+    // Products without a media catalog can still require the source origin
+    // identity in durable retry state, so the source is hashed before
+    // conversion even when no existing-media lookup is requested.
+    const bool originRequired =
+        tryx::printer_media_identity::printerMediaOriginRequired(
+            *productProfile);
+    const bool analyzeFirst = ensureExisting || originRequired;
     if (!activeOperationId_.isEmpty()) {
         return reject(
             QStringLiteral("Busy"),
@@ -4839,13 +4846,13 @@ QString PrinterOperationCoordinator::queueUploadOperation(
     OperationRecord record;
     record.info.id = operationId;
     record.info.kind = kind;
-    record.info.state = ensureExisting ? QStringLiteral("Hashing")
-                                       : QStringLiteral("Converting");
-    record.info.stage = ensureExisting
+    record.info.state = analyzeFirst ? QStringLiteral("Hashing")
+                                     : QStringLiteral("Converting");
+    record.info.stage = analyzeFirst
         ? QStringLiteral("HashingSource")
         : QStringLiteral("Converting");
     record.info.subject = subject;
-    record.info.message = ensureExisting
+    record.info.message = analyzeFirst
         ? tryx::DeviceManagerMessages::tr(
               "Calculating the source media content identity...")
         : tryx::DeviceManagerMessages::tr("Preparing media for printer-class upload...");
@@ -4862,6 +4869,7 @@ QString PrinterOperationCoordinator::queueUploadOperation(
     record.updateMetrics =
         updateMetrics || normalizedApplyRequest.replaceOverlay;
     record.ensureExisting = ensureExisting;
+    record.originRequired = originRequired;
     record.sourcePath = effectiveSourcePath;
     record.conversionProfile =
         tryx::printer_media_identity::printerConversionProfile(
@@ -4878,7 +4886,7 @@ QString PrinterOperationCoordinator::queueUploadOperation(
     operationOrder_.append(operationId);
     activeOperationId_ = operationId;
     publishOperation(operationId);
-    if (ensureExisting) {
+    if (analyzeFirst) {
         if (profile.target == QStringLiteral("SplitArea")) {
             emit requestAnalyzeSourceWithProfile(
                 operationId, record.sourcePath, context.generation,
@@ -6133,7 +6141,8 @@ void PrinterOperationCoordinator::handleSourceAnalyzed(
         return;
     }
     OperationRecord &record = operations_[operationId];
-    if (!record.ensureExisting || record.cancelRequested ||
+    if (!(record.ensureExisting || record.originRequired) ||
+        record.cancelRequested ||
         !isSha256Hex(contentSha256) || sourceSize <= 0 ||
         conversionProfile.isEmpty() ||
         QFileInfo(localPath).absoluteFilePath() != record.sourcePath) {
@@ -6157,6 +6166,29 @@ void PrinterOperationCoordinator::handleSourceAnalyzed(
     record.sourceContentSha256 = contentSha256;
     record.sourceSize = sourceSize;
     record.conversionProfile = conversionProfile;
+    if (!record.ensureExisting) {
+        // Origin-only analysis: there is no device catalog to consult, so
+        // conversion starts directly with the verified source identity and
+        // the preparer re-checks it after encoding.
+        record.info.state = QStringLiteral("Converting");
+        record.info.stage = QStringLiteral("Converting");
+        record.info.message = tryx::DeviceManagerMessages::tr(
+            "Preparing media for printer-class upload...");
+        publishOperation(operationId);
+        if (record.mediaPreparationProfile.target ==
+            QStringLiteral("SplitArea")) {
+            emit requestPrepareMediaWithProfile(
+                operationId, context.devicePath, record.sourcePath,
+                record.sourceContentSha256, context.generation,
+                record.mediaPreparationProfile, record.printerProductId);
+        } else {
+            emit requestPrepareMedia(
+                operationId, context.devicePath, record.sourcePath,
+                record.sourceContentSha256, context.generation,
+                record.mediaTransform, record.printerProductId);
+        }
+        return;
+    }
     record.originLookupPending = true;
     record.info.state = QStringLiteral("Refreshing");
     record.info.stage = QStringLiteral("RefreshingMedia");

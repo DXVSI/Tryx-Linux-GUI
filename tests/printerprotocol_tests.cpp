@@ -2579,6 +2579,10 @@ private slots:
     void productChangeDoesNotReuseSessionOrRecovery();
     void turrisAcknowledgedUploadSkipsCatalog();
     void turrisLostFinalAckDoesNotReconcileOrRetransmit();
+    void turrisUploadQueuesSourceAnalysisBeforePreparation();
+    void turrisUploadMediaDispatchesWithOriginIdentity();
+    void turrisSourceAnalysisFailureIsClassifiedAsSourceAnalysisFailed();
+    void turrisUploadCancelDuringSourceAnalysisIsUserCancelled();
     void unsupportedProductFirmwareIsRejectedBeforeQuiesce();
     void unidentifiedFirmwareTargetIsRejectedBeforeQuiesce();
     void identifiedLegacyFirmwareTargetCanBeQuiesced();
@@ -36663,6 +36667,367 @@ void PrinterProtocolTests::
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
+}
+
+void PrinterProtocolTests::turrisUploadQueuesSourceAnalysisBeforePreparation() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "2011"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId,
+             quint16{0x2011});
+
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("turris-source.png"));
+    QImage image(32, 18, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#336699")));
+    QVERIFY(image.save(sourcePath));
+    QVERIFY(QFile::setPermissions(
+        sourcePath, QFile::ReadOwner | QFile::WriteOwner));
+
+    // The preparer stays disconnected: this test pins the coordinator
+    // ordering, the ffmpeg path is covered separately.
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestAnalyzePrinterSource,
+        manager->printerMediaPreparer_,
+        &PrinterMediaPreparer::analyzeSource);
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPreparePrinterMedia,
+        manager->printerMediaPreparer_,
+        &PrinterMediaPreparer::prepare);
+    QSignalSpy analyzeSpy(
+        manager.get(), &DeviceManager::requestAnalyzePrinterSource);
+    QSignalSpy prepareSpy(
+        manager.get(), &DeviceManager::requestPreparePrinterMedia);
+    QSignalSpy refreshSpy(
+        manager.get(), &DeviceManager::requestPrinterRefreshMedia);
+
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112021");
+    const TryxRuntimeMediaTransform transform =
+        tryxLegacyFitMediaTransform();
+    const QString queuedId = manager->queueUploadOperation(
+        operationId, sourcePath, false, TryxRuntimeApplyRequest{}, false,
+        false, transform);
+    QVERIFY2(!queuedId.isEmpty(),
+             qPrintable(manager->operationInfo(operationId).message));
+    QCOMPARE(queuedId, operationId);
+
+    // TURRIS has no media catalog, but its durable retry state requires the
+    // source identity, so the source must be hashed before conversion.
+    const TryxRuntimeOperationInfo queued =
+        manager->operationInfo(operationId);
+    QCOMPARE(queued.state, QStringLiteral("Hashing"));
+    QCOMPARE(queued.stage, QStringLiteral("HashingSource"));
+    QCOMPARE(analyzeSpy.count(), 1);
+    QCOMPARE(analyzeSpy.first().at(0).toString(), operationId);
+    QCOMPARE(analyzeSpy.first().at(4).value<quint16>(), quint16{0x2011});
+    QCOMPARE(prepareSpy.count(), 0);
+
+    const QString sourceSha256 =
+        tryx::printer_media_file_integrity::sha256File(sourcePath);
+    const qint64 sourceSize = QFileInfo(sourcePath).size();
+    const QString conversionProfile =
+        tryx::printer_media_identity::printerConversionProfile(
+            sourcePath, transform, 0x2011);
+    QVERIFY(conversionProfile.startsWith(QStringLiteral("turris-mxhd-v1-")));
+    manager->operationCoordinator_.handleSourceAnalyzed(
+        manager->operationContext(), operationId, sourcePath, sourceSha256,
+        sourceSize, conversionProfile,
+        manager->sessionController_.state_.printerGeneration);
+
+    // No catalog lookup: preparation starts directly with the expected
+    // source hash, and the record carries the complete origin identity.
+    QCOMPARE(refreshSpy.count(), 0);
+    QCOMPARE(prepareSpy.count(), 1);
+    QCOMPARE(prepareSpy.first().at(0).toString(), operationId);
+    QCOMPARE(prepareSpy.first().at(2).toString(), sourcePath);
+    QCOMPARE(prepareSpy.first().at(3).toString(), sourceSha256);
+    QCOMPARE(prepareSpy.first().at(6).value<quint16>(), quint16{0x2011});
+    const TryxRuntimeOperationInfo converting =
+        manager->operationInfo(operationId);
+    QCOMPARE(converting.state, QStringLiteral("Converting"));
+    QCOMPARE(converting.stage, QStringLiteral("Converting"));
+    const PrinterOperationCoordinator::OperationRecord record =
+        manager->operationCoordinator_.operations_.value(operationId);
+    QCOMPARE(record.sourceContentSha256, sourceSha256);
+    QCOMPARE(record.sourceSize, sourceSize);
+    QCOMPARE(record.conversionProfile, conversionProfile);
+    QVERIFY(!record.originLookupPending);
+    QVERIFY(!record.ensureExisting);
+}
+
+void PrinterProtocolTests::turrisUploadMediaDispatchesWithOriginIdentity() {
+    if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty() ||
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "2011"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    // The real preparer runs; only the USB upload itself stays offline.
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPrinterUploadPrepared,
+        manager->worker_, &DeviceWorker::uploadPreparedPrinterMedia);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId,
+             quint16{0x2011});
+
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("turris-photo.png"));
+    QImage image(32, 18, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#336699")));
+    QVERIFY(image.save(sourcePath));
+    QVERIFY(QFile::setPermissions(
+        sourcePath, QFile::ReadOwner | QFile::WriteOwner));
+
+    QSignalSpy uploadSpy(
+        manager.get(), &DeviceManager::requestPrinterUploadPrepared);
+    QSignalSpy refreshSpy(
+        manager.get(), &DeviceManager::requestPrinterRefreshMedia);
+
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112022");
+    const TryxRuntimeMediaTransform transform =
+        tryxLegacyFitMediaTransform();
+    const QString queuedId = manager->queueUploadOperation(
+        operationId, sourcePath, false, TryxRuntimeApplyRequest{}, false,
+        false, transform);
+    QVERIFY2(!queuedId.isEmpty(),
+             qPrintable(manager->operationInfo(operationId).message));
+    QCOMPARE(queuedId, operationId);
+
+    const auto terminal = [&]() {
+        const QString state = manager->operationInfo(operationId).state;
+        return state == QStringLiteral("Failed") ||
+               state == QStringLiteral("Cancelled") ||
+               state == QStringLiteral("RetryAvailable") ||
+               state == QStringLiteral("Succeeded");
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(uploadSpy.count() == 1 || terminal(), 60000);
+    QVERIFY2(uploadSpy.count() == 1,
+             qPrintable(manager->operationInfo(operationId).message));
+
+    const TryxRuntimeOperationInfo uploading =
+        manager->operationInfo(operationId);
+    QCOMPARE(uploading.state, QStringLiteral("Uploading"));
+    QCOMPARE(refreshSpy.count(), 0);
+    QCOMPARE(uploadSpy.first().at(4).toString(), operationId);
+    const QString durablePreparedPath = uploadSpy.first().at(1).toString();
+    const QString remoteName = uploadSpy.first().at(2).toString();
+    QVERIFY(remoteName.endsWith(QStringLiteral(".png.h264_1280x720")));
+    QVERIFY(QFileInfo::exists(durablePreparedPath));
+
+    const auto &dispatch =
+        manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch;
+    QVERIFY(dispatch.has_value());
+    QCOMPARE(dispatch->operationId, operationId);
+    QCOMPARE(dispatch->productId, quint16{0x2011});
+    QVERIFY(dispatch->origin.has_value());
+    QCOMPARE(dispatch->origin->sourceContentSha256,
+             tryx::printer_media_file_integrity::sha256File(sourcePath));
+    QCOMPARE(dispatch->origin->sourceContentSize,
+             QFileInfo(sourcePath).size());
+    QCOMPARE(dispatch->origin->conversionProfile,
+             tryx::printer_media_identity::printerConversionProfile(
+                 sourcePath, transform, 0x2011));
+
+    QSignalSpy uploadedSpy(manager.get(), &DeviceManager::mediaUploaded);
+    manager->worker_->printerUploadFinished(
+        operationId, durablePreparedPath, remoteName, true,
+        PrinterProtocol::MutationOutcome::Succeeded, QString(),
+        manager->sessionController_.state_.printerGeneration);
+    QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Succeeded"));
+    QCOMPARE(uploadedSpy.count(), 1);
+    QCOMPARE(refreshSpy.count(), 0);
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_
+                 .inFlightDispatch.has_value());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_
+                 .retryCandidate.has_value());
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+}
+
+void PrinterProtocolTests::turrisSourceAnalysisFailureIsClassifiedAsSourceAnalysisFailed() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "2011"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId,
+             quint16{0x2011});
+
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("turris-unreadable.png"));
+    QImage image(32, 18, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#336699")));
+    QVERIFY(image.save(sourcePath));
+    QVERIFY(QFile::setPermissions(
+        sourcePath, QFile::ReadOwner | QFile::WriteOwner));
+
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestAnalyzePrinterSource,
+        manager->printerMediaPreparer_,
+        &PrinterMediaPreparer::analyzeSource);
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPreparePrinterMedia,
+        manager->printerMediaPreparer_,
+        &PrinterMediaPreparer::prepare);
+    QSignalSpy analyzeSpy(
+        manager.get(), &DeviceManager::requestAnalyzePrinterSource);
+    QSignalSpy prepareSpy(
+        manager.get(), &DeviceManager::requestPreparePrinterMedia);
+
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112023");
+    QCOMPARE(manager->queueUploadOperation(
+                 operationId, sourcePath, false, TryxRuntimeApplyRequest{},
+                 false, false, tryxLegacyFitMediaTransform()),
+             operationId);
+    QCOMPARE(manager->operationInfo(operationId).stage,
+             QStringLiteral("HashingSource"));
+    QCOMPARE(analyzeSpy.count(), 1);
+
+    // A preparer failure while the source is still being analysed (for
+    // example an unsupported or unreadable file) is a source failure, not a
+    // conversion failure, exactly like the ensureExisting flow reports it.
+    const QString failure = QStringLiteral("Unsupported media file type");
+    manager->operationCoordinator_.handlePreparationFailed(
+        manager->operationContext(), operationId, failure,
+        manager->sessionController_.state_.printerGeneration);
+    const TryxRuntimeOperationInfo failed =
+        manager->operationInfo(operationId);
+    QCOMPARE(failed.state, QStringLiteral("Failed"));
+    QCOMPARE(failed.errorCategory, QStringLiteral("SourceAnalysisFailed"));
+    QCOMPARE(failed.message, failure);
+    QCOMPARE(prepareSpy.count(), 0);
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+    QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_
+                 .inFlightDispatch.has_value());
+}
+
+void PrinterProtocolTests::turrisUploadCancelDuringSourceAnalysisIsUserCancelled() {
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "2011"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId,
+             quint16{0x2011});
+
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("turris-cancelled.png"));
+    QImage image(32, 18, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#336699")));
+    QVERIFY(image.save(sourcePath));
+    QVERIFY(QFile::setPermissions(
+        sourcePath, QFile::ReadOwner | QFile::WriteOwner));
+
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestAnalyzePrinterSource,
+        manager->printerMediaPreparer_,
+        &PrinterMediaPreparer::analyzeSource);
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPreparePrinterMedia,
+        manager->printerMediaPreparer_,
+        &PrinterMediaPreparer::prepare);
+    QSignalSpy prepareSpy(
+        manager.get(), &DeviceManager::requestPreparePrinterMedia);
+    QSignalSpy cancelSpy(
+        manager.get(),
+        &DeviceManager::requestCancelPrinterPreparationOperation);
+
+    const QString operationId =
+        QStringLiteral("20112011-2011-4011-8011-201120112024");
+    const TryxRuntimeMediaTransform transform =
+        tryxLegacyFitMediaTransform();
+    QCOMPARE(manager->queueUploadOperation(
+                 operationId, sourcePath, false, TryxRuntimeApplyRequest{},
+                 false, false, transform),
+             operationId);
+    QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Hashing"));
+
+    manager->cancelOperation(operationId);
+    const TryxRuntimeOperationInfo cancelled =
+        manager->operationInfo(operationId);
+    QCOMPARE(cancelled.state, QStringLiteral("Cancelled"));
+    QCOMPARE(cancelled.errorCategory, QStringLiteral("UserCancelled"));
+    QCOMPARE(cancelSpy.count(), 1);
+    QCOMPARE(cancelSpy.first().at(0).toString(), operationId);
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+
+    // A late analysis result for the cancelled operation must not start
+    // conversion or resurrect the record.
+    manager->operationCoordinator_.handleSourceAnalyzed(
+        manager->operationContext(), operationId, sourcePath,
+        tryx::printer_media_file_integrity::sha256File(sourcePath),
+        QFileInfo(sourcePath).size(),
+        tryx::printer_media_identity::printerConversionProfile(
+            sourcePath, transform, 0x2011),
+        manager->sessionController_.state_.printerGeneration);
+    QCOMPARE(prepareSpy.count(), 0);
+    QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Cancelled"));
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
 }
 
 void PrinterProtocolTests::

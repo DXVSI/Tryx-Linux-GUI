@@ -500,4 +500,10 @@ bool printerConversionProfileMatchesConversion(
         QStringLiteral("pase-h264-v3-"));
 }
 
+bool printerMediaOriginRequired(const PrinterProductProfile &profile) {
+    // TURRIS has no device media catalog, so its retry state is the only
+    // durable record of which source produced the prepared artifact.
+    return profile.productId == turris_media::kProductId;
+}
+
 }  // namespace tryx::printer_media_identity
