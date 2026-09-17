@@ -217,7 +217,7 @@ WriteResult writeBlob(
         result.cancelled = true;
         return result;
     }
-    if ((kind != kImageKind && kind != kVideoKind) ||
+    if ((kind != kImageKind && kind != kGifKind && kind != kVideoKind) ||
         frameCount == 0 || frameCount > 0xffffffffULL ||
         (kind == kImageKind && frameCount != 1)) {
         result.error = QObject::tr("Turris media attributes are invalid");
@@ -374,7 +374,8 @@ FrameCountProbeResult parseFrameCountProbe(
             QString::number(kHeight);
 
     FrameCountProbeResult result;
-    result.valid = (kind == kImageKind || kind == kVideoKind) &&
+    result.valid = (kind == kImageKind || kind == kGifKind ||
+                    kind == kVideoKind) &&
                    probeShapeValid && probeValues.size() == 3 &&
                    geometryValid && frameCountOk && frameCount != 0 &&
                    frameCount <= 0xffffffffULL &&
@@ -434,9 +435,10 @@ bool validateBlob(QFile *file, qint64 declaredSize,
     if (lowerName.endsWith(QStringLiteral(".png.h264_1280x720"))) {
         expectedKind = kImageKind;
     } else if (lowerName.endsWith(
-                   QStringLiteral(".mp4.h264_1280x720")) ||
-               lowerName.endsWith(
                    QStringLiteral(".gif.h264_1280x720"))) {
+        expectedKind = kGifKind;
+    } else if (lowerName.endsWith(
+                   QStringLiteral(".mp4.h264_1280x720"))) {
         expectedKind = kVideoKind;
     } else {
         return reject(QStringLiteral(

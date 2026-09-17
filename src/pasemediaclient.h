@@ -24,8 +24,9 @@ public:
     using TransactionProfile = PrinterTransactionChannel::TransactionProfile;
 
     PaseMediaClient(PrinterTransactionChannel &channel,
-                    const PrinterProductProfile &profile)
-        : channel_(channel), productProfile_(profile) {}
+                    const PrinterProductProfile &profile,
+                    PrinterProtocol::NegotiatedCapabilities &negotiated)
+        : channel_(channel), productProfile_(profile), negotiated_(negotiated) {}
     PaseMediaClient(const PaseMediaClient &) = delete;
     PaseMediaClient &operator=(const PaseMediaClient &) = delete;
 
@@ -72,8 +73,13 @@ public:
                      const QString &expectedSha256 = QString());
 
 private:
+    bool catalogAvailable() const {
+        return productProfile_.mediaCatalogSupported && negotiated_.mediaCatalog;
+    }
+
     PrinterTransactionChannel &channel_;
     const PrinterProductProfile &productProfile_;
+    PrinterProtocol::NegotiatedCapabilities &negotiated_;
     qint64 mediaPullMaximumBytes_ = tryx::printer_protocol_constants::kMaxMediaPullSize;
     int mediaPullMaximumChunks_ = tryx::printer_protocol_constants::kMaxMediaPullChunks;
     qint64 mediaPullDeadlineOverrideMs_ = 0;

@@ -45,6 +45,8 @@ inline QString printerKeepaliveOutcomeName(
         return QStringLiteral("retryable-failure");
     case PrinterProtocol::KeepaliveOutcome::FatalFailure:
         return QStringLiteral("fatal-failure");
+    case PrinterProtocol::KeepaliveOutcome::Unsupported:
+        return QStringLiteral("unsupported");
     }
     return QStringLiteral("unknown");
 }

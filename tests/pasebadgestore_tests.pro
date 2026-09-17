@@ -12,6 +12,7 @@ SOURCES += $$PWD/pasebadgestore_tests.cpp \
     $$PWD/../src/pasemetricsconfigstore.cpp \
     $$PWD/../src/configurationformatbackup.cpp \
     $$PWD/../src/paseoverlayconfig.cpp \
+    $$PWD/../src/printerproductprofile.cpp \
     $$PWD/../src/runtimeapplyrequestcodec.cpp \
     $$PWD/../src/runtimecontract.cpp \
     $$PWD/../src/runtimebadgetext.cpp

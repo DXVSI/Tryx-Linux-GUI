@@ -196,6 +196,11 @@ signals:
     void printerMediaListFailed(const QString &operationId,
                                 const QString &message,
                                 quint64 generation);
+    // A negotiated device capability was withdrawn for the rest of this
+    // physical generation (Turris fail-safe negotiation).
+    void printerCapabilityUnavailable(const QString &capabilityToken,
+                                      const QString &reason,
+                                      quint64 generation);
     void printerMediaStaged(
         const QString &operationId, const QString &mediaName,
         const QString &outputPath, bool success, bool cancelled,

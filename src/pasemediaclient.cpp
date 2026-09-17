@@ -3,8 +3,10 @@
 #include "printermediahelpers_p.h"
 #include "printeroperation_p.h"
 #include "printerprotocolconstants_p.h"
+#include "turrismediaformat.h"
 
 #include <QCryptographicHash>
+#include <QFile>
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QRandomGenerator>
@@ -275,7 +277,7 @@ void PaseMediaClient::setMediaPullLimitsForTesting(qint64 maximumBytes,
 PrinterProtocol::MediaListResult
 PaseMediaClient::readMediaList(const QString &devicePath,
                                const OperationContext &context) {
-    if (!productProfile_.mediaCatalogSupported) {
+    if (!catalogAvailable()) {
         return {false,
                 unsupportedCapabilityError(productProfile_,
                                            QStringLiteral("media catalog operations")),
@@ -285,9 +287,19 @@ PaseMediaClient::readMediaList(const QString &devicePath,
     request.mutable_media_catalog_query();
     panorama::wire::v1::Response response;
     QString error;
+    TransactionOutcome outcome = TransactionOutcome::NotSent;
     if (!channel_.execute(&request, panorama::wire::v1::Response::kMediaCatalog,
-                          &response, devicePath, context, &error)) {
-        return {false, error, {}};
+                          &response, devicePath, context, &error, &outcome)) {
+        const bool rejected = outcome == TransactionOutcome::Rejected;
+        if (rejected && productProfile_.family == PrinterProtocolFamily::Turris) {
+            // Fail-safe negotiation: the device has no catalog command; keep the
+            // transport for uploads and stop asking.
+            negotiated_.mediaCatalog = false;
+        }
+        MediaListResult result;
+        result.error = error;
+        result.deviceRejected = rejected;
+        return result;
     }
 
     QList<MediaFile> files;
@@ -309,7 +321,7 @@ PaseMediaClient::pullUserMedia(const QString &devicePath, const QString &mediaNa
                                qint64 expectedSize, const MediaPullChunkSink &sink,
                                const MediaPullProgress &progress,
                                const OperationContext &context) {
-    if (!productProfile_.mediaCatalogSupported) {
+    if (!productProfile_.mediaPullSupported || !catalogAvailable()) {
         MediaPullResult result;
         result.mediaName = mediaName;
         result.fileSize = expectedSize;
@@ -334,9 +346,9 @@ PrinterProtocol::MediaReferenceResult PaseMediaClient::readUserMediaReferences(
     const QString &expectedReplacementName, qint64 expectedReplacementSize,
     const OperationContext &context) {
     MediaReferenceResult result;
-    if (!productProfile_.mediaCatalogSupported) {
+    if (!productProfile_.mediaPullSupported || !catalogAvailable()) {
         result.error = unsupportedCapabilityError(
-            productProfile_, QStringLiteral("media catalog operations"));
+            productProfile_, QStringLiteral("media pull operations"));
         return result;
     }
     if (!isSafeUploadFileName(mediaName) || expectedSize <= 0 ||
@@ -464,7 +476,7 @@ PrinterProtocol::DeleteResult PaseMediaClient::removeUserMedia(
     const OperationContext &context, bool reconcileOnly, qint64 expectedSingleSize,
     const QString &expectedReplacementName, qint64 expectedReplacementSize) {
     DeleteResult result;
-    if (!productProfile_.mediaCatalogSupported) {
+    if (!catalogAvailable()) {
         result.outcome = MutationOutcome::Rejected;
         result.error = unsupportedCapabilityError(productProfile_,
                                                   QStringLiteral("media deletion"));
@@ -823,7 +835,31 @@ bool PaseMediaClient::uploadMedia(const QString &devicePath, const QString &loca
         return false;
     }
     PrinterMediaUploadOptions options;
-    options.allowKeepalive = productProfile_.idleMode != PrinterIdleMode::TransferOnly;
+    // Only the static PASE Ping profile may interleave keepalives with a file
+    // transfer; the official Turris app never does.
+    options.allowKeepalive = productProfile_.keepalive == PrinterSessionKeepalive::Ping;
+    options.fixedTrackId = productProfile_.fileTransferTrackId;
+    if (productProfile_.mediaContainer == PrinterMediaContainer::MxhdH264) {
+        options.validateSource = [&remoteFileName, errorMessage, mutationDetails](
+                                     QFile &file, qint64 declaredSize,
+                                     const std::function<bool()> &sourceIsUnchanged) {
+            if (!tryx::turris_media::validateBlob(&file, declaredSize, remoteFileName,
+                                                  errorMessage)) {
+                if (mutationDetails) {
+                    mutationDetails->outcome = MutationOutcome::Rejected;
+                }
+                return false;
+            }
+            if (!sourceIsUnchanged() || !file.seek(0)) {
+                if (errorMessage) {
+                    *errorMessage =
+                        QObject::tr("Prepared Turris media changed during validation");
+                }
+                return false;
+            }
+            return true;
+        };
+    }
     return uploadPrinterMedia(channel_, options, devicePath, localPath, remoteFileName,
                               uploadedName, errorMessage, progress, context,
                               mutationDetails, expectedSha256);

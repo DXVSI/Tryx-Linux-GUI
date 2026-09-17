@@ -135,7 +135,6 @@ HEADERS += \
     src/printerlifecycle_p.h \
     src/printerprotocol.h \
     src/printermediaupload.h \
-    src/turrismediaclient.h \
     src/paseconfigurationclient.h \
     src/pasemediaclient.h \
     src/printertransactionchannel.h \
@@ -192,7 +191,6 @@ SOURCES += \
     src/printersessioncontroller.cpp \
     src/printerprotocol.cpp \
     src/printermediaupload.cpp \
-    src/turrismediaclient.cpp \
     src/paseconfigurationclient.cpp \
     src/pasemediaclient.cpp \
     src/printeroperation.cpp \

@@ -68,6 +68,49 @@ bool paseBadgeChoicesAreValid(const PrinterProtocol::PaseOverlayConfig &overlay,
     return true;
 }
 
+bool paseOverlayIsSupportedByProduct(const PrinterProtocol::PaseOverlayConfig &overlay,
+                                     quint16 productId, QString *error) {
+    // Same wording as printer_media::unsupportedCapabilityError; that helper
+    // lives in the protobuf-dependent media layer, which this file must not
+    // pull into protobuf-free test suites.
+    const auto unsupported = [productId](const QString &capability) {
+        return QObject::tr("TRYX %1 does not support %2")
+            .arg(printerProductIdString(productId), capability);
+    };
+    const std::optional<PrinterProductProfile> profile =
+        printerProductProfileForId(productId);
+    if (!profile || !profile->overlayMetricsSupported) {
+        if (error) {
+            *error = profile
+                ? unsupported(QStringLiteral("overlay metrics"))
+                : QStringLiteral("Unsupported TRYX USB product %1")
+                      .arg(printerProductIdString(productId));
+        }
+        return false;
+    }
+    const bool usesRightArea = overlay.dualMode || !overlay.right.metrics.isEmpty() ||
+                               !overlay.right.badges.isEmpty();
+    if (usesRightArea && !profile->splitAreaMediaSupported) {
+        if (error) {
+            *error = unsupported(QStringLiteral("split-screen overlays"));
+        }
+        return false;
+    }
+    if (overlay.waterfallMode && !profile->waterfallSupported) {
+        if (error) {
+            *error = unsupported(QStringLiteral("waterfall overlays"));
+        }
+        return false;
+    }
+    return true;
+}
+
+bool paseMetricsRequestIsSupportedByProduct(
+    const TryxRuntimeMetricsConfigRequest &request, quint16 productId, QString *error) {
+    return paseOverlayIsSupportedByProduct(paseOverlayFromMetricsRequest(request),
+                                           productId, error);
+}
+
 QString printerPresetMediaFile(const QString &presetId) {
     if (presetId == QStringLiteral("Pre-set 1: Cooling delivery")) {
         return QStringLiteral("default_01.mp4.h264_2240x1080");

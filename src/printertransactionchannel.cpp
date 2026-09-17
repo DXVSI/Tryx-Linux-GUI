@@ -516,7 +516,11 @@ PrinterTransactionChannel::KeepaliveOutcome
 PrinterTransactionChannel::sendPeriodicFrame(const QByteArray &frame,
                                              const QString &devicePath,
                                              const OperationContext &context,
-                                             QString *errorMessage) {
+                                             QString *errorMessage,
+                                             TransactionOutcome *drainOutcome) {
+    if (drainOutcome) {
+        *drainOutcome = TransactionOutcome::NotSent;
+    }
     if (isCancelled(context)) {
         setCancelledError(errorMessage);
         return KeepaliveOutcome::FatalFailure;
@@ -533,7 +537,7 @@ PrinterTransactionChannel::sendPeriodicFrame(const QByteArray &frame,
     // write-only requests. Drain an optional response to the previous
     // command before sending the next one so asynchronous replies cannot
     // accumulate ahead of a later tracked transaction.
-    if (!drainKeepaliveResponses(context, errorMessage)) {
+    if (!drainKeepaliveResponses(context, errorMessage, false, 0, drainOutcome)) {
         closeDevice();
         return KeepaliveOutcome::FatalFailure;
     }
@@ -548,8 +552,17 @@ PrinterTransactionChannel::sendPeriodicFrame(const QByteArray &frame,
         }
         return KeepaliveOutcome::RetryableFailure;
     }
-    if (!drainKeepaliveResponses(context, errorMessage, true)) {
-        closeDevice();
+    TransactionOutcome postWriteOutcome = TransactionOutcome::NotSent;
+    if (!drainKeepaliveResponses(context, errorMessage, true, 0, &postWriteOutcome)) {
+        if (drainOutcome) {
+            *drainOutcome = postWriteOutcome;
+        }
+        // An explicit device rejection leaves the transport healthy, the
+        // same way a rejected tracked setter does; the caller decides
+        // whether the session survives it.
+        if (postWriteOutcome != TransactionOutcome::Rejected) {
+            closeDevice();
+        }
         return KeepaliveOutcome::FatalFailure;
     }
     return KeepaliveOutcome::Sent;
@@ -558,7 +571,11 @@ PrinterTransactionChannel::sendPeriodicFrame(const QByteArray &frame,
 PrinterTransactionChannel::KeepaliveOutcome
 PrinterTransactionChannel::sendPeriodicRequest(
     const panorama::wire::v1::Request &request, const QString &devicePath,
-    const OperationContext &context, QString *errorMessage) {
+    const OperationContext &context, QString *errorMessage,
+    TransactionOutcome *drainOutcome) {
+    if (drainOutcome) {
+        *drainOutcome = TransactionOutcome::NotSent;
+    }
     std::string serializedRequest;
     if (!request.SerializeToString(&serializedRequest) ||
         serializedRequest.size() >
@@ -577,7 +594,7 @@ PrinterTransactionChannel::sendPeriodicRequest(
         }
         return KeepaliveOutcome::FatalFailure;
     }
-    return sendPeriodicFrame(frame, devicePath, context, errorMessage);
+    return sendPeriodicFrame(frame, devicePath, context, errorMessage, drainOutcome);
 }
 
 int PrinterTransactionChannel::millisecondsUntilKeepalive() const {

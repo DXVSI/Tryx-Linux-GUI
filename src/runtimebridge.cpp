@@ -160,6 +160,13 @@ TryxRuntimeManagerAdaptor::TryxRuntimeManagerAdaptor(
                 snapshot_.displaySessionActive = active;
                 emit DisplaySessionChanged(active, nextRevision());
             });
+    // A withdrawn device capability is announced through the same signal:
+    // clients re-read GetDeviceCapabilitiesV1 on every DisplaySessionChanged.
+    connect(manager_, &DeviceManager::deviceCapabilitiesChanged, this,
+            [this]() {
+                emit DisplaySessionChanged(snapshot_.displaySessionActive,
+                                           nextRevision());
+            });
 }
 
 TryxRuntimeSnapshot TryxRuntimeManagerAdaptor::GetSnapshot() const {

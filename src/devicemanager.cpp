@@ -558,6 +558,9 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
             &PrinterSessionController::printerDisplaySessionChanged, this,
             &DeviceManager::printerDisplaySessionChanged, Qt::DirectConnection);
     connect(&sessionController_,
+            &PrinterSessionController::deviceCapabilitiesChanged, this,
+            &DeviceManager::deviceCapabilitiesChanged, Qt::DirectConnection);
+    connect(&sessionController_,
             &PrinterSessionController::requestCancelPrinterPreparation, this,
             &DeviceManager::requestCancelPrinterPreparation,
             Qt::DirectConnection);
@@ -1264,6 +1267,12 @@ DeviceManager::DeviceManager(PrinterDeviceMonitor *printerMonitor,
                 sessionController_.handleWorkerPrinterDisplayStateFailed(
                     message, generation);
             });
+    connect(worker_, &DeviceWorker::printerCapabilityUnavailable, this,
+            [this](const QString &capabilityToken, const QString &reason,
+                   quint64 generation) {
+                sessionController_.handleWorkerPrinterCapabilityUnavailable(
+                    capabilityToken, reason, generation);
+            });
 #ifdef TRYX_PROTOCOL_TESTING
     connect(worker_, &DeviceWorker::printerDeviceInfoFailed, this,
             &DeviceManager::printerWorkerDeviceInfoFailedForTesting);
@@ -1645,12 +1654,14 @@ PrinterOperationContext DeviceManager::operationContext() const {
         sessionController_.state().firmwareRecoveryInterlockActive;
     const auto profile = currentPrinterProductProfile();
     if (profile) {
+        // Runtime-negotiated capabilities come from the controller; the
+        // static split-area flag stays profile-based.
         context.supportsMediaCatalog =
-            profile->mediaCatalogSupported;
+            sessionController_.currentPrinterSupportsMediaCatalog();
         context.supportsDisplayConfiguration =
-            profile->displayConfigurationSupported;
+            sessionController_.currentPrinterSupportsDisplayConfiguration();
         context.supportsOverlayMetrics =
-            profile->overlayMetricsSupported;
+            sessionController_.currentPrinterSupportsOverlayMetrics();
         context.supportsSplitAreaMedia =
             profile->splitAreaMediaSupported;
     }

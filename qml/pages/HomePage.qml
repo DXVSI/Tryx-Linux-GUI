@@ -200,6 +200,25 @@ ScrollView {
                     }
 
                     Label {
+                        objectName: "dashboardDeviceVersions"
+                        Layout.fillWidth: true
+                        readonly property string firmwareText:
+                            ("firmwareVersion" in root.runtime)
+                            ? String(root.runtime.firmwareVersion || "")
+                            : ""
+                        readonly property string appText:
+                            ("deviceAppVersion" in root.runtime)
+                            ? String(root.runtime.deviceAppVersion || "")
+                            : ""
+                        visible: firmwareText.length > 0 || appText.length > 0
+                        text: qsTr("Firmware %1 · App %2")
+                              .arg(firmwareText.length > 0 ? firmwareText : qsTr("Unknown"))
+                              .arg(appText.length > 0 ? appText : qsTr("Unknown"))
+                        color: "#9ca4ac"
+                        elide: Text.ElideRight
+                    }
+
+                    Label {
                         Layout.fillWidth: true
                         text: root.runtime.displayedMedia.length > 0
                               ? root.runtime.displayedMedia.join(", ")

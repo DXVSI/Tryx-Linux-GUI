@@ -503,7 +503,9 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     productId_ = productId;
     turrisMediaKind_ = type == panorama::MediaType::Image
         ? turris_media::kImageKind
-        : turris_media::kVideoKind;
+        : type == panorama::MediaType::Gif
+            ? turris_media::kGifKind
+            : turris_media::kVideoKind;
     generation_ = generation;
     processOutput_.clear();
     cancelling_ = false;

@@ -112,15 +112,19 @@ public:
                           const QString &devicePath, const OperationContext &context,
                           QString *errorMessage, TransactionOutcome *outcome = nullptr);
 
+    // drainOutcome reports the outcome of draining the optional response,
+    // so callers can distinguish a device rejection from a transport loss.
     KeepaliveOutcome sendPeriodicFrame(const QByteArray &frame,
                                        const QString &devicePath,
                                        const OperationContext &context,
-                                       QString *errorMessage);
+                                       QString *errorMessage,
+                                       TransactionOutcome *drainOutcome = nullptr);
 
     KeepaliveOutcome sendPeriodicRequest(const panorama::wire::v1::Request &request,
                                          const QString &devicePath,
                                          const OperationContext &context,
-                                         QString *errorMessage);
+                                         QString *errorMessage,
+                                         TransactionOutcome *drainOutcome = nullptr);
 
     int millisecondsUntilKeepalive() const;
 

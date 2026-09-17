@@ -33,7 +33,6 @@ class UserConfiguration;
 class PrinterTransactionChannel;
 class PaseConfigurationClient;
 class PaseMediaClient;
-class TurrisMediaClient;
 
 class PrinterProtocol {
 public:
@@ -93,6 +92,18 @@ public:
         quint32 videoOutputHeight = 0;
         QString screenType;
         bool usbAutoKeepalive = false;
+        // True only when the device reported the keepalive flag explicitly.
+        bool usbAutoKeepaliveKnown = false;
+    };
+
+    // Runtime outcome of the fail-safe capability negotiation. Every flag
+    // starts true for a new session; a device rejection or a clean timeout
+    // on the corresponding command clears it for the rest of the session.
+    struct NegotiatedCapabilities {
+        bool deviceInformation = true;
+        bool mediaCatalog = true;
+        bool displayConfiguration = true;
+        bool overlayMetrics = true;
     };
 
     struct Result {
@@ -100,6 +111,7 @@ public:
         QString error;
         DeviceInfo deviceInfo;
         DeviceSpecifications deviceSpecifications;
+        NegotiatedCapabilities negotiatedCapabilities;
     };
 
     enum class MediaSource {
@@ -118,6 +130,8 @@ public:
         bool success = false;
         QString error;
         QList<MediaFile> files;
+        // The device answered with a protocol error instead of a catalog.
+        bool deviceRejected = false;
     };
 
     struct MediaPullResult {
@@ -168,7 +182,9 @@ public:
     enum class KeepaliveOutcome {
         Sent,
         RetryableFailure,
-        FatalFailure
+        FatalFailure,
+        // The device rejected the keepalive command; the transport is intact.
+        Unsupported
     };
 
     enum class MutationOutcome {
@@ -259,6 +275,8 @@ public:
         bool success = false;
         QString error;
         PaseDisplayState state;
+        // The device answered with a protocol error instead of a config.
+        bool deviceRejected = false;
     };
 
     using UploadProgress = std::function<void(qint64 bytesSent, qint64 totalBytes)>;
@@ -289,6 +307,7 @@ public:
 
     void close();
     const PrinterProductProfile &productProfile() const;
+    const NegotiatedCapabilities &negotiatedCapabilities() const;
     bool persistentUsbInputFailure() const;
     Result startDisplaySession(
         const QString &devicePath, const OperationContext &context);
@@ -442,10 +461,11 @@ public:
 private:
 
     const PrinterProductProfile productProfile_;
+    // Declared before the clients: both borrow a reference to it.
+    NegotiatedCapabilities negotiated_;
     std::unique_ptr<PrinterTransactionChannel> channel_;
     std::unique_ptr<PaseConfigurationClient> configuration_;
     std::unique_ptr<PaseMediaClient> media_;
-    std::unique_ptr<TurrisMediaClient> turris_;
 };
 
 Q_DECLARE_METATYPE(PrinterProtocol::UsbPrinterDevice)

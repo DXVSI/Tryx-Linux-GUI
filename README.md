@@ -62,13 +62,18 @@ that every TRYX display has the same geometry or capabilities:
 |--------------|-----------------|----------------|------------------------|
 | `391a:1021` | Panorama SE / PASE | 2240 × 1080 | Current PASE printer-class features |
 | `391a:1011` | Panorama | 2240 × 1080 | PASE media, display, and overlay features; firmware flashing disabled; community-tested |
-| `391a:2011` | Turris 620 | 1280 × 720 | Acknowledged user-media upload only; no PASE bootstrap, Ping, catalog, display configuration, or firmware |
+| `391a:2011` | Turris 620 | 1280 × 720 | MXHD media upload, FileList catalog with read-only device presets, single-media Apply with Single/Loop/Shuffle, brightness, backlight and mirror, overlay metrics with hardware badges; no split screen, waterfall, custom badge text, media pull (Save as new/Replace), saved layouts, or firmware; community-tested |
 
-Turris support is based on the independently reported hardware results from
+Turris support follows the command set of the official desktop application and
+the independently reported hardware results from
 [MrEssentials/tryx-linux-display-manager](https://github.com/MrEssentials/tryx-linux-display-manager).
-It has not been reproduced on maintainer-owned hardware. Metrics and overlay
-layouts, split or waterfall modes, factory presets, and firmware operations
-remain disabled for Turris through model capability gates.
+It has not been reproduced on maintainer-owned hardware, so every Turris
+command beyond the file transfer is negotiated fail-safe: a command that the
+device rejects or leaves unanswered is withdrawn for the rest of the physical
+USB generation, the GUI hides the matching controls, and media upload keeps
+working. Split screen, waterfall orientation, custom badge text, media export,
+saved layouts, and firmware operations remain disabled for Turris through model
+capability gates.
 
 <div align="center">
 
@@ -239,6 +244,22 @@ to the user service. A separate Settings switch can create an owner-managed
 XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
+
+## Unreleased
+
+- Turris 620 uses the PASE display pipeline with a Turris profile: the device
+  media library, media selection with Single, Loop and Shuffle playback,
+  brightness, backlight and mirror control, deletion, and overlay metrics with
+  hardware badges on the 1280 × 720 layout of the official application.
+- Turris commands are negotiated per USB generation. A rejected or unanswered
+  device information, system configuration, layout, or file list command only
+  withdraws that capability; uploads never depend on it.
+- Turris keepalive is sent only when the device reports that it does not keep
+  the USB link alive itself, and stops as soon as the device rejects a Ping.
+- Uploaded Turris files are stored on the device and shown after Apply; the
+  dashboard lists the reported firmware and application versions.
+- Still unavailable for Turris: split screen, waterfall orientation, custom
+  badge text, Save as new and Replace, saved layouts, and firmware flashing.
 
 ## What's new in 2.4.0
 
@@ -661,18 +682,36 @@ authorizing the transition into Loader mode.
 
 After updating to the new KANALI firmware, the cooler no longer exposes ADB by default. It appears as `391a:1021 RK PASE` with a bidirectional printer interface. The app generates C++ types from three minimal, project-owned schemas under `protocol/wire-v1`; recovered vendor descriptor sources are not a build or release dependency. The production path does not read or write `/dev/usb/lp*`: it claims the `07/01/02` interface through usbfs, temporarily detaches `usblp`, arms one bulk IN before each request, never re-arms that endpoint while the matching bulk OUT is still active, drains optional periodic responses to a complete frame boundary after OUT, and releases the interface on shutdown.
 
-Turris 620 exposes the supported `391a:2011` printer-class identity. Its
-community-tested contract is deliberately narrower than PASE: media is prepared
-at `1280x720`, wrapped as MXHD, and sent only through the acknowledged
-FileTransmit sequence `400` (begin), `401` (data), and `402` (end), with exact
-successful responses `800`, `801`, and `802`. The final `802` acknowledgement is
-the success and activation boundary. Turris does not use the PASE bootstrap,
-Ping or display keepalive, FileList/media-catalog queries, user/display
-configuration, overlay metrics, presets, deletion, or firmware operations.
+Turris 620 exposes the supported `391a:2011` printer-class identity and runs on
+the same configuration pipeline as PASE with a Turris product profile. Media is
+prepared at `1280x720`, wrapped as MXHD, and sent through the acknowledged
+FileTransmit sequence `400` (begin), `401` (data), and `402` (end) with the
+fixed transfer track ID of the official application and exact successful
+responses `800`, `801`, and `802`. The final `802` acknowledgement only stores
+the file: the runtime confirms it through a FileList (`103`) catalog read and
+shows it after an explicit Apply. Apply writes a complete user configuration
+(`200`) with the official power-on and standby defaults, a single-media work
+configuration with Single, Loop or Shuffle playback, and backlight, brightness
+and mirror display fields, then sends the layout trigger (`201`). Deletion uses
+the base file name (`403`), and overlay metrics use the 1280 × 720 label-group
+layout of the official application with live values every second (`300`).
+Split screen, waterfall orientation, custom badge text, media pull, saved
+layouts, and firmware operations are refused before any USB traffic.
 
-All printer operations are serialized by one worker-owned session, while cancellable ffmpeg conversion runs outside the USB worker. Passive udev discovery recognizes the `391a:0006 rk3xxx` Rockchip gadget identity but never opens it. Discovery is based on physical USB device events and stable bus/port identity, so the app does not mistake its own `usblp` detach or attach for a physical reconnect. Printer Class `GET_PORT_STATUS` is deliberately not used because PASE does not provide a reliable readiness signal through that request. A physical remove/add creates a new connection generation, interrupts old I/O through its cancellation gate, and discards stale results. On Panorama/PASE profiles, recovery confirms protocol readiness through an exact DeviceInfo response, completes the remaining bootstrap once, sends one post-bootstrap Ping, restores the confirmed overlay at most once, and only then starts metrics. It never retries a complete bootstrap in the same physical generation or automatically replays user configuration, upload, delete, or apply mutations. Turris bypasses this PASE readiness/bootstrap path and opens its bounded transfer path only for an explicit user upload.
+Turris session start is fail-safe. After the transport opens, the runtime sends
+device information (`100`), system configuration (`102`, only after a
+confirmed `100`), an empty layout trigger (`201`), and a file list (`103`). A
+command that the device rejects or leaves unanswered within the clean timeout
+withdraws only its capability token for the rest of the physical USB
+generation: the GUI hides the matching controls, `GetDeviceCapabilitiesV1`
+drops the token, and uploads keep working. A transport failure still fails the
+session. Turris sends a Ping only when the system configuration reports that
+the device does not keep the USB link alive itself; an unknown answer means no
+Ping, and a rejected Ping disables the keepalive without ending the session.
 
-The Panorama/PASE readiness phase has a 20-second monotonic deadline. It retries only a DeviceInfo request whose USB OUT is confirmed to have transferred zero bytes, keeping the same claimed handle and using capped `500`, `1000`, then `2000` millisecond backoff. A partial or unknown OUT, cancellation, malformed response, or a complete OUT without the exact DeviceInfo response is terminal for that physical generation. System configuration and authentication queries are each sent at most once after readiness. Panorama/PASE keepalive uses the observed untracked Ping frame and drains an optional asynchronous Pong. Metrics sampling and mutations start only after the post-bootstrap barrier. Manual upload converts media to the active product profile and gives data chunks a dedicated 15-second OUT deadline. Panorama/PASE verifies the exact new name, prepared size, writable flag, and user source through a fresh media catalog before reporting success or applying it. Turris requires an exact successful response to every MXHD-wrapped FileTransmit stage, and the successful `802` response completes and activates the upload without a subsequent FileList or Apply request. Save and origin reuse are catalog-backed Panorama/PASE workflows and are unavailable for Turris. No completed IN transfer is re-armed while any OUT remains active, preventing queued response fragments or `EPROTO` completions from starving the writer. Periodic Panorama/PASE write-only commands perform a bounded post-OUT drain; no response is acceptable, but a partial or malformed frame closes the session fail-closed. A persistent bulk-IN failure latches the current USB endpoint generation as lost. Production does not call `libusb_reset_device`, retry the same generation, or replay its last mutation; recovery requires an observed physical remove/add cycle or a full printer-class device power cycle that creates a new generation. Conversion and preview subprocesses have bounded deadlines; a preview timeout falls back to an honest placeholder without discarding valid H264. The direct USB reader can recover a complete tracked protobuf when faulty PASE firmware drops only the `TRYX` frame header after an IN transport error; recovery still requires the exact transaction ID and expected response body. Manager2 API version 8 adds FilePull-backed trusted device-media artifacts with owner-bound leases and crash-safe Save as new or Replace operations while preserving the API 7 media-transform and upload semantics. It also exposes stable UUIDs, structured operation states, origin-aware catalog entries, typed display mutations, confirmed display state, per-side overlay configuration, and explicit backlight power control. Manager1 retains its original catalog tuple for ABI compatibility. A verified prepared file and its staged JPEG preview are cached atomically after a failed transfer and can only be retried manually after prepared-file hash and exact product and device-generation checks; catalog-capable Panorama/PASE profiles additionally require media-catalog validation. The original source file is not required after conversion. If a data transfer ends partially or with an unknown outcome, its recovery requirement remains sticky across retries and daemon restarts. Mutations supported by the active product profile remain blocked until the runtime observes removal and reconnection of the same printer-class product, because closing libusb or issuing a generic USB reset does not prove that firmware discarded its hidden transfer session. A successful Panorama/PASE verification promotes the preview and content identity into the XDG media catalog. Apply is not atomic: uncertain writes are reported as partial or unknown, the session is closed, and no automatic rollback or replay is attempted.
+All printer operations are serialized by one worker-owned session, while cancellable ffmpeg conversion runs outside the USB worker. Passive udev discovery recognizes the `391a:0006 rk3xxx` Rockchip gadget identity but never opens it. Discovery is based on physical USB device events and stable bus/port identity, so the app does not mistake its own `usblp` detach or attach for a physical reconnect. Printer Class `GET_PORT_STATUS` is deliberately not used because PASE does not provide a reliable readiness signal through that request. A physical remove/add creates a new connection generation, interrupts old I/O through its cancellation gate, and discards stale results. On Panorama/PASE profiles, recovery confirms protocol readiness through an exact DeviceInfo response, completes the remaining bootstrap once, sends one post-bootstrap Ping, restores the confirmed overlay at most once, and only then starts metrics. It never retries a complete bootstrap in the same physical generation or automatically replays user configuration, upload, delete, or apply mutations. Turris skips the exact DeviceInfo readiness deadline and instead negotiates its commands after the transport opens, as described above.
+
+The Panorama/PASE readiness phase has a 20-second monotonic deadline. It retries only a DeviceInfo request whose USB OUT is confirmed to have transferred zero bytes, keeping the same claimed handle and using capped `500`, `1000`, then `2000` millisecond backoff. A partial or unknown OUT, cancellation, malformed response, or a complete OUT without the exact DeviceInfo response is terminal for that physical generation. System configuration and authentication queries are each sent at most once after readiness. Panorama/PASE keepalive uses the observed untracked Ping frame and drains an optional asynchronous Pong. Metrics sampling and mutations start only after the post-bootstrap barrier. Manual upload converts media to the active product profile and gives data chunks a dedicated 15-second OUT deadline. Panorama/PASE verifies the exact new name, prepared size, writable flag, and user source through a fresh media catalog before reporting success or applying it. Turris requires an exact successful response to every MXHD-wrapped FileTransmit stage and then verifies the stored file through the same FileList check; showing it requires an explicit Apply. Origin reuse is available for Turris, while Save as new and Replace need the media pull command and are unavailable. No completed IN transfer is re-armed while any OUT remains active, preventing queued response fragments or `EPROTO` completions from starving the writer. Periodic Panorama/PASE write-only commands perform a bounded post-OUT drain; no response is acceptable, but a partial or malformed frame closes the session fail-closed. A persistent bulk-IN failure latches the current USB endpoint generation as lost. Production does not call `libusb_reset_device`, retry the same generation, or replay its last mutation; recovery requires an observed physical remove/add cycle or a full printer-class device power cycle that creates a new generation. Conversion and preview subprocesses have bounded deadlines; a preview timeout falls back to an honest placeholder without discarding valid H264. The direct USB reader can recover a complete tracked protobuf when faulty PASE firmware drops only the `TRYX` frame header after an IN transport error; recovery still requires the exact transaction ID and expected response body. Manager2 API version 8 adds FilePull-backed trusted device-media artifacts with owner-bound leases and crash-safe Save as new or Replace operations while preserving the API 7 media-transform and upload semantics. It also exposes stable UUIDs, structured operation states, origin-aware catalog entries, typed display mutations, confirmed display state, per-side overlay configuration, and explicit backlight power control. Manager1 retains its original catalog tuple for ABI compatibility. A verified prepared file and its staged JPEG preview are cached atomically after a failed transfer and can only be retried manually after prepared-file hash and exact product and device-generation checks; catalog-capable Panorama/PASE profiles additionally require media-catalog validation. The original source file is not required after conversion. If a data transfer ends partially or with an unknown outcome, its recovery requirement remains sticky across retries and daemon restarts. Mutations supported by the active product profile remain blocked until the runtime observes removal and reconnection of the same printer-class product, because closing libusb or issuing a generic USB reset does not prove that firmware discarded its hidden transfer session. A successful Panorama/PASE verification promotes the preview and content identity into the XDG media catalog. Apply is not atomic: uncertain writes are reported as partial or unknown, the session is closed, and no automatic rollback or replay is attempted.
 
 PASE full-screen mode supports up to three exact protocol metrics selected from CPU temperature, frequency, usage and power; GPU temperature, frequency, usage and power; memory frequency and usage; and date/time. A separate Manager2 operation sends the overlay layout, then the background daemon sends live values through a headerless metric batch every second. The two-second background scheduler supports two measured arms through `pase_overlay_lease_mode` in the existing XDG `config.json`: `ping-and-overlay-lease` alternates Ping with a full overlay lease, while `ping-only` sends only Ping after the initial reconnect overlay restoration. The default preserves the current `ping-and-overlay-lease` behavior until the A/B monitor selects an arm. The lease never writes user configuration or media state. An explicit protocol error from either metric update or layout lease is fail-closed instead of being discarded. Metric sampling pauses during upload or Apply and coalesces to the latest sample, while a delayed tracked response can still receive one bounded liveness command without replaying the mutation. The confirmed layout is stored only for the same non-empty device serial and survives GUI or daemon restarts. Missing sensors remain unavailable instead of being reported as zero. The Memory Frequency protocol label is retained for compatibility, but the current Linux runtime reports it as unavailable because upstream Linux does not expose a portable unprivileged source for the live DRAM clock; static SMBIOS transfer rates are not mislabeled as MHz.
 

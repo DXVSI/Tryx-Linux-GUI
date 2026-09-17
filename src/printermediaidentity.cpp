@@ -501,8 +501,9 @@ bool printerConversionProfileMatchesConversion(
 }
 
 bool printerMediaOriginRequired(const PrinterProductProfile &profile) {
-    // TURRIS has no device media catalog, so its retry state is the only
-    // durable record of which source produced the prepared artifact.
+    // The frozen TURRIS retry manifest reader requires a complete origin
+    // record, so the source identity stays mandatory for compatibility even
+    // though the device catalog is now consulted as well.
     return profile.productId == turris_media::kProductId;
 }
 

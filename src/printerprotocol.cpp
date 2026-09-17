@@ -1,7 +1,6 @@
 #include "printerprotocol.h"
 #include "paseconfigurationclient.h"
 #include "pasemediaclient.h"
-#include "turrismediaclient.h"
 #include "printertransactionchannel.h"
 #include "printermediahelpers_p.h"
 #include "printerprotocolconstants_p.h"
@@ -30,9 +29,10 @@ PrinterProtocol::PrinterProtocol(const PrinterProductProfile &productProfile)
       channel_(std::make_unique<PrinterTransactionChannel>(
           productProfile_.productId, 3000, kFileTransmitResponseTimeoutMs)),
       configuration_(std::make_unique<PaseConfigurationClient>(
-          *channel_, productProfile_, kDeviceInformationReadinessDeadlineMs)),
-      media_(std::make_unique<PaseMediaClient>(*channel_, productProfile_)),
-      turris_(std::make_unique<TurrisMediaClient>(*channel_, productProfile_)) {}
+          *channel_, productProfile_, negotiated_,
+          kDeviceInformationReadinessDeadlineMs)),
+      media_(std::make_unique<PaseMediaClient>(*channel_, productProfile_,
+                                               negotiated_)) {}
 
 PrinterProtocol::PrinterProtocol(const PrinterProductProfile &productProfile,
                                  int transactionTimeoutMs)
@@ -40,9 +40,9 @@ PrinterProtocol::PrinterProtocol(const PrinterProductProfile &productProfile,
       channel_(std::make_unique<PrinterTransactionChannel>(
           productProfile_.productId, transactionTimeoutMs, transactionTimeoutMs)),
       configuration_(std::make_unique<PaseConfigurationClient>(
-          *channel_, productProfile_, transactionTimeoutMs)),
-      media_(std::make_unique<PaseMediaClient>(*channel_, productProfile_)),
-      turris_(std::make_unique<TurrisMediaClient>(*channel_, productProfile_)) {}
+          *channel_, productProfile_, negotiated_, transactionTimeoutMs)),
+      media_(std::make_unique<PaseMediaClient>(*channel_, productProfile_,
+                                               negotiated_)) {}
 
 PrinterProtocol::PrinterProtocol(const PrinterProductProfile &productProfile,
                                  int transactionTimeoutMs, int deviceInfoReadyTimeoutMs)
@@ -50,9 +50,9 @@ PrinterProtocol::PrinterProtocol(const PrinterProductProfile &productProfile,
       channel_(std::make_unique<PrinterTransactionChannel>(
           productProfile_.productId, transactionTimeoutMs, transactionTimeoutMs)),
       configuration_(std::make_unique<PaseConfigurationClient>(
-          *channel_, productProfile_, deviceInfoReadyTimeoutMs)),
-      media_(std::make_unique<PaseMediaClient>(*channel_, productProfile_)),
-      turris_(std::make_unique<TurrisMediaClient>(*channel_, productProfile_)) {}
+          *channel_, productProfile_, negotiated_, deviceInfoReadyTimeoutMs)),
+      media_(std::make_unique<PaseMediaClient>(*channel_, productProfile_,
+                                               negotiated_)) {}
 
 PrinterProtocol::~PrinterProtocol() = default;
 
@@ -66,6 +66,11 @@ const PrinterProductProfile &PrinterProtocol::productProfile() const {
     return productProfile_;
 }
 
+const PrinterProtocol::NegotiatedCapabilities &
+PrinterProtocol::negotiatedCapabilities() const {
+    return negotiated_;
+}
+
 bool PrinterProtocol::persistentUsbInputFailure() const {
     return channel_->persistentUsbInputFailure();
 }
@@ -73,18 +78,12 @@ bool PrinterProtocol::persistentUsbInputFailure() const {
 PrinterProtocol::Result
 PrinterProtocol::startDisplaySession(const QString &devicePath,
                                      const OperationContext &context) {
-    if (productProfile_.idleMode == PrinterIdleMode::TransferOnly) {
-        return turris_->startDisplaySession(devicePath, context);
-    }
     return configuration_->startDisplaySession(devicePath, context);
 }
 
 PrinterProtocol::Result
 PrinterProtocol::readDeviceInfo(const QString &devicePath,
                                 const OperationContext &context) {
-    if (productProfile_.idleMode == PrinterIdleMode::TransferOnly) {
-        return turris_->readDeviceInfo(devicePath, context);
-    }
     return configuration_->readDeviceInfo(devicePath, context);
 }
 
@@ -128,11 +127,6 @@ bool PrinterProtocol::uploadMedia(const QString &devicePath, const QString &loca
                                   const OperationContext &context,
                                   MutationDetails *mutationDetails,
                                   const QString &expectedSha256) {
-    if (productProfile_.productId == kTurrisProductId) {
-        return turris_->uploadMedia(devicePath, localPath, remoteFileName, uploadedName,
-                                    errorMessage, progress, context, mutationDetails,
-                                    expectedSha256);
-    }
     return media_->uploadMedia(devicePath, localPath, remoteFileName, uploadedName,
                                errorMessage, progress, context, mutationDetails,
                                expectedSha256);

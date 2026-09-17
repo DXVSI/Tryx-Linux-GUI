@@ -290,6 +290,7 @@ signals:
     void printerDeviceInfoFailed(const QString &message);
     void printerPresenceChanged(bool present);
     void printerDisplaySessionChanged(bool active);
+    void deviceCapabilitiesChanged();
     void operationChanged(const TryxRuntimeOperationInfo &info,
                           quint64 revision);
     void operationRemoved(const QString &operationId, quint64 revision);

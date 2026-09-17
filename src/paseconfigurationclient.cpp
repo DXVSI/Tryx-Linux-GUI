@@ -24,12 +24,16 @@ using namespace tryx::printer_media;
 using namespace tryx::printer_operation;
 using namespace tryx::printer_protocol_constants;
 
-PaseConfigurationClient::PaseConfigurationClient(PrinterTransactionChannel &channel,
-                                                 const PrinterProductProfile &profile,
-                                                 int deviceInfoReadyTimeoutMs)
-    : channel_(channel), productProfile_(profile),
+PaseConfigurationClient::PaseConfigurationClient(
+    PrinterTransactionChannel &channel, const PrinterProductProfile &profile,
+    PrinterProtocol::NegotiatedCapabilities &negotiated, int deviceInfoReadyTimeoutMs)
+    : channel_(channel), productProfile_(profile), negotiated_(negotiated),
       deviceInfoReadyTimeoutMs_(
           qBound(1, deviceInfoReadyTimeoutMs, kDeviceInformationReadinessDeadlineMs)) {
+    // The Ping frame factory is installed for every profile: a Negotiated
+    // keepalive may be enabled after the system configuration probe. Whether a
+    // Ping is injected during a wait is decided per operation through
+    // OperationContext::maintainKeepalive.
     channel_.setKeepaliveFrameFactory(&PaseConfigurationClient::makeKeepaliveFrame);
 }
 
@@ -346,7 +350,10 @@ bool PaseConfigurationClient::bootstrapSession(
 bool PaseConfigurationClient::executeUserConfigurationQueryWithRetry(
     panorama::wire::v1::Request *request, panorama::wire::v1::Response *response,
     const QString &devicePath, const OperationContext &context, QString *errorMessage,
-    const QString &queryName) {
+    const QString &queryName, TransactionOutcome *lastOutcome) {
+    if (lastOutcome) {
+        *lastOutcome = TransactionOutcome::NotSent;
+    }
     if (!request ||
         request->body_case() != panorama::wire::v1::Request::kUserConfigurationQuery) {
         if (errorMessage) {
@@ -372,6 +379,9 @@ bool PaseConfigurationClient::executeUserConfigurationQueryWithRetry(
             return true;
         }
 
+        if (lastOutcome) {
+            *lastOutcome = outcome;
+        }
         if (retryAvailable && outcome == TransactionOutcome::AcknowledgementTimeout &&
             operationIsCancelled(context)) {
             channel_.closeDevice();
@@ -379,6 +389,11 @@ bool PaseConfigurationClient::executeUserConfigurationQueryWithRetry(
             return false;
         }
         if (!retryAvailable || outcome != TransactionOutcome::AcknowledgementTimeout) {
+            if (outcome == TransactionOutcome::Rejected && negotiatesCapabilities()) {
+                // The device has no user-configuration command: stop offering
+                // display configuration for this session, keep the transport.
+                negotiated_.displayConfiguration = false;
+            }
             if (errorMessage) {
                 *errorMessage = attemptError;
             }
@@ -559,8 +574,66 @@ makeDeviceSpecifications(const panorama::wire::v1::SystemConfiguration &configur
     specifications.videoOutputHeight = height;
     specifications.usbAutoKeepalive =
         configuration.runtime_behavior().usb_auto_keepalive();
+    specifications.usbAutoKeepaliveKnown = true;
     specifications.valid = true;
     return specifications;
+}
+
+// Records the keepalive flag even when the rest of the system configuration is
+// incomplete, so the session can choose a keepalive policy independently.
+void applyRuntimeKeepalive(const panorama::wire::v1::SystemConfiguration &configuration,
+                           PrinterProtocol::DeviceSpecifications *specifications) {
+    if (!specifications) {
+        return;
+    }
+    if (configuration.has_runtime_behavior() &&
+        configuration.runtime_behavior().has_usb_auto_keepalive()) {
+        specifications->usbAutoKeepalive =
+            configuration.runtime_behavior().usb_auto_keepalive();
+        specifications->usbAutoKeepaliveKnown = true;
+    }
+}
+
+PrinterProtocol::DeviceInfo
+makeTransferOnlyDeviceInfo(const QString &devicePath,
+                           const PrinterProductProfile &productProfile) {
+    PrinterProtocol::DeviceInfo info;
+    info.devicePath = devicePath;
+    info.productName = printerProductIdString(productProfile.productId);
+    return info;
+}
+
+// The official app always writes a complete UserConfiguration for Turris and
+// never reads one back. Fill the sections a device may not report so that a
+// read-modify-write never sends a partial message; existing sections are
+// preserved untouched. No-op for the PASE family.
+void applyProfileUserConfigDefaults(panorama::wire::v1::UserConfiguration *config,
+                                    const PrinterProductProfile &profile) {
+    if (!config || profile.family != PrinterProtocolFamily::Turris) {
+        return;
+    }
+    if (!config->has_poweron_config() ||
+        config->poweron_config().media_file().empty()) {
+        config->mutable_poweron_config()->set_media_file(
+            profile.defaultPowerOnMedia.toStdString());
+    }
+    if (!config->has_standby_config()) {
+        auto *standby = config->mutable_standby_config();
+        standby->set_enable(true);
+        standby->set_media_file(profile.defaultStandbyMedia.toStdString());
+    }
+    if (!config->has_work_config()) {
+        auto *work = config->mutable_work_config();
+        work->set_media_mode(panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        work->set_loop_mode(panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+        work->set_single_mode_media_file("");
+    }
+    if (!config->has_display_config()) {
+        auto *display = config->mutable_display_config();
+        display->set_backlight_enable(true);
+        display->set_backlight_brightness(100U);
+        display->set_mirror(false);
+    }
 }
 
 struct PaseMetricDefinition {
@@ -683,7 +756,8 @@ PaseBadgeColors paseBadgeColors(const QString &text) {
 }
 
 void configurePaseBadge(panorama::wire::v1::OverlayLabel *label, quint32 id,
-                        qint32 gapLeft, const QString &text, bool custom) {
+                        qint32 gapLeft, const QString &text, bool custom,
+                        quint32 textSize) {
     const PaseBadgeColors colors = custom ? PaseBadgeColors{0x004A4A4AU, 0x00707070U}
                                           : paseBadgeColors(text);
     label->set_label_id(id);
@@ -693,7 +767,7 @@ void configurePaseBadge(panorama::wire::v1::OverlayLabel *label, quint32 id,
     label->set_background_color(colors.background);
     label->set_gradient_color(colors.gradient);
     label->set_text_font("roboto-regular");
-    label->set_text_size(30);
+    label->set_text_size(textSize);
     label->set_text_color(0x00DCDCDCU);
     label->set_text(QStringLiteral("  %1  ").arg(text).toStdString());
 }
@@ -702,19 +776,51 @@ bool paseAreaHasContent(const PrinterProtocol::PaseOverlayAreaConfig &area) {
     return !area.metrics.isEmpty() || !area.badges.isEmpty();
 }
 
+// Screen geometry and label sizes of the vendor overlay layout per product
+// family. The PASE values reproduce the previously hard-coded 2240x1080 layout
+// byte for byte; the Turris values follow the official app's 1280x720 layout.
+struct OverlayLayoutGeometry {
+    int screenWidth;
+    int screenHeight;
+    int textOffsetX;
+    int textOffsetY;
+    int valueTextSize;
+    int titleTextSize;
+    int unitTextSize;
+    int groupHeight;
+    int tagOffsetY;
+    int badgeTextSize;
+    int badgeXInset;
+    // Turris rows are spaced by rounding H/(n+1)*(i+1) without the PASE
+    // integer division and per-row 10 px drift.
+    bool roundedRowSpacing;
+};
+
+OverlayLayoutGeometry overlayLayoutGeometry(PrinterOverlayLayoutKind kind) {
+    switch (kind) {
+    case PrinterOverlayLayoutKind::TurrisSingleArea1280:
+        return {1280, 720, 30, 0, 120, 15, 25, 120, 60, 25, 0, true};
+    case PrinterOverlayLayoutKind::PaseDualArea2240:
+        break;
+    }
+    return {2240, 1080, 60, -20, 160, 30, 36, 160, 70, 30, 10, false};
+}
+
 void appendPaseOverlayArea(panorama::wire::v1::OverlayLayout *runConfig,
                            const PrinterProtocol::PaseOverlayConfig &overlay,
                            const PrinterProtocol::PaseOverlayAreaConfig &area,
-                           bool rightArea) {
+                           bool rightArea, const PrinterProductProfile &profile) {
     if (!runConfig || !paseAreaHasContent(area)) {
         return;
     }
-    constexpr int kScreenWidth = 2240;
-    constexpr int kScreenHeight = 1080;
-    constexpr int kTextOffsetX = 60;
-    constexpr int kTextOffsetY = -20;
-    constexpr int kValueTextSize = 160;
-    constexpr int kTagOffsetY = 70;
+    const OverlayLayoutGeometry geometry = overlayLayoutGeometry(profile.overlayLayout);
+    const int kScreenWidth = geometry.screenWidth;
+    const int kScreenHeight = geometry.screenHeight;
+    const int kTextOffsetX = geometry.textOffsetX;
+    const int kTextOffsetY = geometry.textOffsetY;
+    const int kValueTextSize = geometry.valueTextSize;
+    const int kTagOffsetY = geometry.tagOffsetY;
+    const bool waterfall = overlay.waterfallMode && profile.waterfallSupported;
     const int areaCount = overlay.dualMode ? 2 : 1;
     int areaX = rightArea ? kScreenWidth / areaCount + kTextOffsetX : kTextOffsetX;
     const int groupIdOffset = rightArea ? 100 : 0;
@@ -727,14 +833,20 @@ void appendPaseOverlayArea(panorama::wire::v1::OverlayLayout *runConfig,
 
     for (int index = 0; index < metricCount; ++index) {
         const PaseMetricDefinition &definition = *selected.at(index);
-        int groupY =
-            metricCount == 1
+        int groupY = 0;
+        if (geometry.roundedRowSpacing) {
+            groupY = qRound(static_cast<double>(kScreenHeight) / (metricCount + 1) *
+                            (index + 1)) -
+                     qRound(kValueTextSize / 2.0);
+        } else {
+            groupY = metricCount == 1
                 ? kScreenHeight / 2
                 : (kScreenHeight / (metricCount + 1)) * (index + 1) + index * 10;
-        groupY -= kValueTextSize / 2;
+            groupY -= kValueTextSize / 2;
+        }
         int groupWidth = kScreenWidth / areaCount - kTextOffsetX * 2;
         int groupX = areaX;
-        if (overlay.waterfallMode) {
+        if (waterfall) {
             groupWidth = kScreenWidth / 2 - kTextOffsetX * 2 - 50;
             if (overlay.dualMode) {
                 if (rightArea) {
@@ -753,7 +865,7 @@ void appendPaseOverlayArea(panorama::wire::v1::OverlayLayout *runConfig,
         group->set_group_x(static_cast<quint32>(groupX));
         group->set_group_y(static_cast<quint32>(groupY + kTextOffsetY));
         group->set_group_width(static_cast<quint32>(groupWidth));
-        group->set_group_height(160);
+        group->set_group_height(static_cast<quint32>(geometry.groupHeight));
         group->set_text_align(alignment);
         group->set_line_gap(-10);
 
@@ -762,16 +874,19 @@ void appendPaseOverlayArea(panorama::wire::v1::OverlayLayout *runConfig,
         const quint32 unitId =
             definition.unitId == 0 ? 0 : definition.unitId + groupIdOffset;
         if (definition.dateTime) {
-            configurePaseLabel(group->add_labels(), titleId, 1, titleGap, 30,
+            configurePaseLabel(group->add_labels(), titleId, 1, titleGap,
+                               static_cast<quint32>(geometry.titleTextSize),
                                area.textColor,
                                QLocale().toString(now.date(), QLocale::ShortFormat));
             configurePaseLabel(
-                group->add_labels(), valueId, 0, 0, 160, area.textColor,
+                group->add_labels(), valueId, 0, 0,
+                static_cast<quint32>(kValueTextSize), area.textColor,
                 tryxFormatLocalTime(now.time(), overlay.timeFormat, QLocale()));
             continue;
         }
 
-        configurePaseLabel(group->add_labels(), titleId, 1, titleGap, 30,
+        configurePaseLabel(group->add_labels(), titleId, 1, titleGap,
+                           static_cast<quint32>(geometry.titleTextSize),
                            area.textColor, QString::fromUtf8(definition.title));
         const int initialIndex =
             area.initialLabels.indexOf(QString::fromLatin1(definition.name));
@@ -790,10 +905,12 @@ void appendPaseOverlayArea(panorama::wire::v1::OverlayLayout *runConfig,
                     !area.initialUnits.at(initialIndex).isEmpty()
                 ? area.initialUnits.at(initialIndex)
                 : defaultUnit;
-        configurePaseLabel(group->add_labels(), valueId, 0, 0, 160, area.textColor,
+        configurePaseLabel(group->add_labels(), valueId, 0, 0,
+                           static_cast<quint32>(kValueTextSize), area.textColor,
                            initialValue);
-        configurePaseLabel(group->add_labels(), unitId, 0, 0, 36, area.textColor,
-                           initialUnit);
+        configurePaseLabel(group->add_labels(), unitId, 0, 0,
+                           static_cast<quint32>(geometry.unitTextSize),
+                           area.textColor, initialUnit);
     }
 
     if (area.badges.isEmpty()) {
@@ -801,8 +918,8 @@ void appendPaseOverlayArea(panorama::wire::v1::OverlayLayout *runConfig,
     }
     int badgeY = kTagOffsetY;
     int badgeWidth = kScreenWidth / areaCount - kTextOffsetX * 2;
-    int badgeX = areaX + 10;
-    if (overlay.waterfallMode) {
+    int badgeX = areaX + geometry.badgeXInset;
+    if (waterfall) {
         badgeWidth = kScreenWidth / 2 - kTextOffsetX * 2 - 30;
         if (overlay.dualMode) {
             if (rightArea) {
@@ -845,7 +962,8 @@ void appendPaseOverlayArea(panorama::wire::v1::OverlayLayout *runConfig,
         configurePaseBadge(
             badgeGroup->add_labels(),
             static_cast<quint32>((rightArea ? 400 : 300) + (cpu ? 1 : 2)),
-            badgeIndex > 0 ? 10 : 0, text, custom);
+            badgeIndex > 0 ? 10 : 0, text, custom,
+            static_cast<quint32>(geometry.badgeTextSize));
         ++badgeIndex;
     }
     if (badgeGroup->labels().empty()) {
@@ -854,11 +972,12 @@ void appendPaseOverlayArea(panorama::wire::v1::OverlayLayout *runConfig,
 }
 
 panorama::wire::v1::OverlayLayout
-buildPaseRunConfig(const PrinterProtocol::PaseOverlayConfig &overlay) {
+buildPaseRunConfig(const PrinterProtocol::PaseOverlayConfig &overlay,
+                   const PrinterProductProfile &profile) {
     panorama::wire::v1::OverlayLayout runConfig;
-    appendPaseOverlayArea(&runConfig, overlay, overlay.left, false);
+    appendPaseOverlayArea(&runConfig, overlay, overlay.left, false, profile);
     if (overlay.dualMode) {
-        appendPaseOverlayArea(&runConfig, overlay, overlay.right, true);
+        appendPaseOverlayArea(&runConfig, overlay, overlay.right, true, profile);
     }
     return runConfig;
 }
@@ -879,31 +998,223 @@ PaseConfigurationClient::startDisplaySession(const QString &devicePath,
                                              const OperationContext &context) {
     QString error;
     if (!channel_.openSessionTransport(devicePath, context, &error)) {
-        return {false, error, {}, {}};
+        return {false, error, {}, {}, {}};
+    }
+
+    // Every session starts with the full profile capability set; the
+    // negotiation below only ever removes capabilities.
+    negotiated_ = {};
+
+    if (negotiatesCapabilities()) {
+        DeviceInfo deviceInfo;
+        DeviceSpecifications deviceSpecifications;
+        if (!bootstrapTurrisSession(devicePath, context, &deviceInfo,
+                                    &deviceSpecifications, &error)) {
+            return {false, error, {}, {}, {}};
+        }
+        channel_.closeDisplayActivationCycle();
+        Result result{true, {}, deviceInfo, deviceSpecifications};
+        result.negotiatedCapabilities = negotiated_;
+        return result;
     }
 
     panorama::wire::v1::Response bootstrapResponse;
     panorama::wire::v1::Response sysConfigResponse;
     if (!bootstrapSession(devicePath, context, &bootstrapResponse, &sysConfigResponse,
                           &error)) {
-        return {false, error, {}, {}};
+        return {false, error, {}, {}, {}};
     }
-    if (productProfile_.idleMode == PrinterIdleMode::OverlayLayout &&
-        !sendRunConfigTrigger(devicePath, &error, context, nullptr)) {
+    if (!sendRunConfigTrigger(devicePath, &error, context, nullptr)) {
         channel_.closeDevice();
-        return {false, error, {}, {}};
+        return {false, error, {}, {}, {}};
     }
     const DeviceInfo deviceInfo =
         makePrinterDeviceInfo(devicePath, bootstrapResponse.device_information());
-    const DeviceSpecifications deviceSpecifications =
+    DeviceSpecifications deviceSpecifications =
         makeDeviceSpecifications(sysConfigResponse.system_configuration());
+    applyRuntimeKeepalive(sysConfigResponse.system_configuration(),
+                          &deviceSpecifications);
     channel_.closeDisplayActivationCycle();
-    return {true, {}, deviceInfo, deviceSpecifications};
+    Result result{true, {}, deviceInfo, deviceSpecifications};
+    result.negotiatedCapabilities = negotiated_;
+    return result;
+}
+
+bool PaseConfigurationClient::bootstrapTurrisSession(
+    const QString &devicePath, const OperationContext &context, DeviceInfo *deviceInfo,
+    DeviceSpecifications *specifications, QString *errorMessage) {
+    if (!deviceInfo || !specifications) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Turris bootstrap output is not available");
+        }
+        return false;
+    }
+    *deviceInfo = makeTransferOnlyDeviceInfo(devicePath, productProfile_);
+    *specifications = {};
+
+    // Outcome classes of a single probe: accepted, declined (the device
+    // rejected the command or stayed silent until the clean timeout, the
+    // transport is still usable) or failed (transport problem, fail closed).
+    enum class Probe { Accepted, Declined, Failed };
+    const auto probe = [this, &devicePath, &context, errorMessage](
+                           panorama::wire::v1::Request *request,
+                           panorama::wire::v1::Response::BodyCase expectedBody,
+                           panorama::wire::v1::Response *response,
+                           const char *commandName) {
+        QString probeError;
+        TransactionOutcome outcome = TransactionOutcome::NotSent;
+        const bool ok = channel_.execute(request, expectedBody, response, devicePath,
+                                         context, &probeError, &outcome,
+                                         TransactionProfile::Default,
+                                         /*preserveConnectionOnCleanTimeout=*/true);
+        const bool declined = !ok &&
+            (outcome == TransactionOutcome::Rejected ||
+             outcome == TransactionOutcome::AcknowledgementTimeout);
+        qInfo().noquote()
+            << QStringLiteral("tryx_turris_negotiation command=%1 outcome=%2%3")
+                   .arg(QString::fromLatin1(commandName),
+                        ok ? QStringLiteral("accepted")
+                           : declined ? QStringLiteral("declined")
+                                      : QStringLiteral("failed"),
+                        probeError.isEmpty() ? QString()
+                                             : QStringLiteral(" error=\"%1\"")
+                                                   .arg(probeError));
+        if (ok) {
+            return Probe::Accepted;
+        }
+        if (declined) {
+            return Probe::Declined;
+        }
+        if (errorMessage) {
+            *errorMessage = probeError;
+        }
+        return Probe::Failed;
+    };
+    const auto cancelled = [this, &context, errorMessage]() {
+        if (!operationIsCancelled(context)) {
+            return false;
+        }
+        channel_.closeDevice();
+        setCancelledError(errorMessage);
+        return true;
+    };
+
+    // 100 get_device_info: firmware and app versions for the dashboard.
+    bool deviceConfirmed = false;
+    {
+        panorama::wire::v1::Request request;
+        request.mutable_device_information_query()->set_dummy("NA");
+        panorama::wire::v1::Response response;
+        switch (probe(&request, panorama::wire::v1::Response::kDeviceInformation,
+                      &response, "get_device_info")) {
+        case Probe::Accepted:
+            *deviceInfo = makePrinterDeviceInfo(devicePath, response.device_information());
+            deviceConfirmed = true;
+            break;
+        case Probe::Declined:
+            negotiated_.deviceInformation = false;
+            break;
+        case Probe::Failed:
+            channel_.closeDevice();
+            return false;
+        }
+    }
+    if (cancelled()) {
+        return false;
+    }
+    if (context.onDeviceInfoReady) {
+        context.onDeviceInfoReady();
+    }
+
+    // 102 get_sys_config: only after a confirmed device, mainly for the
+    // usb_auto_keepalive flag that selects the keepalive policy.
+    if (deviceConfirmed) {
+        panorama::wire::v1::Request request;
+        request.mutable_system_configuration_query()->set_dummy("NA");
+        panorama::wire::v1::Response response;
+        switch (probe(&request, panorama::wire::v1::Response::kSystemConfiguration,
+                      &response, "get_sys_config")) {
+        case Probe::Accepted:
+            *specifications = makeDeviceSpecifications(response.system_configuration());
+            applyRuntimeKeepalive(response.system_configuration(), specifications);
+            break;
+        case Probe::Declined:
+            break;
+        case Probe::Failed:
+            channel_.closeDevice();
+            return false;
+        }
+        if (cancelled()) {
+            return false;
+        }
+    }
+
+    // 201 run_config without label groups: the official app sends this on every
+    // connect. A rejection only disables overlay metrics.
+    {
+        QString runConfigError;
+        MutationDetails details;
+        const bool ok =
+            sendRunConfigTrigger(devicePath, &runConfigError, context, nullptr, &details);
+        qInfo().noquote()
+            << QStringLiteral("tryx_turris_negotiation command=run_config outcome=%1%2")
+                   .arg(ok ? QStringLiteral("accepted")
+                           : details.outcome == MutationOutcome::Rejected
+                               ? QStringLiteral("declined")
+                               : QStringLiteral("failed"),
+                        runConfigError.isEmpty()
+                            ? QString()
+                            : QStringLiteral(" error=\"%1\"").arg(runConfigError));
+        if (!ok) {
+            if (details.outcome == MutationOutcome::Rejected) {
+                negotiated_.overlayMetrics = false;
+            } else {
+                if (errorMessage) {
+                    *errorMessage = runConfigError;
+                }
+                channel_.closeDevice();
+                return false;
+            }
+        }
+        if (cancelled()) {
+            return false;
+        }
+    }
+
+    // 103 get_file_list: proves the catalog command; the list itself is read
+    // again by the regular catalog refresh.
+    {
+        panorama::wire::v1::Request request;
+        request.mutable_media_catalog_query();
+        panorama::wire::v1::Response response;
+        switch (probe(&request, panorama::wire::v1::Response::kMediaCatalog, &response,
+                      "get_file_list")) {
+        case Probe::Accepted:
+            break;
+        case Probe::Declined:
+            negotiated_.mediaCatalog = false;
+            break;
+        case Probe::Failed:
+            channel_.closeDevice();
+            return false;
+        }
+    }
+    return !cancelled();
 }
 
 PrinterProtocol::Result
 PaseConfigurationClient::readDeviceInfo(const QString &devicePath,
                                         const OperationContext &context) {
+    if (negotiatesCapabilities() && !negotiated_.deviceInformation) {
+        if (operationIsCancelled(context)) {
+            return {false,
+                    QObject::tr(
+                        "TRYX USB operation was cancelled because the device state changed"),
+                    {},
+                    {}};
+        }
+        return {true, {}, makeTransferOnlyDeviceInfo(devicePath, productProfile_), {}};
+    }
 
     panorama::wire::v1::Request request;
     request.mutable_device_information_query();
@@ -911,7 +1222,7 @@ PaseConfigurationClient::readDeviceInfo(const QString &devicePath,
     QString error;
     if (!channel_.execute(&request, panorama::wire::v1::Response::kDeviceInformation,
                           &response, devicePath, context, &error)) {
-        return {false, error, {}, {}};
+        return {false, error, {}, {}, {}};
     }
 
     return {
@@ -951,7 +1262,7 @@ PrinterProtocol::PaseDisplayStateResult
 PaseConfigurationClient::readPaseDisplayState(const QString &devicePath,
                                               const OperationContext &context) {
     PaseDisplayStateResult result;
-    if (!productProfile_.displayConfigurationSupported) {
+    if (!displayAvailable()) {
         result.error = unsupportedCapabilityError(
             productProfile_, QStringLiteral("display configuration"));
         return result;
@@ -959,13 +1270,16 @@ PaseConfigurationClient::readPaseDisplayState(const QString &devicePath,
     panorama::wire::v1::Request request;
     request.mutable_user_configuration_query();
     panorama::wire::v1::Response response;
+    TransactionOutcome queryOutcome = TransactionOutcome::NotSent;
     if (!executeUserConfigurationQueryWithRetry(
             &request, &response, devicePath, context, &result.error,
-            QStringLiteral("user-configuration-state"))) {
+            QStringLiteral("user-configuration-state"), &queryOutcome)) {
+        result.deviceRejected = queryOutcome == TransactionOutcome::Rejected;
         return result;
     }
 
-    const panorama::wire::v1::UserConfiguration &config = response.user_configuration();
+    panorama::wire::v1::UserConfiguration config = response.user_configuration();
+    applyProfileUserConfigDefaults(&config, productProfile_);
     if (!config.has_display_config() || !config.has_work_config()) {
         result.error = QObject::tr(
             "TRYX user configuration is missing display or work configuration");
@@ -976,8 +1290,14 @@ PaseConfigurationClient::readPaseDisplayState(const QString &devicePath,
     result.state.backlightEnabled = display.backlight_enable();
     result.state.brightness =
         static_cast<int>(qMin<quint32>(display.backlight_brightness(), 100U));
-    result.state.mirrorMode = display.media_rotation() == 180U;
-    result.state.waterfallMode = display.ui_rotation() == 90U;
+    if (productProfile_.orientationModel == PrinterDisplayOrientationModel::MirrorFlag) {
+        result.state.mirrorMode = display.mirror();
+        result.state.waterfallMode = false;
+    } else {
+        result.state.mirrorMode = display.media_rotation() == 180U;
+        result.state.waterfallMode =
+            productProfile_.waterfallSupported && display.ui_rotation() == 90U;
+    }
     if (config.has_standby_config()) {
         result.state.standbyEnabled = config.standby_config().enable();
         result.state.standbyMedia =
@@ -1006,7 +1326,7 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
             mutationDetails->outcome = MutationOutcome::Rejected;
         }
     };
-    if (!productProfile_.displayConfigurationSupported) {
+    if (!displayAvailable()) {
         if (errorMessage) {
             *errorMessage = unsupportedCapabilityError(
                 productProfile_, QStringLiteral("display configuration"));
@@ -1018,7 +1338,13 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
         markRejected();
         return false;
     }
-    if (config.replaceOverlay && !productProfile_.overlayMetricsSupported) {
+    if (config.replaceOverlay &&
+        !tryx::pase_overlay_config::paseOverlayIsSupportedByProduct(
+            config.overlay, productProfile_.productId, errorMessage)) {
+        markRejected();
+        return false;
+    }
+    if (config.replaceOverlay && !overlayAvailable()) {
         if (errorMessage) {
             *errorMessage = unsupportedCapabilityError(
                 productProfile_, QStringLiteral("overlay metrics"));
@@ -1044,10 +1370,27 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
         markRejected();
         return false;
     }
+    if (config.display.orientationPresent && config.display.waterfallMode &&
+        !productProfile_.waterfallSupported) {
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("waterfall orientation"));
+        }
+        markRejected();
+        return false;
+    }
     if (config.mediaPresent) {
         const bool fullScreen = config.screenMode == QStringLiteral("Full Screen");
         const bool splitScreen =
             config.screenMode == QStringLiteral("Screen Splitting");
+        if (splitScreen && !productProfile_.splitAreaMediaSupported) {
+            if (errorMessage) {
+                *errorMessage = unsupportedCapabilityError(
+                    productProfile_, QStringLiteral("split-screen media"));
+            }
+            markRejected();
+            return false;
+        }
         if (!fullScreen && !splitScreen) {
             if (errorMessage) {
                 *errorMessage = QObject::tr("The PASE screen mode is not supported");
@@ -1113,6 +1456,7 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
     }
 
     panorama::wire::v1::UserConfiguration userConfig = getResponse.user_configuration();
+    applyProfileUserConfigDefaults(&userConfig, productProfile_);
     if (config.mediaPresent && !userConfig.has_work_config()) {
         if (errorMessage) {
             *errorMessage = QObject::tr(
@@ -1169,9 +1513,15 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
     }
     if (config.display.orientationPresent) {
         auto *display = userConfig.mutable_display_config();
-        display->set_mirror(false);
-        display->set_ui_rotation(config.display.waterfallMode ? 90U : 0U);
-        display->set_media_rotation(config.display.mirrorMode ? 180U : 0U);
+        if (productProfile_.orientationModel ==
+            PrinterDisplayOrientationModel::MirrorFlag) {
+            // Turris exposes a single mirror flag; rotation fields stay untouched.
+            display->set_mirror(config.display.mirrorMode);
+        } else {
+            display->set_mirror(false);
+            display->set_ui_rotation(config.display.waterfallMode ? 90U : 0U);
+            display->set_media_rotation(config.display.mirrorMode ? 180U : 0U);
+        }
     }
 
     if (!sendUserConfigWithOutcome(devicePath, userConfig, errorMessage, context,
@@ -1235,7 +1585,8 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
         if (readback.state.mirrorMode != config.display.mirrorMode) {
             mismatches.append(QObject::tr("mirror"));
         }
-        if (readback.state.waterfallMode != config.display.waterfallMode) {
+        if (productProfile_.waterfallSupported &&
+            readback.state.waterfallMode != config.display.waterfallMode) {
             mismatches.append(QObject::tr("waterfall"));
         }
     }
@@ -1266,7 +1617,7 @@ bool PaseConfigurationClient::configurePaseOverlay(const QString &devicePath,
         *mutationDetails = {};
         mutationDetails->stage = QStringLiteral("ActivatingMetricsLayout");
     }
-    if (!productProfile_.overlayMetricsSupported) {
+    if (!overlayAvailable()) {
         if (mutationDetails) {
             mutationDetails->outcome = MutationOutcome::Rejected;
         }
@@ -1286,14 +1637,16 @@ bool PaseConfigurationClient::sendPaseMetricBatch(
     const QString &devicePath, const PaseOverlayConfig &overlay,
     const QStringList &labels, const QStringList &values, const QStringList &units,
     QString *errorMessage, const OperationContext &context) {
-    if (!productProfile_.overlayMetricsSupported) {
+    if (!overlayAvailable()) {
         if (errorMessage) {
             *errorMessage = unsupportedCapabilityError(
                 productProfile_, QStringLiteral("overlay metrics"));
         }
         return false;
     }
-    if (!paseOverlayMetricSelectionIsValid(overlay, errorMessage)) {
+    if (!paseOverlayMetricSelectionIsValid(overlay, errorMessage) ||
+        !tryx::pase_overlay_config::paseOverlayIsSupportedByProduct(
+            overlay, productProfile_.productId, errorMessage)) {
         return false;
     }
     const QList<const PaseMetricDefinition *> leftSelected =
@@ -1358,7 +1711,7 @@ bool PaseConfigurationClient::sendPaseMetricBatch(
 bool PaseConfigurationClient::setBrightness(const QString &devicePath, int brightness,
                                             QString *errorMessage,
                                             const OperationContext &context) {
-    if (!productProfile_.displayConfigurationSupported) {
+    if (!displayAvailable()) {
         if (errorMessage) {
             *errorMessage = unsupportedCapabilityError(
                 productProfile_, QStringLiteral("brightness control"));
@@ -1389,6 +1742,10 @@ bool PaseConfigurationClient::sendUserConfigWithOutcome(
             mutationDetails->outcome = MutationOutcome::PartialOrUnknown;
         }
         return true;
+    }
+    if (outcome == PrinterTransactionChannel::TransactionOutcome::Rejected &&
+        negotiatesCapabilities()) {
+        negotiated_.displayConfiguration = false;
     }
     if (mutationDetails) {
         switch (outcome) {
@@ -1502,7 +1859,8 @@ bool PaseConfigurationClient::sendRunConfigTrigger(const QString &devicePath,
                                                    const PaseOverlayConfig *overlay,
                                                    MutationDetails *mutationDetails) {
     if (overlay && (!paseOverlayMetricSelectionIsValid(*overlay, errorMessage)
-                    || !tryx::pase_overlay_config::paseBadgeChoicesAreValid(*overlay, productProfile_.productId, errorMessage))) {
+                    || !tryx::pase_overlay_config::paseBadgeChoicesAreValid(*overlay, productProfile_.productId, errorMessage)
+                    || !tryx::pase_overlay_config::paseOverlayIsSupportedByProduct(*overlay, productProfile_.productId, errorMessage))) {
         if (mutationDetails) {
             mutationDetails->outcome = MutationOutcome::Rejected;
         }
@@ -1510,7 +1868,7 @@ bool PaseConfigurationClient::sendRunConfigTrigger(const QString &devicePath,
     }
     panorama::wire::v1::Request request;
     if (overlay) {
-        *request.mutable_overlay_layout() = buildPaseRunConfig(*overlay);
+        *request.mutable_overlay_layout() = buildPaseRunConfig(*overlay, productProfile_);
     } else {
         request.mutable_overlay_layout();
     }
@@ -1518,6 +1876,12 @@ bool PaseConfigurationClient::sendRunConfigTrigger(const QString &devicePath,
         PrinterTransactionChannel::TransactionOutcome::NotSent;
     const bool success = channel_.writeTrackedOnly(&request, devicePath, context,
                                                    errorMessage, &transactionOutcome);
+    if (!success && overlay && negotiatesCapabilities() &&
+        transactionOutcome == PrinterTransactionChannel::TransactionOutcome::Rejected) {
+        // The device refused a label-group layout: overlay metrics are not
+        // offered again in this session, the transport stays open.
+        negotiated_.overlayMetrics = false;
+    }
     if (mutationDetails) {
         if (success) {
             mutationDetails->outcome = MutationOutcome::Succeeded;
@@ -1544,7 +1908,7 @@ bool PaseConfigurationClient::sendRunConfigTrigger(const QString &devicePath,
 PrinterProtocol::KeepaliveOutcome
 PaseConfigurationClient::sendKeepalive(const QString &devicePath, QString *errorMessage,
                                        const OperationContext &context) {
-    if (productProfile_.idleMode == PrinterIdleMode::TransferOnly) {
+    if (productProfile_.keepalive == PrinterSessionKeepalive::None) {
         if (operationIsCancelled(context)) {
             if (errorMessage) {
                 *errorMessage = QObject::tr(
@@ -1557,15 +1921,24 @@ PaseConfigurationClient::sendKeepalive(const QString &devicePath, QString *error
         }
         return KeepaliveOutcome::Sent;
     }
-    return channel_.sendPeriodicFrame(
+    TransactionOutcome drainOutcome = TransactionOutcome::NotSent;
+    const KeepaliveOutcome outcome = channel_.sendPeriodicFrame(
         PaseConfigurationClient::makeKeepaliveFrame(errorMessage), devicePath, context,
-        errorMessage);
+        errorMessage, &drainOutcome);
+    if (outcome == KeepaliveOutcome::FatalFailure &&
+        drainOutcome == TransactionOutcome::Rejected &&
+        productProfile_.keepalive == PrinterSessionKeepalive::Negotiated) {
+        // A negotiated keepalive that the device rejects is switched off by the
+        // session instead of ending it.
+        return KeepaliveOutcome::Unsupported;
+    }
+    return outcome;
 }
 
 PrinterProtocol::KeepaliveOutcome PaseConfigurationClient::sendDisplayKeepalive(
     const QString &devicePath, QString *errorMessage, const OperationContext &context,
     const PaseOverlayConfig *overlay) {
-    if (!productProfile_.overlayMetricsSupported) {
+    if (!overlayAvailable() || !productProfile_.overlayLeaseSupported) {
         if (errorMessage) {
             *errorMessage = unsupportedCapabilityError(
                 productProfile_, QStringLiteral("display keepalive"));
@@ -1573,7 +1946,8 @@ PrinterProtocol::KeepaliveOutcome PaseConfigurationClient::sendDisplayKeepalive(
         return KeepaliveOutcome::FatalFailure;
     }
     if (overlay && (!paseOverlayMetricSelectionIsValid(*overlay, errorMessage)
-                    || !tryx::pase_overlay_config::paseBadgeChoicesAreValid(*overlay, productProfile_.productId, errorMessage))) {
+                    || !tryx::pase_overlay_config::paseBadgeChoicesAreValid(*overlay, productProfile_.productId, errorMessage)
+                    || !tryx::pase_overlay_config::paseOverlayIsSupportedByProduct(*overlay, productProfile_.productId, errorMessage))) {
         return KeepaliveOutcome::FatalFailure;
     }
     panorama::wire::v1::Request request;
@@ -1583,7 +1957,7 @@ PrinterProtocol::KeepaliveOutcome PaseConfigurationClient::sendDisplayKeepalive(
     // mutations use the tracked request path and still require their exact response.
     request.mutable_header();
     if (overlay) {
-        *request.mutable_overlay_layout() = buildPaseRunConfig(*overlay);
+        *request.mutable_overlay_layout() = buildPaseRunConfig(*overlay, productProfile_);
     } else {
         request.mutable_overlay_layout();
     }

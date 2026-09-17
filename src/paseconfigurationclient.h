@@ -24,6 +24,7 @@ public:
 
     PaseConfigurationClient(PrinterTransactionChannel &channel,
                             const PrinterProductProfile &profile,
+                            PrinterProtocol::NegotiatedCapabilities &negotiated,
                             int deviceInfoReadyTimeoutMs);
     PaseConfigurationClient(const PaseConfigurationClient &) = delete;
     PaseConfigurationClient &operator=(const PaseConfigurationClient &) = delete;
@@ -33,12 +34,22 @@ public:
                           panorama::wire::v1::Response *sysConfigResponse,
                           QString *errorMessage);
 
+    // Fail-safe Turris bootstrap: probes 100, 102, 201 and 103 and clears the
+    // matching negotiated capability on a device rejection or clean timeout
+    // instead of failing the session. Transport failures still fail.
+    bool bootstrapTurrisSession(const QString &devicePath,
+                                const OperationContext &context,
+                                DeviceInfo *deviceInfo,
+                                DeviceSpecifications *specifications,
+                                QString *errorMessage);
+
     bool executeUserConfigurationQueryWithRetry(panorama::wire::v1::Request *request,
                                                 panorama::wire::v1::Response *response,
                                                 const QString &devicePath,
                                                 const OperationContext &context,
                                                 QString *errorMessage,
-                                                const QString &queryName);
+                                                const QString &queryName,
+                                                TransactionOutcome *lastOutcome = nullptr);
 
 #ifdef TRYX_PROTOCOL_TESTING
     void setBootstrapZeroByteWriteFailuresForTesting(int failureCount);
@@ -116,8 +127,20 @@ public:
                                           const PaseOverlayConfig *overlay = nullptr);
 
 private:
+    bool displayAvailable() const {
+        return productProfile_.displayConfigurationSupported &&
+               negotiated_.displayConfiguration;
+    }
+    bool overlayAvailable() const {
+        return productProfile_.overlayMetricsSupported && negotiated_.overlayMetrics;
+    }
+    bool negotiatesCapabilities() const {
+        return productProfile_.family == PrinterProtocolFamily::Turris;
+    }
+
     PrinterTransactionChannel &channel_;
     const PrinterProductProfile &productProfile_;
+    PrinterProtocol::NegotiatedCapabilities &negotiated_;
     int deviceInfoReadyTimeoutMs_;
 #ifdef TRYX_PROTOCOL_TESTING
     int bootstrapZeroByteWriteFailuresForTesting_ = 0;

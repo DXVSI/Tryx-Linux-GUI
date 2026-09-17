@@ -7,7 +7,6 @@
 #include "usbprintertransport.h"
 #include "paseconfigurationclient.h"
 #include "pasemediaclient.h"
-#include "turrismediaclient.h"
 #include "deleteintentstore.h"
 #include "devicemanager.h"
 #include "legacydevicesession.h"
@@ -2257,6 +2256,7 @@ private slots:
     void turrisMediaAnalysisUses1280Profile();
     void turrisMediaFormatFrameCountParserIsStrict();
     void turrisMediaFormatWriterIsAtomicAndRewinds();
+    void turrisGifMediaCarriesGifOriginalType();
     void turrisMediaFormatValidatorRejectsMalformedMetadata();
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
@@ -2577,8 +2577,8 @@ private slots:
     void lostPrinterSessionRequiresObservedRemovalBeforeReconnect();
     void sessionNotReadyRejectsMutationsBeforeDispatch();
     void productChangeDoesNotReuseSessionOrRecovery();
-    void turrisAcknowledgedUploadSkipsCatalog();
-    void turrisLostFinalAckDoesNotReconcileOrRetransmit();
+    void turrisAcknowledgedUploadVerifiesCatalog();
+    void turrisLostFinalAckReconcilesThroughCatalog();
     void turrisUploadQueuesSourceAnalysisBeforePreparation();
     void turrisUploadMediaDispatchesWithOriginIdentity();
     void turrisSourceAnalysisFailureIsClassifiedAsSourceAnalysisFailed();
@@ -2624,8 +2624,13 @@ private slots:
     void udbSessionBootstrapDecodesDeviceSpecifications_data();
     void udbSessionBootstrapDecodesDeviceSpecifications();
     void udbSessionActivationFailureDiscardsDeviceSpecifications();
-    void turrisSessionUsesTransferOnlyTransport();
-    void turrisWorkerSessionSendsNoPaseTraffic();
+    void turrisSessionNegotiatesCommandsFailSafe();
+    void turrisSessionRejectedDeviceInfoFallsBackToTransferOnly();
+    void turrisSessionSilentDeviceInfoFallsBackToTransferOnly();
+    void turrisWorkerSessionActivatesWithoutKeepalive();
+    void turrisWorkerRejectedPingDisablesNegotiatedKeepalive();
+    void turrisWorkerOverlayRejectionKeepsSessionActive();
+    void supportSnapshotKeepsTurrisNegotiationEvents();
     void udbSessionBootstrapWaitsForLateDeviceInfo();
     void udbSessionBootstrapResynchronizesAfterStaleTail();
     void udbSessionBootstrapSkipsStaleTrackedResponse();
@@ -5153,7 +5158,34 @@ void PrinterProtocolTests::runtimeCapabilitiesAreProfileBounded() {
     capabilities = operationsAdaptor.GetDeviceCapabilitiesV1();
     QCOMPARE(
         capabilities.capabilities,
-        QStringList{QStringLiteral("device.media-upload.v1")});
+        QStringList({QStringLiteral("device.media-upload.v1"),
+                     QStringLiteral("device.media-catalog.v1"),
+                     QStringLiteral("device.display-configuration.v1"),
+                     QStringLiteral("device.overlay-metrics.v1")}));
+    QVERIFY(manager->operationContext().supportsMediaCatalog);
+
+    // A capability withdrawn by the worker disappears for the rest of the
+    // physical generation and is announced once.
+    QSignalSpy capabilitiesChangedSpy(
+        manager.get(), &DeviceManager::deviceCapabilitiesChanged);
+    manager->sessionController_.state_.printerSnapshot.state =
+        PrinterProtocol::DiscoveryState::Ready;
+    manager->sessionController_.handleWorkerPrinterCapabilityUnavailable(
+        tryxDeviceMediaCatalogV1Token(), QStringLiteral("rejected"),
+        manager->sessionController_.state_.printerGeneration);
+    manager->sessionController_.handleWorkerPrinterCapabilityUnavailable(
+        tryxDeviceMediaCatalogV1Token(), QStringLiteral("rejected"),
+        manager->sessionController_.state_.printerGeneration);
+    QCOMPARE(capabilitiesChangedSpy.count(), 1);
+    capabilities = operationsAdaptor.GetDeviceCapabilitiesV1();
+    QCOMPARE(
+        capabilities.capabilities,
+        QStringList({QStringLiteral("device.media-upload.v1"),
+                     QStringLiteral("device.display-configuration.v1"),
+                     QStringLiteral("device.overlay-metrics.v1")}));
+    QVERIFY(!manager->operationContext().supportsMediaCatalog);
+    QVERIFY(manager->operationContext().supportsDisplayConfiguration);
+    manager->sessionController_.state_.printerUnavailableCapabilities.clear();
 
     manager->sessionController_.state_.printerProductId = 0x1021;
     manager->sessionController_.state_.printerDeviceSerial.clear();
@@ -11014,76 +11046,96 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QVERIFY(turris.has_value());
     QVERIFY(!printerProductProfileForId(0x9999).has_value());
 
-    QCOMPARE(pase->mediaWidth, 2240);
-    QCOMPARE(pase->mediaHeight, 1080);
-    QCOMPARE(pase->idleMode, PrinterIdleMode::OverlayLayout);
-    QVERIFY(pase->mediaUploadSupported);
-    QVERIFY(pase->mediaCatalogSupported);
-    QVERIFY(pase->displayConfigurationSupported);
-    QVERIFY(pase->splitAreaMediaSupported);
-    QVERIFY(pase->overlayMetricsSupported);
+    for (const auto &profile : {pase, pano}) {
+        QCOMPARE(profile->mediaWidth, 2240);
+        QCOMPARE(profile->mediaHeight, 1080);
+        QCOMPARE(profile->family, PrinterProtocolFamily::Pase);
+        QCOMPARE(profile->mediaContainer, PrinterMediaContainer::RawH264);
+        QCOMPARE(profile->keepalive, PrinterSessionKeepalive::Ping);
+        QCOMPARE(profile->overlayLayout,
+                 PrinterOverlayLayoutKind::PaseDualArea2240);
+        QCOMPARE(profile->orientationModel,
+                 PrinterDisplayOrientationModel::RotationFields);
+        QCOMPARE(profile->fileTransferTrackId, quint64{0});
+        QVERIFY(profile->defaultPowerOnMedia.isEmpty());
+        QVERIFY(profile->defaultStandbyMedia.isEmpty());
+        QVERIFY(profile->mediaUploadSupported);
+        QVERIFY(profile->mediaCatalogSupported);
+        QVERIFY(profile->mediaPullSupported);
+        QVERIFY(profile->displayConfigurationSupported);
+        QVERIFY(profile->splitAreaMediaSupported);
+        QVERIFY(profile->waterfallSupported);
+        QVERIFY(profile->overlayMetricsSupported);
+        QVERIFY(profile->overlayLeaseSupported);
+    }
     QVERIFY(pase->firmwareFlashSupported);
-
-    QCOMPARE(pano->mediaWidth, 2240);
-    QCOMPARE(pano->mediaHeight, 1080);
-    QCOMPARE(pano->idleMode, PrinterIdleMode::OverlayLayout);
-    QVERIFY(pano->mediaUploadSupported);
-    QVERIFY(pano->mediaCatalogSupported);
-    QVERIFY(pano->displayConfigurationSupported);
-    QVERIFY(pano->splitAreaMediaSupported);
-    QVERIFY(pano->overlayMetricsSupported);
     QVERIFY(!pano->firmwareFlashSupported);
 
     QCOMPARE(turris->mediaWidth, 1280);
     QCOMPARE(turris->mediaHeight, 720);
-    QCOMPARE(turris->idleMode, PrinterIdleMode::TransferOnly);
+    QCOMPARE(turris->family, PrinterProtocolFamily::Turris);
+    QCOMPARE(turris->mediaContainer, PrinterMediaContainer::MxhdH264);
+    QCOMPARE(turris->keepalive, PrinterSessionKeepalive::Negotiated);
+    QCOMPARE(turris->overlayLayout,
+             PrinterOverlayLayoutKind::TurrisSingleArea1280);
+    QCOMPARE(turris->orientationModel,
+             PrinterDisplayOrientationModel::MirrorFlag);
+    QCOMPARE(turris->fileTransferTrackId, quint64{981521});
+    QCOMPARE(turris->defaultPowerOnMedia,
+             QStringLiteral("default_poweron_1280x720.mp4.h264"));
+    QCOMPARE(turris->defaultStandbyMedia,
+             QStringLiteral("default_standby_1280x720.mp4.h264"));
     QVERIFY(turris->mediaUploadSupported);
-    QVERIFY(!turris->mediaCatalogSupported);
-    QVERIFY(!turris->displayConfigurationSupported);
+    QVERIFY(turris->mediaCatalogSupported);
+    QVERIFY(!turris->mediaPullSupported);
+    QVERIFY(turris->displayConfigurationSupported);
     QVERIFY(!turris->splitAreaMediaSupported);
-    QVERIFY(!turris->overlayMetricsSupported);
+    QVERIFY(!turris->waterfallSupported);
+    QVERIFY(turris->overlayMetricsSupported);
+    QVERIFY(!turris->overlayLeaseSupported);
     QVERIFY(!turris->firmwareFlashSupported);
 
+    // Static Turris rejections happen before any USB traffic.
     PrinterProtocol turrisProtocol(*turris, 100);
-    const PrinterProtocol::MediaListResult mediaList =
-        turrisProtocol.readMediaList(QStringLiteral("unused"), {});
-    QVERIFY(!mediaList.success);
-    QVERIFY(mediaList.error.contains(QStringLiteral("391a:2011")));
-    const PrinterProtocol::DeleteResult deleteResult =
-        turrisProtocol.removeUserMedia(
-            QStringLiteral("unused"),
-            {QStringLiteral("turris.mp4.h264_1280x720")},
-            PrinterProtocol::BeforeDeleteDispatch{},
-            PrinterProtocol::DeleteProgress{},
-            PrinterProtocol::OperationContext{});
-    QVERIFY(!deleteResult.success);
-    QCOMPARE(deleteResult.outcome,
-             PrinterProtocol::MutationOutcome::Rejected);
+    const PrinterProtocol::MediaPullResult pull = turrisProtocol.pullUserMedia(
+        QStringLiteral("unused"), QStringLiteral("turris.mp4.h264_1280x720"), 4096,
+        PrinterProtocol::MediaPullChunkSink{}, PrinterProtocol::MediaPullProgress{},
+        PrinterProtocol::OperationContext{});
+    QVERIFY(!pull.success);
+    QVERIFY(pull.error.contains(QStringLiteral("391a:2011")));
 
-    const PrinterProtocol::PaseDisplayStateResult displayState =
-        turrisProtocol.readPaseDisplayState(
-            QStringLiteral("unused"), {});
-    QVERIFY(!displayState.success);
-    QVERIFY(displayState.error.contains(QStringLiteral("391a:2011")));
-    PrinterProtocol::PaseApplyConfig applyConfig;
-    applyConfig.mediaPresent = true;
-    applyConfig.media = {
-        QStringLiteral("turris.mp4.h264_1280x720")};
+    PrinterProtocol::PaseApplyConfig splitConfig;
+    splitConfig.mediaPresent = true;
+    splitConfig.screenMode = QStringLiteral("Screen Splitting");
+    splitConfig.media = {QStringLiteral("left.mp4.h264_1280x720"),
+                         QStringLiteral("right.mp4.h264_1280x720")};
     PrinterProtocol::MutationDetails mutation;
     QString error;
     QVERIFY(!turrisProtocol.applyPaseConfiguration(
-        QStringLiteral("unused"), applyConfig, &error, {}, &mutation));
-    QCOMPARE(mutation.outcome,
-             PrinterProtocol::MutationOutcome::Rejected);
-    QVERIFY(error.contains(QStringLiteral("391a:2011")));
+        QStringLiteral("unused"), splitConfig, &error, {}, &mutation));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY2(error.contains(QStringLiteral("391a:2011")), qPrintable(error));
+
+    PrinterProtocol::PaseApplyConfig waterfallConfig;
+    waterfallConfig.display.orientationPresent = true;
+    waterfallConfig.display.waterfallMode = true;
+    error.clear();
+    mutation = {};
+    QVERIFY(!turrisProtocol.applyPaseConfiguration(
+        QStringLiteral("unused"), waterfallConfig, &error, {}, &mutation));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY2(error.contains(QStringLiteral("391a:2011")), qPrintable(error));
+
+    PrinterProtocol::PaseOverlayConfig dualOverlay;
+    dualOverlay.dualMode = true;
+    dualOverlay.left.metrics = {QStringLiteral("CPU Usage")};
+    dualOverlay.right.metrics = {QStringLiteral("GPU Usage")};
     error.clear();
     mutation = {};
     QVERIFY(!turrisProtocol.configurePaseOverlay(
-        QStringLiteral("unused"), PrinterProtocol::PaseOverlayConfig{},
-        &error, {}, &mutation));
-    QCOMPARE(mutation.outcome,
-             PrinterProtocol::MutationOutcome::Rejected);
-    QVERIFY(error.contains(QStringLiteral("391a:2011")));
+        QStringLiteral("unused"), dualOverlay, &error, {}, &mutation));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY2(error.contains(QStringLiteral("391a:2011")), qPrintable(error));
 }
 
 void PrinterProtocolTests::turrisMediaAnalysisUses1280Profile() {
@@ -11326,6 +11378,59 @@ void PrinterProtocolTests::
                      Qt::CaseInsensitive),
                  qPrintable(error));
     }
+}
+
+void PrinterProtocolTests::turrisGifMediaCarriesGifOriginalType() {
+    namespace turris = tryx::turris_media;
+
+    // MediaHeaderPb.original_media_type must name the source type the way
+    // the official app does: GIF sources are 3, not the MP4 value 4.
+    QCOMPARE(turris::kGifKind, quint32{3});
+    const turris::FrameCountProbeResult gifProbe =
+        turris::parseFrameCountProbe(
+            QByteArrayLiteral(
+                "width=1280\nheight=720\nnb_read_frames=12\n"),
+            turris::kGifKind);
+    QVERIFY(gifProbe.valid);
+    QCOMPARE(gifProbe.frameCount, quint64{12});
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray rawH264;
+    const QByteArray gifBlob = turrisMediaBlob(turris::kGifKind, 12);
+    QVERIFY(splitTurrisMediaBlob(gifBlob, nullptr, &rawH264));
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("gif-source.h264"));
+    const QString outputPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("gif-output.mxhd"));
+    QVERIFY(writeTextFile(rawPath, rawH264));
+    const turris::WriteResult written = turris::writeBlob(
+        rawPath, outputPath, turris::kGifKind, 12, {});
+    QVERIFY2(written.error.isEmpty(), qPrintable(written.error));
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.readAll(), gifBlob);
+    output.close();
+
+    const auto validates = [&](const QByteArray &blob, const QString &name) {
+        const QString path = QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("validate-") + name);
+        if (!writeTextFile(path, blob)) {
+            return false;
+        }
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            return false;
+        }
+        QString error;
+        return turris::validateBlob(&file, blob.size(), name, &error);
+    };
+    QVERIFY(validates(gifBlob, QStringLiteral("clip.gif.h264_1280x720")));
+    QVERIFY(!validates(gifBlob, QStringLiteral("clip.mp4.h264_1280x720")));
+    QVERIFY(!validates(turrisMediaBlob(turris::kVideoKind, 12),
+                       QStringLiteral("clip.gif.h264_1280x720")));
+    QVERIFY(validates(turrisMediaBlob(turris::kVideoKind, 12),
+                      QStringLiteral("clip.mp4.h264_1280x720")));
 }
 
 void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
@@ -33593,6 +33698,19 @@ void PrinterProtocolTests::
         PrinterProtocol::MutationOutcome::Succeeded,
         QString(), manager->sessionController_.state_.printerGeneration);
 
+    // Turris confirms the stored file through FileList like PASE.
+    QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Refreshing"));
+    QCOMPARE(refreshSpy.count(), 1);
+    PrinterProtocol::MediaFile exact;
+    exact.name = record.remoteName;
+    exact.size = preparedBytes.size();
+    exact.source = PrinterProtocol::MediaSource::User;
+    exact.readOnly = false;
+    manager->worker_->printerMediaListReady(
+        operationId, {exact},
+        manager->sessionController_.state_.printerGeneration);
+
     const TryxRuntimeOperationInfo acknowledged =
         manager->operationInfo(operationId);
     QCOMPARE(acknowledged.state, QStringLiteral("Succeeded"));
@@ -33602,7 +33720,7 @@ void PrinterProtocolTests::
     QCOMPARE(uploadedSpy.count(), 1);
     QCOMPARE(uploadedSpy.first().first().toString(),
              record.remoteName);
-    QCOMPARE(refreshSpy.count(), 0);
+    QCOMPARE(refreshSpy.count(), 1);
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.cleanupPending.isEmpty());
@@ -36486,7 +36604,7 @@ void PrinterProtocolTests::productChangeDoesNotReuseSessionOrRecovery() {
         QStringLiteral("391a:2011")));
 }
 
-void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
+void PrinterProtocolTests::turrisAcknowledgedUploadVerifiesCatalog() {
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
     const QString sysRoot =
@@ -36558,9 +36676,26 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
         PrinterProtocol::MutationOutcome::Succeeded,
         QString(), manager->sessionController_.state_.printerGeneration);
 
+    // The acknowledged upload is only stored on the device; the catalog
+    // confirms it before the operation succeeds.
+    QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Refreshing"));
+    QCOMPARE(refreshSpy.count(), 1);
+    QCOMPARE(uploadedSpy.count(), 0);
+    QVERIFY(QFileInfo::exists(durablePreparedPath));
+
+    PrinterProtocol::MediaFile exact;
+    exact.name = remoteName;
+    exact.size = preparedBytes.size();
+    exact.source = PrinterProtocol::MediaSource::User;
+    exact.readOnly = false;
+    manager->worker_->printerMediaListReady(
+        operationId, {exact},
+        manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
-    QCOMPARE(refreshSpy.count(), 0);
+    QCOMPARE(manager->operationInfo(operationId).message,
+             QStringLiteral("Media uploaded and verified"));
     QCOMPARE(uploadedSpy.count(), 1);
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
@@ -36569,7 +36704,7 @@ void PrinterProtocolTests::turrisAcknowledgedUploadSkipsCatalog() {
 }
 
 void PrinterProtocolTests::
-    turrisLostFinalAckDoesNotReconcileOrRetransmit() {
+    turrisLostFinalAckReconcilesThroughCatalog() {
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
     const QString sysRoot =
@@ -36642,28 +36777,30 @@ void PrinterProtocolTests::
         QStringLiteral("FileTransmitEnd status timed out"),
         manager->sessionController_.state_.printerGeneration);
 
-    const TryxRuntimeOperationInfo failed =
-        manager->operationInfo(operationId);
-    QCOMPARE(failed.state, QStringLiteral("RetryAvailable"));
-    QCOMPARE(failed.errorCategory, QStringLiteral("PartialOrUnknown"));
-    QCOMPARE(failed.retryMode, QStringLiteral("PreparedMedia"));
-    QVERIFY(failed.message.contains(QStringLiteral("Power-cycle"),
-                                    Qt::CaseInsensitive));
-    QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
-                .requiresDeviceRecovery);
-    QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
-                .retryMustUseNewRemoteName);
-    QVERIFY(!manager->operationCoordinator_.operations_.value(operationId)
-                 .uploadFinalizationReconciliationPending);
-    QVERIFY(manager->sessionController_.state_.printerRecoveryRequired);
-    QCOMPARE(refreshSpy.count(), 0);
+    // A lost FileTransmitEnd acknowledgement is reconciled through the
+    // Turris catalog instead of forcing a device recovery.
+    QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Refreshing"));
+    QCOMPARE(manager->operationInfo(operationId).stage,
+             QStringLiteral("RecoveringFinalization"));
+    QCOMPARE(refreshSpy.count(), 1);
     QCOMPARE(retransmitSpy.count(), 0);
+    QVERIFY(!manager->sessionController_.state_.printerRecoveryRequired);
+    QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
+                .uploadFinalizationReconciliationPending);
     QVERIFY(QFileInfo::exists(durablePreparedPath));
-    QVERIFY(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
-    QCOMPARE(manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate->operationId,
-             operationId);
 
-    manager->cancelOperation(operationId);
+    PrinterProtocol::MediaFile exact;
+    exact.name = remoteName;
+    exact.size = preparedBytes.size();
+    exact.source = PrinterProtocol::MediaSource::User;
+    exact.readOnly = false;
+    manager->worker_->printerMediaListReady(
+        operationId, {exact},
+        manager->sessionController_.state_.printerGeneration);
+    QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Succeeded"));
+    QCOMPARE(retransmitSpy.count(), 0);
     QVERIFY(!QFileInfo::exists(durablePreparedPath));
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.retryCandidate.has_value());
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_.inFlightDispatch.has_value());
@@ -36863,14 +37000,26 @@ void PrinterProtocolTests::turrisUploadMediaDispatchesWithOriginIdentity() {
                  sourcePath, transform, 0x2011));
 
     QSignalSpy uploadedSpy(manager.get(), &DeviceManager::mediaUploaded);
+    const qint64 preparedSize = QFileInfo(durablePreparedPath).size();
     manager->worker_->printerUploadFinished(
         operationId, durablePreparedPath, remoteName, true,
         PrinterProtocol::MutationOutcome::Succeeded, QString(),
         manager->sessionController_.state_.printerGeneration);
     QCOMPARE(manager->operationInfo(operationId).state,
+             QStringLiteral("Refreshing"));
+    QCOMPARE(refreshSpy.count(), 1);
+    QCOMPARE(uploadedSpy.count(), 0);
+    PrinterProtocol::MediaFile exact;
+    exact.name = remoteName;
+    exact.size = preparedSize;
+    exact.source = PrinterProtocol::MediaSource::User;
+    exact.readOnly = false;
+    manager->worker_->printerMediaListReady(
+        operationId, {exact},
+        manager->sessionController_.state_.printerGeneration);
+    QCOMPARE(manager->operationInfo(operationId).state,
              QStringLiteral("Succeeded"));
     QCOMPARE(uploadedSpy.count(), 1);
-    QCOMPARE(refreshSpy.count(), 0);
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_
                  .inFlightDispatch.has_value());
     QVERIFY(!manager->operationCoordinator_.retryCacheSnapshot_
@@ -39862,7 +40011,120 @@ udbSessionActivationFailureDiscardsDeviceSpecifications() {
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
 }
 
-void PrinterProtocolTests::turrisSessionUsesTransferOnlyTransport() {
+// Peer half of the fail-safe Turris bootstrap (100, 102, 201 {}, 103). Each
+// probe is accepted, rejected with UNSUPPORTED_BODY or left unanswered.
+struct TurrisBootstrapPeerOptions {
+    enum class Answer { Accept, Reject, Silent };
+    Answer deviceInfo = Answer::Accept;
+    Answer systemConfiguration = Answer::Accept;
+    bool usbAutoKeepalive = true;
+    Answer runConfig = Answer::Accept;
+    Answer fileList = Answer::Accept;
+    QStringList catalogFiles;
+};
+
+static panorama::wire::v1::Response turrisRejection(
+    const panorama::wire::v1::Request &request) {
+    auto response = baseResponse(request);
+    response.mutable_error()->set_code(
+        panorama::wire::v1::ProtocolError::UNSUPPORTED_BODY);
+    response.mutable_error()->set_why("unsupported body");
+    return response;
+}
+
+static bool serveTurrisBootstrap(int fd,
+                                 const TurrisBootstrapPeerOptions &options,
+                                 QString *errorMessage,
+                                 QByteArray *buffer) {
+    using Answer = TurrisBootstrapPeerOptions::Answer;
+    using Body = panorama::wire::v1::Request::BodyCase;
+    QList<QPair<Body, Answer>> steps;
+    steps.append({Body::kDeviceInformationQuery, options.deviceInfo});
+    if (options.deviceInfo == Answer::Accept) {
+        steps.append({Body::kSystemConfigurationQuery,
+                      options.systemConfiguration});
+    }
+    steps.append({Body::kOverlayLayout, options.runConfig});
+    steps.append({Body::kMediaCatalogQuery, options.fileList});
+    for (int index = 0; index < steps.size(); ++index) {
+        panorama::wire::v1::Request request;
+        if (!readRequest(fd, &request, errorMessage, kPeerTimeoutMs, buffer)) {
+            return false;
+        }
+        if (request.body_case() != steps.at(index).first ||
+            !request.has_header() || request.header().version() != 1 ||
+            request.header().track_id() == 0) {
+            if (errorMessage) {
+                *errorMessage =
+                    QStringLiteral("unexpected Turris bootstrap request %1 (body %2)")
+                        .arg(index)
+                        .arg(static_cast<int>(request.body_case()));
+            }
+            return false;
+        }
+        const Answer answer = steps.at(index).second;
+        if (answer == Answer::Silent) {
+            continue;
+        }
+        if (answer == Answer::Reject) {
+            if (!writeResponse(fd, turrisRejection(request), errorMessage)) {
+                return false;
+            }
+            continue;
+        }
+        auto response = baseResponse(request);
+        switch (request.body_case()) {
+        case Body::kDeviceInformationQuery: {
+            auto *info = response.mutable_device_information();
+            info->set_product_name("TURRIS 620");
+            info->set_firmware_version("turris-firmware");
+            info->set_app_version("turris-app");
+            info->set_serial_number("turris-serial");
+            break;
+        }
+        case Body::kSystemConfigurationQuery: {
+            auto *config = response.mutable_system_configuration();
+            config->set_reported_product("TURRIS 620");
+            config->mutable_board_summary()->mutable_display_panel()->set_kind(
+                panorama::wire::v1::DeviceDisplayPanelSummary::DISPLAY_PANEL_LCD);
+            config->mutable_video_output()->set_width(1280);
+            config->mutable_video_output()->set_height(720);
+            config->mutable_runtime_behavior()->set_usb_auto_keepalive(
+                options.usbAutoKeepalive);
+            break;
+        }
+        case Body::kOverlayLayout:
+            if (request.overlay_layout().label_groups_size() != 0) {
+                if (errorMessage) {
+                    *errorMessage = QStringLiteral(
+                        "Turris bootstrap run_config carried label groups");
+                }
+                return false;
+            }
+            // Layout updates are one-way setters: an accepting device sends
+            // no acknowledgement at all.
+            continue;
+        case Body::kMediaCatalogQuery: {
+            auto *catalog = response.mutable_media_catalog();
+            for (const QString &name : options.catalogFiles) {
+                auto *entry = catalog->add_media_file_list();
+                entry->set_file_path(name.toStdString());
+                entry->set_file_size(4096);
+                entry->set_read_only(false);
+            }
+            break;
+        }
+        default:
+            return false;
+        }
+        if (!writeResponse(fd, response, errorMessage)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void PrinterProtocolTests::turrisSessionNegotiatesCommandsFailSafe() {
     const auto profile = printerProductProfileForId(0x2011);
     QVERIFY(profile.has_value());
     int sockets[2] = {-1, -1};
@@ -39870,30 +40132,152 @@ void PrinterProtocolTests::turrisSessionUsesTransferOnlyTransport() {
     QVERIFY2(createSocketPair(sockets, &socketError),
              qPrintable(socketError));
 
+    TurrisBootstrapPeerOptions options;
+    options.usbAutoKeepalive = false;
+    options.runConfig = TurrisBootstrapPeerOptions::Answer::Reject;
+    options.catalogFiles = {QStringLiteral("stored.mp4.h264_1280x720")};
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        serveTurrisBootstrap(sockets[1], options, &peerError, &buffer);
+    });
+
     PrinterProtocol protocol(*profile, 500);
     protocol.adoptFileDescriptorForTesting(
         sockets[0], QStringLiteral("turris-endpoint"));
     const PrinterProtocol::Result result = protocol.startDisplaySession(
         QStringLiteral("turris-endpoint"), {});
-    QString peerError;
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.deviceInfo.devicePath, QStringLiteral("turris-endpoint"));
+    QCOMPARE(result.deviceInfo.firmwareVersion,
+             QStringLiteral("turris-firmware"));
+    QCOMPARE(result.deviceInfo.appVersion, QStringLiteral("turris-app"));
+    QVERIFY(result.deviceSpecifications.valid);
+    QVERIFY(result.deviceSpecifications.usbAutoKeepaliveKnown);
+    QVERIFY(!result.deviceSpecifications.usbAutoKeepalive);
+    QCOMPARE(result.deviceSpecifications.videoOutputWidth, 1280U);
+    QCOMPARE(result.deviceSpecifications.videoOutputHeight, 720U);
+    QVERIFY(result.negotiatedCapabilities.deviceInformation);
+    QVERIFY(result.negotiatedCapabilities.mediaCatalog);
+    QVERIFY(result.negotiatedCapabilities.displayConfiguration);
+    QVERIFY(!result.negotiatedCapabilities.overlayMetrics);
+    QVERIFY(!protocol.negotiatedCapabilities().overlayMetrics);
+
+    // A withdrawn capability is refused locally without USB traffic.
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.left.metrics = {QStringLiteral("CPU Usage")};
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    QVERIFY(!protocol.configurePaseOverlay(
+        QStringLiteral("turris-endpoint"), overlay, &error, {}, &mutation));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY2(error.contains(QStringLiteral("391a:2011")), qPrintable(error));
     QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
              qPrintable(peerError));
     ::close(sockets[1]);
-
-    QVERIFY2(result.success, qPrintable(result.error));
-    QCOMPARE(result.deviceInfo.devicePath,
-             QStringLiteral("turris-endpoint"));
-    QCOMPARE(result.deviceInfo.productName,
-             QStringLiteral("391a:2011"));
 }
 
-void PrinterProtocolTests::turrisWorkerSessionSendsNoPaseTraffic() {
+void PrinterProtocolTests::
+    turrisSessionRejectedDeviceInfoFallsBackToTransferOnly() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    options.deviceInfo = TurrisBootstrapPeerOptions::Answer::Reject;
+    options.fileList = TurrisBootstrapPeerOptions::Answer::Reject;
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        serveTurrisBootstrap(sockets[1], options, &peerError, &buffer);
+    });
+
+    PrinterProtocol protocol(*profile, 500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    const PrinterProtocol::Result result = protocol.startDisplaySession(
+        QStringLiteral("turris-endpoint"), {});
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.deviceInfo.productName, QStringLiteral("391a:2011"));
+    QVERIFY(result.deviceInfo.firmwareVersion.isEmpty());
+    QVERIFY(!result.deviceSpecifications.valid);
+    QVERIFY(!result.deviceSpecifications.usbAutoKeepaliveKnown);
+    QVERIFY(!result.negotiatedCapabilities.deviceInformation);
+    QVERIFY(!result.negotiatedCapabilities.mediaCatalog);
+    QVERIFY(result.negotiatedCapabilities.displayConfiguration);
+    QVERIFY(result.negotiatedCapabilities.overlayMetrics);
+
+    // Declined commands are answered locally for the rest of the session.
+    const PrinterProtocol::Result info =
+        protocol.readDeviceInfo(QStringLiteral("turris-endpoint"), {});
+    QVERIFY2(info.success, qPrintable(info.error));
+    QCOMPARE(info.deviceInfo.productName, QStringLiteral("391a:2011"));
+    const PrinterProtocol::MediaListResult list =
+        protocol.readMediaList(QStringLiteral("turris-endpoint"), {});
+    QVERIFY(!list.success);
+    QVERIFY2(list.error.contains(QStringLiteral("391a:2011")),
+             qPrintable(list.error));
+    QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+             qPrintable(peerError));
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::
+    turrisSessionSilentDeviceInfoFallsBackToTransferOnly() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    options.deviceInfo = TurrisBootstrapPeerOptions::Answer::Silent;
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        serveTurrisBootstrap(sockets[1], options, &peerError, &buffer);
+    });
+
+    // A clean 500 ms timeout on the first probe keeps the transport open
+    // and only marks device information as unavailable.
+    PrinterProtocol protocol(*profile, 500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    const PrinterProtocol::Result result = protocol.startDisplaySession(
+        QStringLiteral("turris-endpoint"), {});
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(result.success, qPrintable(result.error));
+    QVERIFY(!result.negotiatedCapabilities.deviceInformation);
+    QVERIFY(result.negotiatedCapabilities.mediaCatalog);
+    QVERIFY(result.negotiatedCapabilities.overlayMetrics);
+    QVERIFY(!result.deviceSpecifications.usbAutoKeepaliveKnown);
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::turrisWorkerSessionActivatesWithoutKeepalive() {
     const QString endpoint = QStringLiteral("turris-endpoint");
     constexpr quint64 generation = 2011;
     int sockets[2] = {-1, -1};
     QString socketError;
     QVERIFY2(createSocketPair(sockets, &socketError),
              qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    options.usbAutoKeepalive = true;
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        serveTurrisBootstrap(sockets[1], options, &peerError, &buffer);
+    });
 
     DeviceWorker worker;
     worker.updatePrinterGenerationGate(generation, true);
@@ -39902,27 +40286,220 @@ void PrinterProtocolTests::turrisWorkerSessionSendsNoPaseTraffic() {
     worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
     QSignalSpy startedSpy(&worker, &DeviceWorker::printerSessionStarted);
     QSignalSpy readySpy(&worker, &DeviceWorker::printerTransportReady);
-    QSignalSpy infoSpy(&worker, &DeviceWorker::printerDeviceInfoReady);
+    QSignalSpy versionsSpy(&worker, &DeviceWorker::printerDeviceVersionsReady);
     QSignalSpy specificationsSpy(
         &worker, &DeviceWorker::printerDeviceSpecificationsReady);
+    QSignalSpy capabilitySpy(
+        &worker, &DeviceWorker::printerCapabilityUnavailable);
+    QSignalSpy lostSpy(&worker, &DeviceWorker::printerSessionLost);
 
     worker.startPrinterDisplaySession(endpoint, generation);
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
     QVERIFY(worker.printerSessionActiveForTesting());
     QCOMPARE(startedSpy.count(), 1);
     QCOMPARE(readySpy.count(), 1);
-    QCOMPARE(specificationsSpy.count(), 0);
+    QCOMPARE(lostSpy.count(), 0);
+    QCOMPARE(capabilitySpy.count(), 0);
+    QCOMPARE(versionsSpy.count(), 1);
+    QCOMPARE(versionsSpy.first().at(0).toString(),
+             QStringLiteral("turris-firmware"));
+    QCOMPARE(specificationsSpy.count(), 1);
+    // The device keeps the link alive itself: no Ping timer, no Ping frames.
+    QVERIFY(!worker.printerSession_->printerKeepaliveActive());
     QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
-
-    worker.readPrinterDeviceInfo(endpoint, generation);
-    QCOMPARE(infoSpy.count(), 1);
     worker.printerSession_->restartPrinterKeepaliveAfterActivity();
     worker.sendPrinterKeepalive();
     QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
-
-    QString peerError;
+    QVERIFY(worker.printerSessionActiveForTesting());
     QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
              qPrintable(peerError));
     ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::
+    turrisWorkerRejectedPingDisablesNegotiatedKeepalive() {
+    const QString endpoint = QStringLiteral("turris-endpoint");
+    constexpr quint64 generation = 2012;
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    options.usbAutoKeepalive = false;
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        if (!serveTurrisBootstrap(sockets[1], options, &peerError, &buffer)) {
+            return;
+        }
+        panorama::wire::v1::Request ping;
+        if (!readRequest(sockets[1], &ping, &peerError, kPeerTimeoutMs,
+                         &buffer) ||
+            ping.body_case() != panorama::wire::v1::Request::kPing) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral(
+                    "negotiated keepalive did not send a Ping");
+            }
+            return;
+        }
+        writeResponse(sockets[1], turrisRejection(ping), &peerError);
+    });
+
+    DeviceWorker worker;
+    worker.updatePrinterGenerationGate(generation, true);
+    worker.configurePrinterDevice(
+        endpoint, QStringLiteral("turris-test"), 0x2011, generation);
+    worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
+    QSignalSpy readySpy(&worker, &DeviceWorker::printerTransportReady);
+    QSignalSpy lostSpy(&worker, &DeviceWorker::printerSessionLost);
+
+    worker.startPrinterDisplaySession(endpoint, generation);
+    // usb_auto_keepalive=false: the host pings until the device objects, and
+    // the session activates only after the first keepalive round trip.
+    QVERIFY(!worker.printerSessionActiveForTesting());
+    QCOMPARE(readySpy.count(), 0);
+    QVERIFY(worker.printerSession_->printerKeepaliveActive());
+    QVERIFY(worker.printerSession_->printerKeepaliveTimer_->isActive());
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &worker, "sendPrinterKeepalive", Qt::DirectConnection));
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(worker.printerSessionActiveForTesting());
+    QCOMPARE(lostSpy.count(), 0);
+    QVERIFY(!worker.printerSession_->printerKeepaliveActive());
+    QVERIFY(!worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QCOMPARE(worker.printerSession_->printerKeepaliveDisableReason_,
+             QStringLiteral("unsupported-response"));
+    QCOMPARE(readySpy.count(), 1);
+    QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+             qPrintable(peerError));
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::turrisWorkerOverlayRejectionKeepsSessionActive() {
+    const QString endpoint = QStringLiteral("turris-endpoint");
+    constexpr quint64 generation = 2013;
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    QString peerError;
+    int layoutGroups = -1;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        if (!serveTurrisBootstrap(sockets[1], options, &peerError, &buffer)) {
+            return;
+        }
+        panorama::wire::v1::Request layout;
+        if (!readRequest(sockets[1], &layout, &peerError, kPeerTimeoutMs,
+                         &buffer) ||
+            layout.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral(
+                    "restored overlay was not sent as run_config");
+            }
+            return;
+        }
+        layoutGroups = layout.overlay_layout().label_groups_size();
+        auto response = baseResponse(layout);
+        response.mutable_error()->set_code(
+            panorama::wire::v1::ProtocolError::FAILURE);
+        response.mutable_error()->set_why("label groups rejected");
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    DeviceWorker worker;
+    worker.updatePrinterGenerationGate(generation, true);
+    worker.configurePrinterDevice(
+        endpoint, QStringLiteral("turris-test"), 0x2011, generation);
+    worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
+    PrinterProtocol::PaseOverlayConfig restored;
+    restored.left.metrics = {QStringLiteral("CPU Usage")};
+    worker.restorePrinterOverlay(restored, generation);
+    QSignalSpy startedSpy(&worker, &DeviceWorker::printerSessionStarted);
+    QSignalSpy capabilitySpy(
+        &worker, &DeviceWorker::printerCapabilityUnavailable);
+    QSignalSpy lostSpy(&worker, &DeviceWorker::printerSessionLost);
+    QSignalSpy errorSpy(&worker, &DeviceWorker::printerOperationError);
+
+    worker.startPrinterDisplaySession(endpoint, generation);
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(layoutGroups > 0);
+    // The device refused label groups: overlay metrics are withdrawn, the
+    // transfer session stays usable.
+    QVERIFY(worker.printerSessionActiveForTesting());
+    QCOMPARE(startedSpy.count(), 1);
+    QCOMPARE(lostSpy.count(), 0);
+    QCOMPARE(errorSpy.count(), 1);
+    QCOMPARE(capabilitySpy.count(), 1);
+    QCOMPARE(capabilitySpy.first().at(0).toString(),
+             QStringLiteral("device.overlay-metrics.v1"));
+    QVERIFY(worker.printerSession_->printerOverlayConfig_.left.metrics.isEmpty());
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
+    worker.sendPrinterMetrics();
+    QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+             qPrintable(peerError));
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::supportSnapshotKeepsTurrisNegotiationEvents() {
+    tryx::clearSupportLifecycleEventsForTesting();
+    tryx::appendSupportLifecycleEvent(
+        QStringLiteral("keepalive_policy_selected"), 7,
+        {{QStringLiteral("keepalive_policy"), QStringLiteral("disabled")},
+         {QStringLiteral("keepalive_reason"),
+          QStringLiteral("device-auto-keepalive")},
+         {QStringLiteral("device_info_confirmed"), QStringLiteral("true")}});
+    tryx::appendSupportLifecycleEvent(
+        QStringLiteral("keepalive_disabled"), 7,
+        {{QStringLiteral("keepalive_reason"),
+          QStringLiteral("unsupported-response")}});
+    tryx::appendSupportLifecycleEvent(
+        QStringLiteral("overlay_capability_disabled"), 7,
+        {{QStringLiteral("outcome"), QStringLiteral("failed")},
+         {QStringLiteral("overlay_present"), QStringLiteral("true")}});
+    tryx::appendSupportLifecycleEvent(
+        QStringLiteral("unknown_turris_event"), 7,
+        {{QStringLiteral("keepalive_reason"), QStringLiteral("static-profile")}});
+
+    tryx::SupportSnapshotSourceV1 source;
+    source.generatedAtUtcMs = QDateTime::currentMSecsSinceEpoch();
+    source.runtimeVersion = QStringLiteral("2.5.0");
+    source.runtimeApiVersion = 8;
+    const QString json = tryx::buildSupportSnapshotV1(source);
+    tryx::clearSupportLifecycleEventsForTesting();
+    QString validationError;
+    QVERIFY2(tryx::supportSnapshotV1IsValid(json, &validationError),
+             qPrintable(validationError));
+    const QJsonArray events = QJsonDocument::fromJson(json.toUtf8())
+                                  .object()
+                                  .value(QStringLiteral("events"))
+                                  .toArray();
+    QStringList names;
+    for (const QJsonValue &value : events) {
+        names.append(value.toObject().value(QStringLiteral("event")).toString());
+    }
+    QCOMPARE(names,
+             QStringList({QStringLiteral("keepalive_policy_selected"),
+                          QStringLiteral("keepalive_disabled"),
+                          QStringLiteral("overlay_capability_disabled")}));
+    const QJsonObject policyFields =
+        events.at(0).toObject().value(QStringLiteral("fields")).toObject();
+    QCOMPARE(policyFields.value(QStringLiteral("keepalive_policy")).toString(),
+             QStringLiteral("disabled"));
+    QCOMPARE(policyFields.value(QStringLiteral("keepalive_reason")).toString(),
+             QStringLiteral("device-auto-keepalive"));
+    QVERIFY(policyFields.contains(QStringLiteral("device_info_confirmed")));
+    const QJsonObject disabledFields =
+        events.at(1).toObject().value(QStringLiteral("fields")).toObject();
+    QCOMPARE(disabledFields.value(QStringLiteral("keepalive_reason")).toString(),
+             QStringLiteral("unsupported-response"));
 }
 
 void PrinterProtocolTests::udbSessionBootstrapWaitsForLateDeviceInfo() {
@@ -43769,7 +44346,6 @@ void PrinterProtocolTests::protocolLayerOwnersAreNotCopyable() {
     QVERIFY(!std::is_copy_constructible<PrinterTransactionChannel>::value);
     QVERIFY(!std::is_copy_constructible<PaseConfigurationClient>::value);
     QVERIFY(!std::is_copy_constructible<PaseMediaClient>::value);
-    QVERIFY(!std::is_copy_constructible<TurrisMediaClient>::value);
 }
 
 void PrinterProtocolTests::usbTransportOwnsOnlyItsDataDescriptor_data() {
@@ -43851,9 +44427,10 @@ void PrinterProtocolTests::modelClientsBorrowOneBufferedChannel() {
     QVERIFY2(channel.readFrame(&payload, context, 100, &error), qPrintable(error));
     QCOMPARE(payload, first);
     {
-        PaseConfigurationClient configuration(channel, *pase, 100);
-        PaseMediaClient media(channel, *pase);
-        TurrisMediaClient transferOnly(channel, *turris);
+        PrinterProtocol::NegotiatedCapabilities negotiated;
+        PaseConfigurationClient configuration(channel, *pase, negotiated, 100);
+        PaseMediaClient media(channel, *pase, negotiated);
+        PaseMediaClient turrisMedia(channel, *turris, negotiated);
         channel.closeDisplayActivationCycle();
     }
     // Destroying clients must neither close the borrowed stream nor discard

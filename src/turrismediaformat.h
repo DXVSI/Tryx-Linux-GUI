@@ -11,7 +11,10 @@ class QFile;
 namespace tryx::turris_media {
 
 inline constexpr quint16 kProductId = 0x2011;
+// MediaHeaderPb.original_media_type: PNG=2, GIF=3, MP4=4. Still images are
+// always delivered as PNG-derived single frames, matching the official app.
 inline constexpr quint32 kImageKind = 2U;
+inline constexpr quint32 kGifKind = 3U;
 inline constexpr quint32 kVideoKind = 4U;
 inline constexpr quint32 kWidth = 1280U;
 inline constexpr quint32 kHeight = 720U;
