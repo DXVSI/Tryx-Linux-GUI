@@ -2630,6 +2630,10 @@ private slots:
     void turrisWorkerSessionActivatesWithoutKeepalive();
     void turrisWorkerRejectedPingDisablesNegotiatedKeepalive();
     void turrisWorkerOverlayRejectionKeepsSessionActive();
+    void turrisWorkerUnknownKeepalivePingsUntilRejected();
+    void turrisWorkerSilentPingKeepsKeepalive();
+    void turrisApplyToleratesUnacknowledgedUserConfig();
+    void turrisDisplayOnlyApplyRequiresStoredMedia();
     void supportSnapshotKeepsTurrisNegotiationEvents();
     void udbSessionBootstrapWaitsForLateDeviceInfo();
     void udbSessionBootstrapResynchronizesAfterStaleTail();
@@ -40018,6 +40022,10 @@ struct TurrisBootstrapPeerOptions {
     Answer deviceInfo = Answer::Accept;
     Answer systemConfiguration = Answer::Accept;
     bool usbAutoKeepalive = true;
+    // false: the 102 answer carries no runtime_behavior at all.
+    bool reportKeepalive = true;
+    QString powerOnDefault;
+    QString standbyDefault;
     Answer runConfig = Answer::Accept;
     Answer fileList = Answer::Accept;
     QStringList catalogFiles;
@@ -40089,8 +40097,16 @@ static bool serveTurrisBootstrap(int fd,
                 panorama::wire::v1::DeviceDisplayPanelSummary::DISPLAY_PANEL_LCD);
             config->mutable_video_output()->set_width(1280);
             config->mutable_video_output()->set_height(720);
-            config->mutable_runtime_behavior()->set_usb_auto_keepalive(
-                options.usbAutoKeepalive);
+            if (options.reportKeepalive) {
+                config->mutable_runtime_behavior()->set_usb_auto_keepalive(
+                    options.usbAutoKeepalive);
+            }
+            if (!options.powerOnDefault.isEmpty()) {
+                config->set_poweron_media_file(options.powerOnDefault.toStdString());
+            }
+            if (!options.standbyDefault.isEmpty()) {
+                config->set_standby_media_file(options.standbyDefault.toStdString());
+            }
             break;
         }
         case Body::kOverlayLayout:
@@ -40448,6 +40464,257 @@ void PrinterProtocolTests::turrisWorkerOverlayRejectionKeepsSessionActive() {
     ::close(sockets[1]);
 }
 
+void PrinterProtocolTests::turrisWorkerUnknownKeepalivePingsUntilRejected() {
+    const QString endpoint = QStringLiteral("turris-endpoint");
+    constexpr quint64 generation = 2014;
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    // 102 accepted without runtime_behavior: the vendor schema treats the
+    // missing flag as "host keeps the link alive", so the runtime pings.
+    TurrisBootstrapPeerOptions options;
+    options.reportKeepalive = false;
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        if (!serveTurrisBootstrap(sockets[1], options, &peerError, &buffer)) {
+            return;
+        }
+        panorama::wire::v1::Request ping;
+        if (!readRequest(sockets[1], &ping, &peerError, kPeerTimeoutMs,
+                         &buffer) ||
+            ping.body_case() != panorama::wire::v1::Request::kPing) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral(
+                    "unknown keepalive policy did not send a Ping");
+            }
+            return;
+        }
+        writeResponse(sockets[1], turrisRejection(ping), &peerError);
+    });
+
+    DeviceWorker worker;
+    worker.updatePrinterGenerationGate(generation, true);
+    worker.configurePrinterDevice(
+        endpoint, QStringLiteral("turris-test"), 0x2011, generation);
+    worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
+    QSignalSpy lostSpy(&worker, &DeviceWorker::printerSessionLost);
+
+    worker.startPrinterDisplaySession(endpoint, generation);
+    QVERIFY(!worker.printerSessionActiveForTesting());
+    QVERIFY(worker.printerSession_->printerKeepaliveActive());
+    QVERIFY(worker.printerSession_->printerKeepaliveTimer_->isActive());
+    QVERIFY(worker.printerSession_->printerKeepaliveDisableReason_.isEmpty());
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &worker, "sendPrinterKeepalive", Qt::DirectConnection));
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(worker.printerSessionActiveForTesting());
+    QCOMPARE(lostSpy.count(), 0);
+    QVERIFY(!worker.printerSession_->printerKeepaliveActive());
+    QCOMPARE(worker.printerSession_->printerKeepaliveDisableReason_,
+             QStringLiteral("unsupported-response"));
+    QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+             qPrintable(peerError));
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::turrisWorkerSilentPingKeepsKeepalive() {
+    const QString endpoint = QStringLiteral("turris-endpoint");
+    constexpr quint64 generation = 2015;
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    options.reportKeepalive = false;
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        if (!serveTurrisBootstrap(sockets[1], options, &peerError, &buffer)) {
+            return;
+        }
+        panorama::wire::v1::Request ping;
+        if (!readRequest(sockets[1], &ping, &peerError, kPeerTimeoutMs,
+                         &buffer) ||
+            ping.body_case() != panorama::wire::v1::Request::kPing) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("no Ping before activation");
+            }
+        }
+        // A device that ignores Pings keeps the keepalive running.
+    });
+
+    DeviceWorker worker;
+    worker.updatePrinterGenerationGate(generation, true);
+    worker.configurePrinterDevice(
+        endpoint, QStringLiteral("turris-test"), 0x2011, generation);
+    worker.adoptPrinterFileDescriptorForTesting(sockets[0], endpoint);
+    QSignalSpy lostSpy(&worker, &DeviceWorker::printerSessionLost);
+    QSignalSpy startedSpy(&worker, &DeviceWorker::printerSessionStarted);
+
+    worker.startPrinterDisplaySession(endpoint, generation);
+    QVERIFY(QMetaObject::invokeMethod(
+        &worker, "sendPrinterKeepalive", Qt::DirectConnection));
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(worker.printerSessionActiveForTesting());
+    QCOMPARE(startedSpy.count(), 1);
+    QCOMPARE(lostSpy.count(), 0);
+    QVERIFY(worker.printerSession_->printerKeepaliveActive());
+    QVERIFY(worker.printerSession_->printerKeepaliveTimer_->isActive());
+    worker.printerSession_->printerKeepaliveTimer_->stop();
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::turrisApplyToleratesUnacknowledgedUserConfig() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    options.usbAutoKeepalive = true;
+    options.powerOnDefault = QStringLiteral("device_poweron.mp4.h264");
+    options.standbyDefault = QStringLiteral("device_standby.mp4.h264");
+    options.catalogFiles = {QStringLiteral("x.mp4.h264_1280x720")};
+    QString peerError;
+    panorama::wire::v1::UserConfiguration written;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        if (!serveTurrisBootstrap(sockets[1], options, &peerError, &buffer)) {
+            return;
+        }
+        // 104 preflight: the device has no stored user configuration.
+        panorama::wire::v1::Request query;
+        if (!readRequest(sockets[1], &query, &peerError, kPeerTimeoutMs, &buffer) ||
+            query.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral("apply did not start with a 104 query");
+            return;
+        }
+        auto empty = baseResponse(query);
+        empty.mutable_user_configuration();
+        if (!writeResponse(sockets[1], empty, &peerError)) {
+            return;
+        }
+        // 200: stored silently, never acknowledged.
+        panorama::wire::v1::Request write;
+        if (!readRequest(sockets[1], &write, &peerError, kPeerTimeoutMs, &buffer) ||
+            write.body_case() != panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral("apply did not write the user configuration");
+            return;
+        }
+        written = write.user_configuration();
+        // 201 trigger: one-way.
+        panorama::wire::v1::Request trigger;
+        if (!readRequest(sockets[1], &trigger, &peerError, kPeerTimeoutMs, &buffer) ||
+            trigger.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral("apply did not send the layout trigger");
+            return;
+        }
+        // 104 readback returns what was stored.
+        panorama::wire::v1::Request readback;
+        if (!readRequest(sockets[1], &readback, &peerError, kPeerTimeoutMs, &buffer) ||
+            readback.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral("apply did not read the configuration back");
+            return;
+        }
+        auto stored = baseResponse(readback);
+        *stored.mutable_user_configuration() = written;
+        writeResponse(sockets[1], stored, &peerError);
+    });
+
+    PrinterProtocol protocol(*profile, 500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    const PrinterProtocol::Result session = protocol.startDisplaySession(
+        QStringLiteral("turris-endpoint"), {});
+    QVERIFY2(session.success, qPrintable(session.error));
+
+    PrinterProtocol::PaseApplyConfig config;
+    config.mediaPresent = true;
+    config.screenMode = QStringLiteral("Full Screen");
+    config.playMode = QStringLiteral("Single");
+    config.media = {QStringLiteral("x.mp4.h264_1280x720")};
+    config.display.brightnessPresent = true;
+    config.display.brightness = 60;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    PrinterProtocol::PaseDisplayState applied;
+    const bool ok = protocol.applyPaseConfiguration(
+        QStringLiteral("turris-endpoint"), config, &error, {}, &mutation, &applied);
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(ok, qPrintable(error));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Succeeded);
+    QCOMPARE(applied.media, QStringList{QStringLiteral("x.mp4.h264_1280x720")});
+    QCOMPARE(applied.brightness, 60);
+    // The device's own defaults are written back, not the profile guesses.
+    QCOMPARE(QString::fromStdString(written.poweron_config().media_file()),
+             QStringLiteral("device_poweron.mp4.h264"));
+    QCOMPARE(QString::fromStdString(written.standby_config().media_file()),
+             QStringLiteral("device_standby.mp4.h264"));
+    QVERIFY(written.standby_config().enable());
+    QCOMPARE(QString::fromStdString(written.work_config().single_mode_media_file()),
+             QStringLiteral("x.mp4.h264_1280x720"));
+    QCOMPARE(written.display_config().backlight_brightness(), 60U);
+    QVERIFY(written.display_config().backlight_enable());
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::turrisDisplayOnlyApplyRequiresStoredMedia() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        if (!serveTurrisBootstrap(sockets[1], options, &peerError, &buffer)) {
+            return;
+        }
+        panorama::wire::v1::Request query;
+        if (!readRequest(sockets[1], &query, &peerError, kPeerTimeoutMs, &buffer) ||
+            query.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral("brightness apply did not start with 104");
+            return;
+        }
+        auto empty = baseResponse(query);
+        empty.mutable_user_configuration();
+        writeResponse(sockets[1], empty, &peerError);
+    });
+
+    PrinterProtocol protocol(*profile, 500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    const PrinterProtocol::Result session = protocol.startDisplaySession(
+        QStringLiteral("turris-endpoint"), {});
+    QVERIFY2(session.success, qPrintable(session.error));
+
+    QString error;
+    QVERIFY(!protocol.setBrightness(QStringLiteral("turris-endpoint"), 40, &error, {}));
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(error.contains(QStringLiteral("no active media")), qPrintable(error));
+    // No user configuration with an empty media name reaches the device.
+    QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+             qPrintable(peerError));
+    ::close(sockets[1]);
+}
+
 void PrinterProtocolTests::supportSnapshotKeepsTurrisNegotiationEvents() {
     tryx::clearSupportLifecycleEventsForTesting();
     tryx::appendSupportLifecycleEvent(
@@ -40460,6 +40727,11 @@ void PrinterProtocolTests::supportSnapshotKeepsTurrisNegotiationEvents() {
         QStringLiteral("keepalive_disabled"), 7,
         {{QStringLiteral("keepalive_reason"),
           QStringLiteral("unsupported-response")}});
+    tryx::appendSupportLifecycleEvent(
+        QStringLiteral("keepalive_policy_selected"), 7,
+        {{QStringLiteral("keepalive_policy"), QStringLiteral("ping")},
+         {QStringLiteral("keepalive_reason"),
+          QStringLiteral("unknown-probe-ping")}});
     tryx::appendSupportLifecycleEvent(
         QStringLiteral("overlay_capability_disabled"), 7,
         {{QStringLiteral("outcome"), QStringLiteral("failed")},
@@ -40488,7 +40760,11 @@ void PrinterProtocolTests::supportSnapshotKeepsTurrisNegotiationEvents() {
     QCOMPARE(names,
              QStringList({QStringLiteral("keepalive_policy_selected"),
                           QStringLiteral("keepalive_disabled"),
+                          QStringLiteral("keepalive_policy_selected"),
                           QStringLiteral("overlay_capability_disabled")}));
+    QCOMPARE(events.at(2).toObject().value(QStringLiteral("fields")).toObject()
+                 .value(QStringLiteral("keepalive_reason")).toString(),
+             QStringLiteral("unknown-probe-ping"));
     const QJsonObject policyFields =
         events.at(0).toObject().value(QStringLiteral("fields")).toObject();
     QCOMPARE(policyFields.value(QStringLiteral("keepalive_policy")).toString(),

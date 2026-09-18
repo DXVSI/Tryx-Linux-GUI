@@ -118,6 +118,7 @@ const QHash<QString, QSet<QString>> &eventEnumValues() {
           QStringLiteral("device-auto-keepalive"),
           QStringLiteral("device-manual-keepalive"),
           QStringLiteral("unknown-default-off"),
+          QStringLiteral("unknown-probe-ping"),
           QStringLiteral("unsupported-response"),
           QStringLiteral("write-retries-exhausted")}},
         {QStringLiteral("session_state"), sessionStates()},

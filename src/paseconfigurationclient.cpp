@@ -608,19 +608,26 @@ makeTransferOnlyDeviceInfo(const QString &devicePath,
 // read-modify-write never sends a partial message; existing sections are
 // preserved untouched. No-op for the PASE family.
 void applyProfileUserConfigDefaults(panorama::wire::v1::UserConfiguration *config,
-                                    const PrinterProductProfile &profile) {
+                                    const PrinterProductProfile &profile,
+                                    const QString &devicePowerOnMedia = QString(),
+                                    const QString &deviceStandbyMedia = QString()) {
     if (!config || profile.family != PrinterProtocolFamily::Turris) {
         return;
     }
+    // The device's own defaults (from its system configuration) win over the
+    // profile guesses, which only cover firmware that reports nothing.
+    const QString powerOn = devicePowerOnMedia.isEmpty() ? profile.defaultPowerOnMedia
+                                                         : devicePowerOnMedia;
+    const QString standby = deviceStandbyMedia.isEmpty() ? profile.defaultStandbyMedia
+                                                         : deviceStandbyMedia;
     if (!config->has_poweron_config() ||
         config->poweron_config().media_file().empty()) {
-        config->mutable_poweron_config()->set_media_file(
-            profile.defaultPowerOnMedia.toStdString());
+        config->mutable_poweron_config()->set_media_file(powerOn.toStdString());
     }
     if (!config->has_standby_config()) {
-        auto *standby = config->mutable_standby_config();
-        standby->set_enable(true);
-        standby->set_media_file(profile.defaultStandbyMedia.toStdString());
+        auto *standby_config = config->mutable_standby_config();
+        standby_config->set_enable(true);
+        standby_config->set_media_file(standby.toStdString());
     }
     if (!config->has_work_config()) {
         auto *work = config->mutable_work_config();
@@ -1004,6 +1011,8 @@ PaseConfigurationClient::startDisplaySession(const QString &devicePath,
     // Every session starts with the full profile capability set; the
     // negotiation below only ever removes capabilities.
     negotiated_ = {};
+    deviceDefaultPowerOnMedia_.clear();
+    deviceDefaultStandbyMedia_.clear();
 
     if (negotiatesCapabilities()) {
         DeviceInfo deviceInfo;
@@ -1134,10 +1143,44 @@ bool PaseConfigurationClient::bootstrapTurrisSession(
         panorama::wire::v1::Response response;
         switch (probe(&request, panorama::wire::v1::Response::kSystemConfiguration,
                       &response, "get_sys_config")) {
-        case Probe::Accepted:
-            *specifications = makeDeviceSpecifications(response.system_configuration());
-            applyRuntimeKeepalive(response.system_configuration(), specifications);
+        case Probe::Accepted: {
+            const panorama::wire::v1::SystemConfiguration &systemConfiguration =
+                response.system_configuration();
+            *specifications = makeDeviceSpecifications(systemConfiguration);
+            applyRuntimeKeepalive(systemConfiguration, specifications);
+            const QString powerOn = systemConfiguration.has_poweron_media_file()
+                ? QString::fromStdString(systemConfiguration.poweron_media_file()).trimmed()
+                : QString();
+            const QString standby = systemConfiguration.has_standby_media_file()
+                ? QString::fromStdString(systemConfiguration.standby_media_file()).trimmed()
+                : QString();
+            deviceDefaultPowerOnMedia_ = isSafeDeviceMediaName(powerOn) ? powerOn : QString();
+            deviceDefaultStandbyMedia_ = isSafeDeviceMediaName(standby) ? standby : QString();
+            // Presence only: the names are device defaults, but keep the log
+            // free of media names anyway.
+            qInfo().noquote()
+                << QStringLiteral(
+                       "tryx_turris_sys_config runtime_behavior=%1 usb_auto_keepalive=%2 "
+                       "poweron_media=%3 standby_media=%4 video_output=%5")
+                       .arg(systemConfiguration.has_runtime_behavior()
+                                ? QStringLiteral("present")
+                                : QStringLiteral("absent"),
+                            !specifications->usbAutoKeepaliveKnown
+                                ? QStringLiteral("absent")
+                                : specifications->usbAutoKeepalive
+                                    ? QStringLiteral("true")
+                                    : QStringLiteral("false"),
+                            deviceDefaultPowerOnMedia_.isEmpty()
+                                ? QStringLiteral("absent")
+                                : QStringLiteral("present"),
+                            deviceDefaultStandbyMedia_.isEmpty()
+                                ? QStringLiteral("absent")
+                                : QStringLiteral("present"),
+                            systemConfiguration.has_video_output()
+                                ? QStringLiteral("present")
+                                : QStringLiteral("absent"));
             break;
+        }
         case Probe::Declined:
             break;
         case Probe::Failed:
@@ -1279,7 +1322,8 @@ PaseConfigurationClient::readPaseDisplayState(const QString &devicePath,
     }
 
     panorama::wire::v1::UserConfiguration config = response.user_configuration();
-    applyProfileUserConfigDefaults(&config, productProfile_);
+    applyProfileUserConfigDefaults(&config, productProfile_, deviceDefaultPowerOnMedia_,
+                                   deviceDefaultStandbyMedia_);
     if (!config.has_display_config() || !config.has_work_config()) {
         result.error = QObject::tr(
             "TRYX user configuration is missing display or work configuration");
@@ -1456,7 +1500,22 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
     }
 
     panorama::wire::v1::UserConfiguration userConfig = getResponse.user_configuration();
-    applyProfileUserConfigDefaults(&userConfig, productProfile_);
+    applyProfileUserConfigDefaults(&userConfig, productProfile_,
+                                   deviceDefaultPowerOnMedia_, deviceDefaultStandbyMedia_);
+    if (negotiatesCapabilities() && !config.mediaPresent &&
+        userConfig.work_config().media_mode() ==
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE &&
+        userConfig.work_config().single_mode_media_file().empty()) {
+        // The device has no stored work media (empty user configuration). A
+        // display-only write would persist "no media"; the official app never
+        // writes an empty media name.
+        if (errorMessage) {
+            *errorMessage = QObject::tr(
+                "TRYX device has no active media yet; select a media file and apply it first");
+        }
+        markRejected();
+        return false;
+    }
     if (config.mediaPresent && !userConfig.has_work_config()) {
         if (errorMessage) {
             *errorMessage = QObject::tr(
@@ -1736,8 +1795,29 @@ bool PaseConfigurationClient::sendUserConfigWithOutcome(
     panorama::wire::v1::Response response;
     PrinterTransactionChannel::TransactionOutcome outcome =
         PrinterTransactionChannel::TransactionOutcome::NotSent;
+    // Turris stores the configuration without acknowledging it within the
+    // transaction window; keep the transport on a clean timeout and let the
+    // readback confirm the write.
+    const bool tolerateSilence = negotiatesCapabilities();
     if (channel_.execute(&request, panorama::wire::v1::Response::kAcknowledgement,
-                         &response, devicePath, context, errorMessage, &outcome)) {
+                         &response, devicePath, context, errorMessage, &outcome,
+                         TransactionProfile::Default,
+                         /*preserveConnectionOnCleanTimeout=*/tolerateSilence)) {
+        if (mutationDetails) {
+            mutationDetails->outcome = MutationOutcome::PartialOrUnknown;
+        }
+        return true;
+    }
+    if (tolerateSilence &&
+        outcome == PrinterTransactionChannel::TransactionOutcome::AcknowledgementTimeout) {
+        qInfo().noquote()
+            << QStringLiteral("tryx_turris_negotiation command=user_config outcome=unconfirmed")
+            << (errorMessage && !errorMessage->isEmpty()
+                    ? QStringLiteral("error=\"%1\"").arg(*errorMessage)
+                    : QString());
+        if (errorMessage) {
+            errorMessage->clear();
+        }
         if (mutationDetails) {
             mutationDetails->outcome = MutationOutcome::PartialOrUnknown;
         }

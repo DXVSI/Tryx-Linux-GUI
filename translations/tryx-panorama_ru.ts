@@ -8478,6 +8478,10 @@
         <source>TRYX user configuration is missing work configuration</source>
         <translation>В пользовательской конфигурации TRYX отсутствует рабочая конфигурация</translation>
     </message>
+    <message>
+        <source>TRYX device has no active media yet; select a media file and apply it first</source>
+        <translation>На устройстве TRYX ещё нет активного медиафайла; выберите медиафайл и примените его сначала</translation>
+    </message>
 </context>
 <context>
     <name>RuntimeClient</name>

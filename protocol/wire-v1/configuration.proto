@@ -109,6 +109,11 @@ message DeviceRuntimeBehaviorSummary {
 // protocol layer.
 message SystemConfiguration {
   optional string reported_product = 1;
+  // Device-side default media for power-on and standby (vendor SysConfigPb
+  // fields 2 and 3). Turris writes them back unchanged in its user
+  // configuration instead of guessing profile defaults.
+  optional string poweron_media_file = 2;
+  optional string standby_media_file = 3;
   DeviceBoardSummary board_summary = 9;
   DeviceVideoOutputSummary video_output = 12;
   DeviceRuntimeBehaviorSummary runtime_behavior = 14;

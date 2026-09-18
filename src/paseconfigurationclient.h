@@ -142,6 +142,10 @@ private:
     const PrinterProductProfile &productProfile_;
     PrinterProtocol::NegotiatedCapabilities &negotiated_;
     int deviceInfoReadyTimeoutMs_;
+    // Power-on and standby media reported by the device system configuration
+    // (Turris); empty when the device did not report them.
+    QString deviceDefaultPowerOnMedia_;
+    QString deviceDefaultStandbyMedia_;
 #ifdef TRYX_PROTOCOL_TESTING
     int bootstrapZeroByteWriteFailuresForTesting_ = 0;
     QList<qint64> bootstrapReadinessAttemptOffsetsForTesting_;

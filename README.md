@@ -254,8 +254,12 @@ window is shown. This switch never changes the background runtime service.
 - Turris commands are negotiated per USB generation. A rejected or unanswered
   device information, system configuration, layout, or file list command only
   withdraws that capability; uploads never depend on it.
-- Turris keepalive is sent only when the device reports that it does not keep
-  the USB link alive itself, and stops as soon as the device rejects a Ping.
+- Turris keepalive is sent unless the device reports that it keeps the USB
+  link alive itself, and stops as soon as the device rejects a Ping. A
+  user-configuration write that the device stores without acknowledging is
+  confirmed through the readback instead of failing the session, the
+  device's own power-on and standby media names are written back, and a
+  display-only change is refused while the device has no active media.
 - Uploaded Turris files are stored on the device and shown after Apply; the
   dashboard lists the reported firmware and application versions.
 - Still unavailable for Turris: split screen, waterfall orientation, custom
@@ -705,9 +709,13 @@ command that the device rejects or leaves unanswered within the clean timeout
 withdraws only its capability token for the rest of the physical USB
 generation: the GUI hides the matching controls, `GetDeviceCapabilitiesV1`
 drops the token, and uploads keep working. A transport failure still fails the
-session. Turris sends a Ping only when the system configuration reports that
-the device does not keep the USB link alive itself; an unknown answer means no
+session. Turris sends a Ping every two seconds unless the system configuration
+reports that the device keeps the USB link alive itself; a missing flag means
 Ping, and a rejected Ping disables the keepalive without ending the session.
+The user-configuration write (`200`) may stay unacknowledged within the
+transaction window: on a clean timeout the transport is kept and the
+configuration readback decides the outcome. The power-on and standby media
+names come from the device system configuration when it reports them.
 
 All printer operations are serialized by one worker-owned session, while cancellable ffmpeg conversion runs outside the USB worker. Passive udev discovery recognizes the `391a:0006 rk3xxx` Rockchip gadget identity but never opens it. Discovery is based on physical USB device events and stable bus/port identity, so the app does not mistake its own `usblp` detach or attach for a physical reconnect. Printer Class `GET_PORT_STATUS` is deliberately not used because PASE does not provide a reliable readiness signal through that request. A physical remove/add creates a new connection generation, interrupts old I/O through its cancellation gate, and discards stale results. On Panorama/PASE profiles, recovery confirms protocol readiness through an exact DeviceInfo response, completes the remaining bootstrap once, sends one post-bootstrap Ping, restores the confirmed overlay at most once, and only then starts metrics. It never retries a complete bootstrap in the same physical generation or automatically replays user configuration, upload, delete, or apply mutations. Turris skips the exact DeviceInfo readiness deadline and instead negotiates its commands after the transport opens, as described above.
 

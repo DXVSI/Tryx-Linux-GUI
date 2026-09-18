@@ -1,6 +1,7 @@
 #include "printertransactionchannel.h"
 #include "printerframecodec_p.h"
 #include "printeroperation_p.h"
+#include "turrismediaformat.h"
 
 #include <QDebug>
 #include <QRandomGenerator>
@@ -282,6 +283,17 @@ bool PrinterTransactionChannel::execute(
             return false;
         }
         if (parsed.header().track_id() != trackId) {
+            if (expectedProductId_ == tryx::turris_media::kProductId) {
+                // Turris answers are still being characterized on hardware:
+                // record what the device sent instead of the expected frame.
+                qInfo().noquote()
+                    << QStringLiteral(
+                           "tryx_turris_wire skipped_response body=%1 version=%2 "
+                           "track_match=false expected_body=%3")
+                           .arg(static_cast<int>(parsed.body_case()))
+                           .arg(parsed.header().version())
+                           .arg(static_cast<int>(expectedBody));
+            }
             ++skippedFrames;
             skippedResponseBytes += payload.size() + 8;
             continue;
@@ -996,6 +1008,22 @@ bool PrinterTransactionChannel::drainKeepaliveResponses(const OperationContext &
             // queued frame is stale by definition. Optional Ping,
             // RunConfig and metric replies must not tear down an otherwise
             // healthy display session.
+            if (expectedProductId_ == tryx::turris_media::kProductId) {
+                panorama::wire::v1::Response drained;
+                const bool parsedFrame = drained.ParseFromArray(
+                    payload.constData(), static_cast<int>(payload.size()));
+                qInfo().noquote()
+                    << QStringLiteral(
+                           "tryx_turris_wire drained_response parsed=%1 body=%2 "
+                           "version=%3 tracked=%4")
+                           .arg(parsedFrame ? QStringLiteral("true") : QStringLiteral("false"))
+                           .arg(parsedFrame ? static_cast<int>(drained.body_case()) : -1)
+                           .arg(parsedFrame && drained.has_header()
+                                    ? static_cast<int>(drained.header().version())
+                                    : -1)
+                           .arg(trackedResponseId != 0 ? QStringLiteral("true")
+                                                       : QStringLiteral("false"));
+            }
             ++drainedFrames;
             drainedResponseBytes += payload.size() + 8;
             if (waitForOptionalResponse) {

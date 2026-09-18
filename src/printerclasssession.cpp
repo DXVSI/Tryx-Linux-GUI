@@ -2274,8 +2274,8 @@ bool PrinterClassSession::printerKeepaliveActive() const {
     case PrinterSessionKeepalive::Negotiated:
         break;
     }
-    // Negotiated: off until the device asked for Pings, off again once it
-    // rejected one.
+    // Negotiated: on unless the device reported that it keeps the link alive
+    // itself, off again once it rejected a Ping.
     return printerKeepaliveState_ == PrinterKeepaliveState::Active;
 }
 
@@ -2293,8 +2293,11 @@ void PrinterClassSession::selectPrinterKeepalivePolicy(
         break;
     case PrinterSessionKeepalive::Negotiated:
         if (!result.deviceSpecifications.usbAutoKeepaliveKnown) {
-            // Unknown device policy: never inject unrequested Pings.
-            reason = QStringLiteral("unknown-default-off");
+            // Unknown device policy: the vendor schema treats a missing flag
+            // as "the host keeps the link alive", so ping until the device
+            // rejects a Ping.
+            active = true;
+            reason = QStringLiteral("unknown-probe-ping");
         } else if (result.deviceSpecifications.usbAutoKeepalive) {
             reason = QStringLiteral("device-auto-keepalive");
         } else {
