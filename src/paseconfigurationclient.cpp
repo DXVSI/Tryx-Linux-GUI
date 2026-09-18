@@ -643,6 +643,37 @@ void applyProfileUserConfigDefaults(panorama::wire::v1::UserConfiguration *confi
     }
 }
 
+// Structure of a Turris user configuration as the device reports or as the
+// host writes it: section presence, modes and display flags only, never media
+// names.
+void logTurrisUserConfiguration(const char *stage,
+                                const panorama::wire::v1::UserConfiguration &config) {
+    const auto flag = [](bool value) {
+        return value ? QStringLiteral("true") : QStringLiteral("false");
+    };
+    const auto presence = [](bool value) {
+        return value ? QStringLiteral("present") : QStringLiteral("absent");
+    };
+    qInfo().noquote()
+        << QStringLiteral(
+               "tryx_turris_user_config stage=%1 poweron=%2 standby=%3 standby_enable=%4 "
+               "work=%5 media_mode=%6 loop_mode=%7 work_media=%8 display=%9 "
+               "backlight_enable=%10 brightness=%11 mirror=%12")
+               .arg(QString::fromLatin1(stage),
+                    presence(config.has_poweron_config() &&
+                             !config.poweron_config().media_file().empty()),
+                    presence(config.has_standby_config()),
+                    flag(config.standby_config().enable()),
+                    presence(config.has_work_config()))
+               .arg(static_cast<int>(config.work_config().media_mode()))
+               .arg(static_cast<int>(config.work_config().loop_mode()))
+               .arg(presence(!config.work_config().single_mode_media_file().empty()),
+                    presence(config.has_display_config()),
+                    flag(config.display_config().backlight_enable()))
+               .arg(config.display_config().backlight_brightness())
+               .arg(flag(config.display_config().mirror()));
+}
+
 struct PaseMetricDefinition {
     const char *name;
     const char *title;
@@ -1322,6 +1353,9 @@ PaseConfigurationClient::readPaseDisplayState(const QString &devicePath,
     }
 
     panorama::wire::v1::UserConfiguration config = response.user_configuration();
+    if (negotiatesCapabilities()) {
+        logTurrisUserConfiguration("read", config);
+    }
     applyProfileUserConfigDefaults(&config, productProfile_, deviceDefaultPowerOnMedia_,
                                    deviceDefaultStandbyMedia_);
     if (!config.has_display_config() || !config.has_work_config()) {
@@ -1500,6 +1534,9 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
     }
 
     panorama::wire::v1::UserConfiguration userConfig = getResponse.user_configuration();
+    if (negotiatesCapabilities()) {
+        logTurrisUserConfiguration("preflight", userConfig);
+    }
     applyProfileUserConfigDefaults(&userConfig, productProfile_,
                                    deviceDefaultPowerOnMedia_, deviceDefaultStandbyMedia_);
     if (negotiatesCapabilities() && !config.mediaPresent &&
@@ -1569,6 +1606,13 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
     if (config.display.backlightPresent) {
         userConfig.mutable_display_config()->set_backlight_enable(
             config.display.backlightEnabled);
+    }
+    if (negotiatesCapabilities() && config.mediaPresent &&
+        !config.display.backlightPresent) {
+        // Showing media implies a lit display: the official app writes
+        // backlight_enable=true with every media selection, and a stored
+        // "off" would otherwise be echoed back from the preflight read.
+        userConfig.mutable_display_config()->set_backlight_enable(true);
     }
     if (config.display.orientationPresent) {
         auto *display = userConfig.mutable_display_config();
@@ -1789,6 +1833,9 @@ bool PaseConfigurationClient::sendUserConfigWithOutcome(
     MutationDetails *mutationDetails) {
     if (mutationDetails) {
         mutationDetails->stage = QStringLiteral("WritingConfig");
+    }
+    if (negotiatesCapabilities()) {
+        logTurrisUserConfiguration("write", userConfig);
     }
     panorama::wire::v1::Request request;
     *request.mutable_user_configuration() = userConfig;

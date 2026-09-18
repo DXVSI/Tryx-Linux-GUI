@@ -2634,6 +2634,7 @@ private slots:
     void turrisWorkerSilentPingKeepsKeepalive();
     void turrisApplyToleratesUnacknowledgedUserConfig();
     void turrisDisplayOnlyApplyRequiresStoredMedia();
+    void turrisMediaApplyTurnsBacklightOn();
     void supportSnapshotKeepsTurrisNegotiationEvents();
     void udbSessionBootstrapWaitsForLateDeviceInfo();
     void udbSessionBootstrapResynchronizesAfterStaleTail();
@@ -40712,6 +40713,109 @@ void PrinterProtocolTests::turrisDisplayOnlyApplyRequiresStoredMedia() {
     // No user configuration with an empty media name reaches the device.
     QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
              qPrintable(peerError));
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::turrisMediaApplyTurnsBacklightOn() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    TurrisBootstrapPeerOptions options;
+    options.catalogFiles = {QStringLiteral("x.mp4.h264_1280x720")};
+    QString peerError;
+    panorama::wire::v1::UserConfiguration written;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        if (!serveTurrisBootstrap(sockets[1], options, &peerError, &buffer)) {
+            return;
+        }
+        // The device stored a configuration whose backlight is off.
+        panorama::wire::v1::Request query;
+        if (!readRequest(sockets[1], &query, &peerError, kPeerTimeoutMs, &buffer) ||
+            query.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral("apply did not start with a 104 query");
+            return;
+        }
+        auto stored = baseResponse(query);
+        auto *config = stored.mutable_user_configuration();
+        config->mutable_poweron_config()->set_media_file("device_poweron.mp4.h264");
+        config->mutable_standby_config()->set_enable(true);
+        config->mutable_standby_config()->set_media_file("device_standby.mp4.h264");
+        config->mutable_work_config()->set_single_mode_media_file(
+            "old.mp4.h264_1280x720");
+        config->mutable_display_config()->set_backlight_enable(false);
+        config->mutable_display_config()->set_backlight_brightness(70);
+        if (!writeResponse(sockets[1], stored, &peerError)) {
+            return;
+        }
+        panorama::wire::v1::Request write;
+        if (!readRequest(sockets[1], &write, &peerError, kPeerTimeoutMs, &buffer) ||
+            write.body_case() != panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral("apply did not write the user configuration");
+            return;
+        }
+        written = write.user_configuration();
+        auto acknowledgement = baseResponse(write);
+        acknowledgement.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], acknowledgement, &peerError)) {
+            return;
+        }
+        panorama::wire::v1::Request trigger;
+        if (!readRequest(sockets[1], &trigger, &peerError, kPeerTimeoutMs, &buffer) ||
+            trigger.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral("apply did not send the layout trigger");
+            return;
+        }
+        panorama::wire::v1::Request readback;
+        if (!readRequest(sockets[1], &readback, &peerError, kPeerTimeoutMs, &buffer) ||
+            readback.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral("apply did not read the configuration back");
+            return;
+        }
+        auto readbackResponse = baseResponse(readback);
+        *readbackResponse.mutable_user_configuration() = written;
+        writeResponse(sockets[1], readbackResponse, &peerError);
+    });
+
+    PrinterProtocol protocol(*profile, 500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    const PrinterProtocol::Result session = protocol.startDisplaySession(
+        QStringLiteral("turris-endpoint"), {});
+    QVERIFY2(session.success, qPrintable(session.error));
+
+    PrinterProtocol::PaseApplyConfig config;
+    config.mediaPresent = true;
+    config.screenMode = QStringLiteral("Full Screen");
+    config.playMode = QStringLiteral("Loop");
+    config.media = {QStringLiteral("x.mp4.h264_1280x720")};
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    PrinterProtocol::PaseDisplayState applied;
+    const bool ok = protocol.applyPaseConfiguration(
+        QStringLiteral("turris-endpoint"), config, &error, {}, &mutation, &applied);
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(ok, qPrintable(error));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Succeeded);
+    // Media selection lights the display; brightness and the device's own
+    // power-on and standby entries are echoed back unchanged.
+    QVERIFY(written.display_config().backlight_enable());
+    QCOMPARE(written.display_config().backlight_brightness(), 70U);
+    QCOMPARE(QString::fromStdString(written.poweron_config().media_file()),
+             QStringLiteral("device_poweron.mp4.h264"));
+    QCOMPARE(QString::fromStdString(written.work_config().single_mode_media_file()),
+             QStringLiteral("x.mp4.h264_1280x720"));
+    QCOMPARE(written.work_config().loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QVERIFY(applied.backlightEnabled);
+    QCOMPARE(applied.playMode, QStringLiteral("Loop"));
     ::close(sockets[1]);
 }
 

@@ -258,8 +258,9 @@ window is shown. This switch never changes the background runtime service.
   link alive itself, and stops as soon as the device rejects a Ping. A
   user-configuration write that the device stores without acknowledging is
   confirmed through the readback instead of failing the session, the
-  device's own power-on and standby media names are written back, and a
-  display-only change is refused while the device has no active media.
+  device's own power-on and standby media names are written back, a
+  display-only change is refused while the device has no active media, and
+  applying media always turns the backlight on.
 - Uploaded Turris files are stored on the device and shown after Apply; the
   dashboard lists the reported firmware and application versions.
 - Still unavailable for Turris: split screen, waterfall orientation, custom
