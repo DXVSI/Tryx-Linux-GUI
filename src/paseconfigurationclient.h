@@ -119,8 +119,8 @@ public:
                               MutationDetails *mutationDetails = nullptr);
 
     // Turris (re)starts playback of the selected media on a bare
-    // FileTransmitEnd for "media" (402), as the community project measured
-    // on hardware. Best effort: the outcome is logged, never fatal.
+    // FileTransmitEnd for "media" (402); the firmware then loops the file by
+    // itself. Best effort: the outcome is logged, never fatal.
     void restartTurrisPlayback(const QString &devicePath,
                                const OperationContext &context);
 

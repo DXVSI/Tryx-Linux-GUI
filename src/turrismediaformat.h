@@ -15,12 +15,24 @@ inline constexpr quint16 kProductId = 0x2011;
 // always delivered as PNG-derived single frames, matching the official app.
 inline constexpr quint32 kImageKind = 2U;
 inline constexpr quint32 kGifKind = 3U;
-// A still image is uploaded as a ten-second clip at the fixed 30 fps: the
-// firmware shows a single frame only for a moment.
-inline constexpr quint64 kStillClipFrames = 300ULL;
+// The official converter overlays a still on its background with
+// shortest=1, so a still image is exactly one encoded frame.
+inline constexpr quint64 kStillImageFrames = 1ULL;
 inline constexpr quint32 kVideoKind = 4U;
 inline constexpr quint32 kWidth = 1280U;
 inline constexpr quint32 kHeight = 720U;
+
+// Frame rate the official application encodes and declares per media kind:
+// stills at 30 fps, video and animated GIF at 60 fps.
+quint32 framesPerSecondForKind(quint32 kind);
+
+// Target H.264 bitrate in kbit/s, reproducing the official converter: the
+// source bitrate scaled by the frame-rate ratio (clamped to 0.75..2.0) and
+// the frame-area ratio (clamped to 0.35..1.0) plus 15 percent, bounded to
+// 500..12000 kbit/s; 4000 kbit/s when the source bitrate is unknown.
+int videoBitrateKbps(qint64 sourceKbps, double sourceFps, int sourceWidth,
+                     int sourceHeight, int outputWidth, int outputHeight,
+                     int outputFps);
 
 struct WriteResult {
     QString sha256;

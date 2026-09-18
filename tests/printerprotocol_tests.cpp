@@ -1002,11 +1002,11 @@ private:
         if (profile.productId == 0x2011) {
             static const QStringList validBases{
                 QStringLiteral(
-                    "turris-mxhd-v1-image-still10s-1280x720-yuv420p-30fps-libx264-main40-medium-crf18"),
+                    "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali"),
                 QStringLiteral(
-                    "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"),
+                    "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"),
                 QStringLiteral(
-                    "turris-mxhd-v1-gif-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"),
+                    "turris-mxhd-v1-gif-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"),
             };
             for (const QString &base : validBases) {
                 if (conversionProfile == base) {
@@ -1952,15 +1952,18 @@ void appendTurrisBytesField(QByteArray *output, quint32 field,
 
 QByteArray turrisMediaMetadata(quint32 mediaKind,
                                quint64 frameCount) {
+    // Stills are declared at 30 fps, video and GIF at 60 fps.
+    const quint32 framesPerSecond = mediaKind == 2 ? 30 : 60;
     QByteArray metadata;
     appendTurrisVarintField(&metadata, 1, 0x4D584844U);
     appendTurrisBytesField(
         &metadata, 2,
-        QByteArrayLiteral(
-            "Tryx media header v1, fps=30, size=1280x720"));
+        QStringLiteral("Tryx media header v1, fps=%1, size=1280x720")
+            .arg(framesPerSecond)
+            .toLatin1());
     appendTurrisVarintField(&metadata, 3, mediaKind);
     appendTurrisVarintField(&metadata, 4, 1);
-    appendTurrisVarintField(&metadata, 5, 30);
+    appendTurrisVarintField(&metadata, 5, framesPerSecond);
     appendTurrisVarintField(&metadata, 6, 1280);
     appendTurrisVarintField(&metadata, 7, 720);
     appendTurrisVarintField(&metadata, 8, frameCount);
@@ -2257,6 +2260,7 @@ private slots:
     void turrisMediaFormatFrameCountParserIsStrict();
     void turrisMediaFormatWriterIsAtomicAndRewinds();
     void turrisGifMediaCarriesGifOriginalType();
+    void turrisMediaFollowsOfficialEncoderSettings();
     void turrisMediaFormatValidatorRejectsMalformedMetadata();
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
@@ -7206,7 +7210,7 @@ void PrinterProtocolTests::
     wrongProfileOrigin.remote.name =
         QStringLiteral("wrong-profile.mp4.h264_2240x1080");
     wrongProfileOrigin.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
     wrongProfileOrigin.operationId =
         QStringLiteral("11111111-1111-4111-8111-111111111111");
     const auto wrongProfilePersisted =
@@ -7250,7 +7254,7 @@ void PrinterProtocolTests::
     turrisOrigin.remote.name =
         QStringLiteral("turris-origin.mp4.h264_1280x720");
     turrisOrigin.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
     turrisOrigin.operationId =
         QStringLiteral("15151515-1515-4515-8515-151515151515");
     const auto turrisPersisted = catalog.persistOrigin(turrisOrigin);
@@ -11161,7 +11165,7 @@ void PrinterProtocolTests::turrisMediaAnalysisUses1280Profile() {
     QCOMPARE(
         analyzedSpy.first().at(4).toString(),
         QStringLiteral(
-            "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"));
+            "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"));
 }
 
 void PrinterProtocolTests::turrisMediaFormatFrameCountParserIsStrict() {
@@ -11178,10 +11182,10 @@ void PrinterProtocolTests::turrisMediaFormatFrameCountParserIsStrict() {
     const turris::FrameCountProbeResult image =
         turris::parseFrameCountProbe(
             QByteArrayLiteral(
-                "nb_read_frames=300\nheight=720\nwidth=1280\n"),
+                "nb_read_frames=1\nheight=720\nwidth=1280\n"),
             turris::kImageKind);
     QVERIFY(image.valid);
-    QCOMPARE(image.frameCount, quint64{300});
+    QCOMPARE(image.frameCount, quint64{1});
 
     const turris::FrameCountProbeResult maximumVideo =
         turris::parseFrameCountProbe(
@@ -11339,10 +11343,11 @@ void PrinterProtocolTests::
     QByteArray missingField = baseMetadata;
     missingField.chop(2);
     QByteArray wrongFps = baseMetadata;
+    // Video declares 60 fps (field 5 = 0x3c); 59 must be rejected.
     const qsizetype fpsField =
-        wrongFps.indexOf(QByteArray::fromHex("281e"));
+        wrongFps.indexOf(QByteArray::fromHex("283c"));
     QVERIFY(fpsField >= 0);
-    wrongFps[fpsField + 1] = static_cast<char>(29);
+    wrongFps[fpsField + 1] = static_cast<char>(59);
 
     struct MalformedCase {
         QByteArray blob;
@@ -11383,6 +11388,59 @@ void PrinterProtocolTests::
                      Qt::CaseInsensitive),
                  qPrintable(error));
     }
+}
+
+void PrinterProtocolTests::turrisMediaFollowsOfficialEncoderSettings() {
+    namespace turris = tryx::turris_media;
+    QCOMPARE(turris::framesPerSecondForKind(turris::kImageKind), quint32{30});
+    QCOMPARE(turris::framesPerSecondForKind(turris::kVideoKind), quint32{60});
+    QCOMPARE(turris::framesPerSecondForKind(turris::kGifKind), quint32{60});
+    QCOMPARE(turris::kStillImageFrames, quint64{1});
+
+    // Unknown source bitrate: the converter's default.
+    QCOMPARE(turris::videoBitrateKbps(0, 30.0, 1920, 1080, 1280, 720, 60), 4000);
+    // 1080p30 at 8 Mbit/s: frame-rate ratio 2.0, area ratio 0.444, +15 %.
+    QCOMPARE(turris::videoBitrateKbps(8000, 30.0, 1920, 1080, 1280, 720, 60), 8178);
+    // Upscaled sources keep the area ratio at 1.0.
+    QCOMPARE(turris::videoBitrateKbps(5000, 30.0, 640, 360, 1280, 720, 60), 11500);
+    // Tiny area ratios stop at 0.35, high frame rates at 0.75.
+    QCOMPARE(turris::videoBitrateKbps(20000, 60.0, 3840, 2160, 1280, 720, 60), 8050);
+    QCOMPARE(turris::videoBitrateKbps(4000, 120.0, 1280, 720, 1280, 720, 60), 3450);
+    // Bounded to 500..12000 kbit/s.
+    QCOMPARE(turris::videoBitrateKbps(200, 60.0, 1280, 720, 1280, 720, 60), 500);
+    QCOMPARE(turris::videoBitrateKbps(20000, 60.0, 1280, 720, 1280, 720, 60), 12000);
+
+    // The header declares the kind's frame rate, and the validator rejects
+    // a video that claims the still-image rate.
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const auto validates = [&temporaryDirectory](const QByteArray &blob,
+                                                 const QString &name) {
+        const QString path = QDir(temporaryDirectory.path()).filePath(name);
+        QFile out(path);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            out.write(blob) != blob.size()) {
+            return false;
+        }
+        out.close();
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            return false;
+        }
+        QString error;
+        return turris::validateBlob(&file, blob.size(), name, &error);
+    };
+    const QByteArray video60 = turrisMediaBlob(turris::kVideoKind, 2);
+    QVERIFY(validates(video60, QStringLiteral("clip.mp4.h264_1280x720")));
+    QByteArray video30Metadata = turrisMediaMetadata(turris::kImageKind, 2);
+    // Rewrite the kind field of a 30 fps header to video: fps no longer
+    // matches the kind.
+    const int kindOffset = video30Metadata.indexOf(QByteArray("\x18\x02", 2));
+    QVERIFY(kindOffset > 0);
+    video30Metadata[kindOffset + 1] = static_cast<char>(turris::kVideoKind);
+    QVERIFY(!validates(wrapTurrisMediaBlob(video30Metadata,
+                                           QByteArray::fromHex("00000001658884000affff")),
+                       QStringLiteral("claims.mp4.h264_1280x720")));
 }
 
 void PrinterProtocolTests::turrisGifMediaCarriesGifOriginalType() {
@@ -11492,15 +11550,14 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
     QVERIFY(output.open(QIODevice::ReadOnly));
     const QByteArray blob = output.readAll();
     QVERIFY(blob.size() > 4);
-    // Metadata length: the 300-frame count costs one varint byte more.
-    QCOMPARE(static_cast<quint8>(blob.at(0)), quint8{66});
+    QCOMPARE(static_cast<quint8>(blob.at(0)), quint8{65});
     QCOMPARE(static_cast<quint8>(blob.at(1)), quint8{0});
     QCOMPARE(static_cast<quint8>(blob.at(2)), quint8{0});
     QCOMPARE(static_cast<quint8>(blob.at(3)), quint8{0});
     QByteArray metadata;
     QByteArray h264;
     QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
-    QCOMPARE(metadata, turrisMediaMetadata(2, 300));
+    QCOMPARE(metadata, turrisMediaMetadata(2, 1));
     QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
             h264.startsWith(QByteArray::fromHex("000001")));
     const QString rawPath =
@@ -11526,14 +11583,14 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
             .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     for (const QString &expected : {
              QStringLiteral("profile=Main"),
-             QStringLiteral("level=40"),
+             QStringLiteral("level=41"),
              QStringLiteral("width=1280"),
              QStringLiteral("height=720"),
              QStringLiteral("color_range=pc"),
              QStringLiteral("color_space=bt709"),
              QStringLiteral("color_transfer=bt709"),
              QStringLiteral("color_primaries=bt709"),
-             QStringLiteral("nb_read_frames=300")}) {
+             QStringLiteral("nb_read_frames=1")}) {
         QVERIFY2(properties.contains(expected), qPrintable(expected));
     }
     QCOMPARE(
@@ -29009,7 +29066,7 @@ void PrinterProtocolTests::
         legacy.insert(
             QStringLiteral("conversionProfile"),
             QStringLiteral(
-                "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"));
+                "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"));
     }
     const QString shadowManifestPath = QDir(retryDirectory).filePath(
         QStringLiteral("retry-manifest.json"));
@@ -31233,7 +31290,7 @@ void PrinterProtocolTests::
         manifest.insert(
             QStringLiteral("conversionProfile"),
             QStringLiteral(
-                "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"));
+                "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"));
     }
 
     const QByteArray manifestBytes =
@@ -33674,7 +33731,7 @@ void PrinterProtocolTests::
         manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
     record.sourceContentSha256 = record.preparedSha256;
     record.sourceSize = preparedBytes.size();
     manager->operationCoordinator_.operations_.insert(operationId, record);
@@ -36660,7 +36717,7 @@ void PrinterProtocolTests::turrisAcknowledgedUploadVerifiesCatalog() {
         manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
     record.sourceContentSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
                                  QCryptographicHash::Sha256)
@@ -36759,7 +36816,7 @@ void PrinterProtocolTests::
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
     record.sourceContentSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
                                  QCryptographicHash::Sha256)

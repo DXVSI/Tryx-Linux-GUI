@@ -43,7 +43,7 @@ the maintainer; roadmap entries do not imply current compatibility.
 | [PANORAMA SE ARGB 240](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-se/black-360) | AIO liquid cooler | 6.67-inch curved AMOLED, 2240 × 1080 | Hardware needed; protocol unverified |
 | [PANORAMA WB](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-wb/black) | Custom-loop CPU water block | 6.5-inch curved AMOLED | Planned; hardware and protocol research required |
 | [STAGE ARGB 360](https://www.tryx.com/en/products/liquid-cooling/stage/stage/white) | AIO liquid cooler | Dual 4.0-inch IPS, 720 × 720 each | Planned; hardware and protocol research required |
-| [TURRIS 620](https://www.tryx.com/en/products/liquid-cooling/turris/turris-620/black) | Dual-tower air cooler | 5.0-inch IPS, 1280 × 720 | Community-tested upstream; not maintainer-tested |
+| [TURRIS 620](https://www.tryx.com/en/products/liquid-cooling/turris/turris-620/black) | Dual-tower air cooler | 5.0-inch IPS, 1280 × 720 | Community-tested; not maintainer-tested |
 | [HOLO ARGB 360](https://www.tryx.com/en/products/liquid-cooling/holo/holo/white-360) | AIO liquid cooler | Holographic display, 640 × 480 | Planned; hardware and protocol research required |
 | [PANORAMA V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
 | [PANORAMA SE V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
@@ -64,9 +64,7 @@ that every TRYX display has the same geometry or capabilities:
 | `391a:1011` | Panorama | 2240 × 1080 | PASE media, display, and overlay features; firmware flashing disabled; community-tested |
 | `391a:2011` | Turris 620 | 1280 × 720 | MXHD media upload, FileList catalog with read-only device presets, single-media Apply with Single/Loop/Shuffle, brightness, backlight and mirror, overlay metrics with hardware badges; no split screen, waterfall, custom badge text, media pull (Save as new/Replace), saved layouts, or firmware; community-tested |
 
-Turris support follows the command set of the official desktop application and
-the independently reported hardware results from
-[MrEssentials/tryx-linux-display-manager](https://github.com/MrEssentials/tryx-linux-display-manager).
+Turris support follows the command set of the official desktop application.
 It has not been reproduced on maintainer-owned hardware, so every Turris
 command beyond the file transfer is negotiated fail-safe: a command that the
 device rejects or leaves unanswered is withdrawn for the rest of the physical
@@ -261,10 +259,11 @@ window is shown. This switch never changes the background runtime service.
   device's own power-on and standby media names are written back, a
   display-only change is refused while the device has no active media, and
   applying media always turns the backlight on and restarts playback with
-  the bare FileTransmitEnd the device expects. Turris video uses the H.264
-  options proven on hardware by the community project (no weighted
-  prediction, closed 60-frame GOP), and a still image becomes a ten-second
-  clip because the firmware shows a single frame only for a moment.
+  the bare FileTransmitEnd the device expects. Turris media is encoded like
+  the official application: video and GIF at 60 fps with a one-second GOP,
+  no B-frames and a bitrate derived from the source (500 to 12000 kbit/s), a
+  still image as a single frame at CRF 18, all with the same x264 parameter
+  set and a media header that declares the matching frame rate.
 - Uploaded Turris files are stored on the device and shown after Apply; the
   dashboard lists the reported firmware and application versions.
 - Still unavailable for Turris: split screen, waterfall orientation, custom

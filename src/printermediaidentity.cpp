@@ -19,15 +19,14 @@ namespace {
 
 QString turrisConversionProfileBase(const QString &typeName) {
     if (typeName == QStringLiteral("image")) {
-        // A still is a ten-second clip: the Turris firmware shows a single
-        // frame only for a moment.
+        // One frame at 30 fps with CRF 18, as the official converter.
         return QStringLiteral(
-            "turris-mxhd-v1-image-still10s-1280x720-yuv420p-30fps-libx264-main40-medium-crf18");
+            "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
     }
-    // x264v2: the encoder options proven on hardware by the community
-    // project (no weighted prediction, closed 60-frame GOP, three refs).
+    // Video and GIF at 60 fps with the official converter's source-derived
+    // bitrate, one-second GOP and no B-frames.
     return QStringLiteral(
-        "turris-mxhd-v1-%1-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2")
+        "turris-mxhd-v1-%1-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali")
         .arg(typeName);
 }
 
@@ -269,6 +268,21 @@ bool isCanonicalPrinterConversionProfile(
         if (profileMatchesBaseOrTransform(
                 conversionProfile,
                 turrisConversionProfileBase(typeName))) {
+            return true;
+        }
+    }
+    // Earlier Turris encoder generations stay canonical so that durable
+    // retry and catalog records written by them still load; they never match
+    // the current profile, so their files are not reused for new uploads.
+    for (const QString &legacyBase : {
+             QStringLiteral("turris-mxhd-v1-image-single-frame-1280x720-yuv420p-30fps-libx264-main40-medium-crf18"),
+             QStringLiteral("turris-mxhd-v1-image-still10s-1280x720-yuv420p-30fps-libx264-main40-medium-crf18"),
+             QStringLiteral("turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"),
+             QStringLiteral("turris-mxhd-v1-gif-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"),
+             QStringLiteral("turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"),
+             QStringLiteral("turris-mxhd-v1-gif-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"),
+         }) {
+        if (profileMatchesBaseOrTransform(conversionProfile, legacyBase)) {
             return true;
         }
     }

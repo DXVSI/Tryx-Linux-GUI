@@ -12,6 +12,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImageReader>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMutexLocker>
 #include <QProcess>
 #include <QStandardPaths>
@@ -30,6 +33,74 @@ constexpr int kThumbnailPreparationDeadlineMs = 2 * 60 * 1000;
 const qint64 kMediaPreparationOutputCapBytes =
     tryx::printer_media_file_integrity::kMaximumPreparedMediaBytes +
     1024LL * 1024LL;
+
+struct SourceVideoInfo {
+    qint64 kbps = 0;
+    double framesPerSecond = 0.0;
+    int width = 0;
+    int height = 0;
+};
+
+double parseFrameRate(const QString &value) {
+    const QStringList parts = value.split(QLatin1Char('/'));
+    bool numeratorOk = false;
+    const double numerator = parts.value(0).toDouble(&numeratorOk);
+    if (!numeratorOk || numerator <= 0.0) {
+        return 0.0;
+    }
+    if (parts.size() < 2) {
+        return numerator;
+    }
+    bool denominatorOk = false;
+    const double denominator = parts.at(1).toDouble(&denominatorOk);
+    return denominatorOk && denominator > 0.0 ? numerator / denominator : 0.0;
+}
+
+// Reads the source parameters the official converter derives its video
+// bitrate from. Runs on the preparation thread; a missing or slow ffprobe
+// only falls back to the converter's default bitrate.
+SourceVideoInfo probeSourceVideo(const QString &ffprobe, const QString &path) {
+    SourceVideoInfo info;
+    if (ffprobe.isEmpty()) {
+        return info;
+    }
+    QProcess process;
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+    process.start(ffprobe,
+                  {QStringLiteral("-v"), QStringLiteral("error"),
+                   QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+                   QStringLiteral("-show_entries"),
+                   QStringLiteral("stream=width,height,avg_frame_rate,r_frame_rate,"
+                                  "bit_rate:format=bit_rate"),
+                   QStringLiteral("-of"), QStringLiteral("json"), path});
+    if (!process.waitForFinished(15000) ||
+        process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        process.kill();
+        process.waitForFinished(1000);
+        return info;
+    }
+    const QJsonObject root =
+        QJsonDocument::fromJson(process.readAllStandardOutput()).object();
+    const QJsonObject stream =
+        root.value(QStringLiteral("streams")).toArray().at(0).toObject();
+    const auto bitRate = [](const QJsonObject &object) {
+        return object.value(QStringLiteral("bit_rate")).toString().toLongLong();
+    };
+    qint64 bitsPerSecond = bitRate(stream);
+    if (bitsPerSecond <= 0) {
+        bitsPerSecond = bitRate(root.value(QStringLiteral("format")).toObject());
+    }
+    info.kbps = bitsPerSecond > 0 ? bitsPerSecond / 1000 : 0;
+    info.framesPerSecond =
+        parseFrameRate(stream.value(QStringLiteral("avg_frame_rate")).toString());
+    if (info.framesPerSecond <= 0.0) {
+        info.framesPerSecond =
+            parseFrameRate(stream.value(QStringLiteral("r_frame_rate")).toString());
+    }
+    info.width = stream.value(QStringLiteral("width")).toInt();
+    info.height = stream.value(QStringLiteral("height")).toInt();
+    return info;
+}
 
 QString printerTempPath(const QString &fileName) {
     const QString directory =
@@ -412,13 +483,12 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     QFile::remove(stagedThumbnailTempPath);
 
     QStringList arguments{QStringLiteral("-y")};
-    if (type == panorama::MediaType::Image) {
-        // Turris shows a one-frame stream only for a moment, so a still
-        // becomes a ten-second clip; PASE keeps its minute-long still.
+    if (type == panorama::MediaType::Image && !turrisMedia) {
+        // PASE shows a still as a minute-long clip. Turris encodes it as one
+        // frame, like the official converter.
         arguments << QStringLiteral("-loop") << QStringLiteral("1")
                   << QStringLiteral("-framerate") << QStringLiteral("30")
-                  << QStringLiteral("-t")
-                  << (turrisMedia ? QStringLiteral("10") : QStringLiteral("60"));
+                  << QStringLiteral("-t") << QStringLiteral("60");
     } else if (recoveredVideo) {
         arguments << QStringLiteral("-f") << QStringLiteral("h264")
                   << QStringLiteral("-framerate") << QStringLiteral("30");
@@ -434,49 +504,64 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     arguments << QStringLiteral("-i") << localPath
               << QStringLiteral("-c:v") << QStringLiteral("libx264");
     if (turrisMedia) {
+        // Mirrors the official converter for this product: libx264 "fast",
+        // main 4.1, one-second GOP without B-frames, full-range BT.709, the
+        // same x264 parameter set, 60 fps for video and GIF and 30 fps for a
+        // single-frame still. Video uses the converter's source-derived
+        // bitrate; a still uses CRF 18.
         const bool turrisImage = type == panorama::MediaType::Image;
-        const QString turrisFilter = filter + QStringLiteral(
-            ",scale=in_range=auto:out_range=full:out_color_matrix=bt709");
-        arguments << QStringLiteral("-preset")
-                  << (turrisImage ? QStringLiteral("medium")
-                                  : QStringLiteral("fast"));
+        const quint32 turrisKind = turrisImage
+            ? turris_media::kImageKind
+            : type == panorama::MediaType::Gif ? turris_media::kGifKind
+                                               : turris_media::kVideoKind;
+        const QString framesPerSecond =
+            QString::number(turris_media::framesPerSecondForKind(turrisKind));
+        const QString defaultRate = QStringLiteral("fps=30");
+        if (!filter.endsWith(defaultRate)) {
+            emit failed(operationId, tr("Media transform filter is invalid"),
+                        generation);
+            return;
+        }
+        const QString turrisFilter =
+            filter.left(filter.size() - defaultRate.size()) +
+            QStringLiteral("fps=") + framesPerSecond +
+            QStringLiteral(",scale=in_range=auto:out_range=full:out_color_matrix=bt709");
+        arguments << QStringLiteral("-preset") << QStringLiteral("fast");
         if (turrisImage) {
             arguments << QStringLiteral("-crf") << QStringLiteral("18");
         } else {
-            arguments << QStringLiteral("-b:v") << QStringLiteral("12M");
+            const SourceVideoInfo source = probeSourceVideo(
+                QStandardPaths::findExecutable(QStringLiteral("ffprobe")),
+                localPath);
+            const int kbps = turris_media::videoBitrateKbps(
+                source.kbps, source.framesPerSecond, source.width,
+                source.height, targetSize.width(), targetSize.height(),
+                static_cast<int>(
+                    turris_media::framesPerSecondForKind(turrisKind)));
+            arguments << QStringLiteral("-b:v")
+                      << QStringLiteral("%1k").arg(kbps);
         }
         arguments << QStringLiteral("-vf") << turrisFilter
                   << QStringLiteral("-an")
                   << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p")
-                  << QStringLiteral("-r") << QStringLiteral("30")
+                  << QStringLiteral("-r") << framesPerSecond
                   << QStringLiteral("-fps_mode") << QStringLiteral("cfr")
                   << QStringLiteral("-profile:v") << QStringLiteral("main")
-                  << QStringLiteral("-level:v")
-                  << (turrisImage
-                          ? QStringLiteral("4.0")
-                          : QStringLiteral("4.1"))
+                  << QStringLiteral("-level:v") << QStringLiteral("4.1")
+                  << QStringLiteral("-g") << framesPerSecond
+                  << QStringLiteral("-bf") << QStringLiteral("0")
                   << QStringLiteral("-color_range") << QStringLiteral("pc")
                   << QStringLiteral("-colorspace") << QStringLiteral("bt709")
                   << QStringLiteral("-color_primaries") << QStringLiteral("bt709")
                   << QStringLiteral("-color_trc") << QStringLiteral("bt709")
                   << QStringLiteral("-x264-params")
-                  // The video set reproduces the options proven on a Turris
-                  // by the community project: no weighted prediction and
-                  // no B-frames for the hardware decoder, closed 60-frame
-                  // GOP with scene cuts, Annex B with AUDs and repeated
-                  // parameter sets. Stills use a fixed 30-frame GOP.
-                  << (turrisImage
-                          ? QStringLiteral(
-                                "keyint=30:min-keyint=30:scenecut=0:bframes=0:"
-                                "weightp=0:aud=1:repeat-headers=1:annexb=1:"
-                                "open-gop=0:fullrange=on:colorprim=bt709:"
-                                "transfer=bt709:colormatrix=bt709")
-                          : QStringLiteral(
-                                "ref=3:keyint=60:min-keyint=6:scenecut=40:"
-                                "bframes=0:b-pyramid=0:weightp=0:aud=1:"
-                                "repeat-headers=1:annexb=1:open-gop=0:"
-                                "fullrange=on:colorprim=bt709:transfer=bt709:"
-                                "colormatrix=bt709"));
+                  << QStringLiteral(
+                         "repeat-headers=1:annexb=1:aud=1:b-pyramid=0:weightp=0:"
+                         "ref=3:fullrange=on:colorprim=bt709:transfer=bt709:"
+                         "colormatrix=bt709");
+        if (turrisImage) {
+            arguments << QStringLiteral("-frames:v") << QStringLiteral("1");
+        }
     } else {
         arguments << QStringLiteral("-preset") << QStringLiteral("veryfast")
                   << QStringLiteral("-crf") << QStringLiteral("23")
