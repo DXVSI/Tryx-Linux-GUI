@@ -15,6 +15,9 @@ inline constexpr quint16 kProductId = 0x2011;
 // always delivered as PNG-derived single frames, matching the official app.
 inline constexpr quint32 kImageKind = 2U;
 inline constexpr quint32 kGifKind = 3U;
+// A still image is uploaded as a ten-second clip at the fixed 30 fps: the
+// firmware shows a single frame only for a moment.
+inline constexpr quint64 kStillClipFrames = 300ULL;
 inline constexpr quint32 kVideoKind = 4U;
 inline constexpr quint32 kWidth = 1280U;
 inline constexpr quint32 kHeight = 720U;

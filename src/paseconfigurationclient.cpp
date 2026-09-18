@@ -1637,6 +1637,9 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
         !activationRejected) {
         return false;
     }
+    if (negotiatesCapabilities() && config.mediaPresent) {
+        restartTurrisPlayback(devicePath, context);
+    }
 
     if (mutationDetails) {
         mutationDetails->stage = QStringLiteral("VerifyingConfig");
@@ -1825,6 +1828,30 @@ bool PaseConfigurationClient::setBrightness(const QString &devicePath, int brigh
     config.display.brightnessPresent = true;
     config.display.brightness = brightness;
     return applyPaseConfiguration(devicePath, config, errorMessage, context);
+}
+
+void PaseConfigurationClient::restartTurrisPlayback(const QString &devicePath,
+                                                    const OperationContext &context) {
+    panorama::wire::v1::Request request;
+    auto *end = request.mutable_transfer_end();
+    end->set_file_type("media");
+    end->set_checksum(0);
+    panorama::wire::v1::Response response;
+    QString error;
+    TransactionOutcome outcome = TransactionOutcome::NotSent;
+    const bool ok = channel_.execute(
+        &request, panorama::wire::v1::Response::kTransferEndStatus, &response,
+        devicePath, context, &error, &outcome, TransactionProfile::FileTransmit,
+        /*preserveConnectionOnCleanTimeout=*/true, /*acceptHeaderOnlySuccess=*/false,
+        productProfile_.fileTransferTrackId);
+    qInfo().noquote()
+        << QStringLiteral("tryx_turris_negotiation command=media_restart outcome=%1%2")
+               .arg(ok ? QStringLiteral("accepted")
+                       : outcome == TransactionOutcome::Rejected
+                           ? QStringLiteral("declined")
+                           : QStringLiteral("unconfirmed"),
+                    error.isEmpty() ? QString()
+                                    : QStringLiteral(" error=\"%1\"").arg(error));
 }
 
 bool PaseConfigurationClient::sendUserConfigWithOutcome(

@@ -260,7 +260,11 @@ window is shown. This switch never changes the background runtime service.
   confirmed through the readback instead of failing the session, the
   device's own power-on and standby media names are written back, a
   display-only change is refused while the device has no active media, and
-  applying media always turns the backlight on.
+  applying media always turns the backlight on and restarts playback with
+  the bare FileTransmitEnd the device expects. Turris video uses the H.264
+  options proven on hardware by the community project (no weighted
+  prediction, closed 60-frame GOP), and a still image becomes a ten-second
+  clip because the firmware shows a single frame only for a moment.
 - Uploaded Turris files are stored on the device and shown after Apply; the
   dashboard lists the reported firmware and application versions.
 - Still unavailable for Turris: split screen, waterfall orientation, custom

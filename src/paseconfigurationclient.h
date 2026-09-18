@@ -118,6 +118,12 @@ public:
                               const PaseOverlayConfig *overlay = nullptr,
                               MutationDetails *mutationDetails = nullptr);
 
+    // Turris (re)starts playback of the selected media on a bare
+    // FileTransmitEnd for "media" (402), as the community project measured
+    // on hardware. Best effort: the outcome is logged, never fatal.
+    void restartTurrisPlayback(const QString &devicePath,
+                               const OperationContext &context);
+
     KeepaliveOutcome sendKeepalive(const QString &devicePath, QString *errorMessage,
                                    const OperationContext &context);
 

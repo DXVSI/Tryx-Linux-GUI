@@ -1002,11 +1002,11 @@ private:
         if (profile.productId == 0x2011) {
             static const QStringList validBases{
                 QStringLiteral(
-                    "turris-mxhd-v1-image-single-frame-1280x720-yuv420p-30fps-libx264-main40-medium-crf18"),
+                    "turris-mxhd-v1-image-still10s-1280x720-yuv420p-30fps-libx264-main40-medium-crf18"),
                 QStringLiteral(
-                    "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"),
+                    "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"),
                 QStringLiteral(
-                    "turris-mxhd-v1-gif-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"),
+                    "turris-mxhd-v1-gif-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"),
             };
             for (const QString &base : validBases) {
                 if (conversionProfile == base) {
@@ -7206,7 +7206,7 @@ void PrinterProtocolTests::
     wrongProfileOrigin.remote.name =
         QStringLiteral("wrong-profile.mp4.h264_2240x1080");
     wrongProfileOrigin.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
+        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
     wrongProfileOrigin.operationId =
         QStringLiteral("11111111-1111-4111-8111-111111111111");
     const auto wrongProfilePersisted =
@@ -7250,7 +7250,7 @@ void PrinterProtocolTests::
     turrisOrigin.remote.name =
         QStringLiteral("turris-origin.mp4.h264_1280x720");
     turrisOrigin.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
+        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
     turrisOrigin.operationId =
         QStringLiteral("15151515-1515-4515-8515-151515151515");
     const auto turrisPersisted = catalog.persistOrigin(turrisOrigin);
@@ -11161,7 +11161,7 @@ void PrinterProtocolTests::turrisMediaAnalysisUses1280Profile() {
     QCOMPARE(
         analyzedSpy.first().at(4).toString(),
         QStringLiteral(
-            "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"));
+            "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"));
 }
 
 void PrinterProtocolTests::turrisMediaFormatFrameCountParserIsStrict() {
@@ -11178,10 +11178,10 @@ void PrinterProtocolTests::turrisMediaFormatFrameCountParserIsStrict() {
     const turris::FrameCountProbeResult image =
         turris::parseFrameCountProbe(
             QByteArrayLiteral(
-                "nb_read_frames=1\nheight=720\nwidth=1280\n"),
+                "nb_read_frames=300\nheight=720\nwidth=1280\n"),
             turris::kImageKind);
     QVERIFY(image.valid);
-    QCOMPARE(image.frameCount, quint64{1});
+    QCOMPARE(image.frameCount, quint64{300});
 
     const turris::FrameCountProbeResult maximumVideo =
         turris::parseFrameCountProbe(
@@ -11492,14 +11492,15 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
     QVERIFY(output.open(QIODevice::ReadOnly));
     const QByteArray blob = output.readAll();
     QVERIFY(blob.size() > 4);
-    QCOMPARE(static_cast<quint8>(blob.at(0)), quint8{65});
+    // Metadata length: the 300-frame count costs one varint byte more.
+    QCOMPARE(static_cast<quint8>(blob.at(0)), quint8{66});
     QCOMPARE(static_cast<quint8>(blob.at(1)), quint8{0});
     QCOMPARE(static_cast<quint8>(blob.at(2)), quint8{0});
     QCOMPARE(static_cast<quint8>(blob.at(3)), quint8{0});
     QByteArray metadata;
     QByteArray h264;
     QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
-    QCOMPARE(metadata, turrisMediaMetadata(2, 1));
+    QCOMPARE(metadata, turrisMediaMetadata(2, 300));
     QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
             h264.startsWith(QByteArray::fromHex("000001")));
     const QString rawPath =
@@ -11532,7 +11533,7 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
              QStringLiteral("color_space=bt709"),
              QStringLiteral("color_transfer=bt709"),
              QStringLiteral("color_primaries=bt709"),
-             QStringLiteral("nb_read_frames=1")}) {
+             QStringLiteral("nb_read_frames=300")}) {
         QVERIFY2(properties.contains(expected), qPrintable(expected));
     }
     QCOMPARE(
@@ -29008,7 +29009,7 @@ void PrinterProtocolTests::
         legacy.insert(
             QStringLiteral("conversionProfile"),
             QStringLiteral(
-                "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"));
+                "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"));
     }
     const QString shadowManifestPath = QDir(retryDirectory).filePath(
         QStringLiteral("retry-manifest.json"));
@@ -31232,7 +31233,7 @@ void PrinterProtocolTests::
         manifest.insert(
             QStringLiteral("conversionProfile"),
             QStringLiteral(
-                "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"));
+                "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"));
     }
 
     const QByteArray manifestBytes =
@@ -33673,7 +33674,7 @@ void PrinterProtocolTests::
         manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
+        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
     record.sourceContentSha256 = record.preparedSha256;
     record.sourceSize = preparedBytes.size();
     manager->operationCoordinator_.operations_.insert(operationId, record);
@@ -36659,7 +36660,7 @@ void PrinterProtocolTests::turrisAcknowledgedUploadVerifiesCatalog() {
         manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
+        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
     record.sourceContentSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
                                  QCryptographicHash::Sha256)
@@ -36758,7 +36759,7 @@ void PrinterProtocolTests::
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps");
+        "turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2");
     record.sourceContentSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
                                  QCryptographicHash::Sha256)
@@ -40620,6 +40621,22 @@ void PrinterProtocolTests::turrisApplyToleratesUnacknowledgedUserConfig() {
             peerError = QStringLiteral("apply did not send the layout trigger");
             return;
         }
+        // 402 "media": the playback restart after activation.
+        panorama::wire::v1::Request restart;
+        if (!readRequest(sockets[1], &restart, &peerError, kPeerTimeoutMs, &buffer) ||
+            restart.body_case() != panorama::wire::v1::Request::kTransferEnd ||
+            restart.transfer_end().file_type() != "media" ||
+            restart.header().track_id() != 981521 ||
+            restart.header().version() != 0) {
+            peerError = QStringLiteral("apply did not restart playback with 402");
+            return;
+        }
+        auto restarted = baseResponse(restart);
+        restarted.mutable_transfer_end_status()->set_status(
+            panorama::wire::v1::TransferStatus::OK);
+        if (!writeResponse(sockets[1], restarted, &peerError)) {
+            return;
+        }
         // 104 readback returns what was stored.
         panorama::wire::v1::Request readback;
         if (!readRequest(sockets[1], &readback, &peerError, kPeerTimeoutMs, &buffer) ||
@@ -40769,6 +40786,22 @@ void PrinterProtocolTests::turrisMediaApplyTurnsBacklightOn() {
         if (!readRequest(sockets[1], &trigger, &peerError, kPeerTimeoutMs, &buffer) ||
             trigger.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
             peerError = QStringLiteral("apply did not send the layout trigger");
+            return;
+        }
+        // 402 "media": the playback restart after activation.
+        panorama::wire::v1::Request restart;
+        if (!readRequest(sockets[1], &restart, &peerError, kPeerTimeoutMs, &buffer) ||
+            restart.body_case() != panorama::wire::v1::Request::kTransferEnd ||
+            restart.transfer_end().file_type() != "media" ||
+            restart.header().track_id() != 981521 ||
+            restart.header().version() != 0) {
+            peerError = QStringLiteral("apply did not restart playback with 402");
+            return;
+        }
+        auto restarted = baseResponse(restart);
+        restarted.mutable_transfer_end_status()->set_status(
+            panorama::wire::v1::TransferStatus::OK);
+        if (!writeResponse(sockets[1], restarted, &peerError)) {
             return;
         }
         panorama::wire::v1::Request readback;

@@ -219,7 +219,7 @@ WriteResult writeBlob(
     }
     if ((kind != kImageKind && kind != kGifKind && kind != kVideoKind) ||
         frameCount == 0 || frameCount > 0xffffffffULL ||
-        (kind == kImageKind && frameCount != 1)) {
+        (kind == kImageKind && frameCount != kStillClipFrames)) {
         result.error = QObject::tr("Turris media attributes are invalid");
         return result;
     }
@@ -379,7 +379,7 @@ FrameCountProbeResult parseFrameCountProbe(
                    probeShapeValid && probeValues.size() == 3 &&
                    geometryValid && frameCountOk && frameCount != 0 &&
                    frameCount <= 0xffffffffULL &&
-                   (kind != kImageKind || frameCount == 1);
+                   (kind != kImageKind || frameCount == kStillClipFrames);
     if (result.valid) {
         result.frameCount = frameCount;
     }
@@ -453,7 +453,7 @@ bool validateBlob(QFile *file, qint64 declaredSize,
         metadata.width != kWidth || metadata.height != kHeight ||
         metadata.frameCount == 0 ||
         metadata.frameCount > std::numeric_limits<quint32>::max() ||
-        (metadata.kind == kImageKind && metadata.frameCount != 1)) {
+        (metadata.kind == kImageKind && metadata.frameCount != kStillClipFrames)) {
         return reject(QStringLiteral(
             "metadata values do not match the profile"));
     }

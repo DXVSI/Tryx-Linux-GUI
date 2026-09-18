@@ -19,11 +19,15 @@ namespace {
 
 QString turrisConversionProfileBase(const QString &typeName) {
     if (typeName == QStringLiteral("image")) {
+        // A still is a ten-second clip: the Turris firmware shows a single
+        // frame only for a moment.
         return QStringLiteral(
-            "turris-mxhd-v1-image-single-frame-1280x720-yuv420p-30fps-libx264-main40-medium-crf18");
+            "turris-mxhd-v1-image-still10s-1280x720-yuv420p-30fps-libx264-main40-medium-crf18");
     }
+    // x264v2: the encoder options proven on hardware by the community
+    // project (no weighted prediction, closed 60-frame GOP, three refs).
     return QStringLiteral(
-        "turris-mxhd-v1-%1-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps")
+        "turris-mxhd-v1-%1-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2")
         .arg(typeName);
 }
 

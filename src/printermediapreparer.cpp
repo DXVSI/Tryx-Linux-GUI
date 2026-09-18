@@ -413,11 +413,12 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
 
     QStringList arguments{QStringLiteral("-y")};
     if (type == panorama::MediaType::Image) {
+        // Turris shows a one-frame stream only for a moment, so a still
+        // becomes a ten-second clip; PASE keeps its minute-long still.
         arguments << QStringLiteral("-loop") << QStringLiteral("1")
-                  << QStringLiteral("-framerate") << QStringLiteral("30");
-        if (!turrisMedia) {
-            arguments << QStringLiteral("-t") << QStringLiteral("60");
-        }
+                  << QStringLiteral("-framerate") << QStringLiteral("30")
+                  << QStringLiteral("-t")
+                  << (turrisMedia ? QStringLiteral("10") : QStringLiteral("60"));
     } else if (recoveredVideo) {
         arguments << QStringLiteral("-f") << QStringLiteral("h264")
                   << QStringLiteral("-framerate") << QStringLiteral("30");
@@ -442,9 +443,7 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         if (turrisImage) {
             arguments << QStringLiteral("-crf") << QStringLiteral("18");
         } else {
-            arguments << QStringLiteral("-b:v") << QStringLiteral("12M")
-                      << QStringLiteral("-maxrate") << QStringLiteral("12M")
-                      << QStringLiteral("-bufsize") << QStringLiteral("24M");
+            arguments << QStringLiteral("-b:v") << QStringLiteral("12M");
         }
         arguments << QStringLiteral("-vf") << turrisFilter
                   << QStringLiteral("-an")
@@ -456,25 +455,28 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                   << (turrisImage
                           ? QStringLiteral("4.0")
                           : QStringLiteral("4.1"))
-                  << QStringLiteral("-g")
-                  << (turrisImage ? QStringLiteral("30")
-                                  : QStringLiteral("60"))
-                  << QStringLiteral("-keyint_min")
-                  << (turrisImage ? QStringLiteral("30")
-                                  : QStringLiteral("60"))
-                  << QStringLiteral("-sc_threshold") << QStringLiteral("0")
-                  << QStringLiteral("-bf") << QStringLiteral("0")
-                  << QStringLiteral("-flags") << QStringLiteral("+cgop")
                   << QStringLiteral("-color_range") << QStringLiteral("pc")
                   << QStringLiteral("-colorspace") << QStringLiteral("bt709")
                   << QStringLiteral("-color_primaries") << QStringLiteral("bt709")
                   << QStringLiteral("-color_trc") << QStringLiteral("bt709")
                   << QStringLiteral("-x264-params")
-                  << QStringLiteral(
-                         "aud=1:repeat-headers=1:open-gop=0:force-cfr=1:fullrange=on:colorprim=bt709:transfer=bt709:colormatrix=bt709");
-        if (turrisImage) {
-            arguments << QStringLiteral("-frames:v") << QStringLiteral("1");
-        }
+                  // The video set reproduces the options proven on a Turris
+                  // by the community project: no weighted prediction and
+                  // no B-frames for the hardware decoder, closed 60-frame
+                  // GOP with scene cuts, Annex B with AUDs and repeated
+                  // parameter sets. Stills use a fixed 30-frame GOP.
+                  << (turrisImage
+                          ? QStringLiteral(
+                                "keyint=30:min-keyint=30:scenecut=0:bframes=0:"
+                                "weightp=0:aud=1:repeat-headers=1:annexb=1:"
+                                "open-gop=0:fullrange=on:colorprim=bt709:"
+                                "transfer=bt709:colormatrix=bt709")
+                          : QStringLiteral(
+                                "ref=3:keyint=60:min-keyint=6:scenecut=40:"
+                                "bframes=0:b-pyramid=0:weightp=0:aud=1:"
+                                "repeat-headers=1:annexb=1:open-gop=0:"
+                                "fullrange=on:colorprim=bt709:transfer=bt709:"
+                                "colormatrix=bt709"));
     } else {
         arguments << QStringLiteral("-preset") << QStringLiteral("veryfast")
                   << QStringLiteral("-crf") << QStringLiteral("23")
