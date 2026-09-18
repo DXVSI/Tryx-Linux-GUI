@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.4.0
+Version:        2.5.0
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -120,6 +120,12 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
+* Thu Sep 18 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.0-1
+- Run Turris 620 on the PASE display pipeline: device media library, apply, deletion, brightness, and overlay metrics
+- Negotiate Turris commands per USB generation and keep uploads working when the device rejects one
+- Send Turris keepalives unless the device keeps the USB link alive and confirm stored configuration by readback
+- Stop using the on-disk QML cache so a reinstalled package always shows its own interface
+
 * Mon Sep 14 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.4.0-1
 - Add experimental Flatpak packaging with USB and file chooser portals
 - Load device media automatically after the display session becomes ready

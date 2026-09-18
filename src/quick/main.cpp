@@ -116,6 +116,15 @@ int main(int argc, char *argv[]) {
     }
 
     QQuickStyle::setStyle(QStringLiteral("Material"));
+    // Packaged builds share one version and one changelog date, so rcc stamps
+    // the embedded QML with the same timestamp in every build and Qt's on-disk
+    // QML cache keeps serving the interface compiled from an earlier package.
+    // The runtime compiler is fast enough for this UI; skip the cache unless
+    // the environment asks for it explicitly.
+    if (!qEnvironmentVariableIsSet("QML_DISK_CACHE") &&
+        !qEnvironmentVariableIsSet("QML_DISABLE_DISK_CACHE")) {
+        qputenv("QML_DISABLE_DISK_CACHE", "1");
+    }
     QGuiApplication app(argc, argv);
     configureApplicationIdentity(app);
     app.setWindowIcon(

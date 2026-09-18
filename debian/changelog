@@ -1,3 +1,12 @@
+tryx-panorama-manager (2.5.0-1) noble; urgency=medium
+
+  * Run Turris 620 on the PASE display pipeline: media library, apply, deletion, brightness, and overlay metrics.
+  * Negotiate Turris commands per USB generation and keep uploads working when the device rejects one.
+  * Send Turris keepalives unless the device keeps the USB link alive and confirm stored configuration by readback.
+  * Stop using the on-disk QML cache so a reinstalled package always shows its own interface.
+
+ -- DXVSI <dxvsi123@gmail.com>  Thu, 18 Sep 2026 12:00:29 +0000
+
 tryx-panorama-manager (2.4.0-1) noble; urgency=medium
 
   * Add experimental Flatpak packaging with USB and file chooser portals.
