@@ -13,6 +13,7 @@ ScrollView {
     required property var editor
     required property var deviceMedia
     property var mediaSourceChooser: null
+    property var mediaDropResolver: null
     property var mediaExportChooser: null
 
     clip: true
@@ -29,6 +30,19 @@ ScrollView {
     property var leftBadgeChoices: emptyBadgeArea()
     property var rightBadgeChoices: emptyBadgeArea()
     readonly property bool customBadgeTextSupported: "customBadgeTextSupported" in runtime && runtime.customBadgeTextSupported
+    // Device feature gates; runtimes and mocks without the property keep
+    // the historical full feature set.
+    readonly property bool splitScreenSupported: !("splitScreenSupported" in runtime) || runtime.splitScreenSupported
+    readonly property bool overlayMetricsSupported: !("overlayMetricsSupported" in runtime) || runtime.overlayMetricsSupported
+    readonly property bool waterfallOrientationSupported: !("waterfallOrientationSupported" in runtime) || runtime.waterfallOrientationSupported
+    readonly property bool uploadStoresOnly: ("deviceModel" in runtime) && runtime.deviceModel === "TURRIS 620"
+    onSplitScreenSupportedChanged: {
+        if (!splitScreenSupported && splitMode) {
+            splitMode = false
+            if (selectedMedia.length > 1)
+                selectedMedia = [selectedMedia[0]]
+        }
+    }
     property int brightnessDraft: runtime.brightness
     property bool mirrorDraft: runtime.mirrorMode
     property bool waterfallDraft: runtime.waterfallMode
@@ -834,8 +848,8 @@ ScrollView {
             submissionId = runtime.submitFullDisplayDraft(
                 copyList(draft.layout.media),
                 draft.layout.playMode,
-                copyList(draft.layout.metrics),
-                copyList(draft.layout.badges),
+                root.overlayMetricsSupported ? copyList(draft.layout.metrics) : [],
+                root.overlayMetricsSupported ? copyList(draft.layout.badges) : [],
                 draft.layout.position,
                 draft.layout.color,
                 draft.layout.alignment,
@@ -1125,12 +1139,48 @@ ScrollView {
                         id: dropArea
                         anchors.fill: parent
                         enabled: !root.runtime.operationBusy &&
-                                 !(root.mediaSourceChooser && root.mediaSourceChooser.busy)
+                                 !(root.mediaSourceChooser && root.mediaSourceChooser.busy) &&
+                                 !(root.mediaDropResolver && root.mediaDropResolver.busy)
                         onDropped: drop => {
+                            // In the Flatpak a host drag carries host paths the
+                            // sandbox cannot read; a portal transfer key, when the
+                            // source offers one, is exchanged for exported files.
+                            const transferFormat = "application/vnd.portal.filetransfer"
+                            const transferKey =
+                                root.mediaDropResolver &&
+                                drop.formats.indexOf(transferFormat) >= 0
+                                ? String(drop.getDataAsString(transferFormat))
+                                : ""
+                            if (transferKey.length > 0 &&
+                                    root.mediaDropResolver.resolve(transferKey)) {
+                                drop.acceptProposedAction()
+                                return
+                            }
                             root.editor.beginDropped(drop.urls)
                             drop.acceptProposedAction()
                         }
                     }
+
+                    Connections {
+                        target: root.mediaDropResolver
+
+                        function onResolved(urls) {
+                            root.editor.beginDropped(urls)
+                        }
+
+                        function onFailed(message) {
+                            root.editor.rejectDropped(message)
+                        }
+                    }
+                }
+
+                Label {
+                    objectName: "uploadStoresOnlyHint"
+                    Layout.fillWidth: true
+                    visible: root.uploadStoresOnly
+                    text: qsTr("Uploaded files are stored on the device. Select one in the Media Library and use Apply to display to show it.")
+                    color: "#9ca4ac"
+                    wrapMode: Text.WordWrap
                 }
 
                 GroupBox {
@@ -1478,9 +1528,11 @@ ScrollView {
                         }
                     }
                     RadioButton {
+                        objectName: "splitScreenRadio"
                         Layout.fillWidth: true
                         text: qsTr("Split screen")
                         checked: root.splitMode
+                        enabled: root.splitScreenSupported
                         onClicked: root.splitMode = true
                     }
                     Label { text: qsTr("Play mode") }
@@ -1520,6 +1572,16 @@ ScrollView {
                 }
 
                 Label {
+                    objectName: "splitScreenUnavailableHint"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    visible: !root.splitScreenSupported
+                    text: qsTr("Split screen is not available for this display model.")
+                    color: "#8d91a1"
+                    wrapMode: Text.WordWrap
+                }
+
+                Label {
                     objectName: "mediaSelectionSummary"
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
@@ -1537,10 +1599,21 @@ ScrollView {
                 Label {
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
+                    visible: root.overlayMetricsSupported
                     text: root.splitMode
                           ? qsTr("Select up to three metrics per side")
                           : qsTr("Select up to three overlay metrics")
                     font.bold: true
+                    wrapMode: Text.WordWrap
+                }
+
+                Label {
+                    objectName: "overlayMetricsUnavailableHint"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    visible: !root.overlayMetricsSupported
+                    text: qsTr("Overlay metrics are not available for this display model.")
+                    color: "#8d91a1"
                     wrapMode: Text.WordWrap
                 }
 
@@ -1549,7 +1622,7 @@ ScrollView {
 
                     objectName: "fullMetricSelector"
                     Layout.fillWidth: true
-                    visible: !root.splitMode
+                    visible: !root.splitMode && root.overlayMetricsSupported
                     areaTitle: qsTr("Full")
                     fieldPrefix: "full"
                     catalog: root.runtime.metricsCatalog
@@ -1618,7 +1691,7 @@ ScrollView {
                     Layout.preferredWidth: parent
                                            ? parent.width
                                            : implicitWidth
-                    visible: root.splitMode
+                    visible: root.splitMode && root.overlayMetricsSupported
                     columns: parent && parent.width >= 620 ? 2 : 1
                     columnSpacing: 10
                     rowSpacing: 10
@@ -1793,7 +1866,8 @@ ScrollView {
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
                     visible: !root.splitMode &&
-                             !root.runtime.waterfallMode
+                             !root.runtime.waterfallMode &&
+                             root.waterfallOrientationSupported
                     text: qsTr("Top/Bottom position becomes available after Waterfall orientation is confirmed.")
                     color: "#8d91a1"
                     wrapMode: Text.WordWrap
@@ -2031,11 +2105,21 @@ ScrollView {
                     CheckBox {
                         objectName: "waterfallDraftCheckBox"
                         text: qsTr("Waterfall")
+                        visible: root.waterfallOrientationSupported
                         checked: root.waterfallDraft
                         enabled: root.confirmedSnapshotReady
                         onClicked: root.waterfallDraft = checked
                     }
                     Item { Layout.fillWidth: true }
+                }
+
+                Label {
+                    objectName: "waterfallUnavailableHint"
+                    Layout.fillWidth: true
+                    visible: !root.waterfallOrientationSupported
+                    text: qsTr("Waterfall orientation is not available for this display model.")
+                    color: "#8d91a1"
+                    wrapMode: Text.WordWrap
                 }
 
                 Label {

@@ -40,5 +40,12 @@ bool paseOverlayRequestsBadge(
     const QString &badge);
 bool paseBadgeChoicesAreValid(const PrinterProtocol::PaseOverlayConfig &overlay,
                               quint16 productId, QString *error = nullptr);
+// Product-level overlay feature gates: overlay metrics at all, split-screen
+// (dual) areas and waterfall orientation.
+bool paseOverlayIsSupportedByProduct(const PrinterProtocol::PaseOverlayConfig &overlay,
+                                     quint16 productId, QString *error = nullptr);
+bool paseMetricsRequestIsSupportedByProduct(
+    const TryxRuntimeMetricsConfigRequest &request, quint16 productId,
+    QString *error = nullptr);
 
 }  // namespace tryx::pase_overlay_config

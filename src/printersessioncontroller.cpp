@@ -85,7 +85,8 @@ bool PrinterSessionController::coherentDisplayContextIsCurrent(quint64 generatio
     const QString &identity, quint16 productId) const {
     return printerResultIsCurrent(generation) && state_.printerDisplaySessionActive
         && !identity.isEmpty() && identity == state_.printerDeviceSerial.trimmed()
-        && productId == state_.printerProductId && (productId == 0x1021 || productId == 0x1011);
+        && productId == state_.printerProductId
+        && tryxDisplaySnapshotProductIdIsSupported(printerProductIdString(productId));
 }
 
 TryxRuntimeDisplaySnapshotV1 PrinterSessionController::displaySnapshotV1(quint64 connectionRevision) const {
@@ -827,6 +828,7 @@ void PrinterSessionController::attachPrinterClassDevice(
     state_.printerDevicePath = device.devicePath;
     state_.printerDeviceSerial = device.serial;
     state_.printerProductId = device.productId;
+    state_.printerUnavailableCapabilities.clear();
     invalidateDisplaySnapshot();
     callbacks_.clearMediaCatalogView();
     emit mediaListUpdated({});
@@ -847,6 +849,7 @@ void PrinterSessionController::detachPrinterClassDevice(bool notify) {
     state_.printerDevicePath.clear();
     state_.printerDeviceSerial.clear();
     state_.printerProductId = 0;
+    state_.printerUnavailableCapabilities.clear();
     invalidateDisplaySnapshot();
     if (wasConnected) {
         state_.displayStateReadGeneration = 0;
@@ -897,18 +900,44 @@ std::optional<PrinterProductProfile> PrinterSessionController::
 
 bool PrinterSessionController::currentPrinterSupportsMediaCatalog() const {
     const auto profile = currentPrinterProductProfile();
-    return profile && profile->mediaCatalogSupported;
+    return profile && profile->mediaCatalogSupported &&
+           !state_.printerUnavailableCapabilities.contains(
+               tryxDeviceMediaCatalogV1Token());
 }
 
 bool PrinterSessionController::currentPrinterSupportsDisplayConfiguration()
     const {
     const auto profile = currentPrinterProductProfile();
-    return profile && profile->displayConfigurationSupported;
+    return profile && profile->displayConfigurationSupported &&
+           !state_.printerUnavailableCapabilities.contains(
+               tryxDeviceDisplayConfigurationV1Token());
 }
 
 bool PrinterSessionController::currentPrinterSupportsOverlayMetrics() const {
     const auto profile = currentPrinterProductProfile();
-    return profile && profile->overlayMetricsSupported;
+    return profile && profile->overlayMetricsSupported &&
+           !state_.printerUnavailableCapabilities.contains(
+               tryxDeviceOverlayMetricsV1Token());
+}
+
+void PrinterSessionController::handleWorkerPrinterCapabilityUnavailable(
+    const QString &capabilityToken, const QString &reason, quint64 generation) {
+    if (!printerResultIsCurrent(generation) ||
+        state_.printerUnavailableCapabilities.contains(capabilityToken)) {
+        return;
+    }
+    state_.printerUnavailableCapabilities.insert(capabilityToken);
+    if (capabilityToken == tryxDeviceOverlayMetricsV1Token()) {
+        state_.metricsState.enabled = false;
+        state_.metricsState.samplingActive = false;
+        state_.metricsState.diagnostic = reason;
+        publishMetricsState();
+    } else if (capabilityToken == tryxDeviceDisplayConfigurationV1Token()) {
+        state_.displayState.valid = false;
+        state_.displayState.diagnostic = reason;
+        publishDisplayState();
+    }
+    emit deviceCapabilitiesChanged();
 }
 
 bool PrinterSessionController::firmwareFlashAllowedForCurrentDevice(
@@ -1290,19 +1319,20 @@ TryxRuntimeDeviceCapabilitiesV1 PrinterSessionController::deviceCapabilitiesV1(
     if (profile->mediaUploadSupported) {
         snapshot.capabilities.append(tryxDeviceMediaUploadV1Token());
     }
-    if (profile->mediaCatalogSupported) {
+    if (currentPrinterSupportsMediaCatalog()) {
         snapshot.capabilities.append(tryxDeviceMediaCatalogV1Token());
     }
-    if (profile->displayConfigurationSupported) {
+    if (currentPrinterSupportsDisplayConfiguration()) {
         snapshot.capabilities.append(tryxDeviceDisplayConfigurationV1Token());
     }
     if (profile->splitAreaMediaSupported) {
         snapshot.capabilities.append(tryxDeviceMediaSplitAreaV1Token());
     }
-    if (profile->overlayMetricsSupported) {
+    if (currentPrinterSupportsOverlayMetrics()) {
         snapshot.capabilities.append(tryxDeviceOverlayMetricsV1Token());
     }
-    if (profile->productId == 0x1021 && profile->overlayMetricsSupported && profile->displayConfigurationSupported)
+    if (profile->productId == 0x1021 && currentPrinterSupportsOverlayMetrics() &&
+        currentPrinterSupportsDisplayConfiguration())
         snapshot.capabilities.append(tryxDeviceOverlayBadgeTextV1Token());
     if (profile->firmwareFlashSupported && !tryx::packaging::isFlatpak()) {
         snapshot.capabilities.append(tryxDeviceFirmwareFlashV1Token());
@@ -1337,13 +1367,17 @@ TryxRuntimeDeviceSpecificationsV1 PrinterSessionController::
     }
 
     snapshot.physicalGeneration = state_.printerGeneration;
+    const bool turris = state_.printerProductId == 0x2011;
     if (state_.printerProductId != 0x1011 &&
-        state_.printerProductId != 0x1021) {
+        state_.printerProductId != 0x1021 && !turris) {
         snapshot.status = QStringLiteral("Unsupported");
         return snapshot;
     }
 
-    snapshot.status = QStringLiteral("Unavailable");
+    // Turris reports specifications only when the device confirmed 102;
+    // otherwise the getter keeps the historical Unsupported answer.
+    snapshot.status = turris ? QStringLiteral("Unsupported")
+                             : QStringLiteral("Unavailable");
     const bool exactCache =
         state_.deviceSpecificationsCache.valid &&
         state_.deviceSpecificationsDevicePath == state_.printerDevicePath &&
@@ -1761,7 +1795,7 @@ void PrinterSessionController::handleWorkerPrinterDeviceSpecificationsReady(
         devicePath != state_.printerDevicePath || identity.isEmpty() ||
         identity != state_.printerDeviceSerial.trimmed() ||
         productId != state_.printerProductId ||
-        (productId != 0x1011 && productId != 0x1021) ||
+        (productId != 0x1011 && productId != 0x1021 && productId != 0x2011) ||
         !exactDiscoveryContext) {
         return;
     }

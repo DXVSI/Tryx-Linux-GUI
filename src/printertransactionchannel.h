@@ -102,7 +102,8 @@ public:
                  TransactionOutcome *outcome = nullptr,
                  TransactionProfile profile = TransactionProfile::Default,
                  bool preserveConnectionOnCleanTimeout = false,
-                 bool acceptHeaderOnlySuccess = false, quint64 fixedTrackId = 0);
+                 bool acceptHeaderOnlySuccess = false, quint64 fixedTrackId = 0,
+                 int responseWindowMs = 0);
 
     bool writeOnly(const panorama::wire::v1::Request &request,
                    const QString &devicePath, const OperationContext &context,
@@ -112,15 +113,19 @@ public:
                           const QString &devicePath, const OperationContext &context,
                           QString *errorMessage, TransactionOutcome *outcome = nullptr);
 
+    // drainOutcome reports the outcome of draining the optional response,
+    // so callers can distinguish a device rejection from a transport loss.
     KeepaliveOutcome sendPeriodicFrame(const QByteArray &frame,
                                        const QString &devicePath,
                                        const OperationContext &context,
-                                       QString *errorMessage);
+                                       QString *errorMessage,
+                                       TransactionOutcome *drainOutcome = nullptr);
 
     KeepaliveOutcome sendPeriodicRequest(const panorama::wire::v1::Request &request,
                                          const QString &devicePath,
                                          const OperationContext &context,
-                                         QString *errorMessage);
+                                         QString *errorMessage,
+                                         TransactionOutcome *drainOutcome = nullptr);
 
     int millisecondsUntilKeepalive() const;
 

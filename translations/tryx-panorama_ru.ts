@@ -2858,6 +2858,26 @@
         <source>The device transport could not be quiesced for runtime downgrade; the runtime is stopping safely</source>
         <translation>Не удалось безопасно остановить транспорт устройства для отката фоновой службы. Фоновая служба безопасно завершает работу</translation>
     </message>
+    <message>
+        <source>Applying the uploaded media...</source>
+        <translation>Применяется загруженный медиафайл...</translation>
+    </message>
+    <message>
+        <source>Media was uploaded before cancellation completed</source>
+        <translation>Медиафайл был загружен до завершения отмены</translation>
+    </message>
+    <message>
+        <source>Media uploaded</source>
+        <translation>Медиафайл загружен</translation>
+    </message>
+    <message>
+        <source>Split screen is not supported for USB product %1</source>
+        <translation>Разделение экрана не поддерживается для USB-продукта %1</translation>
+    </message>
+    <message>
+        <source>Waterfall orientation is not supported for USB product %1</source>
+        <translation>Ориентация «Водопад» не поддерживается для USB-продукта %1</translation>
+    </message>
 </context>
 <context>
     <name>DeviceMediaWorkflowController</name>
@@ -3431,6 +3451,22 @@
         <location filename="../src/devicemanager.cpp" line="1806"/>
         <source>Delete intent no longer matches this operation</source>
         <translation>Намерение удаления больше не соответствует этой операции</translation>
+    </message>
+    <message>
+        <source>The TRYX session could not activate the display configuration</source>
+        <translation>Сессия TRYX не смогла активировать настройку дисплея</translation>
+    </message>
+    <message>
+        <source>The device rejected the media catalog command</source>
+        <translation>Устройство отклонило команду каталога медиафайлов</translation>
+    </message>
+    <message>
+        <source>The device rejected the display configuration command</source>
+        <translation>Устройство отклонило команду настройки дисплея</translation>
+    </message>
+    <message>
+        <source>The device rejected the overlay layout command</source>
+        <translation>Устройство отклонило команду разметки оверлея</translation>
     </message>
 </context>
 <context>
@@ -4884,8 +4920,8 @@
     </message>
     <message>
         <location filename="../qml/pages/HomePage.qml" line="125"/>
-        <source>PANORAMA SE</source>
-        <translation>PANORAMA SE</translation>
+        <source>TRYX device</source>
+        <translation>Устройство TRYX</translation>
     </message>
     <message>
         <location filename="../qml/pages/HomePage.qml" line="153"/>
@@ -4997,6 +5033,10 @@
         <location filename="../qml/pages/HomePage.qml" line="363"/>
         <source>Upload</source>
         <translation>Отдача</translation>
+    </message>
+    <message>
+        <source>Firmware %1 · App %2</source>
+        <translation>Прошивка %1 · Приложение %2</translation>
     </message>
 </context>
 <context>
@@ -6644,6 +6684,22 @@
         <source>Retry</source>
         <translation>Повторить</translation>
     </message>
+    <message>
+        <source>Uploaded files are stored on the device. Select one in the Media Library and use Apply to display to show it.</source>
+        <translation>Загруженные файлы сохраняются на устройстве. Выберите файл в Медиатеке и нажмите «Применить на дисплее», чтобы показать его.</translation>
+    </message>
+    <message>
+        <source>Split screen is not available for this display model.</source>
+        <translation>Разделение экрана недоступно для этой модели дисплея.</translation>
+    </message>
+    <message>
+        <source>Overlay metrics are not available for this display model.</source>
+        <translation>Метрики оверлея недоступны для этой модели дисплея.</translation>
+    </message>
+    <message>
+        <source>Waterfall orientation is not available for this display model.</source>
+        <translation>Ориентация «Водопад» недоступна для этой модели дисплея.</translation>
+    </message>
 </context>
 <context>
     <name>PrinterDeviceMonitor</name>
@@ -6860,6 +6916,14 @@
     <message>
         <source>Waiting for read/write access through the USB portal. The host must also allow access to the device.</source>
         <translation>Ожидание доступа для чтения и записи через USB-портал. Основная система также должна разрешать доступ к устройству.</translation>
+    </message>
+    <message>
+        <source>A USB access request is waiting in the desktop portal. Allow access in the dialog to continue.</source>
+        <translation>Запрос доступа к USB ожидает подтверждения в портале рабочего стола. Разрешите доступ в диалоге, чтобы продолжить.</translation>
+    </message>
+    <message>
+        <source>The USB portal reports that the TRYX device is not readable and writable on the host.</source>
+        <translation>USB-портал сообщает, что устройство TRYX недоступно для чтения и записи в основной системе.</translation>
     </message>
     <message>
         <source>TRYX USB portal access is ready</source>
@@ -8413,6 +8477,10 @@
         <location filename="../src/printerprotocol.cpp" line="5667"/>
         <source>TRYX user configuration is missing work configuration</source>
         <translation>В пользовательской конфигурации TRYX отсутствует рабочая конфигурация</translation>
+    </message>
+    <message>
+        <source>TRYX device has no active media yet; select a media file and apply it first</source>
+        <translation>На устройстве TRYX ещё нет активного медиафайла; выберите медиафайл и примените его сначала</translation>
     </message>
 </context>
 <context>
@@ -10143,6 +10211,17 @@
     <message>
         <source>Complete the selection in the system file chooser, or cancel here.</source>
         <translation>Завершите выбор в системном диалоге или отмените его здесь.</translation>
+    </message>
+</context>
+<context>
+    <name>PortalDropResolver</name>
+    <message>
+        <source>The desktop portal could not share the dropped file: %1</source>
+        <translation>Портал рабочего стола не смог передать перетащенный файл: %1</translation>
+    </message>
+    <message>
+        <source>The desktop portal did not share a local file for this drop.</source>
+        <translation>Портал рабочего стола не передал локальный файл для этого перетаскивания.</translation>
     </message>
 </context>
 <context>

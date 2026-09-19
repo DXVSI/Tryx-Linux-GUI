@@ -48,6 +48,7 @@ HEADERS += \
     src/quick/mediapreviewcontroller.h \
     src/quick/operationlistmodel.h \
     src/quick/portalfilechooser.h \
+    src/quick/portaldropresolver.h \
     src/quick/releaseinfo.h \
     src/quick/releaseupdatecontroller.h \
     src/quick/runtimebootstrap.h \
@@ -82,6 +83,7 @@ SOURCES += \
     src/quick/mediapreviewcontroller.cpp \
     src/quick/operationlistmodel.cpp \
     src/quick/portalfilechooser.cpp \
+    src/quick/portaldropresolver.cpp \
     src/quick/releaseinfo.cpp \
     src/quick/releaseupdatecontroller.cpp \
     src/quick/runtimebootstrap.cpp \
@@ -139,6 +141,7 @@ for(qml_file, QML_ALL_FILES) {
 DISTFILES += \
     $$QML_FILES \
     resources/tryx-panorama.png \
+    resources/devices/README.md \
     tests/quick/quick_tests.pro \
     tests/quick/runtimebootstrap_tests.pro \
     tests/quick/runtimebootstrap_tests.cpp \

@@ -14,6 +14,7 @@
 #include "windowchromecontroller.h"
 #include "packagingcontext.h"
 #include "portalfilechooser.h"
+#include "portaldropresolver.h"
 
 #include <QCoreApplication>
 #include <QGuiApplication>
@@ -116,6 +117,15 @@ int main(int argc, char *argv[]) {
     }
 
     QQuickStyle::setStyle(QStringLiteral("Material"));
+    // Packaged builds share one version and one changelog date, so rcc stamps
+    // the embedded QML with the same timestamp in every build and Qt's on-disk
+    // QML cache keeps serving the interface compiled from an earlier package.
+    // The runtime compiler is fast enough for this UI; skip the cache unless
+    // the environment asks for it explicitly.
+    if (!qEnvironmentVariableIsSet("QML_DISK_CACHE") &&
+        !qEnvironmentVariableIsSet("QML_DISABLE_DISK_CACHE")) {
+        qputenv("QML_DISABLE_DISK_CACHE", "1");
+    }
     QGuiApplication app(argc, argv);
     configureApplicationIdentity(app);
     app.setWindowIcon(
@@ -243,7 +253,9 @@ int main(int argc, char *argv[]) {
     std::unique_ptr<PortalFileChooser> mediaSourceChooser;
     std::unique_ptr<PortalFileChooser> mediaExportChooser;
     std::unique_ptr<PortalFileChooser> supportExportChooser;
+    std::unique_ptr<PortalDropResolver> mediaDropResolver;
     if (tryx::packaging::isFlatpak()) {
+        mediaDropResolver = std::make_unique<PortalDropResolver>();
         mediaSourceChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::MediaFile);
         mediaExportChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::Directory);
         supportExportChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::Directory);
@@ -267,6 +279,8 @@ int main(int argc, char *argv[]) {
     engine.setInitialProperties({
         {QStringLiteral("mediaSourceChooser"),
          QVariant::fromValue(static_cast<QObject *>(mediaSourceChooser.get()))},
+        {QStringLiteral("mediaDropResolver"),
+         QVariant::fromValue(static_cast<QObject *>(mediaDropResolver.get()))},
         {QStringLiteral("mediaExportChooser"),
          QVariant::fromValue(static_cast<QObject *>(mediaExportChooser.get()))},
         {QStringLiteral("supportExportChooser"),

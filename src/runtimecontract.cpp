@@ -747,7 +747,7 @@ bool tryxDisplaySnapshotV1IsValid(const TryxRuntimeDisplaySnapshotV1 &snapshot) 
     if (!snapshot.revision || !snapshot.physicalGeneration || display.revision != snapshot.revision
         || !display.valid || !display.diagnostic.isEmpty()
         || !tryxSavedLayoutDeviceIdentityIsCanonical(display.deviceSerial)
-        || !tryxSavedLayoutProductIdIsSupported(snapshot.productId)
+        || !tryxDisplaySnapshotProductIdIsSupported(snapshot.productId)
         || (tryxOverlayBadgesHaveCustomText(snapshot.badges) && snapshot.productId != QStringLiteral("391a:1021"))
         || (!snapshot.acceptedOperationId.isEmpty() && !isCanonicalUuid(snapshot.acceptedOperationId))
         || display.brightness < 0 || display.brightness > 100
@@ -800,6 +800,11 @@ bool tryxSavedLayoutDeviceIdentityIsCanonical(
 bool tryxSavedLayoutProductIdIsSupported(const QString &productId) {
     return productId == QStringLiteral("391a:1011") ||
            productId == QStringLiteral("391a:1021");
+}
+
+bool tryxDisplaySnapshotProductIdIsSupported(const QString &productId) {
+    return tryxSavedLayoutProductIdIsSupported(productId) ||
+           productId == QStringLiteral("391a:2011");
 }
 
 QString tryxRuntimeSupportSnapshotV1Token() {

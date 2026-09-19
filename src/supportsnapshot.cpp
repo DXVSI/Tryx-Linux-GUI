@@ -76,7 +76,10 @@ const QSet<QString> &knownEventNames() {
         QStringLiteral("post_bootstrap_ping_pending"),
         QStringLiteral("display_session_stopped"),
         QStringLiteral("display_session_active"),
-        QStringLiteral("display_session_lost")
+        QStringLiteral("display_session_lost"),
+        QStringLiteral("keepalive_policy_selected"),
+        QStringLiteral("keepalive_disabled"),
+        QStringLiteral("overlay_capability_disabled")
     };
     return names;
 }
@@ -103,7 +106,21 @@ const QHash<QString, QSet<QString>> &eventEnumValues() {
          {QStringLiteral("post-bootstrap-ping"),
           QStringLiteral("overlay-lease"),
           QStringLiteral("ping"),
-          QStringLiteral("device-info")}},
+          QStringLiteral("device-info"),
+          QStringLiteral("system-configuration"),
+          QStringLiteral("overlay-activation"),
+          QStringLiteral("media-catalog")}},
+        {QStringLiteral("keepalive_policy"),
+         {QStringLiteral("ping"),
+          QStringLiteral("disabled")}},
+        {QStringLiteral("keepalive_reason"),
+         {QStringLiteral("static-profile"),
+          QStringLiteral("device-auto-keepalive"),
+          QStringLiteral("device-manual-keepalive"),
+          QStringLiteral("unknown-default-off"),
+          QStringLiteral("unknown-probe-ping"),
+          QStringLiteral("unsupported-response"),
+          QStringLiteral("write-retries-exhausted")}},
         {QStringLiteral("session_state"), sessionStates()},
         {QStringLiteral("state_from"), sessionStates()},
         {QStringLiteral("state_to"), sessionStates()},
@@ -111,6 +128,9 @@ const QHash<QString, QSet<QString>> &eventEnumValues() {
          {QStringLiteral("sent"),
           QStringLiteral("retryable-failure"),
           QStringLiteral("fatal-failure"),
+          QStringLiteral("unsupported"),
+          QStringLiteral("rejected"),
+          QStringLiteral("timeout"),
           QStringLiteral("failed"),
           QStringLiteral("succeeded")}},
         {QStringLiteral("failure_class"),
@@ -138,7 +158,8 @@ const QHash<QString, QSet<QString>> &eventEnumValues() {
 const QSet<QString> &eventBooleanFields() {
     static const QSet<QString> fields{
         QStringLiteral("overlay_present"),
-        QStringLiteral("endpoint_selected")
+        QStringLiteral("endpoint_selected"),
+        QStringLiteral("device_info_confirmed")
     };
     return fields;
 }

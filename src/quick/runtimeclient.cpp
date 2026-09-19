@@ -73,7 +73,8 @@ bool isTurrisProductId(const QString &productId) {
 bool supportsDeviceSpecifications(const QString &productId) {
     const QString code = normalizedProductCode(productId);
     return code == QStringLiteral("1011") ||
-           code == QStringLiteral("1021");
+           code == QStringLiteral("1021") ||
+           code == QStringLiteral("2011");
 }
 
 bool deviceReportedProductNameIsSafe(const QString &productName) {
@@ -1733,6 +1734,35 @@ bool RuntimeClient::usesDisplaySnapshotV1() const {
         || (capabilitiesReady_ && runtimeCapabilities_.contains(tryxRuntimeDisplaySnapshotV1Token())));
 }
 
+// Device feature gates derived from the advertised device capability tokens.
+// While the token set is still loading nothing is hidden; an API 8 runtime
+// without the capability getter keeps the historical product defaults.
+bool RuntimeClient::splitScreenSupported() const {
+    if (legacyConnected()) {
+        return true;
+    }
+    if (hasRuntimeCapability(tryxRuntimeDeviceCapabilitiesV1Token())) {
+        return !deviceCapabilitiesReady_ ||
+               hasDeviceCapability(tryxDeviceMediaSplitAreaV1Token());
+    }
+    return !isTurrisProductId(connection_.productId);
+}
+
+bool RuntimeClient::overlayMetricsSupported() const {
+    if (legacyConnected()) {
+        return true;
+    }
+    if (hasRuntimeCapability(tryxRuntimeDeviceCapabilitiesV1Token())) {
+        return !deviceCapabilitiesReady_ ||
+               hasDeviceCapability(tryxDeviceOverlayMetricsV1Token());
+    }
+    return !isTurrisProductId(connection_.productId);
+}
+
+bool RuntimeClient::waterfallOrientationSupported() const {
+    return !isTurrisProductId(connection_.productId);
+}
+
 bool RuntimeClient::customBadgeTextSupported() const {
     return serviceAvailable_ && compatible_ && capabilitiesReady_ && deviceCapabilitiesReady_
         && connection_.printerClassConnected && connection_.productId == QStringLiteral("391a:1021")
@@ -2405,7 +2435,15 @@ RuntimeClient::currentDisplayApplyRequest() const {
     request.settingsAlign2 = display_.settingsAlign2.isEmpty()
         ? QStringLiteral("Right")
         : display_.settingsAlign2;
-    request.replaceOverlay = true;
+    // Without overlay metrics the request carries the media only; the
+    // runtime rejects explicit metric content for such a device.
+    request.replaceOverlay = overlayMetricsSupported();
+    if (!request.replaceOverlay) {
+        request.sysinfoLabels.clear();
+        request.settingsBadges.clear();
+        request.sysinfoLabels2.clear();
+        request.settingsBadges2.clear();
+    }
     return request;
 }
 
@@ -2631,7 +2669,8 @@ bool RuntimeClient::refreshMediaIfReady() {
             }
         } else if (isTurrisProductId(connection_.productId)) {
             // API 8 runtimes without the optional capability getter retain
-            // their baseline catalog support, except for Turris.
+            // their baseline catalog support. The Turris catalog exists only
+            // on runtimes that advertise device.media-catalog.v1.
             mediaRefreshPending_ = false;
             return false;
         }
@@ -4290,9 +4329,13 @@ void RuntimeClient::requestDeviceSpecifications(
                 deviceSpecificationsPayloadIsEmpty(value);
             const bool supportedProduct =
                 supportsDeviceSpecifications(expectedProductId);
+            // A supported product may still answer Unsupported: Turris
+            // reports specifications only after the device confirmed them,
+            // and older runtimes never report them for Turris.
             const bool statusAndPayloadAreValid = supportedProduct
                 ? (readyPayloadIsValid ||
-                   (value.status == QStringLiteral("Unavailable") &&
+                   ((value.status == QStringLiteral("Unavailable") ||
+                     value.status == QStringLiteral("Unsupported")) &&
                     emptyPayload))
                 : (value.status == QStringLiteral("Unsupported") &&
                    emptyPayload);

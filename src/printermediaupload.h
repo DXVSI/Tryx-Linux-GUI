@@ -10,6 +10,9 @@ namespace tryx::printer_media {
 struct PrinterMediaUploadOptions {
     quint64 fixedTrackId = 0;
     bool allowKeepalive = true;
+    // Writes one structural line per transfer stage (name length, sizes,
+    // device status); never the media name.
+    bool logTransferStages = false;
     std::function<bool(QFile &, qint64, const std::function<bool()> &)> validateSource;
 };
 

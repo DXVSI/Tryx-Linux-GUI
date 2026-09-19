@@ -91,8 +91,21 @@ message DeviceDisplayPanelSummary {
   optional Kind kind = 1;
 }
 
+// Where the device keeps its files (vendor StoragePb inside BoardParamPb).
+// Read for diagnostics only.
+message DeviceStorageSummary {
+  optional string mount_base = 2;
+  optional string data_folder = 3;
+}
+
 message DeviceBoardSummary {
+  DeviceStorageSummary storage = 1;
   DeviceDisplayPanelSummary display_panel = 2;
+}
+
+message DeviceVideoDecoderSummary {
+  optional uint32 width = 1;
+  optional uint32 height = 2;
 }
 
 message DeviceVideoOutputSummary {
@@ -109,7 +122,14 @@ message DeviceRuntimeBehaviorSummary {
 // protocol layer.
 message SystemConfiguration {
   optional string reported_product = 1;
+  // Device-side default media for power-on and standby (vendor SysConfigPb
+  // fields 2 and 3). Turris writes them back unchanged in its user
+  // configuration instead of guessing profile defaults.
+  optional string poweron_media_file = 2;
+  optional string standby_media_file = 3;
   DeviceBoardSummary board_summary = 9;
+  // Vendor VDecParamPb: the decoder frame size the firmware configures.
+  DeviceVideoDecoderSummary video_decoder = 10;
   DeviceVideoOutputSummary video_output = 12;
   DeviceRuntimeBehaviorSummary runtime_behavior = 14;
 }

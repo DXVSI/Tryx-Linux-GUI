@@ -2742,25 +2742,70 @@ void PrinterOperationCoordinator::handleUploadFinished(
         if (updated == operations_.end()) {
             return;
         }
+        const std::optional<PrinterProductProfile> completedProfile =
+            printerProductProfileForId(context.productId);
+        // Turris stores an uploaded file without showing it; PASE products
+        // without a catalog activate the upload immediately.
+        const bool storesOnly = completedProfile &&
+            completedProfile->family == PrinterProtocolFamily::Turris;
         if (updated->info.applyAfterUpload) {
+            if (!context.supportsDisplayConfiguration) {
+                removePreparedFileForOperation(operationId);
+                finishOperation(
+                    operationId, QStringLiteral("Failed"),
+                    QStringLiteral("UnsupportedProduct"), QString(),
+                    tryx::DeviceManagerMessages::tr(
+                        "Media was uploaded, but display configuration is not supported for this product"));
+                return;
+            }
+            if (updated->cancelRequested) {
+                const QString completedRemoteName = updated->remoteName;
+                removePreparedFileForOperation(operationId);
+                emit mediaUploaded(completedRemoteName);
+                finishOperation(
+                    operationId, QStringLiteral("Succeeded"), QString(), QString(),
+                    tryx::DeviceManagerMessages::tr(
+                        "Upload completed before cancellation; apply was skipped"));
+                return;
+            }
+            updated->mediaFile = updated->remoteName;
+            const QString completedRemoteName = updated->remoteName;
             removePreparedFileForOperation(operationId);
-            finishOperation(
-                operationId, QStringLiteral("Failed"),
-                QStringLiteral("UnsupportedProduct"), QString(),
-                tryx::DeviceManagerMessages::tr(
-                    "Media was uploaded, but display configuration is not supported for this product"));
+            updated = operations_.find(operationId);
+            if (updated == operations_.end()) {
+                return;
+            }
+            emit mediaUploaded(completedRemoteName);
+            updated = operations_.find(operationId);
+            if (updated == operations_.end()) {
+                return;
+            }
+            updated->info.state = QStringLiteral("Applying");
+            updated->info.stage = QStringLiteral("Applying");
+            updated->info.message = tryx::DeviceManagerMessages::tr(
+                "Applying the uploaded media...");
+            publishOperation(operationId);
+            dispatchApplyRequest(context, *updated);
             return;
         }
         const QString completedRemoteName = updated->remoteName;
         const bool cancellationRequested = updated->cancelRequested;
         removePreparedFileForOperation(operationId);
         emit mediaUploaded(completedRemoteName);
-        finishOperation(
-            operationId, QStringLiteral("Succeeded"), QString(), QString(),
-            cancellationRequested
+        QString completionMessage;
+        if (storesOnly) {
+            completionMessage = cancellationRequested
+                ? tryx::DeviceManagerMessages::tr(
+                      "Media was uploaded before cancellation completed")
+                : tryx::DeviceManagerMessages::tr("Media uploaded");
+        } else {
+            completionMessage = cancellationRequested
                 ? tryx::DeviceManagerMessages::tr(
                       "Media was uploaded and activated before cancellation completed")
-                : tryx::DeviceManagerMessages::tr("Media uploaded and activated"));
+                : tryx::DeviceManagerMessages::tr("Media uploaded and activated");
+        }
+        finishOperation(operationId, QStringLiteral("Succeeded"), QString(),
+                        QString(), completionMessage);
         return;
     }
     updated->info.state = QStringLiteral("Refreshing");
@@ -3339,7 +3384,8 @@ void PrinterOperationCoordinator::handleMediaListReady(
             for (int attempt = 0; attempt < 8; ++attempt) {
                 const QString candidate =
                     h264PrinterNameForConversion(
-                    generatedPrinterMediaName(originalSuffix),
+                    generatedPrinterMediaName(originalSuffix,
+                                              record.printerProductId),
                     record.printerProductId,
                     record.mediaConversion);
                 if (candidate != previousRemoteName &&
@@ -3644,7 +3690,8 @@ void PrinterOperationCoordinator::handleMediaListReady(
             for (int attempt = 0; attempt < 8; ++attempt) {
                 const QString candidate =
                     h264PrinterNameForConversion(
-                    generatedPrinterMediaName(originalSuffix),
+                    generatedPrinterMediaName(originalSuffix,
+                                              record.printerProductId),
                     record.printerProductId,
                     record.mediaConversion);
                 if (!files.contains(candidate)) {
@@ -4011,6 +4058,19 @@ QString PrinterOperationCoordinator::queueStageDeviceMediaOperation(
             tryx::DeviceManagerMessages::tr(
                 "Media catalog export is not supported for USB product %1")
                 .arg(printerProductIdString(context.productId)));
+    }
+    {
+        // Save as new / Replace need the media pull command, which Turris
+        // does not implement.
+        const std::optional<PrinterProductProfile> stageProfile =
+            printerProductProfileForId(context.productId);
+        if (!stageProfile || !stageProfile->mediaPullSupported) {
+            return reject(
+                QStringLiteral("UnsupportedProduct"),
+                tryx::DeviceManagerMessages::tr(
+                    "Media catalog export is not supported for USB product %1")
+                    .arg(printerProductIdString(context.productId)));
+        }
     }
     if (!activeOperationId_.isEmpty()) {
         return reject(
@@ -4640,6 +4700,14 @@ QString PrinterOperationCoordinator::queueUploadOperation(
         }
         normalizedApplyRequest.replaceOverlay = updateMetrics || normalizedApplyRequest.replaceOverlay
             || !normalizedApplyRequest.sysinfoLabels.isEmpty() || !normalizedApplyRequest.settingsBadges.isEmpty();
+        // A bare overlay rebuild is dropped, not rejected, when the device
+        // withdrew overlay metrics; explicit metric or badge content still
+        // fails the capability gate below.
+        if (!context.supportsOverlayMetrics && !updateMetrics
+            && normalizedApplyRequest.sysinfoLabels.isEmpty() && normalizedApplyRequest.settingsBadges.isEmpty()
+            && normalizedApplyRequest.sysinfoLabels2.isEmpty() && normalizedApplyRequest.settingsBadges2.isEmpty()) {
+            normalizedApplyRequest.replaceOverlay = false;
+        }
         overlayStyleValid = tryx::pase_overlay_config::normalizeAndValidatePaseApplyOverlayStyles(&normalizedApplyRequest);
     }
     TryxRuntimeOverlayBadgesV1 normalizedBadges;
@@ -4739,6 +4807,34 @@ QString PrinterOperationCoordinator::queueUploadOperation(
                 "This media workflow is not supported for USB product %1")
                 .arg(printerProductIdString(productProfile->productId)));
     }
+    if (applyAfterUpload &&
+        normalizedApplyRequest.screenMode == QStringLiteral("Screen Splitting") &&
+        !context.supportsSplitAreaMedia) {
+        return reject(
+            QStringLiteral("UnsupportedConfiguration"),
+            tryx::DeviceManagerMessages::tr(
+                "Split screen is not supported for USB product %1")
+                .arg(printerProductIdString(productProfile->productId)));
+    }
+    if (applyAfterUpload &&
+        ((normalizedApplyRequest.display.orientationPresent &&
+          normalizedApplyRequest.display.waterfallMode) ||
+         normalizedApplyRequest.waterfallMode) &&
+        !productProfile->waterfallSupported) {
+        return reject(
+            QStringLiteral("UnsupportedConfiguration"),
+            tryx::DeviceManagerMessages::tr(
+                "Waterfall orientation is not supported for USB product %1")
+                .arg(printerProductIdString(productProfile->productId)));
+    }
+    // The source origin identity is hashed before conversion whenever the
+    // durable retry record requires it (Turris keeps it for manifest
+    // compatibility even though its catalog is available), or when an
+    // existing-media lookup is requested.
+    const bool originRequired =
+        tryx::printer_media_identity::printerMediaOriginRequired(
+            *productProfile);
+    const bool analyzeFirst = ensureExisting || originRequired;
     if (!activeOperationId_.isEmpty()) {
         return reject(
             QStringLiteral("Busy"),
@@ -4839,13 +4935,13 @@ QString PrinterOperationCoordinator::queueUploadOperation(
     OperationRecord record;
     record.info.id = operationId;
     record.info.kind = kind;
-    record.info.state = ensureExisting ? QStringLiteral("Hashing")
-                                       : QStringLiteral("Converting");
-    record.info.stage = ensureExisting
+    record.info.state = analyzeFirst ? QStringLiteral("Hashing")
+                                     : QStringLiteral("Converting");
+    record.info.stage = analyzeFirst
         ? QStringLiteral("HashingSource")
         : QStringLiteral("Converting");
     record.info.subject = subject;
-    record.info.message = ensureExisting
+    record.info.message = analyzeFirst
         ? tryx::DeviceManagerMessages::tr(
               "Calculating the source media content identity...")
         : tryx::DeviceManagerMessages::tr("Preparing media for printer-class upload...");
@@ -4862,6 +4958,7 @@ QString PrinterOperationCoordinator::queueUploadOperation(
     record.updateMetrics =
         updateMetrics || normalizedApplyRequest.replaceOverlay;
     record.ensureExisting = ensureExisting;
+    record.originRequired = originRequired;
     record.sourcePath = effectiveSourcePath;
     record.conversionProfile =
         tryx::printer_media_identity::printerConversionProfile(
@@ -4878,7 +4975,7 @@ QString PrinterOperationCoordinator::queueUploadOperation(
     operationOrder_.append(operationId);
     activeOperationId_ = operationId;
     publishOperation(operationId);
-    if (ensureExisting) {
+    if (analyzeFirst) {
         if (profile.target == QStringLiteral("SplitArea")) {
             emit requestAnalyzeSourceWithProfile(
                 operationId, record.sourcePath, context.generation,
@@ -5330,12 +5427,17 @@ QString PrinterOperationCoordinator::queueApplyOperation(
         normalizedRequest.display.standbyPresent ||
         normalizedRequest.display.backlightPresent ||
         normalizedRequest.display.orientationPresent;
-    const bool overlayRequested =
-        updateMetrics || normalizedRequest.replaceOverlay ||
+    const bool overlayContentRequested =
+        updateMetrics ||
         !normalizedRequest.sysinfoLabels.isEmpty() ||
         !normalizedRequest.settingsBadges.isEmpty() ||
         !normalizedRequest.sysinfoLabels2.isEmpty() ||
         !normalizedRequest.settingsBadges2.isEmpty();
+    // A bare overlay rebuild is dropped when the device withdrew overlay
+    // metrics; explicit content still hits the capability gate below.
+    const bool overlayRequested =
+        overlayContentRequested ||
+        (normalizedRequest.replaceOverlay && context.supportsOverlayMetrics);
     normalizedRequest.replaceOverlay = overlayRequested;
     const bool overlayStyleValid =
         normalizeAndValidatePaseApplyOverlayStyles(&normalizedRequest);
@@ -5399,6 +5501,28 @@ QString PrinterOperationCoordinator::queueApplyOperation(
             tryx::DeviceManagerMessages::tr(
                 "Display configuration is not supported for USB product %1")
                 .arg(printerProductIdString(context.productId)));
+    }
+    if (normalizedRequest.screenMode == QStringLiteral("Screen Splitting") &&
+        !context.supportsSplitAreaMedia) {
+        return reject(
+            QStringLiteral("UnsupportedConfiguration"),
+            tryx::DeviceManagerMessages::tr(
+                "Split screen is not supported for USB product %1")
+                .arg(printerProductIdString(context.productId)));
+    }
+    {
+        const std::optional<PrinterProductProfile> applyProfile =
+            printerProductProfileForId(context.productId);
+        if (applyProfile && !applyProfile->waterfallSupported &&
+            ((normalizedRequest.display.orientationPresent &&
+              normalizedRequest.display.waterfallMode) ||
+             normalizedRequest.waterfallMode)) {
+            return reject(
+                QStringLiteral("UnsupportedConfiguration"),
+                tryx::DeviceManagerMessages::tr(
+                    "Waterfall orientation is not supported for USB product %1")
+                    .arg(printerProductIdString(context.productId)));
+        }
     }
     if (!activeOperationId_.isEmpty()) {
         return reject(
@@ -5582,6 +5706,14 @@ QString PrinterOperationCoordinator::queueMetricsConfigOperation(
             tryx::DeviceManagerMessages::tr(
                 "Overlay metrics are not supported for USB product %1")
                 .arg(printerProductIdString(context.productId)));
+    }
+    {
+        QString productError;
+        if (!tryx::pase_overlay_config::paseMetricsRequestIsSupportedByProduct(
+                request, context.productId, &productError)) {
+            return reject(QStringLiteral("UnsupportedConfiguration"),
+                          productError);
+        }
     }
     if (!activeOperationId_.isEmpty()) {
         return reject(
@@ -5841,7 +5973,7 @@ QString PrinterOperationCoordinator::retryOperation(
         record.remoteName =
             tryx::printer_media_identity::h264PrinterNameForConversion(
                 tryx::printer_media_identity::generatedPrinterMediaName(
-                    originalSuffix),
+                    originalSuffix, record.printerProductId),
                 record.printerProductId, record.mediaConversion);
     }
     record.info.resultName = record.remoteName;
@@ -6133,7 +6265,8 @@ void PrinterOperationCoordinator::handleSourceAnalyzed(
         return;
     }
     OperationRecord &record = operations_[operationId];
-    if (!record.ensureExisting || record.cancelRequested ||
+    if (!(record.ensureExisting || record.originRequired) ||
+        record.cancelRequested ||
         !isSha256Hex(contentSha256) || sourceSize <= 0 ||
         conversionProfile.isEmpty() ||
         QFileInfo(localPath).absoluteFilePath() != record.sourcePath) {
@@ -6157,6 +6290,29 @@ void PrinterOperationCoordinator::handleSourceAnalyzed(
     record.sourceContentSha256 = contentSha256;
     record.sourceSize = sourceSize;
     record.conversionProfile = conversionProfile;
+    if (!record.ensureExisting) {
+        // Origin-only analysis: no existing-media lookup was requested, so
+        // conversion starts directly with the verified source identity and
+        // the preparer re-checks it after encoding.
+        record.info.state = QStringLiteral("Converting");
+        record.info.stage = QStringLiteral("Converting");
+        record.info.message = tryx::DeviceManagerMessages::tr(
+            "Preparing media for printer-class upload...");
+        publishOperation(operationId);
+        if (record.mediaPreparationProfile.target ==
+            QStringLiteral("SplitArea")) {
+            emit requestPrepareMediaWithProfile(
+                operationId, context.devicePath, record.sourcePath,
+                record.sourceContentSha256, context.generation,
+                record.mediaPreparationProfile, record.printerProductId);
+        } else {
+            emit requestPrepareMedia(
+                operationId, context.devicePath, record.sourcePath,
+                record.sourceContentSha256, context.generation,
+                record.mediaTransform, record.printerProductId);
+        }
+        return;
+    }
     record.originLookupPending = true;
     record.info.state = QStringLiteral("Refreshing");
     record.info.stage = QStringLiteral("RefreshingMedia");

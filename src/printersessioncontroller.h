@@ -4,6 +4,7 @@
 #include "runtimecontract.h"
 #include <QElapsedTimer>
 #include <QObject>
+#include <QSet>
 #include <QTimer>
 #include <functional>
 #include <memory>
@@ -40,6 +41,9 @@ public:
         PrinterOverlayLeaseMode printerOverlayLeaseMode =
             PrinterOverlayLeaseMode::PingAndOverlayLease;
         quint64 displayStateReadGeneration = 0;
+        // Capability tokens withdrawn by the worker for the current physical
+        // generation (Turris fail-safe negotiation).
+        QSet<QString> printerUnavailableCapabilities;
         TryxRuntimeMetricsState metricsState;
         TryxRuntimeDisplayState displayState;
         QString legacyProductId;
@@ -194,6 +198,9 @@ public:
         const PrinterProtocol::PaseDisplayState &state, quint64 generation);
     void handleWorkerPrinterDisplayStateFailed(const QString &message,
                                                quint64 generation);
+    void handleWorkerPrinterCapabilityUnavailable(const QString &capabilityToken,
+                                                  const QString &reason,
+                                                  quint64 generation);
     void handleWorkerSysinfoSent();
     void handleWorkerPrinterSysinfoSent(quint64 generation);
     void handleWorkerPrinterSysinfoFailed(const QString &message,
@@ -212,6 +219,7 @@ public:
 signals:
     void requestGenerationGate(quint64 generation, bool open);
     void printerDisplaySessionChanged(bool active);
+    void deviceCapabilitiesChanged();
     void requestCancelPrinterPreparation(quint64 currentGeneration);
     void printerOperationsCancelled();
     void mediaListUpdated(const QStringList &files);

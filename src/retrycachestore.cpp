@@ -2193,7 +2193,8 @@ bool parseLegacyManifest(const QJsonObject &manifest,
     if ((kind == QStringLiteral("EnsureMediaAndApply") &&
          !originComplete) ||
         (version == 10 &&
-         profile->productId == tryx::turris_media::kProductId &&
+         tryx::printer_media_identity::printerMediaOriginRequired(
+             *profile) &&
          !originComplete)) {
         if (detail) {
             *detail = QStringLiteral(
@@ -3339,7 +3340,7 @@ bool parseStoredDispatch(const QJsonValue &value,
             static_cast<qint64>(sourceContentSize),
             conversionProfile};
     }
-    if (profile->productId == tryx::turris_media::kProductId &&
+    if (tryx::printer_media_identity::printerMediaOriginRequired(*profile) &&
         !origin.has_value()) {
         if (detail) {
             *detail = QStringLiteral(
@@ -10160,7 +10161,8 @@ RetryCacheStore::MutationResult RetryCacheStore::persistPrepared(
                        printerConversionProfileMatchesConversion(
                            input.origin->conversionProfile, *profile,
                            input.conversion)
-             : profile->productId != tryx::turris_media::kProductId);
+             : !printer_media_identity::printerMediaOriginRequired(
+                   *profile));
     const QFileInfo stagingInfo(input.prepared.stagingPath);
     const bool preparedInputValid =
         stagingInfo.isAbsolute() && input.prepared.expectedSize > 0 &&

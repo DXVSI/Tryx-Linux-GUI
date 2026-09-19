@@ -54,21 +54,22 @@ require_source_pattern src/pasemediaclient.cpp 'PaseMediaClient::pullValidatedUs
 reject_source_pattern src/printertransactionchannel.cpp 'mutable_user_configuration_query('
 reject_source_pattern src/printertransactionchannel.h 'mediaPullMaximumBytes_'
 require_source_pattern src/printermediaupload.cpp 'mutable_transfer_chunk('
-require_source_pattern src/turrismediaclient.cpp 'tryx::turris_media::validateBlob('
+require_source_pattern src/pasemediaclient.cpp 'tryx::turris_media::validateBlob('
+reject_source_pattern tryx-panorama.pro 'src/turrismediaclient.cpp'
 reject_source_pattern src/printerprotocol.cpp 'mutable_transfer_chunk('
 reject_source_pattern src/printertransactionchannel.cpp 'mutable_transfer_begin('
 reject_source_pattern src/printermediaupload.cpp 'productProfile_'
 reject_source_pattern src/printerprotocol.cpp 'class LibusbAsyncTransport'
 for protocol_layer in printerproductprofile printerframecodec printerdiscovery \
     usbprintertransport printertransactionchannel paseconfigurationclient \
-    pasemediaclient turrismediaclient printermediaupload printermediahelpers \
+    pasemediaclient printermediaupload printermediahelpers \
     printeroperation; do
     require_source_pattern tryx-panorama.pro "src/$protocol_layer.cpp"
     require_source_pattern tests/printerprotocol_tests.pro "src/$protocol_layer.cpp"
 done
 require_source_pattern src/printertransactionchannel.h 'UsbPrinterTransport libusbTransport_;'
 require_source_pattern src/printertransactionchannel.h 'using KeepaliveFrameFactory = QByteArray (*)(QString *);'
-for model_client in paseconfigurationclient pasemediaclient turrismediaclient; do
+for model_client in paseconfigurationclient pasemediaclient; do
     require_source_pattern "src/$model_client.h" 'PrinterTransactionChannel &channel_;'
     reject_source_pattern "src/$model_client.h" 'std::unique_ptr<PrinterTransactionChannel>'
     reject_source_pattern "src/$model_client.h" 'receiveBuffer_'
@@ -1361,7 +1362,11 @@ splitPreparationTargetRejectsTurrisBeforePreparation
 pasePreparationProfilesProduceExactGeometry
 udbSessionBootstrapDecodesDeviceSpecifications
 udbSessionActivationFailureDiscardsDeviceSpecifications
-turrisWorkerSessionSendsNoPaseTraffic
+turrisSessionNegotiatesCommandsFailSafe
+turrisSessionRejectedDeviceInfoFallsBackToTransferOnly
+turrisWorkerSessionActivatesWithoutKeepalive
+turrisWorkerRejectedPingDisablesNegotiatedKeepalive
+turrisWorkerOverlayRejectionKeepsSessionActive
 restoredOverlayWaitsForKeepaliveBeforeSessionReady
 restoredOverlayFailureBecomesLostWithoutReplay
 quickStagedSourceValidationAndLegacyBoundary
@@ -1375,7 +1380,7 @@ finalizationUnknownRestartReconcilesReadOnly
 ambiguousFileListNeverConfirmsPreparedUpload
 uploadDispatchBarrierRevalidatesAfterUploadingPublication
 deleteReconcileOnlyNeverDispatchesFileRemove
-turrisLostFinalAckDoesNotReconcileOrRetransmit
+turrisLostFinalAckReconcilesThroughCatalog
 firmwareExclusiveGateRejectsDeviceWork
 firmwareReleaseFenceWaitsForLateQuiesce
 persistentUsbInputFailureStopsSameGenerationWithoutRecovery

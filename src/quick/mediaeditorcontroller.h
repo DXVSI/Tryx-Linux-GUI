@@ -129,6 +129,9 @@ public:
 
     Q_INVOKABLE void begin(const QUrl &source);
     Q_INVOKABLE void beginDropped(const QVariantList &sources);
+    // Opens the editor with a drop that could not be turned into a readable
+    // local file, showing why instead of a misleading source error.
+    Q_INVOKABLE void rejectDropped(const QString &message);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void reset();
     Q_INVOKABLE void submit();
