@@ -500,6 +500,24 @@ void MediaEditorController::beginDropped(
     begin(sources.constFirst().toUrl());
 }
 
+void MediaEditorController::rejectDropped(const QString &message) {
+    if (rejectWhilePreviewCleanupActive() || !pendingOperationId_.isEmpty()) {
+        return;
+    }
+    preview_.cancel();
+    reset();
+    localPath_.clear();
+    sourceName_.clear();
+    editorError_ = message.trimmed().isEmpty()
+        ? tr("Drop exactly one local media file into the editor")
+        : message.trimmed();
+    if (!open_) {
+        open_ = true;
+        emit openChanged();
+    }
+    emit previewChanged();
+}
+
 void MediaEditorController::cancel() {
     if (!pendingOperationId_.isEmpty()) {
         editorError_ = tr(

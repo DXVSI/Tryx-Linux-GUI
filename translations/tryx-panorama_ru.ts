@@ -10214,6 +10214,17 @@
     </message>
 </context>
 <context>
+    <name>PortalDropResolver</name>
+    <message>
+        <source>The desktop portal could not share the dropped file: %1</source>
+        <translation>Портал рабочего стола не смог передать перетащенный файл: %1</translation>
+    </message>
+    <message>
+        <source>The desktop portal did not share a local file for this drop.</source>
+        <translation>Портал рабочего стола не передал локальный файл для этого перетаскивания.</translation>
+    </message>
+</context>
+<context>
     <name>PortalFileChooser</name>
     <message>
         <source>The desktop file chooser timed out. Please try again.</source>

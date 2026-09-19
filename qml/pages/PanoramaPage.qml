@@ -13,6 +13,7 @@ ScrollView {
     required property var editor
     required property var deviceMedia
     property var mediaSourceChooser: null
+    property var mediaDropResolver: null
     property var mediaExportChooser: null
 
     clip: true
@@ -1138,10 +1139,37 @@ ScrollView {
                         id: dropArea
                         anchors.fill: parent
                         enabled: !root.runtime.operationBusy &&
-                                 !(root.mediaSourceChooser && root.mediaSourceChooser.busy)
+                                 !(root.mediaSourceChooser && root.mediaSourceChooser.busy) &&
+                                 !(root.mediaDropResolver && root.mediaDropResolver.busy)
                         onDropped: drop => {
+                            // In the Flatpak a host drag carries host paths the
+                            // sandbox cannot read; a portal transfer key, when the
+                            // source offers one, is exchanged for exported files.
+                            const transferFormat = "application/vnd.portal.filetransfer"
+                            const transferKey =
+                                root.mediaDropResolver &&
+                                drop.formats.indexOf(transferFormat) >= 0
+                                ? String(drop.getDataAsString(transferFormat))
+                                : ""
+                            if (transferKey.length > 0 &&
+                                    root.mediaDropResolver.resolve(transferKey)) {
+                                drop.acceptProposedAction()
+                                return
+                            }
                             root.editor.beginDropped(drop.urls)
                             drop.acceptProposedAction()
+                        }
+                    }
+
+                    Connections {
+                        target: root.mediaDropResolver
+
+                        function onResolved(urls) {
+                            root.editor.beginDropped(urls)
+                        }
+
+                        function onFailed(message) {
+                            root.editor.rejectDropped(message)
                         }
                     }
                 }

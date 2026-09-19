@@ -14,6 +14,7 @@
 #include "windowchromecontroller.h"
 #include "packagingcontext.h"
 #include "portalfilechooser.h"
+#include "portaldropresolver.h"
 
 #include <QCoreApplication>
 #include <QGuiApplication>
@@ -252,7 +253,9 @@ int main(int argc, char *argv[]) {
     std::unique_ptr<PortalFileChooser> mediaSourceChooser;
     std::unique_ptr<PortalFileChooser> mediaExportChooser;
     std::unique_ptr<PortalFileChooser> supportExportChooser;
+    std::unique_ptr<PortalDropResolver> mediaDropResolver;
     if (tryx::packaging::isFlatpak()) {
+        mediaDropResolver = std::make_unique<PortalDropResolver>();
         mediaSourceChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::MediaFile);
         mediaExportChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::Directory);
         supportExportChooser = std::make_unique<PortalFileChooser>(PortalFileChooser::Mode::Directory);
@@ -276,6 +279,8 @@ int main(int argc, char *argv[]) {
     engine.setInitialProperties({
         {QStringLiteral("mediaSourceChooser"),
          QVariant::fromValue(static_cast<QObject *>(mediaSourceChooser.get()))},
+        {QStringLiteral("mediaDropResolver"),
+         QVariant::fromValue(static_cast<QObject *>(mediaDropResolver.get()))},
         {QStringLiteral("mediaExportChooser"),
          QVariant::fromValue(static_cast<QObject *>(mediaExportChooser.get()))},
         {QStringLiteral("supportExportChooser"),
