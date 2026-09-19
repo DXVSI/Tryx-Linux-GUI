@@ -10,6 +10,10 @@ struct PrinterProductProfile;
 namespace tryx::printer_media_identity {
 
 QString generatedPrinterMediaName(const QString &extension);
+// Turris uses the official app's name layout, "yyyy-MM-dd_HH-mm-ss-zzz.<ext>",
+// with a per-process millisecond that only moves forward so repeated calls stay
+// unique; other products keep the random suffix.
+QString generatedPrinterMediaName(const QString &extension, quint16 productId);
 QString printerConversionProfile(
     const QString &path,
     const TryxRuntimeMediaTransform &transform,

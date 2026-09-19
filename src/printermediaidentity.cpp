@@ -11,6 +11,7 @@
 #include <QStringList>
 #include <QUuid>
 
+#include <atomic>
 #include <optional>
 
 namespace tryx::printer_media_identity {
@@ -21,12 +22,18 @@ QString turrisConversionProfileBase(const QString &typeName) {
     if (typeName == QStringLiteral("image")) {
         // One frame at 30 fps with CRF 18, as the official converter.
         return QStringLiteral(
-            "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
+            "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali2");
     }
-    // Video and GIF at 60 fps with the official converter's source-derived
-    // bitrate, one-second GOP and no B-frames.
+    if (typeName == QStringLiteral("gif")) {
+        // 60 fps, CRF 18 with the animation tune and no scene cuts, as the
+        // official converter encodes GIF.
+        return QStringLiteral(
+            "turris-mxhd-v1-gif-1280x720-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali2");
+    }
+    // Video at 60 fps with the official converter's source-derived bitrate,
+    // one-second GOP and no B-frames.
     return QStringLiteral(
-        "turris-mxhd-v1-%1-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali")
+        "turris-mxhd-v1-%1-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2")
         .arg(typeName);
 }
 
@@ -74,6 +81,25 @@ QString generatedPrinterMediaName(const QString &extension) {
                               .left(8);
     return QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz") +
            QLatin1Char('-') + nonce + QLatin1Char('.') + cleanExtension;
+}
+
+QString generatedPrinterMediaName(const QString &extension, quint16 productId) {
+    if (productId != turris_media::kProductId) {
+        return generatedPrinterMediaName(extension);
+    }
+    const QString cleanExtension = extension.startsWith(QLatin1Char('.'))
+        ? extension.mid(1).toLower()
+        : extension.toLower();
+    static std::atomic<qint64> lastMilliseconds{0};
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 previous = lastMilliseconds.load();
+    qint64 chosen = 0;
+    do {
+        chosen = now > previous ? now : previous + 1;
+    } while (!lastMilliseconds.compare_exchange_weak(previous, chosen));
+    return QDateTime::fromMSecsSinceEpoch(chosen).toString(
+               QStringLiteral("yyyy-MM-dd_HH-mm-ss-zzz")) +
+           QLatin1Char('.') + cleanExtension;
 }
 
 QString printerConversionProfile(
@@ -281,6 +307,9 @@ bool isCanonicalPrinterConversionProfile(
              QStringLiteral("turris-mxhd-v1-gif-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps"),
              QStringLiteral("turris-mxhd-v1-video-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"),
              QStringLiteral("turris-mxhd-v1-gif-1280x720-yuv420p-30fps-libx264-main41-fast-12mbps-x264v2"),
+             QStringLiteral("turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali"),
+             QStringLiteral("turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"),
+             QStringLiteral("turris-mxhd-v1-gif-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"),
          }) {
         if (profileMatchesBaseOrTransform(conversionProfile, legacyBase)) {
             return true;

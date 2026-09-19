@@ -141,11 +141,31 @@ bool uploadPrinterMedia(PrinterTransactionChannel &channel,
             return false;
         }
     }
+    const auto logStage = [&options, &remoteFileName, declaredSize](
+                              const char *stage, const QString &outcome, qint64 bytes,
+                              qint64 chunks) {
+        if (!options.logTransferStages) {
+            return;
+        }
+        qInfo().noquote()
+            << QStringLiteral(
+                   "tryx_turris_upload stage=%1 outcome=%2 name_length=%3 bytes=%4 "
+                   "total_bytes=%5 chunks=%6")
+                   .arg(QString::fromLatin1(stage), outcome)
+                   .arg(remoteFileName.size())
+                   .arg(bytes)
+                   .arg(declaredSize)
+                   .arg(chunks);
+    };
     const auto checkStatus =
-        [errorMessage](const panorama::wire::v1::TransferStatus &status) {
+        [errorMessage, &logStage](const panorama::wire::v1::TransferStatus &status,
+                                  const char *stage, qint64 bytes, qint64 chunks) {
             if (status.status() == panorama::wire::v1::TransferStatus::OK) {
                 return true;
             }
+            logStage(stage,
+                     QStringLiteral("status-%1").arg(static_cast<int>(status.status())),
+                     bytes, chunks);
             if (errorMessage) {
                 *errorMessage = QObject::tr("File transfer failed: %1")
                                     .arg(transmitStatusText(status.status()));
@@ -191,7 +211,7 @@ bool uploadPrinterMedia(PrinterTransactionChannel &channel,
         channel.closeDevice();
         return false;
     }
-    if (!checkStatus(response.transfer_begin_status())) {
+    if (!checkStatus(response.transfer_begin_status(), "begin", 0, 0)) {
         if (mutationDetails) {
             mutationDetails->outcome = MutationOutcome::Rejected;
         }
@@ -199,7 +219,10 @@ bool uploadPrinterMedia(PrinterTransactionChannel &channel,
         return false;
     }
 
+    logStage("begin", QStringLiteral("accepted"), 0, 0);
+
     qint64 bytesSent = 0;
+    qint64 chunksSent = 0;
     if (mutationDetails) {
         mutationDetails->outcome = MutationOutcome::PartialOrUnknown;
         mutationDetails->stage = QStringLiteral("Transferring");
@@ -249,11 +272,13 @@ bool uploadPrinterMedia(PrinterTransactionChannel &channel,
             channel.closeDevice();
             return false;
         }
-        if (!checkStatus(response.transfer_chunk_status())) {
+        if (!checkStatus(response.transfer_chunk_status(), "data", bytesSent,
+                         chunksSent)) {
             channel.closeDevice();
             return false;
         }
         bytesSent += chunk.size();
+        ++chunksSent;
         if (mutationDetails) {
             mutationDetails->bytesSent = bytesSent;
         }
@@ -313,10 +338,11 @@ bool uploadPrinterMedia(PrinterTransactionChannel &channel,
         channel.closeDevice();
         return false;
     }
-    if (!checkStatus(response.transfer_end_status())) {
+    if (!checkStatus(response.transfer_end_status(), "end", bytesSent, chunksSent)) {
         channel.closeDevice();
         return false;
     }
+    logStage("end", QStringLiteral("accepted"), bytesSent, chunksSent);
 
     if (uploadedName) {
         *uploadedName = remoteFileName;

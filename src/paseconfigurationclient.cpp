@@ -658,7 +658,7 @@ void logTurrisUserConfiguration(const char *stage,
         << QStringLiteral(
                "tryx_turris_user_config stage=%1 poweron=%2 standby=%3 standby_enable=%4 "
                "work=%5 media_mode=%6 loop_mode=%7 work_media=%8 display=%9 "
-               "backlight_enable=%10 brightness=%11 mirror=%12")
+               "backlight_enable=%10 brightness=%11 mirror=%12 work_media_length=%13")
                .arg(QString::fromLatin1(stage),
                     presence(config.has_poweron_config() &&
                              !config.poweron_config().media_file().empty()),
@@ -671,7 +671,8 @@ void logTurrisUserConfiguration(const char *stage,
                     presence(config.has_display_config()),
                     flag(config.display_config().backlight_enable()))
                .arg(config.display_config().backlight_brightness())
-               .arg(flag(config.display_config().mirror()));
+               .arg(flag(config.display_config().mirror()))
+               .arg(config.work_config().single_mode_media_file().size());
 }
 
 struct PaseMetricDefinition {
@@ -1188,7 +1189,29 @@ bool PaseConfigurationClient::bootstrapTurrisSession(
             deviceDefaultPowerOnMedia_ = isSafeDeviceMediaName(powerOn) ? powerOn : QString();
             deviceDefaultStandbyMedia_ = isSafeDeviceMediaName(standby) ? standby : QString();
             // Presence only: the names are device defaults, but keep the log
-            // free of media names anyway.
+            // free of media names anyway. Frame sizes and the storage folders
+            // are device-internal and show where and how the player works.
+            const auto frameSize = [](bool present, quint32 width, quint32 height) {
+                return present ? QStringLiteral("%1x%2").arg(width).arg(height)
+                               : QStringLiteral("absent");
+            };
+            const auto &board = systemConfiguration.board_summary();
+            qInfo().noquote()
+                << QStringLiteral(
+                       "tryx_turris_sys_config video_decoder=%1 video_output=%2 "
+                       "storage_mount=%3 storage_folder=%4")
+                       .arg(frameSize(systemConfiguration.has_video_decoder(),
+                                      systemConfiguration.video_decoder().width(),
+                                      systemConfiguration.video_decoder().height()),
+                            frameSize(systemConfiguration.has_video_output(),
+                                      systemConfiguration.video_output().width(),
+                                      systemConfiguration.video_output().height()),
+                            board.has_storage() && board.storage().has_mount_base()
+                                ? diagnosticDeviceToken(board.storage().mount_base(), 64)
+                                : QStringLiteral("absent"),
+                            board.has_storage() && board.storage().has_data_folder()
+                                ? diagnosticDeviceToken(board.storage().data_folder(), 64)
+                                : QStringLiteral("absent"));
             qInfo().noquote()
                 << QStringLiteral(
                        "tryx_turris_sys_config runtime_behavior=%1 usb_auto_keepalive=%2 "
@@ -1264,6 +1287,7 @@ bool PaseConfigurationClient::bootstrapTurrisSession(
         switch (probe(&request, panorama::wire::v1::Response::kMediaCatalog, &response,
                       "get_file_list")) {
         case Probe::Accepted:
+            logTurrisMediaCatalog("bootstrap", response.media_catalog());
             break;
         case Probe::Declined:
             negotiated_.mediaCatalog = false;

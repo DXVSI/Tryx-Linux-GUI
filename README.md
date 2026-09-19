@@ -260,10 +260,17 @@ window is shown. This switch never changes the background runtime service.
   display-only change is refused while the device has no active media, and
   applying media always turns the backlight on and restarts playback with
   the bare FileTransmitEnd the device expects. Turris media is encoded like
-  the official application: video and GIF at 60 fps with a one-second GOP,
-  no B-frames and a bitrate derived from the source (500 to 12000 kbit/s), a
-  still image as a single frame at CRF 18, all with the same x264 parameter
-  set and a media header that declares the matching frame rate.
+  the official application: video at 60 fps with a one-second GOP, no
+  B-frames and a bitrate derived from the source (500 to 12000 kbit/s), GIF
+  at 60 fps and CRF 18 with the animation tune and no scene cuts, a still
+  image as a single frame at CRF 18, all with the same x264 parameter set, no
+  aspect-ratio signalling and a media header that declares the matching frame
+  rate. Uploaded Turris files use the official application's name layout
+  (date, time and milliseconds), which keeps the device path as short as the
+  official application's.
+- The Turris log records the file-list structure (device folder, path and
+  name lengths, extension, size), the decoder frame size and storage folders
+  from the system configuration, and each upload stage, without media names.
 - Uploaded Turris files are stored on the device and shown after Apply; the
   dashboard lists the reported firmware and application versions.
 - Still unavailable for Turris: split screen, waterfall orientation, custom

@@ -18,6 +18,7 @@
 #include "mediacatalogstore.h"
 #include "pasemetricsconfigstore.h"
 #include "printermediafileintegrity.h"
+#include "printermediahelpers_p.h"
 #include "printermediaidentity.h"
 #include "printermediapreparer.h"
 #include "printermediavalidator.h"
@@ -1002,11 +1003,11 @@ private:
         if (profile.productId == 0x2011) {
             static const QStringList validBases{
                 QStringLiteral(
-                    "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali"),
+                    "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali2"),
                 QStringLiteral(
-                    "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"),
+                    "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2"),
                 QStringLiteral(
-                    "turris-mxhd-v1-gif-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"),
+                    "turris-mxhd-v1-gif-1280x720-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali2"),
             };
             for (const QString &base : validBases) {
                 if (conversionProfile == base) {
@@ -2261,6 +2262,8 @@ private slots:
     void turrisMediaFormatWriterIsAtomicAndRewinds();
     void turrisGifMediaCarriesGifOriginalType();
     void turrisMediaFollowsOfficialEncoderSettings();
+    void turrisMediaNamesFollowOfficialLayout();
+    void turrisDiagnosticTokensStayPlain();
     void turrisMediaFormatValidatorRejectsMalformedMetadata();
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
@@ -7210,7 +7213,7 @@ void PrinterProtocolTests::
     wrongProfileOrigin.remote.name =
         QStringLiteral("wrong-profile.mp4.h264_2240x1080");
     wrongProfileOrigin.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2");
     wrongProfileOrigin.operationId =
         QStringLiteral("11111111-1111-4111-8111-111111111111");
     const auto wrongProfilePersisted =
@@ -7254,7 +7257,7 @@ void PrinterProtocolTests::
     turrisOrigin.remote.name =
         QStringLiteral("turris-origin.mp4.h264_1280x720");
     turrisOrigin.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2");
     turrisOrigin.operationId =
         QStringLiteral("15151515-1515-4515-8515-151515151515");
     const auto turrisPersisted = catalog.persistOrigin(turrisOrigin);
@@ -11165,7 +11168,7 @@ void PrinterProtocolTests::turrisMediaAnalysisUses1280Profile() {
     QCOMPARE(
         analyzedSpy.first().at(4).toString(),
         QStringLiteral(
-            "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"));
+            "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2"));
 }
 
 void PrinterProtocolTests::turrisMediaFormatFrameCountParserIsStrict() {
@@ -11388,6 +11391,46 @@ void PrinterProtocolTests::
                      Qt::CaseInsensitive),
                  qPrintable(error));
     }
+}
+
+void PrinterProtocolTests::turrisMediaNamesFollowOfficialLayout() {
+    namespace identity = tryx::printer_media_identity;
+    const QRegularExpression turrisLayout(QStringLiteral(
+        "^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.png$"));
+    QStringList names;
+    for (int index = 0; index < 5; ++index) {
+        names.append(identity::generatedPrinterMediaName(QStringLiteral(".PNG"), 0x2011));
+    }
+    for (const QString &name : names) {
+        QVERIFY2(turrisLayout.match(name).hasMatch(), qPrintable(name));
+    }
+    // Calls within one millisecond still get distinct, ordered names.
+    for (int index = 1; index < names.size(); ++index) {
+        QVERIFY2(names.at(index - 1) < names.at(index), qPrintable(names.at(index)));
+    }
+    const QString uploadName = identity::h264PrinterName(names.constFirst(), 0x2011);
+    QCOMPARE(uploadName.size(), 41);
+    QVERIFY(uploadName.endsWith(QStringLiteral(".png.h264_1280x720")));
+    QVERIFY(identity::isSafePrinterUploadMediaName(uploadName));
+
+    // Other products keep the random suffix.
+    const QRegularExpression suffixedLayout(QStringLiteral(
+        "^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}-[0-9a-f]{8}\\.mp4$"));
+    const QString paseName =
+        identity::generatedPrinterMediaName(QStringLiteral("mp4"), 0x1021);
+    QVERIFY2(suffixedLayout.match(paseName).hasMatch(), qPrintable(paseName));
+}
+
+void PrinterProtocolTests::turrisDiagnosticTokensStayPlain() {
+    using tryx::printer_media::diagnosticDeviceToken;
+    QCOMPARE(diagnosticDeviceToken(std::string("/userdata/media/"), 64),
+             QStringLiteral("/userdata/media/"));
+    QCOMPARE(diagnosticDeviceToken(std::string(".h264_1280x720"), 32),
+             QStringLiteral(".h264_1280x720"));
+    QCOMPARE(diagnosticDeviceToken(std::string(), 32), QStringLiteral("none"));
+    QCOMPARE(diagnosticDeviceToken(std::string("/home/some user/"), 64),
+             QStringLiteral("other"));
+    QCOMPARE(diagnosticDeviceToken(std::string(40, 'a'), 32), QStringLiteral("other"));
 }
 
 void PrinterProtocolTests::turrisMediaFollowsOfficialEncoderSettings() {
@@ -29066,7 +29109,7 @@ void PrinterProtocolTests::
         legacy.insert(
             QStringLiteral("conversionProfile"),
             QStringLiteral(
-                "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"));
+                "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2"));
     }
     const QString shadowManifestPath = QDir(retryDirectory).filePath(
         QStringLiteral("retry-manifest.json"));
@@ -31290,7 +31333,7 @@ void PrinterProtocolTests::
         manifest.insert(
             QStringLiteral("conversionProfile"),
             QStringLiteral(
-                "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"));
+                "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2"));
     }
 
     const QByteArray manifestBytes =
@@ -33731,7 +33774,7 @@ void PrinterProtocolTests::
         manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2");
     record.sourceContentSha256 = record.preparedSha256;
     record.sourceSize = preparedBytes.size();
     manager->operationCoordinator_.operations_.insert(operationId, record);
@@ -36717,7 +36760,7 @@ void PrinterProtocolTests::turrisAcknowledgedUploadVerifiesCatalog() {
         manager->sessionController_.state_.printerDeviceSerial.trimmed();
     record.uploadDeviceGeneration = manager->sessionController_.state_.printerGeneration;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2");
     record.sourceContentSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
                                  QCryptographicHash::Sha256)
@@ -36816,7 +36859,7 @@ void PrinterProtocolTests::
     record.remoteName = remoteName;
     record.originalRemoteName = remoteName;
     record.conversionProfile = QStringLiteral(
-        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+        "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2");
     record.sourceContentSha256 = QString::fromLatin1(
         QCryptographicHash::hash(preparedBytes,
                                  QCryptographicHash::Sha256)

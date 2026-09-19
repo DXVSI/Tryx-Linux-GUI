@@ -462,7 +462,8 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         return;
     }
 
-    const QString remoteBaseName = generatedPrinterMediaName(baseExtension);
+    const QString remoteBaseName =
+        generatedPrinterMediaName(baseExtension, productId);
     const QString remoteName = h264PrinterName(
         remoteBaseName, productId, profile);
     const QString outputPath = printerTempPath(remoteName);
@@ -508,8 +509,11 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         // main 4.1, one-second GOP without B-frames, full-range BT.709, the
         // same x264 parameter set, 60 fps for video and GIF and 30 fps for a
         // single-frame still. Video uses the converter's source-derived
-        // bitrate; a still uses CRF 18.
+        // bitrate; a still uses CRF 18; GIF uses CRF 18 with the animation
+        // tune and without scene cuts. The sample aspect ratio is left unset,
+        // so the SPS carries no aspect-ratio VUI, like the official output.
         const bool turrisImage = type == panorama::MediaType::Image;
+        const bool turrisGif = type == panorama::MediaType::Gif;
         const quint32 turrisKind = turrisImage
             ? turris_media::kImageKind
             : type == panorama::MediaType::Gif ? turris_media::kGifKind
@@ -525,9 +529,13 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         const QString turrisFilter =
             filter.left(filter.size() - defaultRate.size()) +
             QStringLiteral("fps=") + framesPerSecond +
-            QStringLiteral(",scale=in_range=auto:out_range=full:out_color_matrix=bt709");
+            QStringLiteral(",scale=in_range=auto:out_range=full:out_color_matrix=bt709"
+                           ",setsar=0");
         arguments << QStringLiteral("-preset") << QStringLiteral("fast");
-        if (turrisImage) {
+        if (turrisGif) {
+            arguments << QStringLiteral("-tune") << QStringLiteral("animation");
+        }
+        if (turrisImage || turrisGif) {
             arguments << QStringLiteral("-crf") << QStringLiteral("18");
         } else {
             const SourceVideoInfo source = probeSourceVideo(
@@ -555,10 +563,16 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                   << QStringLiteral("-color_primaries") << QStringLiteral("bt709")
                   << QStringLiteral("-color_trc") << QStringLiteral("bt709")
                   << QStringLiteral("-x264-params")
-                  << QStringLiteral(
-                         "repeat-headers=1:annexb=1:aud=1:b-pyramid=0:weightp=0:"
-                         "ref=3:fullrange=on:colorprim=bt709:transfer=bt709:"
-                         "colormatrix=bt709");
+                  << (turrisGif
+                          ? QStringLiteral(
+                                "repeat-headers=1:annexb=1:aud=1:open-gop=0:"
+                                "scenecut=0:b-pyramid=0:weightp=0:ref=3:"
+                                "fullrange=on:colorprim=bt709:transfer=bt709:"
+                                "colormatrix=bt709")
+                          : QStringLiteral(
+                                "repeat-headers=1:annexb=1:aud=1:b-pyramid=0:"
+                                "weightp=0:ref=3:fullrange=on:colorprim=bt709:"
+                                "transfer=bt709:colormatrix=bt709"));
         if (turrisImage) {
             arguments << QStringLiteral("-frames:v") << QStringLiteral("1");
         }

@@ -302,6 +302,9 @@ PaseMediaClient::readMediaList(const QString &devicePath,
         return result;
     }
 
+    if (productProfile_.family == PrinterProtocolFamily::Turris) {
+        logTurrisMediaCatalog("list", response.media_catalog());
+    }
     QList<MediaFile> files;
     const auto appendFiles = [&files](const auto &protobufList, MediaSource source) {
         for (const auto &media : protobufList) {
@@ -839,6 +842,7 @@ bool PaseMediaClient::uploadMedia(const QString &devicePath, const QString &loca
     // transfer; the official Turris app never does.
     options.allowKeepalive = productProfile_.keepalive == PrinterSessionKeepalive::Ping;
     options.fixedTrackId = productProfile_.fileTransferTrackId;
+    options.logTransferStages = productProfile_.family == PrinterProtocolFamily::Turris;
     if (productProfile_.mediaContainer == PrinterMediaContainer::MxhdH264) {
         options.validateSource = [&remoteFileName, errorMessage, mutationDetails](
                                      QFile &file, qint64 declaredSize,

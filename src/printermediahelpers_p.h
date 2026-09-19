@@ -38,4 +38,13 @@ bool resolveMediaPullCandidate(const panorama::wire::v1::MediaCatalog &catalog,
                                QString *errorMessage);
 QString transmitStatusText(panorama::wire::v1::TransferStatus::Code status);
 
+// Keeps a device-internal path or suffix for diagnostics only when it is short
+// and made of plain path characters; anything else is reported as "other".
+QString diagnosticDeviceToken(const std::string &value, qsizetype maximumLength);
+// Structure of a Turris file list: per entry the device directory, path and
+// name lengths, extension, size and read-only flag. Media names stay out of
+// the log.
+void logTurrisMediaCatalog(const char *stage,
+                           const panorama::wire::v1::MediaCatalog &catalog);
+
 } // namespace tryx::printer_media

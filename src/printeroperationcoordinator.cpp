@@ -3384,7 +3384,8 @@ void PrinterOperationCoordinator::handleMediaListReady(
             for (int attempt = 0; attempt < 8; ++attempt) {
                 const QString candidate =
                     h264PrinterNameForConversion(
-                    generatedPrinterMediaName(originalSuffix),
+                    generatedPrinterMediaName(originalSuffix,
+                                              record.printerProductId),
                     record.printerProductId,
                     record.mediaConversion);
                 if (candidate != previousRemoteName &&
@@ -3689,7 +3690,8 @@ void PrinterOperationCoordinator::handleMediaListReady(
             for (int attempt = 0; attempt < 8; ++attempt) {
                 const QString candidate =
                     h264PrinterNameForConversion(
-                    generatedPrinterMediaName(originalSuffix),
+                    generatedPrinterMediaName(originalSuffix,
+                                              record.printerProductId),
                     record.printerProductId,
                     record.mediaConversion);
                 if (!files.contains(candidate)) {
@@ -5971,7 +5973,7 @@ QString PrinterOperationCoordinator::retryOperation(
         record.remoteName =
             tryx::printer_media_identity::h264PrinterNameForConversion(
                 tryx::printer_media_identity::generatedPrinterMediaName(
-                    originalSuffix),
+                    originalSuffix, record.printerProductId),
                 record.printerProductId, record.mediaConversion);
     }
     record.info.resultName = record.remoteName;
