@@ -622,6 +622,9 @@ QString tryxRuntimeCacheCleanupV1Token();
 bool tryxSavedLayoutDeviceIdentityIsCanonical(
     const QString &deviceIdentity);
 bool tryxSavedLayoutProductIdIsSupported(const QString &productId);
+// Products whose coherent DisplaySnapshotV1 the runtime can publish; wider
+// than the saved-layout set because Turris has no saved layouts.
+bool tryxDisplaySnapshotProductIdIsSupported(const QString &productId);
 QString tryxRuntimeSupportSnapshotV1Token();
 QString tryxRuntimeDowngradeV10PreparationV1Token();
 QString tryxDeviceMediaUploadV1Token();

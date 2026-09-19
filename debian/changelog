@@ -1,3 +1,22 @@
+tryx-panorama-manager (2.5.1-1) noble; urgency=medium
+
+  * Play uploaded Turris 620 images, videos, and GIFs: encode them like the official application and keep device file names short enough for the firmware player.
+  * Restart Turris playback after Apply and turn the backlight on when media is applied.
+  * Stop waiting three seconds for Turris acknowledgements the device never sends on Apply and delete.
+  * Resolve Flatpak drag and drop through the FileTransfer portal, without home directory access.
+  * Log the Turris file list structure, decoder size, storage folders, and upload stages without media names.
+
+ -- DXVSI <dxvsi123@gmail.com>  Sat, 19 Sep 2026 10:00:00 +0000
+
+tryx-panorama-manager (2.5.0-1) noble; urgency=medium
+
+  * Run Turris 620 on the PASE display pipeline: media library, apply, deletion, brightness, and overlay metrics.
+  * Negotiate Turris commands per USB generation and keep uploads working when the device rejects one.
+  * Send Turris keepalives unless the device keeps the USB link alive and confirm stored configuration by readback.
+  * Stop using the on-disk QML cache so a reinstalled package always shows its own interface.
+
+ -- DXVSI <dxvsi123@gmail.com>  Fri, 18 Sep 2026 12:00:29 +0000
+
 tryx-panorama-manager (2.4.0-1) noble; urgency=medium
 
   * Add experimental Flatpak packaging with USB and file chooser portals.

@@ -69,7 +69,6 @@ HEADERS += \
     $$PWD/../src/devicemanagermessages.h \
     $$PWD/../src/printerprotocol.h \
     $$PWD/../src/printermediaupload.h \
-    $$PWD/../src/turrismediaclient.h \
     $$PWD/../src/paseconfigurationclient.h \
     $$PWD/../src/pasemediaclient.h \
     $$PWD/../src/printertransactionchannel.h \
@@ -124,7 +123,6 @@ SOURCES += \
     $$PWD/../src/devicemediaartifactstore.cpp \
     $$PWD/../src/printerprotocol.cpp \
     $$PWD/../src/printermediaupload.cpp \
-    $$PWD/../src/turrismediaclient.cpp \
     $$PWD/../src/paseconfigurationclient.cpp \
     $$PWD/../src/pasemediaclient.cpp \
     $$PWD/../src/printeroperation.cpp \

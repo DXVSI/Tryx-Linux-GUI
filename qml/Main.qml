@@ -22,6 +22,7 @@ ApplicationWindow {
     required property bool quickSmokeTest
     required property bool autostartRequested
     property var mediaSourceChooser: null
+    property var mediaDropResolver: null
     property var mediaExportChooser: null
     property var supportExportChooser: null
 
@@ -481,6 +482,7 @@ ApplicationWindow {
                         editor: window.mediaEditor
                         deviceMedia: window.deviceMedia
                         mediaSourceChooser: window.mediaSourceChooser
+                        mediaDropResolver: window.mediaDropResolver
                         mediaExportChooser: window.mediaExportChooser
                         onApplyFinished: (outcome, message) =>
                             window.finishGuardedApply(outcome, message)

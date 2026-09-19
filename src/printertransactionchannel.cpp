@@ -1,6 +1,7 @@
 #include "printertransactionchannel.h"
 #include "printerframecodec_p.h"
 #include "printeroperation_p.h"
+#include "turrismediaformat.h"
 
 #include <QDebug>
 #include <QRandomGenerator>
@@ -105,7 +106,7 @@ bool PrinterTransactionChannel::execute(
     panorama::wire::v1::Response *response, const QString &devicePath,
     const OperationContext &context, QString *errorMessage, TransactionOutcome *outcome,
     TransactionProfile profile, bool preserveConnectionOnCleanTimeout,
-    bool acceptHeaderOnlySuccess, quint64 fixedTrackId) {
+    bool acceptHeaderOnlySuccess, quint64 fixedTrackId, int responseWindowMs) {
     if (outcome) {
         *outcome = TransactionOutcome::NotSent;
     }
@@ -206,8 +207,13 @@ bool PrinterTransactionChannel::execute(
                      parsed.body_case() == panorama::wire::v1::Response::BODY_NOT_SET));
         };
 
-    const int responseTimeoutMs =
+    const int profileResponseTimeoutMs =
         fileTransferProfile ? fileTransmitResponseTimeoutMs_ : transactionTimeoutMs_;
+    // A caller that confirms the write by a readback may shorten the wait for
+    // an acknowledgement the device is known not to send; it never extends it.
+    const int responseTimeoutMs =
+        responseWindowMs > 0 ? qMin(responseWindowMs, profileResponseTimeoutMs)
+                             : profileResponseTimeoutMs;
     QElapsedTimer responseTimer;
     responseTimer.start();
     int skippedFrames = 0;
@@ -282,6 +288,17 @@ bool PrinterTransactionChannel::execute(
             return false;
         }
         if (parsed.header().track_id() != trackId) {
+            if (expectedProductId_ == tryx::turris_media::kProductId) {
+                // Turris answers are still being characterized on hardware:
+                // record what the device sent instead of the expected frame.
+                qInfo().noquote()
+                    << QStringLiteral(
+                           "tryx_turris_wire skipped_response body=%1 version=%2 "
+                           "track_match=false expected_body=%3")
+                           .arg(static_cast<int>(parsed.body_case()))
+                           .arg(parsed.header().version())
+                           .arg(static_cast<int>(expectedBody));
+            }
             ++skippedFrames;
             skippedResponseBytes += payload.size() + 8;
             continue;
@@ -516,7 +533,11 @@ PrinterTransactionChannel::KeepaliveOutcome
 PrinterTransactionChannel::sendPeriodicFrame(const QByteArray &frame,
                                              const QString &devicePath,
                                              const OperationContext &context,
-                                             QString *errorMessage) {
+                                             QString *errorMessage,
+                                             TransactionOutcome *drainOutcome) {
+    if (drainOutcome) {
+        *drainOutcome = TransactionOutcome::NotSent;
+    }
     if (isCancelled(context)) {
         setCancelledError(errorMessage);
         return KeepaliveOutcome::FatalFailure;
@@ -533,7 +554,7 @@ PrinterTransactionChannel::sendPeriodicFrame(const QByteArray &frame,
     // write-only requests. Drain an optional response to the previous
     // command before sending the next one so asynchronous replies cannot
     // accumulate ahead of a later tracked transaction.
-    if (!drainKeepaliveResponses(context, errorMessage)) {
+    if (!drainKeepaliveResponses(context, errorMessage, false, 0, drainOutcome)) {
         closeDevice();
         return KeepaliveOutcome::FatalFailure;
     }
@@ -548,8 +569,17 @@ PrinterTransactionChannel::sendPeriodicFrame(const QByteArray &frame,
         }
         return KeepaliveOutcome::RetryableFailure;
     }
-    if (!drainKeepaliveResponses(context, errorMessage, true)) {
-        closeDevice();
+    TransactionOutcome postWriteOutcome = TransactionOutcome::NotSent;
+    if (!drainKeepaliveResponses(context, errorMessage, true, 0, &postWriteOutcome)) {
+        if (drainOutcome) {
+            *drainOutcome = postWriteOutcome;
+        }
+        // An explicit device rejection leaves the transport healthy, the
+        // same way a rejected tracked setter does; the caller decides
+        // whether the session survives it.
+        if (postWriteOutcome != TransactionOutcome::Rejected) {
+            closeDevice();
+        }
         return KeepaliveOutcome::FatalFailure;
     }
     return KeepaliveOutcome::Sent;
@@ -558,7 +588,11 @@ PrinterTransactionChannel::sendPeriodicFrame(const QByteArray &frame,
 PrinterTransactionChannel::KeepaliveOutcome
 PrinterTransactionChannel::sendPeriodicRequest(
     const panorama::wire::v1::Request &request, const QString &devicePath,
-    const OperationContext &context, QString *errorMessage) {
+    const OperationContext &context, QString *errorMessage,
+    TransactionOutcome *drainOutcome) {
+    if (drainOutcome) {
+        *drainOutcome = TransactionOutcome::NotSent;
+    }
     std::string serializedRequest;
     if (!request.SerializeToString(&serializedRequest) ||
         serializedRequest.size() >
@@ -577,7 +611,7 @@ PrinterTransactionChannel::sendPeriodicRequest(
         }
         return KeepaliveOutcome::FatalFailure;
     }
-    return sendPeriodicFrame(frame, devicePath, context, errorMessage);
+    return sendPeriodicFrame(frame, devicePath, context, errorMessage, drainOutcome);
 }
 
 int PrinterTransactionChannel::millisecondsUntilKeepalive() const {
@@ -979,6 +1013,22 @@ bool PrinterTransactionChannel::drainKeepaliveResponses(const OperationContext &
             // queued frame is stale by definition. Optional Ping,
             // RunConfig and metric replies must not tear down an otherwise
             // healthy display session.
+            if (expectedProductId_ == tryx::turris_media::kProductId) {
+                panorama::wire::v1::Response drained;
+                const bool parsedFrame = drained.ParseFromArray(
+                    payload.constData(), static_cast<int>(payload.size()));
+                qInfo().noquote()
+                    << QStringLiteral(
+                           "tryx_turris_wire drained_response parsed=%1 body=%2 "
+                           "version=%3 tracked=%4")
+                           .arg(parsedFrame ? QStringLiteral("true") : QStringLiteral("false"))
+                           .arg(parsedFrame ? static_cast<int>(drained.body_case()) : -1)
+                           .arg(parsedFrame && drained.has_header()
+                                    ? static_cast<int>(drained.header().version())
+                                    : -1)
+                           .arg(trackedResponseId != 0 ? QStringLiteral("true")
+                                                       : QStringLiteral("false"));
+            }
             ++drainedFrames;
             drainedResponseBytes += payload.size() + 8;
             if (waitForOptionalResponse) {

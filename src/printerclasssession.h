@@ -118,6 +118,10 @@ private:
         Recovering,
         Lost
     };
+    // Runtime keepalive decision for the current physical generation. PASE
+    // always pings; Turris pings only when the device asked for it and until
+    // the device rejects a Ping.
+    enum class PrinterKeepaliveState { Disabled, Active };
 
     bool preparePrinterOperation(const QString &devicePath, quint64 generation,
                                  const QString &operationId,
@@ -135,6 +139,13 @@ private:
     void transitionPrinterSessionState(PrinterSessionState state,
                                        const QString &eventName);
     void restartPrinterKeepaliveAfterActivity();
+    bool printerKeepaliveActive() const;
+    void selectPrinterKeepalivePolicy(const PrinterProtocol::Result &result,
+                                      quint64 generation);
+    void disablePrinterKeepalive(const QString &reason, quint64 generation);
+    bool publishNegotiatedCapabilityChanges(quint64 generation);
+    void disableRejectedOverlayAndStayActive(const QString &failure,
+                                             quint64 generation);
     void activateRestoredPrinterOverlay(quint64 generation);
     void publishPendingPrinterDeviceSpecifications(quint64 generation);
     void markPrinterSessionLost(const QString &reason,
@@ -172,6 +183,10 @@ private:
     bool printerOverlayLeaseRefreshNext_ = false;
     PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
         PrinterOverlayLeaseMode::PingAndOverlayLease;
+    PrinterKeepaliveState printerKeepaliveState_ =
+        PrinterKeepaliveState::Disabled;
+    QString printerKeepaliveDisableReason_;
+    PrinterProtocol::NegotiatedCapabilities publishedNegotiated_;
     QElapsedTimer printerSessionElapsedTimer_;
     QString foregroundPrinterOperationId_;
     PrinterProtocol::DeviceSpecifications pendingPrinterDeviceSpecifications_;

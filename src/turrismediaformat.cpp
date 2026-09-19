@@ -16,10 +16,18 @@ namespace {
 constexpr qint64 kMaximumBlobBytes = 500LL * 1024LL * 1024LL;
 constexpr quint32 kMediaMagic = 0x4D584844U;
 constexpr quint32 kHeaderVersion = 1U;
-constexpr quint32 kFramesPerSecond = 30U;
 constexpr qsizetype kMaximumMetadataBytes = 4096;
-constexpr char kMediaDescription[] =
-    "Tryx media header v1, fps=30, size=1280x720";
+// Every declared frame rate is two digits, so all descriptions share one
+// length: "Tryx media header v1, fps=NN, size=1280x720".
+constexpr qsizetype kMediaDescriptionLength = 43;
+
+QByteArray mediaDescription(quint32 framesPerSecond) {
+    return QStringLiteral("Tryx media header v1, fps=%1, size=%2x%3")
+        .arg(framesPerSecond)
+        .arg(tryx::turris_media::kWidth)
+        .arg(tryx::turris_media::kHeight)
+        .toLatin1();
+}
 
 void appendProtoVarint(QByteArray *output, quint64 value) {
     while (value >= 0x80U) {
@@ -44,12 +52,14 @@ void appendProtoStringField(QByteArray *output, quint32 fieldNumber,
 }
 
 QByteArray mediaMetadata(quint32 kind, quint64 frameCount) {
+    const quint32 framesPerSecond =
+        tryx::turris_media::framesPerSecondForKind(kind);
     QByteArray metadata;
     appendProtoVarintField(&metadata, 1U, kMediaMagic);
-    appendProtoStringField(&metadata, 2U, QByteArray(kMediaDescription));
+    appendProtoStringField(&metadata, 2U, mediaDescription(framesPerSecond));
     appendProtoVarintField(&metadata, 3U, kind);
     appendProtoVarintField(&metadata, 4U, kHeaderVersion);
-    appendProtoVarintField(&metadata, 5U, kFramesPerSecond);
+    appendProtoVarintField(&metadata, 5U, framesPerSecond);
     appendProtoVarintField(&metadata, 6U, tryx::turris_media::kWidth);
     appendProtoVarintField(&metadata, 7U, tryx::turris_media::kHeight);
     appendProtoVarintField(&metadata, 8U, frameCount);
@@ -149,7 +159,7 @@ bool parseMediaMetadata(const QByteArray &bytes,
             }
             quint64 length = 0;
             if (!takeCanonicalProtoVarint(bytes, &offset, &length) ||
-                length != sizeof(kMediaDescription) - 1 ||
+                length != static_cast<quint64>(kMediaDescriptionLength) ||
                 length > static_cast<quint64>(bytes.size() - offset)) {
                 return reject(QStringLiteral(
                     "metadata description length is invalid"));
@@ -209,6 +219,42 @@ bool parseMediaMetadata(const QByteArray &bytes,
 
 namespace tryx::turris_media {
 
+quint32 framesPerSecondForKind(quint32 kind) {
+    return kind == kImageKind ? 30U : 60U;
+}
+
+int videoBitrateKbps(qint64 sourceKbps, double sourceFps, int sourceWidth,
+                     int sourceHeight, int outputWidth, int outputHeight,
+                     int outputFps) {
+    constexpr int kUnknownSourceKbps = 4000;
+    constexpr int kMinimumKbps = 500;
+    constexpr int kMaximumKbps = 12000;
+    if (sourceKbps <= 0) {
+        return kUnknownSourceKbps;
+    }
+    double frameRateRatio = 1.0;
+    if (sourceFps > 0.0 && outputFps > 0) {
+        frameRateRatio = qBound(0.75, outputFps / sourceFps, 2.0);
+    }
+    double areaRatio = 1.0;
+    if (sourceWidth > 0 && sourceHeight > 0 && outputWidth > 0 &&
+        outputHeight > 0) {
+        const double ratio =
+            (static_cast<double>(outputWidth) * outputHeight) /
+            (static_cast<double>(sourceWidth) * sourceHeight);
+        if (ratio < 1.0) {
+            areaRatio = qMax(ratio, 0.35);
+        }
+    }
+    const double kbps = static_cast<double>(sourceKbps) * frameRateRatio *
+                            areaRatio * 1.15 +
+                        0.5;
+    if (kbps < kMinimumKbps) {
+        return kMinimumKbps;
+    }
+    return kbps > kMaximumKbps ? kMaximumKbps : static_cast<int>(kbps);
+}
+
 WriteResult writeBlob(
     const QString &rawPath, const QString &outputPath, quint32 kind,
     quint64 frameCount, const std::function<bool()> &isCancelled) {
@@ -217,9 +263,9 @@ WriteResult writeBlob(
         result.cancelled = true;
         return result;
     }
-    if ((kind != kImageKind && kind != kVideoKind) ||
+    if ((kind != kImageKind && kind != kGifKind && kind != kVideoKind) ||
         frameCount == 0 || frameCount > 0xffffffffULL ||
-        (kind == kImageKind && frameCount != 1)) {
+        (kind == kImageKind && frameCount != kStillImageFrames)) {
         result.error = QObject::tr("Turris media attributes are invalid");
         return result;
     }
@@ -374,11 +420,12 @@ FrameCountProbeResult parseFrameCountProbe(
             QString::number(kHeight);
 
     FrameCountProbeResult result;
-    result.valid = (kind == kImageKind || kind == kVideoKind) &&
+    result.valid = (kind == kImageKind || kind == kGifKind ||
+                    kind == kVideoKind) &&
                    probeShapeValid && probeValues.size() == 3 &&
                    geometryValid && frameCountOk && frameCount != 0 &&
                    frameCount <= 0xffffffffULL &&
-                   (kind != kImageKind || frameCount == 1);
+                   (kind != kImageKind || frameCount == kStillImageFrames);
     if (result.valid) {
         result.frameCount = frameCount;
     }
@@ -434,24 +481,27 @@ bool validateBlob(QFile *file, qint64 declaredSize,
     if (lowerName.endsWith(QStringLiteral(".png.h264_1280x720"))) {
         expectedKind = kImageKind;
     } else if (lowerName.endsWith(
-                   QStringLiteral(".mp4.h264_1280x720")) ||
-               lowerName.endsWith(
                    QStringLiteral(".gif.h264_1280x720"))) {
+        expectedKind = kGifKind;
+    } else if (lowerName.endsWith(
+                   QStringLiteral(".mp4.h264_1280x720"))) {
         expectedKind = kVideoKind;
     } else {
         return reject(QStringLiteral(
             "file name does not identify media kind"));
     }
 
+    const quint32 expectedFramesPerSecond =
+        framesPerSecondForKind(static_cast<quint32>(expectedKind));
     if (metadata.magic != kMediaMagic ||
-        metadata.description != QByteArray(kMediaDescription) ||
+        metadata.description != mediaDescription(expectedFramesPerSecond) ||
         metadata.kind != expectedKind ||
         metadata.headerVersion != kHeaderVersion ||
-        metadata.framesPerSecond != kFramesPerSecond ||
+        metadata.framesPerSecond != expectedFramesPerSecond ||
         metadata.width != kWidth || metadata.height != kHeight ||
         metadata.frameCount == 0 ||
         metadata.frameCount > std::numeric_limits<quint32>::max() ||
-        (metadata.kind == kImageKind && metadata.frameCount != 1)) {
+        (metadata.kind == kImageKind && metadata.frameCount != kStillImageFrames)) {
         return reject(QStringLiteral(
             "metadata values do not match the profile"));
     }

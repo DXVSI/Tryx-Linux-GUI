@@ -85,6 +85,7 @@ private:
         TryxRuntimeMetricsConfigRequest metricsRequest;
         bool updateMetrics = false;
         bool ensureExisting = false;
+        bool originRequired = false;
         bool originLookupPending = false;
         bool deleteReconcileOnly = false;
         bool cancelRequested = false;

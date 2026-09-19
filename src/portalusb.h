@@ -53,6 +53,9 @@ struct Snapshot {
     bool monitoring = false;
     QList<DeviceInfo> devices;
     QString error;
+    // An AcquireDevices request is open and the desktop portal has not
+    // answered yet; the host dialog should be visible to the user.
+    bool acquisitionPending = false;
 };
 
 // Cross-thread lease registry. Only the portal owner publishes; worker threads
@@ -73,6 +76,7 @@ private:
     };
     mutable QMutex mutex_;
     bool monitoring_ = false;
+    bool acquisitionPending_ = false;
     QString error_;
     QHash<QString, Entry> entries_;
 };
@@ -107,7 +111,8 @@ private:
     using ReplyHandler = std::function<void(const QDBusMessage &)>;
     void resolveOwner(bool allowActivation);
     void createSession();
-    void maybeAcquire();
+    // Returns true when a permission request was sent and published.
+    bool maybeAcquire();
     void finishAcquire();
     void verifyOwner(std::function<void()> handler);
     void releaseDevices(const QStringList &ids);

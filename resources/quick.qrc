@@ -22,5 +22,8 @@
         <file alias="qml/pages/PanoramaPage.qml">../qml/pages/PanoramaPage.qml</file>
         <file alias="qml/pages/SettingsPage.qml">../qml/pages/SettingsPage.qml</file>
         <file alias="icons/tryx-panorama.png">tryx-panorama.png</file>
+        <file alias="resources/devices/panorama.png">devices/panorama.png</file>
+        <file alias="resources/devices/panorama-se.png">devices/panorama-se.png</file>
+        <file alias="resources/devices/turris-620.png">devices/turris-620.png</file>
     </qresource>
 </RCC>

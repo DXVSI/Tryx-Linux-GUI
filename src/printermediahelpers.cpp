@@ -3,6 +3,7 @@
 #include "printeroperation_p.h"
 #include "printerprotocolconstants_p.h"
 
+#include <QDebug>
 #include <QFileInfo>
 
 namespace tryx::printer_media {
@@ -294,6 +295,74 @@ QString transmitStatusText(panorama::wire::v1::TransferStatus::Code status) {
         break;
     }
     return QObject::tr("unknown transfer status");
+}
+
+QString diagnosticDeviceToken(const std::string &value, qsizetype maximumLength) {
+    const QString token = QString::fromStdString(value).trimmed();
+    if (token.isEmpty()) {
+        return QStringLiteral("none");
+    }
+    if (token.size() > maximumLength) {
+        return QStringLiteral("other");
+    }
+    for (const QChar character : token) {
+        const bool plain = (character >= QLatin1Char('a') && character <= QLatin1Char('z')) ||
+                           (character >= QLatin1Char('A') && character <= QLatin1Char('Z')) ||
+                           (character >= QLatin1Char('0') && character <= QLatin1Char('9')) ||
+                           character == QLatin1Char('/') || character == QLatin1Char('.') ||
+                           character == QLatin1Char('_') || character == QLatin1Char('-');
+        if (!plain) {
+            return QStringLiteral("other");
+        }
+    }
+    return token;
+}
+
+void logTurrisMediaCatalog(const char *stage,
+                           const panorama::wire::v1::MediaCatalog &catalog) {
+    constexpr int kMaximumLoggedEntries = 64;
+    qInfo().noquote()
+        << QStringLiteral("tryx_turris_media_catalog stage=%1 media=%2 preset=%3")
+               .arg(QString::fromLatin1(stage))
+               .arg(catalog.media_file_list_size())
+               .arg(catalog.preset_file_list_size());
+    int logged = 0;
+    const auto logEntries = [&](const auto &entries, const char *list) {
+        int index = 0;
+        for (const auto &entry : entries) {
+            if (logged >= kMaximumLoggedEntries) {
+                return;
+            }
+            ++logged;
+            const std::string &path = entry.file_path();
+            const std::size_t separator = path.find_last_of('/');
+            const std::string directory =
+                separator == std::string::npos ? std::string() : path.substr(0, separator + 1);
+            const std::string name =
+                separator == std::string::npos ? path : path.substr(separator + 1);
+            const std::string &extension = entry.file_ext();
+            const bool suffixMatches =
+                !extension.empty() && name.size() >= extension.size() &&
+                name.compare(name.size() - extension.size(), extension.size(), extension) == 0;
+            qInfo().noquote()
+                << QStringLiteral(
+                       "tryx_turris_media_entry stage=%1 list=%2 index=%3 dir=%4 "
+                       "path_length=%5 name_length=%6 ext=%7 ext_is_suffix=%8 size=%9 "
+                       "read_only=%10")
+                       .arg(QString::fromLatin1(stage), QString::fromLatin1(list))
+                       .arg(index++)
+                       .arg(diagnosticDeviceToken(directory, 64))
+                       .arg(path.size())
+                       .arg(name.size())
+                       .arg(diagnosticDeviceToken(extension, 32),
+                            suffixMatches ? QStringLiteral("true") : QStringLiteral("false"))
+                       .arg(entry.file_size())
+                       .arg(entry.read_only() ? QStringLiteral("true")
+                                              : QStringLiteral("false"));
+        }
+    };
+    logEntries(catalog.media_file_list(), "media");
+    logEntries(catalog.preset_file_list(), "preset");
 }
 
 } // namespace tryx::printer_media
