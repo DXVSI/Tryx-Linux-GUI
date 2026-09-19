@@ -38,6 +38,11 @@ struct PrinterProductProfile {
         PrinterDisplayOrientationModel::RotationFields;
     // 0 selects a freshly allocated track id per FileTransmit sequence.
     quint64 fileTransferTrackId = 0;
+    // How long to wait for the acknowledgement of a write whose result is
+    // confirmed by a readback anyway (user configuration, file removal).
+    // 0 keeps the full transaction timeout. Turris firmware never
+    // acknowledges these writes and the official app does not wait for them.
+    int readbackConfirmedWriteAckWindowMs = 0;
     // Written into UserConfiguration when the device reports no such section.
     QString defaultPowerOnMedia;
     QString defaultStandbyMedia;

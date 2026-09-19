@@ -2640,6 +2640,7 @@ private slots:
     void turrisWorkerUnknownKeepalivePingsUntilRejected();
     void turrisWorkerSilentPingKeepsKeepalive();
     void turrisApplyToleratesUnacknowledgedUserConfig();
+    void turrisDeleteDoesNotWaitForSilentFileRemove();
     void turrisDisplayOnlyApplyRequiresStoredMedia();
     void turrisMediaApplyTurnsBacklightOn();
     void supportSnapshotKeepsTurrisNegotiationEvents();
@@ -11069,6 +11070,7 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
         QCOMPARE(profile->orientationModel,
                  PrinterDisplayOrientationModel::RotationFields);
         QCOMPARE(profile->fileTransferTrackId, quint64{0});
+        QCOMPARE(profile->readbackConfirmedWriteAckWindowMs, 0);
         QVERIFY(profile->defaultPowerOnMedia.isEmpty());
         QVERIFY(profile->defaultStandbyMedia.isEmpty());
         QVERIFY(profile->mediaUploadSupported);
@@ -11088,6 +11090,7 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QCOMPARE(turris->family, PrinterProtocolFamily::Turris);
     QCOMPARE(turris->mediaContainer, PrinterMediaContainer::MxhdH264);
     QCOMPARE(turris->keepalive, PrinterSessionKeepalive::Negotiated);
+    QCOMPARE(turris->readbackConfirmedWriteAckWindowMs, 300);
     QCOMPARE(turris->overlayLayout,
              PrinterOverlayLayoutKind::TurrisSingleArea1280);
     QCOMPARE(turris->orientationModel,
@@ -40750,7 +40753,8 @@ void PrinterProtocolTests::turrisApplyToleratesUnacknowledgedUserConfig() {
         writeResponse(sockets[1], stored, &peerError);
     });
 
-    PrinterProtocol protocol(*profile, 500);
+    // The production transaction timeout: the silent 200 must not cost it.
+    PrinterProtocol protocol(*profile, 3000);
     protocol.adoptFileDescriptorForTesting(
         sockets[0], QStringLiteral("turris-endpoint"));
     const PrinterProtocol::Result session = protocol.startDisplaySession(
@@ -40767,12 +40771,18 @@ void PrinterProtocolTests::turrisApplyToleratesUnacknowledgedUserConfig() {
     QString error;
     PrinterProtocol::MutationDetails mutation;
     PrinterProtocol::PaseDisplayState applied;
+    QElapsedTimer applyTimer;
+    applyTimer.start();
     const bool ok = protocol.applyPaseConfiguration(
         QStringLiteral("turris-endpoint"), config, &error, {}, &mutation, &applied);
+    const qint64 applyElapsedMs = applyTimer.elapsed();
     peer.join();
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
     QVERIFY2(ok, qPrintable(error));
     QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Succeeded);
+    // Only the short acknowledgement window is spent on the silent write.
+    QVERIFY2(applyElapsedMs >= 250 && applyElapsedMs < 2000,
+             qPrintable(QString::number(applyElapsedMs)));
     QCOMPARE(applied.media, QStringList{QStringLiteral("x.mp4.h264_1280x720")});
     QCOMPARE(applied.brightness, 60);
     // The device's own defaults are written back, not the profile guesses.
@@ -40785,6 +40795,96 @@ void PrinterProtocolTests::turrisApplyToleratesUnacknowledgedUserConfig() {
              QStringLiteral("x.mp4.h264_1280x720"));
     QCOMPARE(written.display_config().backlight_brightness(), 60U);
     QVERIFY(written.display_config().backlight_enable());
+    ::close(sockets[1]);
+}
+
+void PrinterProtocolTests::turrisDeleteDoesNotWaitForSilentFileRemove() {
+    const auto profile = printerProductProfileForId(0x2011);
+    QVERIFY(profile.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    const QString target =
+        QStringLiteral("2026-09-19_16-02-02-123.png.h264_1280x720");
+    TurrisBootstrapPeerOptions options;
+    options.usbAutoKeepalive = true;
+    QString peerError;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        if (!serveTurrisBootstrap(sockets[1], options, &peerError, &buffer)) {
+            return;
+        }
+        panorama::wire::v1::Request request;
+        // 103 preflight lists the target in the device media folder.
+        if (!readRequest(sockets[1], &request, &peerError, kPeerTimeoutMs, &buffer) ||
+            request.body_case() != panorama::wire::v1::Request::kMediaCatalogQuery) {
+            peerError = QStringLiteral("delete did not start with a file list");
+            return;
+        }
+        auto listed = baseResponse(request);
+        auto *file = listed.mutable_media_catalog()->add_media_file_list();
+        file->set_file_path(
+            (QStringLiteral("/mnt/data/app/media/") + target).toStdString());
+        file->set_file_ext(".h264_1280x720");
+        file->set_file_size(82062);
+        if (!writeResponse(sockets[1], listed, &peerError)) {
+            return;
+        }
+        // 104: another file is active, so the target may be removed.
+        if (!readRequest(sockets[1], &request, &peerError, kPeerTimeoutMs, &buffer) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral("delete did not read the active media");
+            return;
+        }
+        auto active = baseResponse(request);
+        active.mutable_user_configuration()->mutable_work_config()
+            ->set_single_mode_media_file("Cosmos.mp4.h264_1280x720");
+        if (!writeResponse(sockets[1], active, &peerError)) {
+            return;
+        }
+        // 403: removed silently, never acknowledged.
+        if (!readRequest(sockets[1], &request, &peerError, kPeerTimeoutMs, &buffer) ||
+            request.body_case() != panorama::wire::v1::Request::kFileRemoval ||
+            request.file_removal().file_name() != target.toStdString()) {
+            peerError = QStringLiteral("delete did not send FileRemove");
+            return;
+        }
+        // 103 reconciliation: the file is gone.
+        if (!readRequest(sockets[1], &request, &peerError, kPeerTimeoutMs, &buffer) ||
+            request.body_case() != panorama::wire::v1::Request::kMediaCatalogQuery) {
+            peerError = QStringLiteral("delete did not reconcile through the file list");
+            return;
+        }
+        auto gone = baseResponse(request);
+        gone.mutable_media_catalog();
+        writeResponse(sockets[1], gone, &peerError);
+    });
+
+    // The production transaction timeout: the silent 403 must not cost it.
+    PrinterProtocol protocol(*profile, 3000);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("turris-endpoint"));
+    const PrinterProtocol::Result session = protocol.startDisplaySession(
+        QStringLiteral("turris-endpoint"), {});
+    QVERIFY2(session.success, qPrintable(session.error));
+
+    QElapsedTimer deleteTimer;
+    deleteTimer.start();
+    const auto result = protocol.removeUserMedia(
+        QStringLiteral("turris-endpoint"), QStringList{target},
+        [](int, const PrinterProtocol::MediaFile &, QString *) { return true; },
+        {}, PrinterProtocol::OperationContext{}, false);
+    const qint64 deleteElapsedMs = deleteTimer.elapsed();
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(result.success, qPrintable(result.error));
+    QVERIFY(!result.commandAcknowledged);
+    QCOMPARE(result.deletedNames, QStringList{target});
+    QVERIFY2(deleteElapsedMs >= 250 && deleteElapsedMs < 2000,
+             qPrintable(QString::number(deleteElapsedMs)));
     ::close(sockets[1]);
 }
 

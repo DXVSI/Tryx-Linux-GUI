@@ -106,7 +106,7 @@ bool PrinterTransactionChannel::execute(
     panorama::wire::v1::Response *response, const QString &devicePath,
     const OperationContext &context, QString *errorMessage, TransactionOutcome *outcome,
     TransactionProfile profile, bool preserveConnectionOnCleanTimeout,
-    bool acceptHeaderOnlySuccess, quint64 fixedTrackId) {
+    bool acceptHeaderOnlySuccess, quint64 fixedTrackId, int responseWindowMs) {
     if (outcome) {
         *outcome = TransactionOutcome::NotSent;
     }
@@ -207,8 +207,13 @@ bool PrinterTransactionChannel::execute(
                      parsed.body_case() == panorama::wire::v1::Response::BODY_NOT_SET));
         };
 
-    const int responseTimeoutMs =
+    const int profileResponseTimeoutMs =
         fileTransferProfile ? fileTransmitResponseTimeoutMs_ : transactionTimeoutMs_;
+    // A caller that confirms the write by a readback may shorten the wait for
+    // an acknowledgement the device is known not to send; it never extends it.
+    const int responseTimeoutMs =
+        responseWindowMs > 0 ? qMin(responseWindowMs, profileResponseTimeoutMs)
+                             : profileResponseTimeoutMs;
     QElapsedTimer responseTimer;
     responseTimer.start();
     int skippedFrames = 0;

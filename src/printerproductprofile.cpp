@@ -37,6 +37,7 @@ PrinterProductProfile turrisProfile() {
     profile.orientationModel = PrinterDisplayOrientationModel::MirrorFlag;
     // Fixed track id observed on the Turris FileTransmit sequence.
     profile.fileTransferTrackId = 981521;
+    profile.readbackConfirmedWriteAckWindowMs = 300;
     profile.defaultPowerOnMedia =
         QStringLiteral("default_poweron_1280x720.mp4.h264");
     profile.defaultStandbyMedia =

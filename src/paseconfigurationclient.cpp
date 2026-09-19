@@ -1900,7 +1900,11 @@ bool PaseConfigurationClient::sendUserConfigWithOutcome(
     if (channel_.execute(&request, panorama::wire::v1::Response::kAcknowledgement,
                          &response, devicePath, context, errorMessage, &outcome,
                          TransactionProfile::Default,
-                         /*preserveConnectionOnCleanTimeout=*/tolerateSilence)) {
+                         /*preserveConnectionOnCleanTimeout=*/tolerateSilence,
+                         /*acceptHeaderOnlySuccess=*/false, /*fixedTrackId=*/0,
+                         tolerateSilence
+                             ? productProfile_.readbackConfirmedWriteAckWindowMs
+                             : 0)) {
         if (mutationDetails) {
             mutationDetails->outcome = MutationOutcome::PartialOrUnknown;
         }

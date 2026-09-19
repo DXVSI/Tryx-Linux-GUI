@@ -735,7 +735,8 @@ PrinterProtocol::DeleteResult PaseMediaClient::removeUserMedia(
         const bool acknowledged = channel_.execute(
             &removeRequest, panorama::wire::v1::Response::kAcknowledgement,
             &removeResponse, devicePath, context, &removeError, &transactionOutcome,
-            PrinterTransactionChannel::TransactionProfile::Default, true, true);
+            PrinterTransactionChannel::TransactionProfile::Default, true, true,
+            /*fixedTrackId=*/0, productProfile_.readbackConfirmedWriteAckWindowMs);
         result.commandAcknowledged = result.commandAcknowledged || acknowledged;
         const bool mayHaveStarted =
             transactionOutcome !=

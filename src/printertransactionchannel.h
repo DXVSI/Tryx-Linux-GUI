@@ -102,7 +102,8 @@ public:
                  TransactionOutcome *outcome = nullptr,
                  TransactionProfile profile = TransactionProfile::Default,
                  bool preserveConnectionOnCleanTimeout = false,
-                 bool acceptHeaderOnlySuccess = false, quint64 fixedTrackId = 0);
+                 bool acceptHeaderOnlySuccess = false, quint64 fixedTrackId = 0,
+                 int responseWindowMs = 0);
 
     bool writeOnly(const panorama::wire::v1::Request &request,
                    const QString &devicePath, const OperationContext &context,
