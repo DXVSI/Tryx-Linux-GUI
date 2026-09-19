@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.5.0
+Version:        2.5.1
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -120,7 +120,14 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
-* Thu Sep 18 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.0-1
+* Sat Sep 19 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.1-1
+- Play uploaded Turris 620 images, videos, and GIFs: encode them like the official application and keep device file names short enough for the firmware player
+- Restart Turris playback after Apply and turn the backlight on when media is applied
+- Stop waiting three seconds for Turris acknowledgements the device never sends on Apply and delete
+- Resolve Flatpak drag and drop through the FileTransfer portal, without home directory access
+- Log the Turris file list structure, decoder size, storage folders, and upload stages without media names
+
+* Fri Sep 18 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.0-1
 - Run Turris 620 on the PASE display pipeline: device media library, apply, deletion, brightness, and overlay metrics
 - Negotiate Turris commands per USB generation and keep uploads working when the device rejects one
 - Send Turris keepalives unless the device keeps the USB link alive and confirm stored configuration by readback

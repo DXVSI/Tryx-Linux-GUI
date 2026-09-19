@@ -26,6 +26,17 @@
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.5.1" type="stable" date="2026-09-19">
+      <description>
+        <ul>
+          <li>Play uploaded Turris 620 images, videos, and GIFs: encode them like the official application and keep device file names short enough for the firmware player.</li>
+          <li>Restart Turris playback after Apply and turn the backlight on when media is applied.</li>
+          <li>Stop waiting three seconds for Turris acknowledgements the device never sends on Apply and delete.</li>
+          <li>Resolve Flatpak drag and drop through the FileTransfer portal, without home directory access.</li>
+          <li>Log the Turris file list structure, decoder size, storage folders, and upload stages without media names.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.5.0" type="development" date="2026-09-18">
       <description>
         <ul>
