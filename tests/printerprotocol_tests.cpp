@@ -22,6 +22,7 @@
 #include "printermediaidentity.h"
 #include "printermediapreparer.h"
 #include "printermediavalidator.h"
+#include "runtime/shutdownguard.h"
 #include "privateruntimepaths.h"
 #include "runtimeapplyrequestcodec.h"
 #include "paseoverlayconfig.h"
@@ -71,6 +72,7 @@
 #include <sys/sysmacros.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/timerfd.h>
 #include <thread>
 #include <type_traits>
@@ -2264,6 +2266,7 @@ private slots:
     void turrisMediaFollowsOfficialEncoderSettings();
     void turrisMediaNamesFollowOfficialLayout();
     void turrisDiagnosticTokensStayPlain();
+    void shutdownGuardExtendsStopTimeoutThroughNotifySocket();
     void turrisMediaFormatValidatorRejectsMalformedMetadata();
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
@@ -11434,6 +11437,55 @@ void PrinterProtocolTests::turrisDiagnosticTokensStayPlain() {
     QCOMPARE(diagnosticDeviceToken(std::string("/home/some user/"), 64),
              QStringLiteral("other"));
     QCOMPARE(diagnosticDeviceToken(std::string(40, 'a'), 32), QStringLiteral("other"));
+}
+
+void PrinterProtocolTests::shutdownGuardExtendsStopTimeoutThroughNotifySocket() {
+    namespace guard = tryx::runtime_shutdown;
+    QCOMPARE(guard::stopTimeoutExtensionMessage(60000),
+             QByteArray("EXTEND_TIMEOUT_USEC=60000000"));
+    QCOMPARE(guard::stopTimeoutExtensionMessage(0),
+             QByteArray("EXTEND_TIMEOUT_USEC=1000"));
+
+    const QByteArray previous = qgetenv("NOTIFY_SOCKET");
+    const bool hadPrevious = qEnvironmentVariableIsSet("NOTIFY_SOCKET");
+    const auto restore = qScopeGuard([&]() {
+        if (hadPrevious) {
+            qputenv("NOTIFY_SOCKET", previous);
+        } else {
+            qunsetenv("NOTIFY_SOCKET");
+        }
+    });
+
+    QTemporaryDir directory(QDir::tempPath() + QStringLiteral("/tryx-notify-XXXXXX"));
+    QVERIFY(directory.isValid());
+    const QByteArray socketPath =
+        QFile::encodeName(directory.filePath(QStringLiteral("n")));
+    sockaddr_un address{};
+    QVERIFY(static_cast<size_t>(socketPath.size()) < sizeof(address.sun_path));
+    address.sun_family = AF_UNIX;
+    std::memcpy(address.sun_path, socketPath.constData(),
+                static_cast<size_t>(socketPath.size()));
+    const int listener = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    QVERIFY(listener >= 0);
+    const auto closeListener = qScopeGuard([listener]() { ::close(listener); });
+    QCOMPARE(::bind(listener, reinterpret_cast<const sockaddr *>(&address),
+                    sizeof(address)),
+             0);
+
+    qputenv("NOTIFY_SOCKET", socketPath);
+    QVERIFY(guard::notifyServiceManager(
+        guard::stopTimeoutExtensionMessage(guard::kStopTimeoutExtensionMs)));
+    char buffer[128] = {};
+    const ssize_t received = ::recv(listener, buffer, sizeof(buffer) - 1, MSG_DONTWAIT);
+    QCOMPARE(QByteArray(buffer, static_cast<qsizetype>(qMax<ssize_t>(0, received))),
+             QByteArray("EXTEND_TIMEOUT_USEC=60000000"));
+
+    // No service manager, or a socket name it would never hand out: no send.
+    QVERIFY(!guard::notifyServiceManager(QByteArray()));
+    qputenv("NOTIFY_SOCKET", "relative/socket");
+    QVERIFY(!guard::notifyServiceManager("READY=1"));
+    qunsetenv("NOTIFY_SOCKET");
+    QVERIFY(!guard::notifyServiceManager("READY=1"));
 }
 
 void PrinterProtocolTests::turrisMediaFollowsOfficialEncoderSettings() {
