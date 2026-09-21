@@ -9,20 +9,25 @@
 // sandbox cannot open. Portal-aware sources (Dolphin, GTK file managers) also
 // offer an "application/vnd.portal.filetransfer" key; the document portal's
 // FileTransfer.RetrieveFiles turns that key into paths exported to this app.
-// One instance serves the media drop zone and handles one request at a time.
+//
+// The key only lives as long as the drag: KDE sources stop the transfer as
+// soon as the drop is finished, and a later RetrieveFiles fails with "Invalid
+// transfer". The files are therefore retrieved synchronously inside the drop
+// handler, before the drop is accepted, with a bounded wait.
 class PortalDropResolver final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
 public:
     static constexpr const char *kTransferMimeType = "application/vnd.portal.filetransfer";
 
-    explicit PortalDropResolver(QObject *parent = nullptr, int requestTimeoutMs = 15000);
+    explicit PortalDropResolver(QObject *parent = nullptr, int requestTimeoutMs = 5000);
     bool busy() const { return busy_; }
-    // Starts a RetrieveFiles request for a drop's transfer key. Returns false
-    // when the key is unusable or a request is already running; the caller
-    // then falls back to the dropped URLs.
+    // Retrieves the files of a drop's transfer key and emits resolved() or
+    // failed() before returning. Must be called from the drop handler, before
+    // the drop is accepted. Returns false when the key is unusable or a
+    // request is already running; the caller then falls back to the dropped
+    // URLs.
     Q_INVOKABLE bool resolve(const QString &transferKey);
-    Q_INVOKABLE void cancel();
 
     // Exposed for tests: trims the terminator some sources append and rejects
     // keys that cannot be a portal transfer key.
@@ -37,9 +42,8 @@ signals:
     void failed(const QString &message);
 
 private:
-    void finish();
+    void setBusy(bool busy);
     QDBusConnection bus_;
     int requestTimeoutMs_;
-    quint64 generation_ = 0;
     bool busy_ = false;
 };
