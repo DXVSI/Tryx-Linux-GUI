@@ -9,7 +9,7 @@ Hardware acceptance on these systems is still required before declaring support.
 - Flatpak 1.15.11 or newer, a working USB portal and compatible desktop backend.
 - Media conversion uses KDE Platform's `org.freedesktop.Platform.codecs-extra`
   extension. Keep the runtime's related extensions enabled when installing.
-- Printer-class product profiles `391a:1011`, `391a:1021`, `391a:2011` only.
+- Printer-class product profiles `391a:1011`, `391a:1021`, `391a:1031`, `391a:2011` only.
   Legacy serial/ADB identities, including `18d1:2d04`, are not exposed in this build.
 - USB enumeration is narrowly scoped. The portal asks for device access once per
   device identity; denial does not trigger a loop of permission prompts.

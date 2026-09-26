@@ -80,7 +80,7 @@ do
     fi
 done
 
-expected_usb_product_ids=$(printf '%s\n' 1011 1021 2011)
+expected_usb_product_ids=$(printf '%s\n' 1011 1021 1031 2011)
 
 udev_product_ids() {
     sed -n \

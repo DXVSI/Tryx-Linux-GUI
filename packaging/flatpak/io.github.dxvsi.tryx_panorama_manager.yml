@@ -21,6 +21,7 @@ finish-args:
   # Enumeration only: actual access is requested from the USB portal.
   - --usb=vnd:391a+dev:1011
   - --usb=vnd:391a+dev:1021
+  - --usb=vnd:391a+dev:1031
   - --usb=vnd:391a+dev:2011
 modules:
   # Test-only private session bus. Removed completely before export.

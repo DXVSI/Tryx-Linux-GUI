@@ -879,7 +879,8 @@ bool TryxReplaceJournal::validateRecord(
     const TryxReplaceJournalRecord &record,
     QString *errorMessage) {
     const bool supportedProduct =
-        record.productId == 0x1011 || record.productId == 0x1021;
+        record.productId == 0x1011 || record.productId == 0x1021 ||
+        record.productId == 0x1031;
     if ((record.formatVersion != LegacyFormatVersion &&
          record.formatVersion != FormatVersion) ||
         !supportedProduct ||

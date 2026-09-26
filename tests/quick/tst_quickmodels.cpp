@@ -1263,6 +1263,11 @@ void QuickClientTests::runtimeDeviceSummaryFollowsLiveSnapshot() {
     QVERIFY(runtime.deviceModel().isEmpty());
 
     snapshot.revision = 7;
+    snapshot.productId = QStringLiteral("391a:1031");
+    runtime.applyConnectionSnapshot(snapshot);
+    QCOMPARE(runtime.deviceModel(), QStringLiteral("PANORAMA WB"));
+
+    snapshot.revision = 8;
     snapshot.connected = false;
     snapshot.productId.clear();
     snapshot.firmware.clear();

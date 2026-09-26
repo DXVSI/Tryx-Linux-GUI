@@ -299,7 +299,8 @@ TryxRuntimeSavedLayoutsSnapshotV2 DeviceManager::savedLayoutsSnapshotV2() const 
         return snapshot;
     }
     if (!profile ||
-        (profile->productId != 0x1011 && profile->productId != 0x1021) ||
+        (profile->productId != 0x1011 && profile->productId != 0x1021 &&
+         profile->productId != 0x1031) ||
         !profile->mediaCatalogSupported ||
         !profile->displayConfigurationSupported ||
         !profile->overlayMetricsSupported) {
@@ -2133,7 +2134,8 @@ bool DeviceManager::currentSavedLayoutsContext(
         tryxSavedLayoutDeviceIdentityIsCanonical(identity) &&
         tryxSavedLayoutProductIdIsSupported(product) && profile &&
         (profile->productId == 0x1011 ||
-         profile->productId == 0x1021) &&
+         profile->productId == 0x1021 ||
+         profile->productId == 0x1031) &&
         profile->mediaCatalogSupported &&
         profile->displayConfigurationSupported &&
         profile->overlayMetricsSupported;

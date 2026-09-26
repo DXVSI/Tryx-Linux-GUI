@@ -11060,13 +11060,16 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
 void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     const auto pase = printerProductProfileForId(0x1021);
     const auto pano = printerProductProfileForId(0x1011);
+    const auto panoWb = printerProductProfileForId(0x1031);
     const auto turris = printerProductProfileForId(0x2011);
     QVERIFY(pase.has_value());
     QVERIFY(pano.has_value());
+    QVERIFY(panoWb.has_value());
     QVERIFY(turris.has_value());
     QVERIFY(!printerProductProfileForId(0x9999).has_value());
+    QVERIFY(!printerProductProfileForId(0x10a1).has_value());
 
-    for (const auto &profile : {pase, pano}) {
+    for (const auto &profile : {pase, pano, panoWb}) {
         QCOMPARE(profile->mediaWidth, 2240);
         QCOMPARE(profile->mediaHeight, 1080);
         QCOMPARE(profile->family, PrinterProtocolFamily::Pase);
@@ -11091,6 +11094,8 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     }
     QVERIFY(pase->firmwareFlashSupported);
     QVERIFY(!pano->firmwareFlashSupported);
+    QVERIFY(!panoWb->firmwareFlashSupported);
+    QCOMPARE(panoWb->productId, quint16{0x1031});
 
     QCOMPARE(turris->mediaWidth, 1280);
     QCOMPARE(turris->mediaHeight, 720);

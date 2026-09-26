@@ -799,7 +799,8 @@ bool tryxSavedLayoutDeviceIdentityIsCanonical(
 
 bool tryxSavedLayoutProductIdIsSupported(const QString &productId) {
     return productId == QStringLiteral("391a:1011") ||
-           productId == QStringLiteral("391a:1021");
+           productId == QStringLiteral("391a:1021") ||
+           productId == QStringLiteral("391a:1031");
 }
 
 bool tryxDisplaySnapshotProductIdIsSupported(const QString &productId) {
