@@ -20,6 +20,7 @@
     <binary>tryx-panorama-manager</binary>
     <modalias>usb:v391Ap1011d*</modalias>
     <modalias>usb:v391Ap1021d*</modalias>
+    <modalias>usb:v391Ap1031d*</modalias>
     <modalias>usb:v391Ap2011d*</modalias>
   </provides>
   <url type="homepage">https://github.com/DXVSI/Tryx-Linux-GUI</url>
