@@ -619,6 +619,7 @@ private slots:
     void catalogExposesOriginMetadataRoles();
     void catalogExposesDeviceCopyEligibility();
     void legacyConnectionPopulatesCurrentMediaModel();
+    void absentPrinterClassDeviceIsReportedNotPresent();
     void legacyScreenConfigKeepsManager1Shape();
     void legacyTransformBoundaryIsExplicit();
     void legacyUploadRetainsSourceUntilTerminalSignal();
@@ -3516,6 +3517,33 @@ void QuickClientTests::catalogExposesDeviceCopyEligibility() {
     QVERIFY(!model.deviceCopyBlockReason(
         presetMedia.mediaId).isEmpty());
     QVERIFY(!model.canStageDeviceCopy(QStringLiteral("missing")));
+}
+
+// A runtime without a visible device (for example the Flatpak when the USB
+// portal lists nothing) must read as "not present", never as a detected
+// device whose display session is merely waiting.
+void QuickClientTests::absentPrinterClassDeviceIsReportedNotPresent() {
+    RuntimeClient runtime(true);
+    runtime.serviceAvailable_ = true;
+    runtime.compatible_ = true;
+
+    TryxRuntimeSnapshot snapshot;
+    snapshot.revision = 1;
+    snapshot.connected = false;
+    snapshot.printerClassConnected = false;
+    snapshot.printerClassDevicePresent = false;
+    snapshot.displaySessionActive = false;
+    runtime.applyConnectionSnapshot(snapshot);
+
+    QVERIFY(!runtime.printerClassDevicePresent());
+    QVERIFY(!runtime.legacyConnected());
+    QVERIFY(!runtime.ready());
+    QCOMPARE(runtime.connectionStatus(),
+             QStringLiteral("TRYX printer-class device is not present"));
+    QVERIFY(!runtime.mutationReady(QStringLiteral("Upload")));
+    QVERIFY2(runtime.diagnostic().contains(
+                 QStringLiteral("requires a TRYX printer-class device")),
+             qPrintable(runtime.diagnostic()));
 }
 
 void QuickClientTests::

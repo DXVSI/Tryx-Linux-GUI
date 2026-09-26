@@ -231,7 +231,7 @@ void PrinterSessionController::handlePrinterSnapshot(
     if (callbacks_.runtimeDowngradePrepared()) {
         return;
     }
-    const bool oldPresence = isPrinterClassDevicePresent();
+    const bool oldPresence = isPrinterClassDeviceDetected();
     const bool wasConnected = state_.connected;
     const bool wasPrinterConnected = state_.printerClassConnected;
     const QString oldPath = state_.printerDevicePath;
@@ -292,7 +292,7 @@ void PrinterSessionController::handlePrinterSnapshot(
         if (wasConnected) {
             emit deviceDisconnected();
         }
-        const bool newPresence = isPrinterClassDevicePresent();
+        const bool newPresence = isPrinterClassDeviceDetected();
         if (oldPresence != newPresence) {
             emit printerPresenceChanged(newPresence);
         }
@@ -469,7 +469,7 @@ void PrinterSessionController::handlePrinterSnapshot(
         return;
     }
 
-    const bool newPresence = isPrinterClassDevicePresent();
+    const bool newPresence = isPrinterClassDeviceDetected();
     if (oldPresence != newPresence) {
         emit printerPresenceChanged(newPresence);
     }
@@ -806,6 +806,11 @@ void PrinterSessionController::requestDeviceInfo() {
 bool PrinterSessionController::isPrinterClassDevicePresent() const {
     return state_.printerClassConnected ||
            state_.printerSnapshot.blocksLegacyTransport();
+}
+
+bool PrinterSessionController::isPrinterClassDeviceDetected() const {
+    return state_.printerClassConnected ||
+           state_.printerSnapshot.indicatesDevice();
 }
 
 void PrinterSessionController::attachPrinterClassDevice(

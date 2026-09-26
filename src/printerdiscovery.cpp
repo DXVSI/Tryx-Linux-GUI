@@ -401,6 +401,17 @@ bool PrinterProtocol::DiscoverySnapshot::blocksLegacyTransport() const {
     return state != DiscoveryState::Absent;
 }
 
+bool PrinterProtocol::DiscoverySnapshot::indicatesDevice() const {
+#ifdef TRYX_FLATPAK
+    // The USB portal lists only supported TRYX devices. Without a listed
+    // device, EnumeratingPrinterClass and MonitoringUnavailable only keep
+    // legacy serial/ADB blocked; they are not evidence of a device.
+    return blocksLegacyTransport() && !devices.isEmpty();
+#else
+    return blocksLegacyTransport();
+#endif
+}
+
 QString PrinterProtocol::DiscoverySnapshot::statusText() const {
 #ifdef TRYX_FLATPAK
     if (state == DiscoveryState::MonitoringUnavailable || state == DiscoveryState::PermissionDenied) {

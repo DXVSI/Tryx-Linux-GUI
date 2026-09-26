@@ -1692,6 +1692,10 @@ bool DeviceManager::isPrinterClassDevicePresent() const {
     return sessionController_.isPrinterClassDevicePresent();
 }
 
+bool DeviceManager::isPrinterClassDeviceDetected() const {
+    return sessionController_.isPrinterClassDeviceDetected();
+}
+
 void DeviceManager::attachPrinterClassDevice(
     const PrinterProtocol::UsbPrinterDevice &device) {
     sessionController_.attachPrinterClassDevice(device);

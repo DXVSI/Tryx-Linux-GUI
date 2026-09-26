@@ -2576,6 +2576,9 @@ private slots:
     void mediaReferencePreflightRejectsUnsafeCatalog();
     void unknownFieldsSurviveMutation();
     void discoveryStateSequence();
+#ifndef TRYX_FLATPAK
+    void nativeDevicePresenceMatchesLegacyBlocking();
+#endif
     void productionEndpointValidationWithOfflineSysfs();
     void paseUdevReadinessUsesUsbDeviceEvents();
     void samePathEndpointEventForcesNewEpochSignal();
@@ -2599,6 +2602,7 @@ private slots:
     void identifiedLegacyFirmwareRequestPassesPreflight();
 #ifdef TRYX_FLATPAK
     void flatpakFirmwareIsBlockedBeforeValidationOrQuiesce();
+    void flatpakEmptyPortalDoesNotPublishDevicePresence();
 #endif
     void firmwareExclusiveGateRejectsDeviceWork();
     void firmwareExclusiveGateRejectsUnresolvedDeviceState();
@@ -35661,6 +35665,59 @@ void PrinterProtocolTests::discoveryStateSequence() {
     QVERIFY(!snapshot.blocksLegacyTransport());
 }
 
+#ifndef TRYX_FLATPAK
+// Native builds publish presence exactly as before the Flatpak fix: every
+// state that blocks the legacy transport also counts as a detected device.
+void PrinterProtocolTests::nativeDevicePresenceMatchesLegacyBlocking() {
+    using State = PrinterProtocol::DiscoveryState;
+    for (const State state : {State::Absent, State::RockchipGadget391a0006,
+                              State::EnumeratingPrinterClass, State::Ready,
+                              State::PermissionDenied, State::Ambiguous,
+                              State::MonitoringUnavailable}) {
+        PrinterProtocol::DiscoverySnapshot snapshot;
+        snapshot.state = state;
+        QCOMPARE(snapshot.indicatesDevice(), snapshot.blocksLegacyTransport());
+    }
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(
+        temporaryDirectory.filePath(QStringLiteral("sys")),
+        temporaryDirectory.filePath(QStringLiteral("dev"))));
+    TryxRuntimeExportedObject exportedObject;
+    TryxRuntimeManagerAdaptor adaptor(&exportedObject, manager.get());
+    QSignalSpy presence(manager.get(), &DeviceManager::printerPresenceChanged);
+
+    PrinterProtocol::DiscoverySnapshot enumerating;
+    enumerating.state = State::EnumeratingPrinterClass;
+    enumerating.workingUsbDeviceCount = 1;
+    manager->handlePrinterSnapshot(enumerating);
+    QCOMPARE(presence.count(), 1);
+    QCOMPARE(presence.last().at(0).toBool(), true);
+    QVERIFY(adaptor.GetSnapshot().printerClassDevicePresent);
+    QCOMPARE(manager->isPrinterClassDeviceDetected(),
+             manager->isPrinterClassDevicePresent());
+
+    // The Flatpak zero-device shape is still a device in native builds.
+    PrinterProtocol::DiscoverySnapshot bareEnumerating;
+    bareEnumerating.state = State::EnumeratingPrinterClass;
+    manager->handlePrinterSnapshot(bareEnumerating);
+    QCOMPARE(presence.count(), 1);
+    QVERIFY(adaptor.GetSnapshot().printerClassDevicePresent);
+
+    PrinterProtocol::DiscoverySnapshot monitoringUnavailable;
+    monitoringUnavailable.state = State::MonitoringUnavailable;
+    manager->handlePrinterSnapshot(monitoringUnavailable);
+    QCOMPARE(presence.count(), 1);
+    QVERIFY(adaptor.GetSnapshot().printerClassDevicePresent);
+
+    manager->handlePrinterSnapshot(PrinterProtocol::DiscoverySnapshot{});
+    QCOMPARE(presence.count(), 2);
+    QCOMPARE(presence.last().at(0).toBool(), false);
+    QVERIFY(!adaptor.GetSnapshot().printerClassDevicePresent);
+}
+#endif
+
 void PrinterProtocolTests::productionEndpointValidationWithOfflineSysfs() {
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
@@ -47553,6 +47610,85 @@ void PrinterProtocolTests::flatpakFirmwareIsBlockedBeforeValidationOrQuiesce() {
     QVERIFY(!bridge.shutdownInhibited());
     QCOMPARE(quiesce.count(), 0);
     QVERIFY(!QFileInfo::exists(directory.filePath("recovery/journal.json")));
+}
+
+// With no device listed by the USB portal, the Flatpak keeps the legacy
+// transport blocked and routes requests as before, but must not publish a
+// detected device ("USB device: Detected" with nothing connected).
+void PrinterProtocolTests::flatpakEmptyPortalDoesNotPublishDevicePresence() {
+    using State = PrinterProtocol::DiscoveryState;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(
+        directory.filePath(QStringLiteral("sys")),
+        directory.filePath(QStringLiteral("dev"))));
+    manager->setAutoConnectModeForTesting(true);
+    TryxRuntimeExportedObject exportedObject;
+    TryxRuntimeManagerAdaptor adaptor(&exportedObject, manager.get());
+    QSignalSpy presence(manager.get(), &DeviceManager::printerPresenceChanged);
+    QSignalSpy connectRequests(manager.get(), &DeviceManager::requestConnect);
+    QSignalSpy rebootRequests(manager.get(), &DeviceManager::requestReboot);
+    QSignalSpy statuses(manager.get(), &DeviceManager::uploadStatus);
+    QSignalSpy errors(manager.get(), &DeviceManager::deviceError);
+    const auto lastText = [](const QSignalSpy &spy) {
+        return spy.isEmpty() ? QString() : spy.last().at(0).toString();
+    };
+
+    PrinterProtocol::DiscoverySnapshot empty;
+    empty.state = State::EnumeratingPrinterClass;
+    manager->handlePrinterSnapshot(empty);
+    QCOMPARE(presence.count(), 0);
+    QVERIFY(!manager->isPrinterClassDeviceDetected());
+    QVERIFY(manager->isPrinterClassDevicePresent());
+    QVERIFY(empty.blocksLegacyTransport());
+    QVERIFY(!adaptor.GetSnapshot().printerClassDevicePresent);
+    QVERIFY2(lastText(statuses).contains(QStringLiteral("USB portal")),
+             qPrintable(lastText(statuses)));
+    QCOMPARE(connectRequests.count(), 0);
+
+    // An adaptor created after the snapshot reads presence in its constructor.
+    TryxRuntimeExportedObject lateExportedObject;
+    TryxRuntimeManagerAdaptor lateAdaptor(&lateExportedObject, manager.get());
+    QVERIFY(!lateAdaptor.GetSnapshot().printerClassDevicePresent);
+
+    // Routing still treats the printer-class path as the owner: no adb reboot.
+    manager->rebootDevice();
+    QCOMPARE(rebootRequests.count(), 0);
+    QVERIFY2(lastText(statuses).contains(QStringLiteral("Reboot is not supported")),
+             qPrintable(lastText(statuses)));
+
+    manager->connectDevice(QStringLiteral("/dev/ttyACM0"));
+    QVERIFY2(lastText(errors).contains(QStringLiteral("use Auto connection")),
+             qPrintable(lastText(errors)));
+    QCOMPARE(connectRequests.count(), 0);
+
+    manager->connectDevice(QString());
+    QCOMPARE(connectRequests.count(), 0);
+    QVERIFY2(lastText(statuses).contains(QStringLiteral("USB portal")),
+             qPrintable(lastText(statuses)));
+
+    PrinterProtocol::DiscoverySnapshot unavailable;
+    unavailable.state = State::MonitoringUnavailable;
+    manager->handlePrinterSnapshot(unavailable);
+    QCOMPARE(presence.count(), 0);
+    QVERIFY(!adaptor.GetSnapshot().printerClassDevicePresent);
+
+    PrinterProtocol::DiscoverySnapshot listed;
+    listed.state = State::PermissionDenied;
+    listed.devices = {{QStringLiteral("portal-usb:synthetic"), QString(), 0x1021,
+                       QString(), QString(), QStringLiteral("S"), false}};
+    listed.workingUsbDeviceCount = 1;
+    manager->handlePrinterSnapshot(listed);
+    QCOMPARE(presence.count(), 1);
+    QCOMPARE(presence.last().at(0).toBool(), true);
+    QVERIFY(adaptor.GetSnapshot().printerClassDevicePresent);
+
+    manager->handlePrinterSnapshot(empty);
+    QCOMPARE(presence.count(), 2);
+    QCOMPARE(presence.last().at(0).toBool(), false);
+    QVERIFY(!adaptor.GetSnapshot().printerClassDevicePresent);
+    QCOMPARE(connectRequests.count(), 0);
+    QCOMPARE(rebootRequests.count(), 0);
 }
 #endif
 

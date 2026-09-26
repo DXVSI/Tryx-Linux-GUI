@@ -56,6 +56,7 @@ done
     make -f Makefile.flatpak-protocol -j"$test_jobs"
     dbus-run-session -- ../build/flatpak-protocol-tests/printerprotocol-tests \
         flatpakFirmwareIsBlockedBeforeValidationOrQuiesce \
+        flatpakEmptyPortalDoesNotPublishDevicePresence \
         mediaPreparationKeepsRetryArtifactsPrivate -txt
     # Same source, unchanged native profile, full protocol regression suite.
     qmake printerprotocol_tests.pro -o Makefile.native-protocol
