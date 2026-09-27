@@ -594,8 +594,73 @@ QString SystemMonitor::resolveGpuModelName(
     if (name.isEmpty()) {
         name = readUdevPciModelName(cardPath);
     }
+    if (name.isEmpty()) {
+        name = readPciDatabaseModelName(cardPath);
+    }
     gpuModelCache_.insert(cacheKey, name.trimmed());
     return name.trimmed();
+}
+
+QString SystemMonitor::readPciDatabaseModelName(const QString &cardPath) {
+    const QString vendor =
+        normalizedPciHex(readSysFile(cardPath + "/vendor"));
+    const QString device =
+        normalizedPciHex(readSysFile(cardPath + "/device"));
+    if (vendor.isEmpty() || device.isEmpty()) {
+        return {};
+    }
+    for (const QString &idsPath : {
+             QStringLiteral("/usr/share/hwdata/pci.ids"),
+             QStringLiteral("/usr/share/misc/pci.ids"),
+         }) {
+        const QString name = readPciIdsModelName(idsPath, vendor, device);
+        if (!name.isEmpty()) {
+            return name;
+        }
+    }
+    return {};
+}
+
+QString SystemMonitor::readPciIdsModelName(const QString &idsPath,
+                                           const QString &vendor,
+                                           const QString &device) {
+    // pci.ids layout: "vvvv  Vendor name" at column 0, "\tdddd  Device name"
+    // below it, "\t\t" lines for subsystems. Only the device name of the
+    // matching vendor is returned, the same text udev stores as
+    // ID_MODEL_FROM_DATABASE.
+    const QString normalizedVendor = normalizedPciHex(vendor);
+    const QString normalizedDevice = normalizedPciHex(device);
+    if (normalizedVendor.isEmpty() || normalizedDevice.isEmpty()) {
+        return {};
+    }
+    QFile ids(idsPath);
+    if (!ids.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return {};
+    }
+    bool insideVendor = false;
+    while (!ids.atEnd()) {
+        const QString line = QString::fromUtf8(ids.readLine());
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+            continue;
+        }
+        if (!line.startsWith(QLatin1Char('\t'))) {
+            if (line.startsWith(QLatin1Char('C'))) {
+                // Device classes follow the vendor list.
+                break;
+            }
+            insideVendor = normalizedPciHex(line.left(4)) == normalizedVendor;
+            continue;
+        }
+        if (!insideVendor || line.startsWith(QStringLiteral("\t\t"))) {
+            continue;
+        }
+        const QString entry = line.mid(1);
+        if (normalizedPciHex(entry.left(4)) != normalizedDevice) {
+            continue;
+        }
+        return entry.mid(4).trimmed();
+    }
+    return {};
 }
 
 QString SystemMonitor::readAmdGpuMarketingName(

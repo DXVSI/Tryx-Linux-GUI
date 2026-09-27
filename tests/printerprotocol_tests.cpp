@@ -16462,6 +16462,52 @@ void PrinterProtocolTests::hardwareBadgeModelsResolve() {
             QStringLiteral("0xc8")),
         QStringLiteral("AMD Radeon RX 7900 XTX"));
 
+    // The PCI ID database is the last name source: it is what the Flatpak
+    // runtime ships when the host's udev database is out of reach.
+    QTemporaryFile pciIdsFile;
+    QVERIFY(pciIdsFile.open());
+    const QByteArray pciIdsContents = QByteArrayLiteral(
+        "# PCI ID database excerpt\n"
+        "1002  Advanced Micro Devices, Inc. [AMD/ATI]\n"
+        "\t13c0  Granite Ridge [Radeon Graphics]\n"
+        "\t\t1002 0123  Subsystem that must be skipped\n"
+        "10de  NVIDIA Corporation\n"
+        "\t2684  AD102 [GeForce RTX 4090]\n"
+        "\t\t1043 889a  TUF Gaming\n"
+        "C 03  Display controller\n"
+        "\t00  VGA compatible controller\n");
+    QCOMPARE(pciIdsFile.write(pciIdsContents),
+             static_cast<qint64>(pciIdsContents.size()));
+    QVERIFY(pciIdsFile.flush());
+    QCOMPARE(SystemMonitor::readPciIdsModelName(
+                 pciIdsFile.fileName(), QStringLiteral("0x10de"),
+                 QStringLiteral("0x2684")),
+             QStringLiteral("AD102 [GeForce RTX 4090]"));
+    QCOMPARE(SystemMonitor::readPciIdsModelName(
+                 pciIdsFile.fileName(), QStringLiteral("0x1002"),
+                 QStringLiteral("0x13C0")),
+             QStringLiteral("Granite Ridge [Radeon Graphics]"));
+    // A device id under another vendor, an unknown vendor, a subsystem id
+    // and a class entry never produce a name.
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QStringLiteral("0x10de"),
+                QStringLiteral("0x13c0")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QStringLiteral("0x8086"),
+                QStringLiteral("0x2684")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QStringLiteral("0x10de"),
+                QStringLiteral("0x1043")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QStringLiteral("0x10de"),
+                QStringLiteral("0x0000")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QString(),
+                QStringLiteral("0x2684")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                QStringLiteral("/nonexistent/pci.ids"),
+                QStringLiteral("0x10de"), QStringLiteral("0x2684")).isEmpty());
+
     QTemporaryDir drmFixture;
     QVERIFY(drmFixture.isValid());
     const QString nvidiaDevice =
