@@ -62,6 +62,10 @@ std::optional<PrinterProductProfile> printerProductProfileForId(quint16 productI
         return paseFamilyProfile(0x1021, true);
     case 0x1011:
         return paseFamilyProfile(0x1011, false);
+    case 0x1031:
+        // Panorama WB: the official application drives it with the Panorama
+        // manager, the same 2240x1080 layout and the same presets.
+        return paseFamilyProfile(0x1031, false);
     case 0x2011:
         return turrisProfile();
     default:

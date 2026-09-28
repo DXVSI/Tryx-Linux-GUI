@@ -222,6 +222,7 @@ QString normalizedProductCode(QString productId) {
     }
     if (productId == QStringLiteral("1021") ||
         productId == QStringLiteral("1011") ||
+        productId == QStringLiteral("1031") ||
         productId == QStringLiteral("2011")) {
         return productId;
     }
@@ -250,6 +251,9 @@ QString modelForProductId(const QString &productId) {
     }
     if (code == QStringLiteral("1011")) {
         return QStringLiteral("PANORAMA");
+    }
+    if (code == QStringLiteral("1031")) {
+        return QStringLiteral("PANORAMA WB");
     }
     if (code == QStringLiteral("2011")) {
         return QStringLiteral("TURRIS 620");

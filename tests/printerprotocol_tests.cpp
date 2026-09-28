@@ -22,6 +22,7 @@
 #include "printermediaidentity.h"
 #include "printermediapreparer.h"
 #include "printermediavalidator.h"
+#include "runtime/shutdownguard.h"
 #include "privateruntimepaths.h"
 #include "runtimeapplyrequestcodec.h"
 #include "paseoverlayconfig.h"
@@ -71,6 +72,7 @@
 #include <sys/sysmacros.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/timerfd.h>
 #include <thread>
 #include <type_traits>
@@ -2264,6 +2266,7 @@ private slots:
     void turrisMediaFollowsOfficialEncoderSettings();
     void turrisMediaNamesFollowOfficialLayout();
     void turrisDiagnosticTokensStayPlain();
+    void shutdownGuardExtendsStopTimeoutThroughNotifySocket();
     void turrisMediaFormatValidatorRejectsMalformedMetadata();
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
@@ -2573,6 +2576,9 @@ private slots:
     void mediaReferencePreflightRejectsUnsafeCatalog();
     void unknownFieldsSurviveMutation();
     void discoveryStateSequence();
+#ifndef TRYX_FLATPAK
+    void nativeDevicePresenceMatchesLegacyBlocking();
+#endif
     void productionEndpointValidationWithOfflineSysfs();
     void paseUdevReadinessUsesUsbDeviceEvents();
     void samePathEndpointEventForcesNewEpochSignal();
@@ -2596,6 +2602,7 @@ private slots:
     void identifiedLegacyFirmwareRequestPassesPreflight();
 #ifdef TRYX_FLATPAK
     void flatpakFirmwareIsBlockedBeforeValidationOrQuiesce();
+    void flatpakEmptyPortalDoesNotPublishDevicePresence();
 #endif
     void firmwareExclusiveGateRejectsDeviceWork();
     void firmwareExclusiveGateRejectsUnresolvedDeviceState();
@@ -11053,13 +11060,16 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
 void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     const auto pase = printerProductProfileForId(0x1021);
     const auto pano = printerProductProfileForId(0x1011);
+    const auto panoWb = printerProductProfileForId(0x1031);
     const auto turris = printerProductProfileForId(0x2011);
     QVERIFY(pase.has_value());
     QVERIFY(pano.has_value());
+    QVERIFY(panoWb.has_value());
     QVERIFY(turris.has_value());
     QVERIFY(!printerProductProfileForId(0x9999).has_value());
+    QVERIFY(!printerProductProfileForId(0x10a1).has_value());
 
-    for (const auto &profile : {pase, pano}) {
+    for (const auto &profile : {pase, pano, panoWb}) {
         QCOMPARE(profile->mediaWidth, 2240);
         QCOMPARE(profile->mediaHeight, 1080);
         QCOMPARE(profile->family, PrinterProtocolFamily::Pase);
@@ -11084,6 +11094,8 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     }
     QVERIFY(pase->firmwareFlashSupported);
     QVERIFY(!pano->firmwareFlashSupported);
+    QVERIFY(!panoWb->firmwareFlashSupported);
+    QCOMPARE(panoWb->productId, quint16{0x1031});
 
     QCOMPARE(turris->mediaWidth, 1280);
     QCOMPARE(turris->mediaHeight, 720);
@@ -11434,6 +11446,55 @@ void PrinterProtocolTests::turrisDiagnosticTokensStayPlain() {
     QCOMPARE(diagnosticDeviceToken(std::string("/home/some user/"), 64),
              QStringLiteral("other"));
     QCOMPARE(diagnosticDeviceToken(std::string(40, 'a'), 32), QStringLiteral("other"));
+}
+
+void PrinterProtocolTests::shutdownGuardExtendsStopTimeoutThroughNotifySocket() {
+    namespace guard = tryx::runtime_shutdown;
+    QCOMPARE(guard::stopTimeoutExtensionMessage(60000),
+             QByteArray("EXTEND_TIMEOUT_USEC=60000000"));
+    QCOMPARE(guard::stopTimeoutExtensionMessage(0),
+             QByteArray("EXTEND_TIMEOUT_USEC=1000"));
+
+    const QByteArray previous = qgetenv("NOTIFY_SOCKET");
+    const bool hadPrevious = qEnvironmentVariableIsSet("NOTIFY_SOCKET");
+    const auto restore = qScopeGuard([&]() {
+        if (hadPrevious) {
+            qputenv("NOTIFY_SOCKET", previous);
+        } else {
+            qunsetenv("NOTIFY_SOCKET");
+        }
+    });
+
+    QTemporaryDir directory(QDir::tempPath() + QStringLiteral("/tryx-notify-XXXXXX"));
+    QVERIFY(directory.isValid());
+    const QByteArray socketPath =
+        QFile::encodeName(directory.filePath(QStringLiteral("n")));
+    sockaddr_un address{};
+    QVERIFY(static_cast<size_t>(socketPath.size()) < sizeof(address.sun_path));
+    address.sun_family = AF_UNIX;
+    std::memcpy(address.sun_path, socketPath.constData(),
+                static_cast<size_t>(socketPath.size()));
+    const int listener = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    QVERIFY(listener >= 0);
+    const auto closeListener = qScopeGuard([listener]() { ::close(listener); });
+    QCOMPARE(::bind(listener, reinterpret_cast<const sockaddr *>(&address),
+                    sizeof(address)),
+             0);
+
+    qputenv("NOTIFY_SOCKET", socketPath);
+    QVERIFY(guard::notifyServiceManager(
+        guard::stopTimeoutExtensionMessage(guard::kStopTimeoutExtensionMs)));
+    char buffer[128] = {};
+    const ssize_t received = ::recv(listener, buffer, sizeof(buffer) - 1, MSG_DONTWAIT);
+    QCOMPARE(QByteArray(buffer, static_cast<qsizetype>(qMax<ssize_t>(0, received))),
+             QByteArray("EXTEND_TIMEOUT_USEC=60000000"));
+
+    // No service manager, or a socket name it would never hand out: no send.
+    QVERIFY(!guard::notifyServiceManager(QByteArray()));
+    qputenv("NOTIFY_SOCKET", "relative/socket");
+    QVERIFY(!guard::notifyServiceManager("READY=1"));
+    qunsetenv("NOTIFY_SOCKET");
+    QVERIFY(!guard::notifyServiceManager("READY=1"));
 }
 
 void PrinterProtocolTests::turrisMediaFollowsOfficialEncoderSettings() {
@@ -14136,8 +14197,10 @@ void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
         QStringLiteral("GPU Badge")};
     config.overlay.cpuBadgeText =
         QStringLiteral("AMD Ryzen 9 9950X3D");
+    // No vendor word: the product name alone must still pick the NVIDIA
+    // colours, as the PCI ID database spells it.
     config.overlay.gpuBadgeText =
-        QStringLiteral("NVIDIA GeForce RTX");
+        QStringLiteral("GeForce RTX 4090");
     QString error;
     PrinterProtocol::PaseDisplayState appliedState;
     const bool applied = protocol.applyPaseConfiguration(
@@ -16400,6 +16463,80 @@ void PrinterProtocolTests::hardwareBadgeModelsResolve() {
             idsFile.fileName(), QStringLiteral("0x744c"),
             QStringLiteral("0xc8")),
         QStringLiteral("AMD Radeon RX 7900 XTX"));
+
+    // The PCI ID database is the last name source: it is what the Flatpak
+    // runtime ships when the host's udev database is out of reach.
+    QTemporaryFile pciIdsFile;
+    QVERIFY(pciIdsFile.open());
+    const QByteArray pciIdsContents = QByteArrayLiteral(
+        "# PCI ID database excerpt\n"
+        "1002  Advanced Micro Devices, Inc. [AMD/ATI]\n"
+        "\t13c0  Granite Ridge [Radeon Graphics]\n"
+        "\t\t1002 0123  Subsystem that must be skipped\n"
+        "10de  NVIDIA Corporation\n"
+        "\t2684  AD102 [GeForce RTX 4090]\n"
+        "\t\t1043 889a  TUF Gaming\n"
+        "C 03  Display controller\n"
+        "\t00  VGA compatible controller\n");
+    QCOMPARE(pciIdsFile.write(pciIdsContents),
+             static_cast<qint64>(pciIdsContents.size()));
+    QVERIFY(pciIdsFile.flush());
+    QCOMPARE(SystemMonitor::readPciIdsModelName(
+                 pciIdsFile.fileName(), QStringLiteral("0x10de"),
+                 QStringLiteral("0x2684")),
+             QStringLiteral("AD102 [GeForce RTX 4090]"));
+    QCOMPARE(SystemMonitor::readPciIdsModelName(
+                 pciIdsFile.fileName(), QStringLiteral("0x1002"),
+                 QStringLiteral("0x13C0")),
+             QStringLiteral("Granite Ridge [Radeon Graphics]"));
+    // A device id under another vendor, an unknown vendor, a subsystem id
+    // and a class entry never produce a name.
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QStringLiteral("0x10de"),
+                QStringLiteral("0x13c0")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QStringLiteral("0x8086"),
+                QStringLiteral("0x2684")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QStringLiteral("0x10de"),
+                QStringLiteral("0x1043")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QStringLiteral("0x10de"),
+                QStringLiteral("0x0000")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                pciIdsFile.fileName(), QString(),
+                QStringLiteral("0x2684")).isEmpty());
+    QVERIFY(SystemMonitor::readPciIdsModelName(
+                QStringLiteral("/nonexistent/pci.ids"),
+                QStringLiteral("0x10de"), QStringLiteral("0x2684")).isEmpty());
+
+    // Database names carry the chip; badges show the product with its
+    // vendor, which is also the word the badge colour is chosen by.
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x10de"),
+                 QStringLiteral("AD102 [GeForce RTX 4090]")),
+             QStringLiteral("NVIDIA GeForce RTX 4090"));
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("8086"),
+                 QStringLiteral("Raptor Lake-S GT1 [UHD Graphics 770]")),
+             QStringLiteral("Intel UHD Graphics 770"));
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x1002"),
+                 QStringLiteral("Navi 31 [Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M]")),
+             QStringLiteral("AMD Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M"));
+    // Already a product name, a foreign vendor, empty brackets, nothing.
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x10de"),
+                 QStringLiteral("NVIDIA GeForce GTX 1650")),
+             QStringLiteral("NVIDIA GeForce GTX 1650"));
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x1af4"), QStringLiteral("Virtio GPU")),
+             QStringLiteral("Virtio GPU"));
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x10de"), QStringLiteral("AD102 [ ]")),
+             QStringLiteral("NVIDIA AD102 [ ]"));
+    QVERIFY(SystemMonitor::marketingNameFromPciDatabase(
+                QStringLiteral("0x10de"), QStringLiteral("  ")).isEmpty());
 
     QTemporaryDir drmFixture;
     QVERIFY(drmFixture.isValid());
@@ -35609,6 +35746,59 @@ void PrinterProtocolTests::discoveryStateSequence() {
     QVERIFY(!snapshot.blocksLegacyTransport());
 }
 
+#ifndef TRYX_FLATPAK
+// Native builds publish presence exactly as before the Flatpak fix: every
+// state that blocks the legacy transport also counts as a detected device.
+void PrinterProtocolTests::nativeDevicePresenceMatchesLegacyBlocking() {
+    using State = PrinterProtocol::DiscoveryState;
+    for (const State state : {State::Absent, State::RockchipGadget391a0006,
+                              State::EnumeratingPrinterClass, State::Ready,
+                              State::PermissionDenied, State::Ambiguous,
+                              State::MonitoringUnavailable}) {
+        PrinterProtocol::DiscoverySnapshot snapshot;
+        snapshot.state = state;
+        QCOMPARE(snapshot.indicatesDevice(), snapshot.blocksLegacyTransport());
+    }
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(
+        temporaryDirectory.filePath(QStringLiteral("sys")),
+        temporaryDirectory.filePath(QStringLiteral("dev"))));
+    TryxRuntimeExportedObject exportedObject;
+    TryxRuntimeManagerAdaptor adaptor(&exportedObject, manager.get());
+    QSignalSpy presence(manager.get(), &DeviceManager::printerPresenceChanged);
+
+    PrinterProtocol::DiscoverySnapshot enumerating;
+    enumerating.state = State::EnumeratingPrinterClass;
+    enumerating.workingUsbDeviceCount = 1;
+    manager->handlePrinterSnapshot(enumerating);
+    QCOMPARE(presence.count(), 1);
+    QCOMPARE(presence.last().at(0).toBool(), true);
+    QVERIFY(adaptor.GetSnapshot().printerClassDevicePresent);
+    QCOMPARE(manager->isPrinterClassDeviceDetected(),
+             manager->isPrinterClassDevicePresent());
+
+    // The Flatpak zero-device shape is still a device in native builds.
+    PrinterProtocol::DiscoverySnapshot bareEnumerating;
+    bareEnumerating.state = State::EnumeratingPrinterClass;
+    manager->handlePrinterSnapshot(bareEnumerating);
+    QCOMPARE(presence.count(), 1);
+    QVERIFY(adaptor.GetSnapshot().printerClassDevicePresent);
+
+    PrinterProtocol::DiscoverySnapshot monitoringUnavailable;
+    monitoringUnavailable.state = State::MonitoringUnavailable;
+    manager->handlePrinterSnapshot(monitoringUnavailable);
+    QCOMPARE(presence.count(), 1);
+    QVERIFY(adaptor.GetSnapshot().printerClassDevicePresent);
+
+    manager->handlePrinterSnapshot(PrinterProtocol::DiscoverySnapshot{});
+    QCOMPARE(presence.count(), 2);
+    QCOMPARE(presence.last().at(0).toBool(), false);
+    QVERIFY(!adaptor.GetSnapshot().printerClassDevicePresent);
+}
+#endif
+
 void PrinterProtocolTests::productionEndpointValidationWithOfflineSysfs() {
     QTemporaryDir temporaryDirectory;
     QVERIFY(temporaryDirectory.isValid());
@@ -47501,6 +47691,85 @@ void PrinterProtocolTests::flatpakFirmwareIsBlockedBeforeValidationOrQuiesce() {
     QVERIFY(!bridge.shutdownInhibited());
     QCOMPARE(quiesce.count(), 0);
     QVERIFY(!QFileInfo::exists(directory.filePath("recovery/journal.json")));
+}
+
+// With no device listed by the USB portal, the Flatpak keeps the legacy
+// transport blocked and routes requests as before, but must not publish a
+// detected device ("USB device: Detected" with nothing connected).
+void PrinterProtocolTests::flatpakEmptyPortalDoesNotPublishDevicePresence() {
+    using State = PrinterProtocol::DiscoveryState;
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(
+        directory.filePath(QStringLiteral("sys")),
+        directory.filePath(QStringLiteral("dev"))));
+    manager->setAutoConnectModeForTesting(true);
+    TryxRuntimeExportedObject exportedObject;
+    TryxRuntimeManagerAdaptor adaptor(&exportedObject, manager.get());
+    QSignalSpy presence(manager.get(), &DeviceManager::printerPresenceChanged);
+    QSignalSpy connectRequests(manager.get(), &DeviceManager::requestConnect);
+    QSignalSpy rebootRequests(manager.get(), &DeviceManager::requestReboot);
+    QSignalSpy statuses(manager.get(), &DeviceManager::uploadStatus);
+    QSignalSpy errors(manager.get(), &DeviceManager::deviceError);
+    const auto lastText = [](const QSignalSpy &spy) {
+        return spy.isEmpty() ? QString() : spy.last().at(0).toString();
+    };
+
+    PrinterProtocol::DiscoverySnapshot empty;
+    empty.state = State::EnumeratingPrinterClass;
+    manager->handlePrinterSnapshot(empty);
+    QCOMPARE(presence.count(), 0);
+    QVERIFY(!manager->isPrinterClassDeviceDetected());
+    QVERIFY(manager->isPrinterClassDevicePresent());
+    QVERIFY(empty.blocksLegacyTransport());
+    QVERIFY(!adaptor.GetSnapshot().printerClassDevicePresent);
+    QVERIFY2(lastText(statuses).contains(QStringLiteral("USB portal")),
+             qPrintable(lastText(statuses)));
+    QCOMPARE(connectRequests.count(), 0);
+
+    // An adaptor created after the snapshot reads presence in its constructor.
+    TryxRuntimeExportedObject lateExportedObject;
+    TryxRuntimeManagerAdaptor lateAdaptor(&lateExportedObject, manager.get());
+    QVERIFY(!lateAdaptor.GetSnapshot().printerClassDevicePresent);
+
+    // Routing still treats the printer-class path as the owner: no adb reboot.
+    manager->rebootDevice();
+    QCOMPARE(rebootRequests.count(), 0);
+    QVERIFY2(lastText(statuses).contains(QStringLiteral("Reboot is not supported")),
+             qPrintable(lastText(statuses)));
+
+    manager->connectDevice(QStringLiteral("/dev/ttyACM0"));
+    QVERIFY2(lastText(errors).contains(QStringLiteral("use Auto connection")),
+             qPrintable(lastText(errors)));
+    QCOMPARE(connectRequests.count(), 0);
+
+    manager->connectDevice(QString());
+    QCOMPARE(connectRequests.count(), 0);
+    QVERIFY2(lastText(statuses).contains(QStringLiteral("USB portal")),
+             qPrintable(lastText(statuses)));
+
+    PrinterProtocol::DiscoverySnapshot unavailable;
+    unavailable.state = State::MonitoringUnavailable;
+    manager->handlePrinterSnapshot(unavailable);
+    QCOMPARE(presence.count(), 0);
+    QVERIFY(!adaptor.GetSnapshot().printerClassDevicePresent);
+
+    PrinterProtocol::DiscoverySnapshot listed;
+    listed.state = State::PermissionDenied;
+    listed.devices = {{QStringLiteral("portal-usb:synthetic"), QString(), 0x1021,
+                       QString(), QString(), QStringLiteral("S"), false}};
+    listed.workingUsbDeviceCount = 1;
+    manager->handlePrinterSnapshot(listed);
+    QCOMPARE(presence.count(), 1);
+    QCOMPARE(presence.last().at(0).toBool(), true);
+    QVERIFY(adaptor.GetSnapshot().printerClassDevicePresent);
+
+    manager->handlePrinterSnapshot(empty);
+    QCOMPARE(presence.count(), 2);
+    QCOMPARE(presence.last().at(0).toBool(), false);
+    QVERIFY(!adaptor.GetSnapshot().printerClassDevicePresent);
+    QCOMPARE(connectRequests.count(), 0);
+    QCOMPARE(rebootRequests.count(), 0);
 }
 #endif
 

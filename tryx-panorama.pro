@@ -103,6 +103,7 @@ SOURCES += \
     src/core/config.cpp
 
 HEADERS += \
+    src/runtime/shutdownguard.h \
     src/applicationpaths.h \
     src/deleteintentstore.h \
     src/devicemediaartifactstore.h \
@@ -162,6 +163,7 @@ HEADERS += \
 
 SOURCES += \
     src/runtime/main.cpp \
+    src/runtime/shutdownguard.cpp \
     src/deleteintentstore.cpp \
     src/devicemediaartifactstore.cpp \
     src/devicemanager.cpp \

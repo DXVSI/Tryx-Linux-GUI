@@ -8,6 +8,7 @@ constexpr quint16 kTryxVendorId = 0x391a;
 constexpr quint16 kTransitionProductId = 0x0006;
 constexpr quint16 kPaseProductId = 0x1021;
 constexpr quint16 kPanoProductId = 0x1011;
+constexpr quint16 kPanoWbProductId = 0x1031;
 constexpr quint16 kTurrisProductId = 0x2011;
 constexpr quint8 kPrinterInterfaceClass = 0x07;
 constexpr quint8 kPrinterInterfaceSubclass = 0x01;

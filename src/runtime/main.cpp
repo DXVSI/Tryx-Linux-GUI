@@ -1,5 +1,6 @@
 #include "devicemanager.h"
 #include "firmwarebridge.h"
+#include "shutdownguard.h"
 #include "runtimebridge.h"
 #include "runtimedowngradestore.h"
 #ifdef TRYX_FLATPAK
@@ -13,6 +14,7 @@
 #include <QDebug>
 #include <QLoggingCategory>
 #include <QSocketNotifier>
+#include <QTimer>
 
 #include <cerrno>
 #include <csignal>
@@ -292,7 +294,24 @@ int main(int argc, char *argv[]) {
         shutdownSignalPipe.readFd(),
         QSocketNotifier::Read,
         &app);
+    // Every quit path ends here only after firmware flashing has released its
+    // inhibition. From then on a worker stuck in a kernel USB call must not
+    // keep the process, and with it the user session, from ending.
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, []() {
+        tryx::runtime_shutdown::armExitDeadline(
+            tryx::runtime_shutdown::kExitDeadlineMs);
+    });
     bool shutdownRequested = false;
+    const auto extendStopTimeout = []() {
+        tryx::runtime_shutdown::notifyServiceManager(
+            tryx::runtime_shutdown::stopTimeoutExtensionMessage(
+                tryx::runtime_shutdown::kStopTimeoutExtensionMs));
+    };
+    QTimer stopTimeoutExtension;
+    stopTimeoutExtension.setInterval(
+        tryx::runtime_shutdown::kStopTimeoutExtensionIntervalMs);
+    QObject::connect(&stopTimeoutExtension, &QTimer::timeout, &app,
+                     extendStopTimeout);
     QObject::connect(
         &shutdownSignalNotifier,
         &QSocketNotifier::activated,
@@ -314,6 +333,10 @@ int main(int argc, char *argv[]) {
             if (firmwareBridge.shutdownInhibited()) {
                 qInfo() << "Shutdown requested while firmware flashing is"
                            " active; waiting for the updater to finish";
+                // The service has a finite stop timeout; keep extending it
+                // for as long as the irreversible write is running.
+                extendStopTimeout();
+                stopTimeoutExtension.start();
                 return;
             }
             app.quit();
@@ -326,6 +349,7 @@ int main(int argc, char *argv[]) {
             if (shutdownRequested && !inhibited) {
                 qInfo() << "Firmware updater finished; completing the"
                            " deferred shutdown";
+                stopTimeoutExtension.stop();
                 app.quit();
             }
         });

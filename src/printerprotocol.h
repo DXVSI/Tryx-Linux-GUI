@@ -67,6 +67,10 @@ public:
 
         bool operator==(const DiscoverySnapshot &other) const;
         bool blocksLegacyTransport() const;
+        // Evidence of a supported TRYX device for published presence. The
+        // Flatpak keeps legacy transport blocked even when the USB portal
+        // lists no device; native builds equal blocksLegacyTransport().
+        bool indicatesDevice() const;
         QString statusText() const;
     };
 

@@ -73,6 +73,7 @@ HEADERS += \
     $$PWD/../src/pasemediaclient.h \
     $$PWD/../src/printertransactionchannel.h \
     $$PWD/../src/printermediahelpers_p.h \
+    $$PWD/../src/runtime/shutdownguard.h \
     $$PWD/../src/usbprintertransport.h \
     $$PWD/../src/printeroperation_p.h \
     $$PWD/../src/printerprotocolconstants_p.h \
@@ -128,6 +129,7 @@ SOURCES += \
     $$PWD/../src/printeroperation.cpp \
     $$PWD/../src/printertransactionchannel.cpp \
     $$PWD/../src/printermediahelpers.cpp \
+    $$PWD/../src/runtime/shutdownguard.cpp \
     $$PWD/../src/usbprintertransport.cpp \
     $$PWD/../src/printerproductprofile.cpp \
     $$PWD/../src/printerframecodec.cpp \

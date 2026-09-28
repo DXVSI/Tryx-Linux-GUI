@@ -592,10 +592,109 @@ QString SystemMonitor::resolveGpuModelName(
         name = readAmdGpuMarketingName(cardPath);
     }
     if (name.isEmpty()) {
-        name = readUdevPciModelName(cardPath);
+        name = marketingNameFromPciDatabase(
+            vendor, readUdevPciModelName(cardPath));
+    }
+    if (name.isEmpty()) {
+        name = marketingNameFromPciDatabase(
+            vendor, readPciDatabaseModelName(cardPath));
     }
     gpuModelCache_.insert(cacheKey, name.trimmed());
     return name.trimmed();
+}
+
+QString SystemMonitor::marketingNameFromPciDatabase(
+    const QString &vendor, const QString &databaseName) {
+    const QString name = databaseName.trimmed();
+    if (name.isEmpty()) {
+        return {};
+    }
+    QString vendorWord;
+    const QString normalizedVendor = normalizedPciHex(vendor);
+    if (normalizedVendor == QStringLiteral("10DE")) {
+        vendorWord = QStringLiteral("NVIDIA");
+    } else if (normalizedVendor == QStringLiteral("1002")) {
+        vendorWord = QStringLiteral("AMD");
+    } else if (normalizedVendor == QStringLiteral("8086")) {
+        vendorWord = QStringLiteral("Intel");
+    }
+
+    QString product = name;
+    const qsizetype open = name.lastIndexOf(QLatin1Char('['));
+    const qsizetype close = name.lastIndexOf(QLatin1Char(']'));
+    if (open >= 0 && close > open + 1) {
+        const QString bracketed = name.mid(open + 1, close - open - 1).trimmed();
+        if (!bracketed.isEmpty()) {
+            product = bracketed;
+        }
+    }
+    if (vendorWord.isEmpty() ||
+        product.startsWith(vendorWord, Qt::CaseInsensitive)) {
+        return product;
+    }
+    return vendorWord + QLatin1Char(' ') + product;
+}
+
+QString SystemMonitor::readPciDatabaseModelName(const QString &cardPath) {
+    const QString vendor =
+        normalizedPciHex(readSysFile(cardPath + "/vendor"));
+    const QString device =
+        normalizedPciHex(readSysFile(cardPath + "/device"));
+    if (vendor.isEmpty() || device.isEmpty()) {
+        return {};
+    }
+    for (const QString &idsPath : {
+             QStringLiteral("/usr/share/hwdata/pci.ids"),
+             QStringLiteral("/usr/share/misc/pci.ids"),
+         }) {
+        const QString name = readPciIdsModelName(idsPath, vendor, device);
+        if (!name.isEmpty()) {
+            return name;
+        }
+    }
+    return {};
+}
+
+QString SystemMonitor::readPciIdsModelName(const QString &idsPath,
+                                           const QString &vendor,
+                                           const QString &device) {
+    // pci.ids layout: "vvvv  Vendor name" at column 0, "\tdddd  Device name"
+    // below it, "\t\t" lines for subsystems. Only the device name of the
+    // matching vendor is returned, the same text udev stores as
+    // ID_MODEL_FROM_DATABASE.
+    const QString normalizedVendor = normalizedPciHex(vendor);
+    const QString normalizedDevice = normalizedPciHex(device);
+    if (normalizedVendor.isEmpty() || normalizedDevice.isEmpty()) {
+        return {};
+    }
+    QFile ids(idsPath);
+    if (!ids.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return {};
+    }
+    bool insideVendor = false;
+    while (!ids.atEnd()) {
+        const QString line = QString::fromUtf8(ids.readLine());
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+            continue;
+        }
+        if (!line.startsWith(QLatin1Char('\t'))) {
+            if (line.startsWith(QLatin1Char('C'))) {
+                // Device classes follow the vendor list.
+                break;
+            }
+            insideVendor = normalizedPciHex(line.left(4)) == normalizedVendor;
+            continue;
+        }
+        if (!insideVendor || line.startsWith(QStringLiteral("\t\t"))) {
+            continue;
+        }
+        const QString entry = line.mid(1);
+        if (normalizedPciHex(entry.left(4)) != normalizedDevice) {
+            continue;
+        }
+        return entry.mid(4).trimmed();
+    }
+    return {};
 }
 
 QString SystemMonitor::readAmdGpuMarketingName(

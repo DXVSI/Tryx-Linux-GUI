@@ -52,7 +52,7 @@ TryxRuntimeManagerAdaptor::TryxRuntimeManagerAdaptor(
     snapshot_.connected = manager_->isConnected();
     snapshot_.printerClassConnected = manager_->isPrinterClassConnected();
     snapshot_.printerClassDevicePresent =
-        manager_->isPrinterClassDevicePresent();
+        manager_->isPrinterClassDeviceDetected();
     snapshot_.displaySessionActive =
         manager_->isPrinterDisplaySessionActive();
 
@@ -253,7 +253,7 @@ void TryxRuntimeManagerAdaptor::updateConnectionSnapshot(
     snapshot_.connected = true;
     snapshot_.printerClassConnected = manager_->isPrinterClassConnected();
     snapshot_.printerClassDevicePresent =
-        manager_->isPrinterClassDevicePresent();
+        manager_->isPrinterClassDeviceDetected();
     snapshot_.displaySessionActive =
         manager_->isPrinterDisplaySessionActive();
     snapshot_.productId = productId;
