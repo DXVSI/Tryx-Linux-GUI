@@ -1,3 +1,13 @@
+tryx-panorama-manager (2.5.2-1) noble; urgency=medium
+
+  * Add Panorama WB (391a:1031) support with the Panorama feature set, confirmed on real hardware.
+  * Show GPU names with their vendor on the hardware badge, for example NVIDIA GeForce RTX 4090 on the NVIDIA colours, also inside the Flatpak.
+  * Fix the first drag and drop after launch failing with Invalid transfer in the Flatpak.
+  * Stop showing a detected device in the Flatpak when the USB portal lists no supported device.
+  * Keep a runtime stuck in a kernel USB call from blocking logout and power-off.
+
+ -- DXVSI <dxvsi123@gmail.com>  Tue, 29 Sep 2026 10:00:00 +0000
+
 tryx-panorama-manager (2.5.1-1) noble; urgency=medium
 
   * Play uploaded Turris 620 images, videos, and GIFs: encode them like the official application and keep device file names short enough for the firmware player.

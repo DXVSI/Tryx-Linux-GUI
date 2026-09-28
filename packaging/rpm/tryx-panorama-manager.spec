@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.5.1
+Version:        2.5.2
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -120,6 +120,13 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
+* Tue Sep 29 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.2-1
+- Add Panorama WB (391a:1031) support with the Panorama feature set, confirmed on real hardware
+- Show GPU names with their vendor on the hardware badge, for example NVIDIA GeForce RTX 4090 on the NVIDIA colours, also inside the Flatpak
+- Fix the first drag and drop after launch failing with Invalid transfer in the Flatpak
+- Stop showing a detected device in the Flatpak when the USB portal lists no supported device
+- Keep a runtime stuck in a kernel USB call from blocking logout and power-off
+
 * Sat Sep 19 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.1-1
 - Play uploaded Turris 620 images, videos, and GIFs: encode them like the official application and keep device file names short enough for the firmware player
 - Restart Turris playback after Apply and turn the backlight on when media is applied

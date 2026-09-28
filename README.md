@@ -14,6 +14,10 @@ Project home: [github.com/DXVSI/Tryx-Linux-GUI](https://github.com/DXVSI/Tryx-Li
 
 If TRYX Panorama Manager is useful to you, you can support continued development, protocol compatibility work, and testing on real hardware.
 
+- A star on the repository helps other Linux users find the project.
+- [GitHub Sponsors](https://github.com/sponsors/DXVSI) accepts one-time and monthly support.
+- Gram or USDT on TON, details below.
+
 ### Gram or USDT on TON
 
 | Detail | Value |
@@ -243,6 +247,28 @@ to the user service. A separate Settings switch can create an owner-managed
 XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
+
+## What's new in 2.5.2
+
+- Panorama WB (`391a:1031`) is supported with the same feature set as the
+  Panorama `391a:1011`: media library, Apply, upload, brightness and overlay
+  metrics with hardware badges. A community tester confirmed it on real
+  hardware. Firmware flashing stays disabled, and the built-in VRM fan is not
+  controlled yet.
+- Hardware badges show the GPU product with its vendor, for example "NVIDIA
+  GeForce RTX 4090" on the NVIDIA colours. Names now also come from the PCI
+  ID database shipped with the Flatpak runtime, so the Flatpak no longer
+  shows a bare "GPU". NVIDIA temperature, usage, clock and power still need
+  the host's `nvidia-smi`, which the Flatpak cannot reach.
+- In the Flatpak, the first drag and drop after launch no longer fails with
+  "Invalid transfer": the dropped file is fetched from the portal before the
+  drop is accepted.
+- In the Flatpak, "USB device: Detected" is shown only when the USB portal
+  actually lists a supported device.
+- The background service has a finite stop timeout. A runtime stuck in a
+  kernel USB call ends itself within about ten seconds of a stop request, so
+  logout and power-off are no longer blocked; firmware flashing extends the
+  timeout for as long as the write runs.
 
 ## What's new in 2.5.1
 
@@ -522,7 +548,7 @@ runtime remote, and a working USB portal backend are required. Stop any other
 TRYX runtime before starting this build.
 
 ```fish
-flatpak install --user ./tryx-panorama-manager-2.5.1-experimental-x86_64.flatpak
+flatpak install --user ./tryx-panorama-manager-2.5.2-experimental-x86_64.flatpak
 flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ```
 
@@ -554,13 +580,13 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.1-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.2-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.5.1-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.5.2-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.5.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.5.2-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
