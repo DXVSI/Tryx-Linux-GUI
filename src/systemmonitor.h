@@ -107,6 +107,11 @@ private:
                                        const QString &vendor,
                                        const QString &device);
     QString readPciDatabaseModelName(const QString &cardPath);
+    // The PCI ID database names a chip with the product in brackets, e.g.
+    // "AD102 [GeForce RTX 4090]". Badges want the product with its vendor,
+    // "NVIDIA GeForce RTX 4090", which is also what selects the badge colour.
+    static QString marketingNameFromPciDatabase(const QString &vendor,
+                                                const QString &databaseName);
     bool invalidateCachedNvidiaTelemetry();
     bool nvidiaProviderRequestsEnabled() const;
     RamMetrics readRamMetrics();

@@ -14197,8 +14197,10 @@ void PrinterProtocolTests::paseSplitApplyBuildsDualUserConfigAndBadges() {
         QStringLiteral("GPU Badge")};
     config.overlay.cpuBadgeText =
         QStringLiteral("AMD Ryzen 9 9950X3D");
+    // No vendor word: the product name alone must still pick the NVIDIA
+    // colours, as the PCI ID database spells it.
     config.overlay.gpuBadgeText =
-        QStringLiteral("NVIDIA GeForce RTX");
+        QStringLiteral("GeForce RTX 4090");
     QString error;
     PrinterProtocol::PaseDisplayState appliedState;
     const bool applied = protocol.applyPaseConfiguration(
@@ -16507,6 +16509,34 @@ void PrinterProtocolTests::hardwareBadgeModelsResolve() {
     QVERIFY(SystemMonitor::readPciIdsModelName(
                 QStringLiteral("/nonexistent/pci.ids"),
                 QStringLiteral("0x10de"), QStringLiteral("0x2684")).isEmpty());
+
+    // Database names carry the chip; badges show the product with its
+    // vendor, which is also the word the badge colour is chosen by.
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x10de"),
+                 QStringLiteral("AD102 [GeForce RTX 4090]")),
+             QStringLiteral("NVIDIA GeForce RTX 4090"));
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("8086"),
+                 QStringLiteral("Raptor Lake-S GT1 [UHD Graphics 770]")),
+             QStringLiteral("Intel UHD Graphics 770"));
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x1002"),
+                 QStringLiteral("Navi 31 [Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M]")),
+             QStringLiteral("AMD Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M"));
+    // Already a product name, a foreign vendor, empty brackets, nothing.
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x10de"),
+                 QStringLiteral("NVIDIA GeForce GTX 1650")),
+             QStringLiteral("NVIDIA GeForce GTX 1650"));
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x1af4"), QStringLiteral("Virtio GPU")),
+             QStringLiteral("Virtio GPU"));
+    QCOMPARE(SystemMonitor::marketingNameFromPciDatabase(
+                 QStringLiteral("0x10de"), QStringLiteral("AD102 [ ]")),
+             QStringLiteral("NVIDIA AD102 [ ]"));
+    QVERIFY(SystemMonitor::marketingNameFromPciDatabase(
+                QStringLiteral("0x10de"), QStringLiteral("  ")).isEmpty());
 
     QTemporaryDir drmFixture;
     QVERIFY(drmFixture.isValid());

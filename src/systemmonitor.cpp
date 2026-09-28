@@ -592,13 +592,47 @@ QString SystemMonitor::resolveGpuModelName(
         name = readAmdGpuMarketingName(cardPath);
     }
     if (name.isEmpty()) {
-        name = readUdevPciModelName(cardPath);
+        name = marketingNameFromPciDatabase(
+            vendor, readUdevPciModelName(cardPath));
     }
     if (name.isEmpty()) {
-        name = readPciDatabaseModelName(cardPath);
+        name = marketingNameFromPciDatabase(
+            vendor, readPciDatabaseModelName(cardPath));
     }
     gpuModelCache_.insert(cacheKey, name.trimmed());
     return name.trimmed();
+}
+
+QString SystemMonitor::marketingNameFromPciDatabase(
+    const QString &vendor, const QString &databaseName) {
+    const QString name = databaseName.trimmed();
+    if (name.isEmpty()) {
+        return {};
+    }
+    QString vendorWord;
+    const QString normalizedVendor = normalizedPciHex(vendor);
+    if (normalizedVendor == QStringLiteral("10DE")) {
+        vendorWord = QStringLiteral("NVIDIA");
+    } else if (normalizedVendor == QStringLiteral("1002")) {
+        vendorWord = QStringLiteral("AMD");
+    } else if (normalizedVendor == QStringLiteral("8086")) {
+        vendorWord = QStringLiteral("Intel");
+    }
+
+    QString product = name;
+    const qsizetype open = name.lastIndexOf(QLatin1Char('['));
+    const qsizetype close = name.lastIndexOf(QLatin1Char(']'));
+    if (open >= 0 && close > open + 1) {
+        const QString bracketed = name.mid(open + 1, close - open - 1).trimmed();
+        if (!bracketed.isEmpty()) {
+            product = bracketed;
+        }
+    }
+    if (vendorWord.isEmpty() ||
+        product.startsWith(vendorWord, Qt::CaseInsensitive)) {
+        return product;
+    }
+    return vendorWord + QLatin1Char(' ') + product;
 }
 
 QString SystemMonitor::readPciDatabaseModelName(const QString &cardPath) {
