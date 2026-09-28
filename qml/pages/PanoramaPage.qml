@@ -1145,6 +1145,8 @@ ScrollView {
                             // In the Flatpak a host drag carries host paths the
                             // sandbox cannot read; a portal transfer key, when the
                             // source offers one, is exchanged for exported files.
+                            // resolve() finishes before it returns: the source
+                            // drops the key once this drop is accepted.
                             const transferFormat = "application/vnd.portal.filetransfer"
                             const transferKey =
                                 root.mediaDropResolver &&

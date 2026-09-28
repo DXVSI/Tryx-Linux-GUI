@@ -74,6 +74,7 @@ bool supportsDeviceSpecifications(const QString &productId) {
     const QString code = normalizedProductCode(productId);
     return code == QStringLiteral("1011") ||
            code == QStringLiteral("1021") ||
+           code == QStringLiteral("1031") ||
            code == QStringLiteral("2011");
 }
 
@@ -149,6 +150,9 @@ QString modelForProductId(const QString &productId) {
     }
     if (code == QStringLiteral("1011")) {
         return QStringLiteral("PANORAMA");
+    }
+    if (code == QStringLiteral("1031")) {
+        return QStringLiteral("PANORAMA WB");
     }
     if (code == QStringLiteral("2011")) {
         return QStringLiteral("TURRIS 620");

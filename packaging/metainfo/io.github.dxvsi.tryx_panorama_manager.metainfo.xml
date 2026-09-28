@@ -20,12 +20,24 @@
     <binary>tryx-panorama-manager</binary>
     <modalias>usb:v391Ap1011d*</modalias>
     <modalias>usb:v391Ap1021d*</modalias>
+    <modalias>usb:v391Ap1031d*</modalias>
     <modalias>usb:v391Ap2011d*</modalias>
   </provides>
   <url type="homepage">https://github.com/DXVSI/Tryx-Linux-GUI</url>
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.5.2" type="stable" date="2026-09-29">
+      <description>
+        <ul>
+          <li>Add Panorama WB (391a:1031) support with the Panorama feature set, confirmed on real hardware.</li>
+          <li>Show GPU names with their vendor on the hardware badge, for example NVIDIA GeForce RTX 4090 on the NVIDIA colours, also inside the Flatpak.</li>
+          <li>Fix the first drag and drop after launch failing with Invalid transfer in the Flatpak.</li>
+          <li>Stop showing a detected device in the Flatpak when the USB portal lists no supported device.</li>
+          <li>Keep a runtime stuck in a kernel USB call from blocking logout and power-off.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.5.1" type="stable" date="2026-09-19">
       <description>
         <ul>

@@ -59,7 +59,10 @@ public:
     bool isPrinterClassConnected() const {
         return sessionController_.state().printerClassConnected;
     }
+    // Routes requests to the printer-class path; not published as presence.
     bool isPrinterClassDevicePresent() const;
+    // Presence published to clients: a supported device is actually visible.
+    bool isPrinterClassDeviceDetected() const;
     bool isPrinterDisplaySessionActive() const {
         return sessionController_.state().printerDisplaySessionActive;
     }

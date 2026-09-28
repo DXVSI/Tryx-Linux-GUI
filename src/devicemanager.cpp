@@ -299,7 +299,8 @@ TryxRuntimeSavedLayoutsSnapshotV2 DeviceManager::savedLayoutsSnapshotV2() const 
         return snapshot;
     }
     if (!profile ||
-        (profile->productId != 0x1011 && profile->productId != 0x1021) ||
+        (profile->productId != 0x1011 && profile->productId != 0x1021 &&
+         profile->productId != 0x1031) ||
         !profile->mediaCatalogSupported ||
         !profile->displayConfigurationSupported ||
         !profile->overlayMetricsSupported) {
@@ -1692,6 +1693,10 @@ bool DeviceManager::isPrinterClassDevicePresent() const {
     return sessionController_.isPrinterClassDevicePresent();
 }
 
+bool DeviceManager::isPrinterClassDeviceDetected() const {
+    return sessionController_.isPrinterClassDeviceDetected();
+}
+
 void DeviceManager::attachPrinterClassDevice(
     const PrinterProtocol::UsbPrinterDevice &device) {
     sessionController_.attachPrinterClassDevice(device);
@@ -2129,7 +2134,8 @@ bool DeviceManager::currentSavedLayoutsContext(
         tryxSavedLayoutDeviceIdentityIsCanonical(identity) &&
         tryxSavedLayoutProductIdIsSupported(product) && profile &&
         (profile->productId == 0x1011 ||
-         profile->productId == 0x1021) &&
+         profile->productId == 0x1021 ||
+         profile->productId == 0x1031) &&
         profile->mediaCatalogSupported &&
         profile->displayConfigurationSupported &&
         profile->overlayMetricsSupported;

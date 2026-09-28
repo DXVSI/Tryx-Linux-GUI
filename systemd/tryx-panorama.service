@@ -16,8 +16,12 @@ TimeoutStartSec=15
 # SIGTERM must reach only the runtime first. It defers exit while its adb or
 # upgrade_tool child owns an irreversible firmware write.
 KillMode=mixed
-# A firmware write has no universally safe forced-termination deadline.
-TimeoutStopSec=infinity
+# A runtime that cannot finish its shutdown, for example because a USB call
+# never returns from the kernel, must not block logout and power-off. While a
+# firmware write is active the runtime keeps extending this timeout with
+# EXTEND_TIMEOUT_USEC, so flashing is never cut short.
+TimeoutStopSec=20
+NotifyAccess=main
 
 [Install]
 WantedBy=graphical-session.target

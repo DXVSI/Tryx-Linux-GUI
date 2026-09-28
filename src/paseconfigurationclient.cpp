@@ -780,7 +780,8 @@ struct PaseBadgeColors {
 
 PaseBadgeColors paseBadgeColors(const QString &text) {
     const QString normalized = text.toLower();
-    if (normalized.contains(QStringLiteral("nvidia"))) {
+    if (normalized.contains(QStringLiteral("nvidia")) ||
+        normalized.contains(QStringLiteral("geforce"))) {
         return {0x00629A00U, 0x0079AB51U};
     }
     if (normalized.contains(QStringLiteral("intel"))) {

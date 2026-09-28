@@ -394,6 +394,7 @@ private slots:
         const auto discovery = PrinterProtocol::discover();
         QVERIFY(discovery.blocksLegacyTransport());
         QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::MonitoringUnavailable);
+        QVERIFY(!discovery.indicatesDevice());
     }
 
     void revocationDrainsDeferredCancellationWithoutNewSubmissions() {
@@ -537,6 +538,7 @@ private slots:
         QTRY_COMPARE(portal.acquisitions, 1);
         auto discovery = PrinterProtocol::discover();
         QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::PermissionDenied);
+        QVERIFY(discovery.indicatesDevice());
         QVERIFY2(discovery.statusText().contains(QStringLiteral("waiting in the desktop portal")),
                  qPrintable(discovery.statusText()));
         emit portal.request.Response(0, {});
@@ -544,6 +546,7 @@ private slots:
                     Registry::instance().snapshot().devices.first().granted);
         discovery = PrinterProtocol::discover();
         QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::Ready);
+        QVERIFY(discovery.indicatesDevice());
         access.stop();
     }
 
@@ -560,10 +563,69 @@ private slots:
         QCOMPARE(portal.acquisitions, 0);
         const auto discovery = PrinterProtocol::discover();
         QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::PermissionDenied);
+        QVERIFY(discovery.indicatesDevice());
         QVERIFY2(discovery.statusText().contains(QStringLiteral("not readable and writable")),
                  qPrintable(discovery.statusText()));
         QVERIFY(!Registry::instance().snapshot().acquisitionPending);
         access.stop();
+    }
+
+    // Only a device the portal actually lists is presence. With nothing listed,
+    // or only an unsupported TRYX model, discovery keeps blocking the legacy
+    // transport but must never be reported as a detected device, not even
+    // briefly while the portal session starts.
+    void portalPresenceRequiresASupportedDevice_data() {
+        QTest::addColumn<Devices>("devices");
+        QTest::addColumn<bool>("present");
+        QTest::newRow("none") << Devices{} << false;
+        QTest::newRow("other-model") << Devices{{"wrong", properties("391a", "ffff")}} << false;
+        QTest::newRow("supported") << Devices{{"device-1", properties()}} << true;
+    }
+    void portalPresenceRequiresASupportedDevice() {
+        QFETCH(Devices, devices);
+        QFETCH(bool, present);
+        FakePortal portal;
+        portal.devices = devices;
+        QVERIFY(portal.install());
+        // Declared before the Access so the destructor's final publish()
+        // cannot touch an already destroyed list when a check fails early.
+        QList<bool> published;
+        Access access(Registry::instance());
+        const auto recorder = QObject::connect(&access, &Access::changed, &access, [&published]() {
+            published.append(PrinterProtocol::discover().indicatesDevice());
+        });
+        QVERIFY(access.start());
+        QTRY_VERIFY(Registry::instance().snapshot().monitoring);
+        if (present) {
+            QTRY_VERIFY(Registry::instance().snapshot().devices.size() == 1 &&
+                        Registry::instance().snapshot().devices.first().granted);
+        } else {
+            QTest::qWait(50);
+        }
+        QVERIFY(!published.isEmpty());
+        for (const bool value : std::as_const(published))
+            QCOMPARE(value, present);
+
+        auto discovery = PrinterProtocol::discover();
+        QCOMPARE(discovery.state, present ? PrinterProtocol::DiscoveryState::Ready
+                                          : PrinterProtocol::DiscoveryState::EnumeratingPrinterClass);
+        QVERIFY(discovery.blocksLegacyTransport());
+        QCOMPARE(discovery.indicatesDevice(), present);
+        if (!present) {
+            QVERIFY(discovery.devices.isEmpty());
+            QCOMPARE(discovery.workingUsbDeviceCount, 0);
+            QCOMPARE(portal.acquisitions, 0);
+            QVERIFY2(discovery.statusText().contains(
+                         QStringLiteral("No supported TRYX printer-class device")),
+                     qPrintable(discovery.statusText()));
+        }
+
+        QObject::disconnect(recorder);
+        access.stop();
+        discovery = PrinterProtocol::discover();
+        QCOMPARE(discovery.state, PrinterProtocol::DiscoveryState::MonitoringUnavailable);
+        QVERIFY(discovery.blocksLegacyTransport());
+        QVERIFY(!discovery.indicatesDevice());
     }
 
     void replacementRequestAfterDenialSupersedesTheDenialText() {

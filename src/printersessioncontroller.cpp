@@ -231,7 +231,7 @@ void PrinterSessionController::handlePrinterSnapshot(
     if (callbacks_.runtimeDowngradePrepared()) {
         return;
     }
-    const bool oldPresence = isPrinterClassDevicePresent();
+    const bool oldPresence = isPrinterClassDeviceDetected();
     const bool wasConnected = state_.connected;
     const bool wasPrinterConnected = state_.printerClassConnected;
     const QString oldPath = state_.printerDevicePath;
@@ -292,7 +292,7 @@ void PrinterSessionController::handlePrinterSnapshot(
         if (wasConnected) {
             emit deviceDisconnected();
         }
-        const bool newPresence = isPrinterClassDevicePresent();
+        const bool newPresence = isPrinterClassDeviceDetected();
         if (oldPresence != newPresence) {
             emit printerPresenceChanged(newPresence);
         }
@@ -469,7 +469,7 @@ void PrinterSessionController::handlePrinterSnapshot(
         return;
     }
 
-    const bool newPresence = isPrinterClassDevicePresent();
+    const bool newPresence = isPrinterClassDeviceDetected();
     if (oldPresence != newPresence) {
         emit printerPresenceChanged(newPresence);
     }
@@ -806,6 +806,11 @@ void PrinterSessionController::requestDeviceInfo() {
 bool PrinterSessionController::isPrinterClassDevicePresent() const {
     return state_.printerClassConnected ||
            state_.printerSnapshot.blocksLegacyTransport();
+}
+
+bool PrinterSessionController::isPrinterClassDeviceDetected() const {
+    return state_.printerClassConnected ||
+           state_.printerSnapshot.indicatesDevice();
 }
 
 void PrinterSessionController::attachPrinterClassDevice(
@@ -1369,7 +1374,8 @@ TryxRuntimeDeviceSpecificationsV1 PrinterSessionController::
     snapshot.physicalGeneration = state_.printerGeneration;
     const bool turris = state_.printerProductId == 0x2011;
     if (state_.printerProductId != 0x1011 &&
-        state_.printerProductId != 0x1021 && !turris) {
+        state_.printerProductId != 0x1021 &&
+        state_.printerProductId != 0x1031 && !turris) {
         snapshot.status = QStringLiteral("Unsupported");
         return snapshot;
     }
@@ -1795,7 +1801,8 @@ void PrinterSessionController::handleWorkerPrinterDeviceSpecificationsReady(
         devicePath != state_.printerDevicePath || identity.isEmpty() ||
         identity != state_.printerDeviceSerial.trimmed() ||
         productId != state_.printerProductId ||
-        (productId != 0x1011 && productId != 0x1021 && productId != 0x2011) ||
+        (productId != 0x1011 && productId != 0x1021 && productId != 0x1031 &&
+         productId != 0x2011) ||
         !exactDiscoveryContext) {
         return;
     }

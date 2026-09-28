@@ -119,7 +119,12 @@ public:
     void connectDevice(const QString &port = QString());
     void disconnectDevice();
     void requestDeviceInfo();
+    // Routing guard: printer-class transport owns device requests. It stays
+    // true while discovery blocks legacy transport, even with no visible
+    // device (Flatpak portal). Do not publish it as presence.
     bool isPrinterClassDevicePresent() const;
+    // Published presence: printerPresenceChanged and the runtime snapshot.
+    bool isPrinterClassDeviceDetected() const;
     void attachPrinterClassDevice(
         const PrinterProtocol::UsbPrinterDevice &device);
     void detachPrinterClassDevice(bool notify);

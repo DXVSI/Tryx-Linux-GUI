@@ -2,8 +2,7 @@
 #include "../packagingcontext.h"
 
 #include <QDBusMessage>
-#include <QDBusPendingCallWatcher>
-#include <QDBusPendingReply>
+#include <QDBusReply>
 #include <QDir>
 #include <QUrl>
 #include <QVariantMap>
@@ -56,48 +55,33 @@ bool PortalDropResolver::resolve(const QString &transferKey) {
     if (key.isEmpty() || !bus_.isConnected()) {
         return false;
     }
-    busy_ = true;
-    const quint64 generation = ++generation_;
-    emit busyChanged();
+    setBusy(true);
     auto message = QDBusMessage::createMethodCall(documentsService, documentsPath,
                                                   fileTransferInterface,
                                                   QStringLiteral("RetrieveFiles"));
     message.setArguments({key, QVariantMap{}});
-    auto *pending =
-        new QDBusPendingCallWatcher(bus_.asyncCall(message, requestTimeoutMs_), this);
-    connect(pending, &QDBusPendingCallWatcher::finished, this, [this, pending, generation]() {
-        const QDBusPendingReply<QStringList> reply = *pending;
-        pending->deleteLater();
-        if (generation != generation_ || !busy_) {
-            return;
-        }
-        finish();
-        if (reply.isError()) {
-            emit failed(tr("The desktop portal could not share the dropped file: %1")
-                            .arg(reply.error().message()));
-            return;
-        }
-        const QVariantList urls = exportedFileUrls(reply.value());
-        if (urls.isEmpty()) {
-            emit failed(tr("The desktop portal did not share a local file for this drop."));
-            return;
-        }
-        emit resolved(urls);
-    });
+    // Blocking on purpose: the source keeps the transfer alive only until the
+    // drop handler returns.
+    const QDBusReply<QStringList> reply =
+        bus_.call(message, QDBus::Block, requestTimeoutMs_);
+    setBusy(false);
+    if (!reply.isValid()) {
+        emit failed(tr("The desktop portal could not share the dropped file: %1")
+                        .arg(reply.error().message()));
+        return true;
+    }
+    const QVariantList urls = exportedFileUrls(reply.value());
+    if (urls.isEmpty()) {
+        emit failed(tr("The desktop portal did not share a local file for this drop."));
+        return true;
+    }
+    emit resolved(urls);
     return true;
 }
 
-void PortalDropResolver::cancel() {
-    if (!busy_) {
-        return;
-    }
-    ++generation_;
-    finish();
-}
-
-void PortalDropResolver::finish() {
-    if (busy_) {
-        busy_ = false;
+void PortalDropResolver::setBusy(bool busy) {
+    if (busy_ != busy) {
+        busy_ = busy;
         emit busyChanged();
     }
 }
