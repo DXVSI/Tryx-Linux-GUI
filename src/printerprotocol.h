@@ -435,6 +435,8 @@ public:
         int inputErrors = 0;
         bool persistentInputFailure = false;
         bool inputPendingAtEnd = false;
+        QList<int> idleRearmDelaysMs;
+        int queuedInputBytesAtEnd = 0;
     };
 
     bool trackedPingForTesting(const QString &devicePath, QString *payload,
@@ -462,7 +464,7 @@ public:
                                            quint16 expectedProductId,
                                            QString *errorMessage);
     static IdleInputTestResult runIdleInputScenarioForTesting(
-        const QList<DuplexTestEvent> &events, int cycles);
+        const QList<DuplexTestEvent> &events, int cycles, int idleMs = 100);
     static DuplexTestResult runDuplexTransportScenarioForTesting(
         const QList<DuplexTestEvent> &events,
         const QByteArray &request,

@@ -293,8 +293,8 @@ bool PrinterProtocol::validateMediaPullPathForTesting(const QByteArray &rawPath,
 }
 
 PrinterProtocol::IdleInputTestResult PrinterProtocol::runIdleInputScenarioForTesting(
-    const QList<DuplexTestEvent> &events, int cycles) {
-    return UsbPrinterTransport::runIdleInputScenarioForTesting(events, cycles);
+    const QList<DuplexTestEvent> &events, int cycles, int idleMs) {
+    return UsbPrinterTransport::runIdleInputScenarioForTesting(events, cycles, idleMs);
 }
 
 PrinterProtocol::DuplexTestResult PrinterProtocol::runDuplexTransportScenarioForTesting(

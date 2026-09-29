@@ -2708,6 +2708,8 @@ private slots:
     void duplexInputReceivesAckDuringOutput();
     void idleInputStaysPendingBetweenExchanges();
     void idleInputErrorsNeverLatchPersistentFailure();
+    void idleInputRearmBacksOffAndRecovers();
+    void idleInputDataIsQueuedAndRearmed();
     void duplexZeroLengthInputDefersRearmUntilOutputCompletes();
     void duplexInputErrorDefersRearmWithoutStarvingOutput();
     void duplexInputRetryBudgetIsBounded();
@@ -45288,7 +45290,7 @@ void PrinterProtocolTests::idleInputStaysPendingBetweenExchanges() {
 
 // An idle IN that the firmware ends with EPROTO or an empty packet must not
 // accumulate into the persistent input failure that ends the session, however
-// often it happens; it only waits for the next request before re-arming.
+// often it happens, and must be re-armed before the next request.
 void PrinterProtocolTests::idleInputErrorsNeverLatchPersistentFailure() {
     using Direction = PrinterProtocol::DuplexTestDirection;
     using Status = PrinterProtocol::DuplexTestStatus;
@@ -45315,10 +45317,82 @@ void PrinterProtocolTests::idleInputErrorsNeverLatchPersistentFailure() {
     QCOMPARE(result.idleInputErrors, kCycles);
     QCOMPARE(result.inputErrors, 0);
     QVERIFY(!result.persistentInputFailure);
-    // Each cycle: one IN for the reply and one idle IN that the device ended;
-    // after the last idle error the IN waits for the next request.
-    QCOMPARE(result.inputSubmissions, 2 * kCycles);
-    QVERIFY(!result.inputPendingAtEnd);
+    // The first request arms one IN. In every cycle the reply ends it, the
+    // idle IN armed after the reply is ended by the device, and the backoff
+    // re-arm leaves an IN pending for the next request to reuse.
+    QCOMPARE(result.inputSubmissions, 1 + 2 * kCycles);
+    QVERIFY(result.inputPendingAtEnd);
+    // Each reply resets the backoff.
+    QCOMPARE(result.idleRearmDelaysMs, QList<int>(kCycles, 20));
+}
+
+// A firmware that ends every idle IN at once gets a growing, capped re-arm
+// delay instead of a spinning host. An idle IN that stayed pending for a while
+// before it failed starts the backoff over.
+void PrinterProtocolTests::idleInputRearmBacksOffAndRecovers() {
+    using Direction = PrinterProtocol::DuplexTestDirection;
+    using Status = PrinterProtocol::DuplexTestStatus;
+    QList<PrinterProtocol::DuplexTestEvent> events;
+    PrinterProtocol::DuplexTestEvent output;
+    output.direction = Direction::Output;
+    events.append(output);
+    PrinterProtocol::DuplexTestEvent reply;
+    reply.direction = Direction::Input;
+    reply.payload = QByteArrayLiteral("reply");
+    events.append(reply);
+    for (int failure = 0; failure < 8; ++failure) {
+        PrinterProtocol::DuplexTestEvent idle;
+        idle.direction = Direction::Input;
+        idle.status = Status::Error;
+        idle.actualLength = 0;
+        events.append(idle);
+    }
+    PrinterProtocol::DuplexTestEvent lateIdle;
+    lateIdle.direction = Direction::Input;
+    lateIdle.status = Status::Error;
+    lateIdle.actualLength = 0;
+    // About 750 ms of scripted time, most of it with the IN pending.
+    lateIdle.deferredDispatches = 150;
+    events.append(lateIdle);
+
+    const auto result = PrinterProtocol::runIdleInputScenarioForTesting(events, 1, 3000);
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.completedCycles, 1);
+    QCOMPARE(result.idleInputErrors, 9);
+    QCOMPARE(result.inputErrors, 0);
+    QVERIFY(!result.persistentInputFailure);
+    QCOMPARE(result.idleRearmDelaysMs,
+             QList<int>({20, 40, 80, 160, 200, 200, 200, 200, 20}));
+    // The request's IN, the idle IN after the reply and one re-arm per failure.
+    QCOMPARE(result.inputSubmissions, 2 + 9);
+    QVERIFY(result.inputPendingAtEnd);
+}
+
+// Data that arrives on the idle IN between requests is kept for the next
+// reader, and the IN is re-armed at once instead of waiting for a request.
+void PrinterProtocolTests::idleInputDataIsQueuedAndRearmed() {
+    using Direction = PrinterProtocol::DuplexTestDirection;
+    QList<PrinterProtocol::DuplexTestEvent> events;
+    PrinterProtocol::DuplexTestEvent output;
+    output.direction = Direction::Output;
+    events.append(output);
+    PrinterProtocol::DuplexTestEvent reply;
+    reply.direction = Direction::Input;
+    reply.payload = QByteArrayLiteral("reply");
+    events.append(reply);
+    PrinterProtocol::DuplexTestEvent unsolicited;
+    unsolicited.direction = Direction::Input;
+    unsolicited.payload = QByteArrayLiteral("unsolicited");
+    events.append(unsolicited);
+
+    const auto result = PrinterProtocol::runIdleInputScenarioForTesting(events, 1);
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.completedCycles, 1);
+    QCOMPARE(result.idleInputErrors, 0);
+    QVERIFY(result.idleRearmDelaysMs.isEmpty());
+    QCOMPARE(result.queuedInputBytesAtEnd, 11);
+    QCOMPARE(result.inputSubmissions, 3);
+    QVERIFY(result.inputPendingAtEnd);
 }
 
 void PrinterProtocolTests::duplexInputReceivesAckDuringOutput() {

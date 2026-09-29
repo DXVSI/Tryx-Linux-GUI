@@ -69,7 +69,8 @@ public:
     // Runs request/response cycles with the idle IN kept pending. Each cycle
     // writes the request, reads the reply and then dispatches one idle event.
     static PrinterProtocol::IdleInputTestResult runIdleInputScenarioForTesting(
-        const QList<PrinterProtocol::DuplexTestEvent> &events, int cycles);
+        const QList<PrinterProtocol::DuplexTestEvent> &events, int cycles,
+        int idleMs);
     static PrinterProtocol::DuplexTestResult
     runScenarioForTesting(const QList<PrinterProtocol::DuplexTestEvent> &events,
                           const QByteArray &request, int writeTimeoutMs,

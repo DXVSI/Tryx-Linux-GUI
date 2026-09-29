@@ -7,14 +7,19 @@
 #include <QScopeGuard>
 #endif
 
+#include <QAbstractEventDispatcher>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QSocketNotifier>
+#include <QThread>
+#include <QTimer>
 
 #include <cerrno>
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -488,7 +493,8 @@ class UsbPrinterTransport::Impl {
         receiveQueue_.clear();
         consecutiveInputTransferErrors_ = 0;
         consecutiveRetryableInputCompletions_ = 0;
-        idleRearmSuppressed_ = false;
+        idleRearmFailures_ = 0;
+        idleRearmDueAtMs_ = -1;
         inputCompletionGeneration_ = 0;
         zeroLengthInputCompletionGeneration_ = 0;
         inputTransferErrorGeneration_ = 0;
@@ -497,10 +503,13 @@ class UsbPrinterTransport::Impl {
             close();
             return false;
         }
+        startIdleWatch();
         return true;
     }
 
     void close() {
+        TransportCallScope scope(transportCallDepth_);
+        stopIdleWatch();
         closing_ = true;
         if (outputState_ && !outputState_->completed) {
             const int cancelResult =
@@ -626,7 +635,8 @@ class UsbPrinterTransport::Impl {
         receiveQueue_.clear();
         consecutiveInputTransferErrors_ = 0;
         consecutiveRetryableInputCompletions_ = 0;
-        idleRearmSuppressed_ = false;
+        idleRearmFailures_ = 0;
+        idleRearmDueAtMs_ = -1;
         closing_ = false;
         fatalError_.clear();
 #ifdef TRYX_PROTOCOL_TESTING
@@ -672,7 +682,8 @@ class UsbPrinterTransport::Impl {
         receiveQueue_.clear();
         consecutiveInputTransferErrors_ = 0;
         consecutiveRetryableInputCompletions_ = 0;
-        idleRearmSuppressed_ = false;
+        idleRearmFailures_ = 0;
+        idleRearmDueAtMs_ = -1;
         inputCompletionGeneration_ = 0;
         zeroLengthInputCompletionGeneration_ = 0;
         inputTransferErrorGeneration_ = 0;
@@ -708,13 +719,31 @@ class UsbPrinterTransport::Impl {
         return inputState_ && inputState_->active;
     }
 
-    bool serviceEventsForTesting(int timeoutMs, QString *errorMessage) {
-        return serviceEvents(timeoutMs, errorMessage);
+    // Stands in for the event loop between requests: the idle watch services
+    // libusb once a completion is ready, and its timer re-arms the IN when the
+    // backoff is due. Scripted time advances by the slice per dispatch.
+    bool idleForTesting(int durationMs, QString *errorMessage) {
+        constexpr int kSliceMs = 5;
+        const qint64 end = eventBackend_->monotonicMilliseconds() + durationMs;
+        while (eventBackend_->monotonicMilliseconds() < end) {
+            if (!serviceEvents(kSliceMs, errorMessage)) {
+                return false;
+            }
+            rearmIdleInput();
+        }
+        return true;
+    }
+
+    QList<int> idleRearmDelaysForTesting() const { return idleRearmDelaysForTesting_; }
+
+    int queuedInputBytesForTesting() const {
+        return static_cast<int>(receiveQueue_.size());
     }
 #endif
 
     WriteResult write(const QByteArray &data, int timeoutMs,
                       const PrinterProtocol::OperationContext &context) {
+        TransportCallScope scope(transportCallDepth_);
         WriteResult result;
         if (!grantIsCurrent(&result.error)) {
             result.cancelled = true;
@@ -756,8 +785,6 @@ class UsbPrinterTransport::Impl {
         const quint64 zeroLengthInputCompletionGenerationBeforeWrite =
             zeroLengthInputCompletionGeneration_;
         const quint64 inputErrorGenerationBeforeWrite = inputTransferErrorGeneration_;
-        // A new request gives a suppressed idle IN another chance afterwards.
-        idleRearmSuppressed_ = false;
         if (!ensureInputActive(&result.error)) {
             return result;
         }
@@ -925,6 +952,7 @@ class UsbPrinterTransport::Impl {
     ReadResult readSome(QByteArray *bytes, int timeoutMs,
                         const PrinterProtocol::OperationContext &context,
                         QString *errorMessage) {
+        TransportCallScope scope(transportCallDepth_);
         if (bytes) {
             bytes->clear();
         }
@@ -1015,6 +1043,7 @@ class UsbPrinterTransport::Impl {
     }
 
     bool takeAvailable(QByteArray *bytes, QString *errorMessage, int timeoutMs = 0) {
+        TransportCallScope scope(transportCallDepth_);
         if (bytes) {
             bytes->clear();
         }
@@ -1032,6 +1061,7 @@ class UsbPrinterTransport::Impl {
                 *bytes = std::move(receiveQueue_);
             }
             receiveQueue_.clear();
+            rearmIdleInput();
             return true;
         }
         // A completed bulk-IN transfer is request-scoped and is not rearmed by
@@ -1062,26 +1092,172 @@ class UsbPrinterTransport::Impl {
 
     void setKeepInputPending(bool keep) { keepInputPending_ = keep; }
 
-    // After an exchange, leave the bulk IN pending so the host keeps polling
-    // the device between requests, as the official bridge does. Never re-arm
-    // while an idle IN error is being backed off or the session is failing.
+    // After an exchange, and whenever an idle IN has ended, leave the bulk IN
+    // pending so the host keeps polling the device between requests, as the
+    // official bridge does. An idle IN that ended without data is re-armed
+    // once its backoff delay has passed; the idle watch's timer calls back
+    // here when it is due. Never re-arm while the session is failing.
     void rearmIdleInput() {
         if (!keepInputPending_ || !sessionOpen_ || closing_ || !inputState_ ||
             !inputState_->transfer || !fatalError_.isEmpty() ||
-            persistentInputFailureLatched_ || idleRearmSuppressed_ ||
+            persistentInputFailureLatched_ ||
             consecutiveRetryableInputCompletions_ > 0) {
             return;
         }
+        const qint64 now = eventBackend_->monotonicMilliseconds();
         if (!inputState_->active) {
+            if (idleRearmDueAtMs_ > now) {
+                scheduleIdleRearm(static_cast<int>(idleRearmDueAtMs_ - now));
+                return;
+            }
             QString ignored;
             if (!ensureInputActive(&ignored)) {
                 return;
             }
         }
-        inputState_->idleArm = true;
+        idleRearmDueAtMs_ = -1;
+        if (!inputState_->idleArm) {
+            idleArmedAtMs_ = now;
+            inputState_->idleArm = true;
+        }
     }
 
   private:
+    // Keeps a transport call from being re-entered by the idle watch.
+    struct TransportCallScope {
+        explicit TransportCallScope(int &depth) : depth_(depth) { ++depth_; }
+        ~TransportCallScope() { --depth_; }
+        int &depth_;
+    };
+
+    // Between requests no transport call services libusb, so an idle IN that
+    // ends would stay unnoticed, and the link idle, until the next request.
+    // The idle watch hands libusb's poll descriptors to the event loop of the
+    // thread that opened the session and services completions as soon as they
+    // are ready. Only sessions that keep the IN pending use it, and only when
+    // that thread has an event loop.
+    void startIdleWatch() {
+        stopIdleWatch();
+        if (!keepInputPending_ || testingSession_ || !context_) {
+            return;
+        }
+        if (!QAbstractEventDispatcher::instance(QThread::currentThread())) {
+            qInfo().noquote() << QStringLiteral("tryx_usb_idle_watch state=unavailable");
+            return;
+        }
+        idleWatchToken_ = std::make_shared<int>(0);
+        if (const libusb_pollfd **pollfds = libusb_get_pollfds(context_)) {
+            for (const libusb_pollfd **entry = pollfds; *entry; ++entry) {
+                watchPollfd((*entry)->fd, (*entry)->events);
+            }
+            libusb_free_pollfds(pollfds);
+        }
+        libusb_set_pollfd_notifiers(context_, &Impl::pollfdAdded, &Impl::pollfdRemoved,
+                                    this);
+        idleRearmTimer_ = new QTimer;
+        idleRearmTimer_->setSingleShot(true);
+        const std::weak_ptr<int> token = idleWatchToken_;
+        QObject::connect(idleRearmTimer_, &QTimer::timeout, idleRearmTimer_,
+                         [this, token]() {
+                             if (!token.expired()) {
+                                 serviceIdleEvents();
+                             }
+                         });
+        qInfo().noquote() << QStringLiteral("tryx_usb_idle_watch state=started descriptors=%1")
+                                 .arg(idleNotifiers_.size());
+    }
+
+    void stopIdleWatch() {
+        if (context_ && idleWatchToken_) {
+            libusb_set_pollfd_notifiers(context_, nullptr, nullptr, nullptr);
+        }
+        idleWatchToken_.reset();
+        for (QSocketNotifier *notifier : std::as_const(idleNotifiers_)) {
+            retireIdleWatchObject(notifier);
+        }
+        idleNotifiers_.clear();
+        if (idleRearmTimer_) {
+            retireIdleWatchObject(idleRearmTimer_);
+            idleRearmTimer_ = nullptr;
+        }
+    }
+
+    // A notifier may be retired from inside its own activation, so it is
+    // disabled at once and deleted by its event loop.
+    static void retireIdleWatchObject(QObject *object) {
+        if (object->thread() == QThread::currentThread()) {
+            if (auto *notifier = qobject_cast<QSocketNotifier *>(object)) {
+                notifier->setEnabled(false);
+            } else if (auto *timer = qobject_cast<QTimer *>(object)) {
+                timer->stop();
+            }
+        }
+        object->deleteLater();
+    }
+
+    void watchPollfd(int fd, short events) {
+        const std::weak_ptr<int> token = idleWatchToken_;
+        const auto watch = [this, fd, &token](QSocketNotifier::Type type) {
+            auto *notifier = new QSocketNotifier(fd, type);
+            QObject::connect(notifier, &QSocketNotifier::activated, notifier,
+                             [this, token]() {
+                                 if (!token.expired()) {
+                                     serviceIdleEvents();
+                                 }
+                             });
+            idleNotifiers_.append(notifier);
+        };
+        if (events & POLLIN) {
+            watch(QSocketNotifier::Read);
+        }
+        if (events & POLLOUT) {
+            watch(QSocketNotifier::Write);
+        }
+    }
+
+    static void LIBUSB_CALL pollfdAdded(int fd, short events, void *userData) {
+        static_cast<Impl *>(userData)->watchPollfd(fd, events);
+    }
+
+    // libusb stops polling a disconnected device's descriptor, which then
+    // reports an error to every poll; its notifier must go with it.
+    static void LIBUSB_CALL pollfdRemoved(int fd, void *userData) {
+        auto *transport = static_cast<Impl *>(userData);
+        for (qsizetype index = transport->idleNotifiers_.size() - 1; index >= 0; --index) {
+            QSocketNotifier *notifier = transport->idleNotifiers_.at(index);
+            if (notifier->socket() == fd) {
+                retireIdleWatchObject(notifier);
+                transport->idleNotifiers_.removeAt(index);
+            }
+        }
+    }
+
+    void serviceIdleEvents() {
+        if (transportCallDepth_ > 0 || !sessionOpen_ || closing_) {
+            return;
+        }
+        TransportCallScope scope(transportCallDepth_);
+        QString ignored;
+        if (serviceEvents(0, &ignored)) {
+            rearmIdleInput();
+        }
+    }
+
+    void scheduleIdleRearm(int delayMs) {
+        if (idleRearmTimer_ && !idleRearmTimer_->isActive()) {
+            idleRearmTimer_->start(qMax(0, delayMs));
+        }
+    }
+
+    int idleRearmDelayMs(int failures) const {
+        int delayMs = kIdleInputRearmInitialDelayMs;
+        for (int failure = 1; failure < failures && delayMs < kIdleInputRearmMaxDelayMs;
+             ++failure) {
+            delayMs = qMin(delayMs * 2, kIdleInputRearmMaxDelayMs);
+        }
+        return delayMs;
+    }
+
     static void LIBUSB_CALL inputTransferCompleted(libusb_transfer *transfer) {
         auto *state = static_cast<InputTransferState *>(transfer->user_data);
         state->active = false;
@@ -1105,18 +1281,31 @@ class UsbPrinterTransport::Impl {
              transfer->status == LIBUSB_TRANSFER_COMPLETED)) {
             // An idle IN that ends without data proves nothing about the
             // session. Record it, keep it out of the persistent failure
-            // counters and wait for the next request before re-arming.
+            // counters and re-arm it after a short backoff, so a firmware
+            // that ends every IN at once cannot make the host spin.
             ++transport->idleInputErrorGeneration_;
-            transport->idleRearmSuppressed_ = true;
+            const qint64 now = transport->eventBackend_->monotonicMilliseconds();
+            if (now - transport->idleArmedAtMs_ > kIdleInputRearmMaxDelayMs) {
+                transport->idleRearmFailures_ = 0;
+            }
+            if (transport->idleRearmFailures_ < kMaxInputTransferErrorRetries) {
+                ++transport->idleRearmFailures_;
+            }
+            const int delayMs = transport->idleRearmDelayMs(transport->idleRearmFailures_);
+            transport->idleRearmDueAtMs_ = now + delayMs;
+#ifdef TRYX_PROTOCOL_TESTING
+            transport->idleRearmDelaysForTesting_.append(delayMs);
+#endif
             const quint64 count = transport->idleInputErrorGeneration_;
             if (count <= 3 || count % 100 == 0) {
                 qInfo().noquote()
                     << QStringLiteral(
-                           "tryx_usb_idle_input outcome=%1 count=%2")
+                           "tryx_usb_idle_input outcome=%1 count=%2 rearm_ms=%3")
                            .arg(transfer->status == LIBUSB_TRANSFER_ERROR
                                     ? QStringLiteral("error")
                                     : QStringLiteral("empty"))
-                           .arg(count);
+                           .arg(count)
+                           .arg(delayMs);
             }
             return;
         }
@@ -1126,7 +1315,8 @@ class UsbPrinterTransport::Impl {
                 transfer->actual_length);
             transport->consecutiveInputTransferErrors_ = 0;
             transport->consecutiveRetryableInputCompletions_ = 0;
-            transport->idleRearmSuppressed_ = false;
+            transport->idleRearmFailures_ = 0;
+            transport->idleRearmDueAtMs_ = -1;
             if (transport->receiveQueue_.size() > kMaxLibusbReceiveQueueSize) {
                 transport->fatalError_ =
                     QObject::tr("TRYX libusb receive queue exceeded its bounded size");
@@ -1174,9 +1364,10 @@ class UsbPrinterTransport::Impl {
             transport->consecutiveRetryableInputCompletions_ = 0;
         }
 
-        // Do not leave a speculative IN URB armed after a completed fragment.
-        // The firmware reports EPROTO for idle reads. The protocol reader will
-        // re-arm this transfer before waiting for the next frame fragment.
+        // Never re-arm from the callback. The protocol reader re-arms this
+        // transfer before waiting for the next frame fragment; sessions that
+        // keep the IN pending re-arm it once the current transport call or the
+        // idle watch has seen the completion.
     }
 
     static void LIBUSB_CALL outputTransferCompleted(libusb_transfer *transfer) {
@@ -1244,6 +1435,7 @@ class UsbPrinterTransport::Impl {
         }
         if (inputState_->active) {
             inputState_->idleArm = false;
+            idleRearmDueAtMs_ = -1;
             return true;
         }
         if (!fatalError_.isEmpty()) {
@@ -1272,6 +1464,7 @@ class UsbPrinterTransport::Impl {
         }
         inputState_->active = true;
         inputState_->idleArm = false;
+        idleRearmDueAtMs_ = -1;
         return true;
     }
 
@@ -1334,8 +1527,17 @@ class UsbPrinterTransport::Impl {
     int consecutiveInputTransferErrors_ = 0;
     bool persistentInputFailureLatched_ = false;
     bool keepInputPending_ = false;
-    bool idleRearmSuppressed_ = false;
+    int idleRearmFailures_ = 0;
+    qint64 idleRearmDueAtMs_ = -1;
+    qint64 idleArmedAtMs_ = 0;
     quint64 idleInputErrorGeneration_ = 0;
+    int transportCallDepth_ = 0;
+    std::shared_ptr<int> idleWatchToken_;
+    QList<QSocketNotifier *> idleNotifiers_;
+    QTimer *idleRearmTimer_ = nullptr;
+#ifdef TRYX_PROTOCOL_TESTING
+    QList<int> idleRearmDelaysForTesting_;
+#endif
     int consecutiveRetryableInputCompletions_ = 0;
     quint64 inputCompletionGeneration_ = 0;
     quint64 zeroLengthInputCompletionGeneration_ = 0;
@@ -1566,7 +1768,7 @@ void UsbPrinterTransport::setKeepInputPending(bool keep) {
 
 #ifdef TRYX_PROTOCOL_TESTING
 PrinterProtocol::IdleInputTestResult UsbPrinterTransport::runIdleInputScenarioForTesting(
-    const QList<PrinterProtocol::DuplexTestEvent> &events, int cycles) {
+    const QList<PrinterProtocol::DuplexTestEvent> &events, int cycles, int idleMs) {
     PrinterProtocol::IdleInputTestResult result;
     Impl transport;
     QString transportError;
@@ -1595,7 +1797,7 @@ PrinterProtocol::IdleInputTestResult UsbPrinterTransport::runIdleInputScenarioFo
         }
         // Idle time between requests: dispatch whatever the device does with
         // the pending IN, without any request expecting it.
-        if (!transport.serviceEventsForTesting(10, &transportError)) {
+        if (!transport.idleForTesting(idleMs, &transportError)) {
             result.error = transportError;
             break;
         }
@@ -1606,6 +1808,8 @@ PrinterProtocol::IdleInputTestResult UsbPrinterTransport::runIdleInputScenarioFo
     result.inputErrors = transport.inputErrorCountForTesting();
     result.persistentInputFailure = transport.persistentUsbInputFailure();
     result.inputPendingAtEnd = transport.inputPendingForTesting();
+    result.idleRearmDelaysMs = transport.idleRearmDelaysForTesting();
+    result.queuedInputBytesAtEnd = transport.queuedInputBytesForTesting();
     transport.close();
     return result;
 }
