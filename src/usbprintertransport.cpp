@@ -254,6 +254,8 @@ class UsbPrinterTransport::Impl {
         libusb_transfer *transfer = nullptr;
         bool active = false;
         bool abandoned = false;
+        // Armed after an exchange, with no response expected.
+        bool idleArm = false;
         libusb_transfer_status lastStatus = LIBUSB_TRANSFER_COMPLETED;
         int lastActualLength = 0;
         std::array<unsigned char, kLibusbInputTransferSize> buffer{};
@@ -486,6 +488,7 @@ class UsbPrinterTransport::Impl {
         receiveQueue_.clear();
         consecutiveInputTransferErrors_ = 0;
         consecutiveRetryableInputCompletions_ = 0;
+        idleRearmSuppressed_ = false;
         inputCompletionGeneration_ = 0;
         zeroLengthInputCompletionGeneration_ = 0;
         inputTransferErrorGeneration_ = 0;
@@ -623,6 +626,7 @@ class UsbPrinterTransport::Impl {
         receiveQueue_.clear();
         consecutiveInputTransferErrors_ = 0;
         consecutiveRetryableInputCompletions_ = 0;
+        idleRearmSuppressed_ = false;
         closing_ = false;
         fatalError_.clear();
 #ifdef TRYX_PROTOCOL_TESTING
@@ -668,6 +672,7 @@ class UsbPrinterTransport::Impl {
         receiveQueue_.clear();
         consecutiveInputTransferErrors_ = 0;
         consecutiveRetryableInputCompletions_ = 0;
+        idleRearmSuppressed_ = false;
         inputCompletionGeneration_ = 0;
         zeroLengthInputCompletionGeneration_ = 0;
         inputTransferErrorGeneration_ = 0;
@@ -693,6 +698,18 @@ class UsbPrinterTransport::Impl {
 
     int inputRearmCountForTesting() const {
         return static_cast<int>(inputRearmsDuringOutput_);
+    }
+
+    int idleInputErrorCountForTesting() const {
+        return static_cast<int>(idleInputErrorGeneration_);
+    }
+
+    bool inputPendingForTesting() const {
+        return inputState_ && inputState_->active;
+    }
+
+    bool serviceEventsForTesting(int timeoutMs, QString *errorMessage) {
+        return serviceEvents(timeoutMs, errorMessage);
     }
 #endif
 
@@ -739,6 +756,8 @@ class UsbPrinterTransport::Impl {
         const quint64 zeroLengthInputCompletionGenerationBeforeWrite =
             zeroLengthInputCompletionGeneration_;
         const quint64 inputErrorGenerationBeforeWrite = inputTransferErrorGeneration_;
+        // A new request gives a suppressed idle IN another chance afterwards.
+        idleRearmSuppressed_ = false;
         if (!ensureInputActive(&result.error)) {
             return result;
         }
@@ -935,6 +954,7 @@ class UsbPrinterTransport::Impl {
                     *bytes = std::move(receiveQueue_);
                 }
                 receiveQueue_.clear();
+                rearmIdleInput();
                 return ReadResult::Data;
             }
             if (!fatalError_.isEmpty()) {
@@ -990,6 +1010,7 @@ class UsbPrinterTransport::Impl {
                 return ReadResult::Error;
             }
         }
+        rearmIdleInput();
         return ReadResult::Timeout;
     }
 
@@ -1035,7 +1056,29 @@ class UsbPrinterTransport::Impl {
             }
             receiveQueue_.clear();
         }
+        rearmIdleInput();
         return fatalError_.isEmpty();
+    }
+
+    void setKeepInputPending(bool keep) { keepInputPending_ = keep; }
+
+    // After an exchange, leave the bulk IN pending so the host keeps polling
+    // the device between requests, as the official bridge does. Never re-arm
+    // while an idle IN error is being backed off or the session is failing.
+    void rearmIdleInput() {
+        if (!keepInputPending_ || !sessionOpen_ || closing_ || !inputState_ ||
+            !inputState_->transfer || !fatalError_.isEmpty() ||
+            persistentInputFailureLatched_ || idleRearmSuppressed_ ||
+            consecutiveRetryableInputCompletions_ > 0) {
+            return;
+        }
+        if (!inputState_->active) {
+            QString ignored;
+            if (!ensureInputActive(&ignored)) {
+                return;
+            }
+        }
+        inputState_->idleArm = true;
     }
 
   private:
@@ -1051,16 +1094,39 @@ class UsbPrinterTransport::Impl {
             return;
         }
         const bool hasInputBytes = transfer->actual_length > 0;
+        const bool idleArm = state->idleArm;
+        state->idleArm = false;
         transport->eventCompletionObserved_ = 1;
         ++transport->inputCompletionGeneration_;
         state->lastStatus = transfer->status;
         state->lastActualLength = transfer->actual_length;
+        if (idleArm && !hasInputBytes &&
+            (transfer->status == LIBUSB_TRANSFER_ERROR ||
+             transfer->status == LIBUSB_TRANSFER_COMPLETED)) {
+            // An idle IN that ends without data proves nothing about the
+            // session. Record it, keep it out of the persistent failure
+            // counters and wait for the next request before re-arming.
+            ++transport->idleInputErrorGeneration_;
+            transport->idleRearmSuppressed_ = true;
+            const quint64 count = transport->idleInputErrorGeneration_;
+            if (count <= 3 || count % 100 == 0) {
+                qInfo().noquote()
+                    << QStringLiteral(
+                           "tryx_usb_idle_input outcome=%1 count=%2")
+                           .arg(transfer->status == LIBUSB_TRANSFER_ERROR
+                                    ? QStringLiteral("error")
+                                    : QStringLiteral("empty"))
+                           .arg(count);
+            }
+            return;
+        }
         if (hasInputBytes) {
             transport->receiveQueue_.append(
                 reinterpret_cast<const char *>(transfer->buffer),
                 transfer->actual_length);
             transport->consecutiveInputTransferErrors_ = 0;
             transport->consecutiveRetryableInputCompletions_ = 0;
+            transport->idleRearmSuppressed_ = false;
             if (transport->receiveQueue_.size() > kMaxLibusbReceiveQueueSize) {
                 transport->fatalError_ =
                     QObject::tr("TRYX libusb receive queue exceeded its bounded size");
@@ -1177,6 +1243,7 @@ class UsbPrinterTransport::Impl {
             return false;
         }
         if (inputState_->active) {
+            inputState_->idleArm = false;
             return true;
         }
         if (!fatalError_.isEmpty()) {
@@ -1204,6 +1271,7 @@ class UsbPrinterTransport::Impl {
             return false;
         }
         inputState_->active = true;
+        inputState_->idleArm = false;
         return true;
     }
 
@@ -1265,6 +1333,9 @@ class UsbPrinterTransport::Impl {
     QString fatalError_;
     int consecutiveInputTransferErrors_ = 0;
     bool persistentInputFailureLatched_ = false;
+    bool keepInputPending_ = false;
+    bool idleRearmSuppressed_ = false;
+    quint64 idleInputErrorGeneration_ = 0;
     int consecutiveRetryableInputCompletions_ = 0;
     quint64 inputCompletionGeneration_ = 0;
     quint64 zeroLengthInputCompletionGeneration_ = 0;
@@ -1489,7 +1560,56 @@ bool UsbPrinterTransport::takeAvailable(QByteArray *bytes, QString *errorMessage
     return impl_->takeAvailable(bytes, errorMessage, timeoutMs);
 }
 
+void UsbPrinterTransport::setKeepInputPending(bool keep) {
+    impl_->setKeepInputPending(keep);
+}
+
 #ifdef TRYX_PROTOCOL_TESTING
+PrinterProtocol::IdleInputTestResult UsbPrinterTransport::runIdleInputScenarioForTesting(
+    const QList<PrinterProtocol::DuplexTestEvent> &events, int cycles) {
+    PrinterProtocol::IdleInputTestResult result;
+    Impl transport;
+    QString transportError;
+    ScriptedLibusbEventBackend *backend = transport.adoptScriptedSessionForTesting(
+        events, QStringLiteral("scripted-usb"), 0x1021, &transportError);
+    if (!backend) {
+        result.error = transportError;
+        return result;
+    }
+    transport.setKeepInputPending(true);
+    PrinterProtocol::OperationContext context;
+    for (int cycle = 0; cycle < cycles; ++cycle) {
+        const Impl::WriteResult write =
+            transport.write(QByteArrayLiteral("request"), 100, context);
+        if (!write.success) {
+            result.error = write.error;
+            break;
+        }
+        QByteArray response;
+        if (transport.readSome(&response, 100, context, &transportError) !=
+            Impl::ReadResult::Data) {
+            result.error = transportError.isEmpty()
+                ? QStringLiteral("no response in cycle %1").arg(cycle)
+                : transportError;
+            break;
+        }
+        // Idle time between requests: dispatch whatever the device does with
+        // the pending IN, without any request expecting it.
+        if (!transport.serviceEventsForTesting(10, &transportError)) {
+            result.error = transportError;
+            break;
+        }
+        ++result.completedCycles;
+    }
+    result.inputSubmissions = backend->inputSubmissions();
+    result.idleInputErrors = transport.idleInputErrorCountForTesting();
+    result.inputErrors = transport.inputErrorCountForTesting();
+    result.persistentInputFailure = transport.persistentUsbInputFailure();
+    result.inputPendingAtEnd = transport.inputPendingForTesting();
+    transport.close();
+    return result;
+}
+
 PrinterProtocol::DuplexTestResult UsbPrinterTransport::runScenarioForTesting(
     const QList<PrinterProtocol::DuplexTestEvent> &events, const QByteArray &request,
     int writeTimeoutMs, int readTimeoutMs, const QString &deviceId,

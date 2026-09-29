@@ -696,6 +696,27 @@ sudo dnf install -y android-tools unzip e2fsprogs ffmpeg mesa-demos
 - Supported printer-class devices use `391a:1011` for Panorama, `391a:1021` for Panorama SE / PASE, `391a:1031` for Panorama WB, and `391a:2011` for Turris 620; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
 - Fedora's generic printer rule must not start CUPS `configure-printer` for this vendor protocol. The qmake install target places an early access rule and a late printer-suppression rule in `/usr/lib/udev/rules.d`; do not create same-named overrides in `/etc/udev/rules.d`, because they would shadow packaged updates.
 
+### Display drops off USB and only returns after a power-off
+
+Some Panorama `391a:1011`, Panorama SE `391a:1021` and Panorama WB
+`391a:1031` displays disappear from the bus during a session and come back
+only after the power supply is switched off. Reports come from AMD 800-series
+chipset USB controllers on Linux and Windows. The firmware fails when the host
+stops polling the device between exchanges; the official bridge keeps a bulk
+IN pending at all times and survives for days. Since this build the runtime
+does the same for the Panorama family.
+
+If a display still drops, a kernel parameter that disables USB link power
+management for these devices is a known workaround:
+
+```text
+usbcore.quirks=391a:1011:k,391a:1021:k,391a:1031:k
+```
+
+Add it to the kernel command line of your boot loader, reboot, and switch the
+power supply off once so the display recovers. Details and measurements are in
+issue #28.
+
 ## Firmware Updates
 
 Firmware updates are initiated from the firmware panel in Quick Settings, but
@@ -727,7 +748,7 @@ verification. A new flash cannot be started from an unidentified Loader-only
 device; the runtime must first identify a firmware-capable TRYX product before
 authorizing the transition into Loader mode.
 
-After updating to the new KANALI firmware, the cooler no longer exposes ADB by default. It appears as `391a:1021 RK PASE` with a bidirectional printer interface. The app generates C++ types from three minimal, project-owned schemas under `protocol/wire-v1`; recovered vendor descriptor sources are not a build or release dependency. The production path does not read or write `/dev/usb/lp*`: it claims the `07/01/02` interface through usbfs, temporarily detaches `usblp`, arms one bulk IN before each request, never re-arms that endpoint while the matching bulk OUT is still active, drains optional periodic responses to a complete frame boundary after OUT, and releases the interface on shutdown.
+After updating to the new KANALI firmware, the cooler no longer exposes ADB by default. It appears as `391a:1021 RK PASE` with a bidirectional printer interface. The app generates C++ types from three minimal, project-owned schemas under `protocol/wire-v1`; recovered vendor descriptor sources are not a build or release dependency. The production path does not read or write `/dev/usb/lp*`: it claims the `07/01/02` interface through usbfs, temporarily detaches `usblp`, arms one bulk IN before each request and, on the Panorama family, leaves one bulk IN pending between requests as the official bridge does (an idle link made these displays drop off the bus until power was removed, see issue #28), never re-arms that endpoint while the matching bulk OUT is still active, drains optional periodic responses to a complete frame boundary after OUT, and releases the interface on shutdown.
 
 Turris 620 exposes the supported `391a:2011` printer-class identity and runs on
 the same configuration pipeline as PASE with a Turris product profile. Media is

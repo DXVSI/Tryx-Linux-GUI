@@ -2706,6 +2706,8 @@ private slots:
     void usbTransportOwnsOnlyItsDataDescriptor();
     void modelClientsBorrowOneBufferedChannel();
     void duplexInputReceivesAckDuringOutput();
+    void idleInputStaysPendingBetweenExchanges();
+    void idleInputErrorsNeverLatchPersistentFailure();
     void duplexZeroLengthInputDefersRearmUntilOutputCompletes();
     void duplexInputErrorDefersRearmWithoutStarvingOutput();
     void duplexInputRetryBudgetIsBounded();
@@ -11096,6 +11098,10 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QVERIFY(!pano->firmwareFlashSupported);
     QVERIFY(!panoWb->firmwareFlashSupported);
     QCOMPARE(panoWb->productId, quint16{0x1031});
+    QVERIFY(pase->keepBulkInPending);
+    QVERIFY(pano->keepBulkInPending);
+    QVERIFY(panoWb->keepBulkInPending);
+    QVERIFY(!turris->keepBulkInPending);
 
     QCOMPARE(turris->mediaWidth, 1280);
     QCOMPARE(turris->mediaHeight, 720);
@@ -45249,6 +45255,70 @@ void PrinterProtocolTests::modelClientsBorrowOneBufferedChannel() {
     QVERIFY(channel.persistentUsbInputFailure());
     QCOMPARE(::fcntl(ownedFd, F_GETFD), -1);
     QCOMPARE(errno, EBADF);
+}
+
+// Issue #28: Panorama-family firmware drops off the bus when the host stops
+// polling between exchanges. After every reply the IN goes pending again.
+void PrinterProtocolTests::idleInputStaysPendingBetweenExchanges() {
+    using Direction = PrinterProtocol::DuplexTestDirection;
+    QList<PrinterProtocol::DuplexTestEvent> events;
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        PrinterProtocol::DuplexTestEvent output;
+        output.direction = Direction::Output;
+        events.append(output);
+        PrinterProtocol::DuplexTestEvent reply;
+        reply.direction = Direction::Input;
+        reply.payload = QByteArrayLiteral("reply");
+        events.append(reply);
+    }
+    const auto result = PrinterProtocol::runIdleInputScenarioForTesting(events, 3);
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.completedCycles, 3);
+    // One IN per reply plus the idle IN left pending after the last one.
+    QCOMPARE(result.inputSubmissions, 4);
+    QVERIFY(result.inputPendingAtEnd);
+    QCOMPARE(result.idleInputErrors, 0);
+    QVERIFY(!result.persistentInputFailure);
+
+    const auto pase = printerProductProfileForId(0x1021);
+    const auto turris = printerProductProfileForId(0x2011);
+    QVERIFY(pase && pase->keepBulkInPending);
+    QVERIFY(turris && !turris->keepBulkInPending);
+}
+
+// An idle IN that the firmware ends with EPROTO or an empty packet must not
+// accumulate into the persistent input failure that ends the session, however
+// often it happens; it only waits for the next request before re-arming.
+void PrinterProtocolTests::idleInputErrorsNeverLatchPersistentFailure() {
+    using Direction = PrinterProtocol::DuplexTestDirection;
+    using Status = PrinterProtocol::DuplexTestStatus;
+    constexpr int kCycles = 25;
+    QList<PrinterProtocol::DuplexTestEvent> events;
+    for (int cycle = 0; cycle < kCycles; ++cycle) {
+        PrinterProtocol::DuplexTestEvent output;
+        output.direction = Direction::Output;
+        events.append(output);
+        PrinterProtocol::DuplexTestEvent reply;
+        reply.direction = Direction::Input;
+        reply.payload = QByteArrayLiteral("reply");
+        events.append(reply);
+        PrinterProtocol::DuplexTestEvent idle;
+        idle.direction = Direction::Input;
+        idle.status = cycle % 2 == 0 ? Status::Error : Status::Completed;
+        idle.actualLength = 0;
+        events.append(idle);
+    }
+    const auto result =
+        PrinterProtocol::runIdleInputScenarioForTesting(events, kCycles);
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.completedCycles, kCycles);
+    QCOMPARE(result.idleInputErrors, kCycles);
+    QCOMPARE(result.inputErrors, 0);
+    QVERIFY(!result.persistentInputFailure);
+    // Each cycle: one IN for the reply and one idle IN that the device ended;
+    // after the last idle error the IN waits for the next request.
+    QCOMPARE(result.inputSubmissions, 2 * kCycles);
+    QVERIFY(!result.inputPendingAtEnd);
 }
 
 void PrinterProtocolTests::duplexInputReceivesAckDuringOutput() {

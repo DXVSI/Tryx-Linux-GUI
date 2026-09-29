@@ -427,6 +427,16 @@ public:
         bool persistentInputFailure = false;
     };
 
+    struct IdleInputTestResult {
+        QString error;
+        int completedCycles = 0;
+        int inputSubmissions = 0;
+        int idleInputErrors = 0;
+        int inputErrors = 0;
+        bool persistentInputFailure = false;
+        bool inputPendingAtEnd = false;
+    };
+
     bool trackedPingForTesting(const QString &devicePath, QString *payload,
                                QString *errorMessage,
                                const OperationContext &context);
@@ -451,6 +461,8 @@ public:
                                            const QString &devRoot,
                                            quint16 expectedProductId,
                                            QString *errorMessage);
+    static IdleInputTestResult runIdleInputScenarioForTesting(
+        const QList<DuplexTestEvent> &events, int cycles);
     static DuplexTestResult runDuplexTransportScenarioForTesting(
         const QList<DuplexTestEvent> &events,
         const QByteArray &request,
