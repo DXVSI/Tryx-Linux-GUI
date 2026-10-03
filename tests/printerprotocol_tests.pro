@@ -100,6 +100,7 @@ HEADERS += \
     $$PWD/../src/mediatransform.h \
     $$PWD/../src/paseoverlayconfig.h \
     $$PWD/../src/pasemetricsconfigstore.h \
+    $$PWD/../src/privatedirectorypath.h \
     $$PWD/../src/privateruntimepaths.h \
     $$PWD/../src/printermediafileintegrity.h \
     $$PWD/../src/printermediaidentity.h \

@@ -5,6 +5,7 @@
 #include "printermediaidentity.h"
 #include "mediatransform.h"
 #include "paseoverlayconfig.h"
+#include "privatedirectorypath.h"
 #include "privateruntimepaths.h"
 #include "runtimeapplyrequestcodec.h"
 
@@ -312,6 +313,10 @@ bool PrinterOperationCoordinator::hasPendingReplaceRecovery() const {
 bool PrinterOperationCoordinator::retryCacheValidationPending() const {
     return !pendingRetryCacheValidations_.isEmpty() ||
            !retryCacheLoadComplete_;
+}
+
+QString PrinterOperationCoordinator::retryCacheStartupFailureDetail() const {
+    return retryCacheStartupFailure_ ? retryCacheFailureDetail_ : QString();
 }
 
 PrinterOperationCoordinator::RuntimeDowngradeAssessment
@@ -1528,6 +1533,11 @@ void PrinterOperationCoordinator::loadRetryCache(
         retryCacheFailureDetail_ = loaded.detail.isEmpty()
             ? tryx::DeviceManagerMessages::tr("Retry-cache state is invalid or unsafe")
             : loaded.detail;
+        if (const QString problem =
+                tryx::privateDirectoryProblem(retryCacheDirectory());
+            !problem.isEmpty()) {
+            retryCacheFailureDetail_ += QStringLiteral(" (%1)").arg(problem);
+        }
         qWarning().noquote()
             << tryx::DeviceManagerMessages::tr("Retry-cache startup remains fail-closed: %1")
                    .arg(retryCacheFailureDetail_);
@@ -5237,9 +5247,15 @@ void PrinterOperationCoordinator::loadDeleteIntent() {
         pendingDeleteIntent_.reset();
         pendingDeleteOperationId_ =
             QStringLiteral("invalid-delete-intent");
+        QString detail = loaded.detail;
+        if (const QString problem = tryx::privateDirectoryProblem(
+                QFileInfo(deleteIntentPath()).absolutePath());
+            !problem.isEmpty()) {
+            detail += QStringLiteral(" (%1)").arg(problem);
+        }
         qWarning().noquote()
             << "Delete intent was not accepted; deletes remain blocked:"
-            << loaded.detail;
+            << detail;
         return;
     }
     const tryx::DeleteIntentRecord &intent = loaded.record;

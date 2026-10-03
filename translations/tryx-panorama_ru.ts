@@ -936,6 +936,14 @@
         <translation>Сохранённый файл для повтора ещё проверяется; сессия дисплея PASE запустится только после завершения проверки</translation>
     </message>
     <message>
+        <source>The PASE display session cannot start because the stored retry state is invalid or unsafe. Keep the cache and check the runtime log.</source>
+        <translation>Сессия дисплея PASE не может запуститься, потому что сохранённое состояние кэша повтора недействительно или небезопасно. Не удаляйте кэш и проверьте журнал службы.</translation>
+    </message>
+    <message>
+        <source>The PASE display session cannot start because the stored retry state cannot be used: %1</source>
+        <translation>Сессия дисплея PASE не может запуститься, потому что сохранённое состояние кэша повтора нельзя использовать: %1</translation>
+    </message>
+    <message>
         <location filename="../src/devicemanager.cpp" line="7669"/>
         <source>A TRYX printer-class or Rockchip gadget device is present; use Auto connection.</source>
         <translation>Обнаружено устройство TRYX printer-class или Rockchip gadget. Используйте автоматическое подключение.</translation>

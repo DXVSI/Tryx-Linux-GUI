@@ -26,6 +26,7 @@
 #include "privateruntimepaths.h"
 #include "runtimeapplyrequestcodec.h"
 #include "paseoverlayconfig.h"
+#include "privatedirectorypath.h"
 #include "runtimebridge.h"
 #include "runtimedowngradestore.h"
 #include "runtimepresentationpreferencesstore.h"
@@ -2710,6 +2711,9 @@ private slots:
     void idleInputErrorsNeverLatchPersistentFailure();
     void idleInputRearmBacksOffAndRecovers();
     void idleInputDataIsQueuedAndRearmed();
+    void privateDirectoryPathIgnoresGroupWritableUmask();
+    void runtimeStoresStayUsableUnderGroupWritableUmask();
+    void retryCacheStartupFailureNamesTheUnsafeDirectory();
     void duplexZeroLengthInputDefersRearmUntilOutputCompletes();
     void duplexInputErrorDefersRearmWithoutStarvingOutput();
     void duplexInputRetryBudgetIsBounded();
@@ -45393,6 +45397,143 @@ void PrinterProtocolTests::idleInputDataIsQueuedAndRearmed() {
     QCOMPARE(result.queuedInputBytesAtEnd, 11);
     QCOMPARE(result.inputSubmissions, 3);
     QVERIFY(result.inputPendingAtEnd);
+}
+
+namespace {
+mode_t directoryModeForTesting(const QString &path) {
+    struct stat status {};
+    if (::lstat(QFile::encodeName(path).constData(), &status) != 0) {
+        return 0;
+    }
+    return status.st_mode & 07777;
+}
+}  // namespace
+
+// #32: a 0002 umask made QDir::mkpath() create group-writable runtime
+// directories that the stores then rejected. Every component the helper
+// creates is owner-only, and existing components keep their mode.
+void PrinterProtocolTests::privateDirectoryPathIgnoresGroupWritableUmask() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const mode_t previousMask = ::umask(0002);
+    const auto restoreMask = qScopeGuard([previousMask]() { ::umask(previousMask); });
+
+    const QString existing = directory.filePath(QStringLiteral("existing"));
+    QVERIFY(QDir().mkdir(existing));
+    QVERIFY(::chmod(QFile::encodeName(existing).constData(), 0755) == 0);
+    const QString target = existing + QStringLiteral("/a/b/c");
+    QVERIFY(tryx::makePrivateDirectoryPath(target));
+    QCOMPARE(directoryModeForTesting(existing), mode_t(0755));
+    QCOMPARE(directoryModeForTesting(existing + QStringLiteral("/a")), mode_t(0700));
+    QCOMPARE(directoryModeForTesting(existing + QStringLiteral("/a/b")), mode_t(0700));
+    QCOMPARE(directoryModeForTesting(target), mode_t(0700));
+    QVERIFY(tryx::makePrivateDirectoryPath(target));
+    QVERIFY(!tryx::makePrivateDirectoryPath(QString()));
+
+    const QString file = directory.filePath(QStringLiteral("file"));
+    QFile regular(file);
+    QVERIFY(regular.open(QIODevice::WriteOnly));
+    regular.close();
+    QVERIFY(!tryx::makePrivateDirectoryPath(file + QStringLiteral("/below")));
+
+    QVERIFY(tryx::privateDirectoryProblem(target).isEmpty());
+    QVERIFY(tryx::privateDirectoryProblem(existing).isEmpty());
+    QVERIFY(tryx::privateDirectoryProblem(
+        directory.filePath(QStringLiteral("missing"))).isEmpty());
+    QVERIFY(tryx::privateDirectoryProblem(file).contains(
+        QStringLiteral("is not a directory")));
+    const QString link = directory.filePath(QStringLiteral("link"));
+    QVERIFY(QFile::link(target, link));
+    QVERIFY(tryx::privateDirectoryProblem(link).contains(
+        QStringLiteral("symbolic link")));
+
+    const QString shared = directory.filePath(QStringLiteral("it's shared"));
+    QVERIFY(QDir().mkdir(shared));
+    QVERIFY(::chmod(QFile::encodeName(shared).constData(), 0775) == 0);
+    const QString problem = tryx::privateDirectoryProblem(shared);
+    QVERIFY2(problem.contains(QStringLiteral("mode 0775")), qPrintable(problem));
+    QString quoted = shared;
+    quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    QVERIFY2(problem.contains(QStringLiteral("chmod go-w '%1'").arg(quoted)),
+             qPrintable(problem));
+}
+
+// The #32 sequence under a 0002 umask: the media catalog creates the shared
+// data root, preferences and delete intent are read from it on the next start,
+// and media preparation creates the retry-cache root. None of them may end up
+// rejected as unsafe.
+void PrinterProtocolTests::runtimeStoresStayUsableUnderGroupWritableUmask() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const mode_t previousMask = ::umask(0002);
+    const auto restoreMask = qScopeGuard([previousMask]() { ::umask(previousMask); });
+
+    const QString dataRoot =
+        directory.filePath(QStringLiteral("data/DXVSI/TRYX Panorama Manager"));
+    const QString catalogRoot = dataRoot + QStringLiteral("/media-catalog");
+    const QString cacheRoot = directory.filePath(
+        QStringLiteral("cache/DXVSI/TRYX Panorama Runtime/prepared-media"));
+
+    tryx::MediaCatalogStore catalog(catalogRoot);
+    const auto catalogResult = catalog.load();
+    QCOMPARE(catalogResult.status, tryx::MediaCatalogStore::LoadStatus::Empty);
+    QCOMPARE(directoryModeForTesting(dataRoot), mode_t(0700));
+    QCOMPARE(directoryModeForTesting(catalogRoot), mode_t(0700));
+
+    const auto preferences = tryx::RuntimePresentationPreferencesStore(dataRoot).load();
+    QCOMPARE(preferences.status,
+             tryx::RuntimePresentationPreferencesStore::LoadStatus::Empty);
+    const auto deleteIntent =
+        tryx::DeleteIntentStore(catalogRoot + QStringLiteral("/delete-intent.json")).load();
+    QCOMPARE(deleteIntent.status, tryx::DeleteIntentStore::LoadStatus::Missing);
+
+    // printerTempPath() creates the retry-cache root with this helper.
+    QVERIFY(tryx::makePrivateDirectoryPath(cacheRoot));
+    QCOMPARE(directoryModeForTesting(cacheRoot), mode_t(0700));
+    tryx::RetryCacheStore retryCache(cacheRoot);
+    const auto retry = retryCache.load();
+    QCOMPARE(retry.status, tryx::RetryCacheStore::LoadStatus::Missing);
+}
+
+// A retry-cache root that fails the safety check blocks the display session
+// until it is fixed. The status must say so and name the directory with the
+// command that fixes it, not claim that validation is still running.
+void PrinterProtocolTests::retryCacheStartupFailureNamesTheUnsafeDirectory() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString retryRoot = directory.filePath(QStringLiteral("retry-cache"));
+    QVERIFY(QDir().mkdir(retryRoot));
+    QVERIFY(::chmod(QFile::encodeName(retryRoot).constData(), 0775) == 0);
+
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(
+        directory.filePath(QStringLiteral("sys")),
+        directory.filePath(QStringLiteral("dev"))));
+    QVERIFY(manager->retryCacheStartupSessionGateActive());
+    const QString detail =
+        manager->operationCoordinator_.retryCacheStartupFailureDetail();
+    QVERIFY2(detail.contains(QStringLiteral(
+                 "Retry-cache root directory has unsafe ownership or permissions")),
+             qPrintable(detail));
+    QVERIFY2(detail.contains(QStringLiteral("chmod go-w '%1'").arg(retryRoot)),
+             qPrintable(detail));
+
+    const QString blocked =
+        manager->sessionController_.retryCacheSessionGateStatusText();
+    QVERIFY2(blocked.contains(QStringLiteral("cannot start")), qPrintable(blocked));
+    QVERIFY2(blocked.contains(detail), qPrintable(blocked));
+    QVERIFY(!blocked.contains(QStringLiteral("still being validated")));
+
+    // The documented fix: once the directory is private, the next load opens
+    // the gate.
+    QVERIFY(::chmod(QFile::encodeName(retryRoot).constData(), 0700) == 0);
+    manager->loadRetryCache();
+    QVERIFY(!manager->retryCacheStartupSessionGateActive());
+    QVERIFY(manager->operationCoordinator_.retryCacheStartupFailureDetail().isEmpty());
+
+    // A load that has not finished yet is still reported as a wait.
+    manager->operationCoordinator_.retryCacheLoadComplete_ = false;
+    QVERIFY(manager->sessionController_.retryCacheSessionGateStatusText().contains(
+        QStringLiteral("still being validated")));
 }
 
 void PrinterProtocolTests::duplexInputReceivesAckDuringOutput() {
