@@ -1,0 +1,99 @@
+tryx-panorama-manager (2.5.2-1) noble; urgency=medium
+
+  * Add Panorama WB (391a:1031) support with the Panorama feature set, confirmed on real hardware.
+  * Show GPU names with their vendor on the hardware badge, for example NVIDIA GeForce RTX 4090 on the NVIDIA colours, also inside the Flatpak.
+  * Fix the first drag and drop after launch failing with Invalid transfer in the Flatpak.
+  * Stop showing a detected device in the Flatpak when the USB portal lists no supported device.
+  * Keep a runtime stuck in a kernel USB call from blocking logout and power-off.
+
+ -- DXVSI <dxvsi123@gmail.com>  Tue, 29 Sep 2026 10:00:00 +0000
+
+tryx-panorama-manager (2.5.1-1) noble; urgency=medium
+
+  * Play uploaded Turris 620 images, videos, and GIFs: encode them like the official application and keep device file names short enough for the firmware player.
+  * Restart Turris playback after Apply and turn the backlight on when media is applied.
+  * Stop waiting three seconds for Turris acknowledgements the device never sends on Apply and delete.
+  * Resolve Flatpak drag and drop through the FileTransfer portal, without home directory access.
+  * Log the Turris file list structure, decoder size, storage folders, and upload stages without media names.
+
+ -- DXVSI <dxvsi123@gmail.com>  Sat, 19 Sep 2026 10:00:00 +0000
+
+tryx-panorama-manager (2.5.0-1) noble; urgency=medium
+
+  * Run Turris 620 on the PASE display pipeline: media library, apply, deletion, brightness, and overlay metrics.
+  * Negotiate Turris commands per USB generation and keep uploads working when the device rejects one.
+  * Send Turris keepalives unless the device keeps the USB link alive and confirm stored configuration by readback.
+  * Stop using the on-disk QML cache so a reinstalled package always shows its own interface.
+
+ -- DXVSI <dxvsi123@gmail.com>  Fri, 18 Sep 2026 12:00:29 +0000
+
+tryx-panorama-manager (2.4.0-1) noble; urgency=medium
+
+  * Add experimental Flatpak packaging with USB and file chooser portals.
+  * Load device media automatically after the display session becomes ready.
+  * Keep generated media private and revalidate retry artifact path identity.
+  * Preserve Qt 6.4 compatibility and complete Russian translations.
+
+ -- DXVSI <dxvsi123@gmail.com>  Mon, 14 Sep 2026 19:10:23 +0000
+
+tryx-panorama-manager (2.3.0-1) noble; urgency=medium
+
+  * Add per-badge custom text, saved layouts, and split-area media preparation.
+  * Add presentation preferences, device details, and grouped metric selection.
+  * Add local support reports, safe temporary-file cleanup, and the tryx CLI.
+  * Add quiet release notifications and independent desktop GUI autostart.
+  * Refactor runtime ownership while preserving API 8 and model capability gates.
+  * Recover GUI state when cached connection revisions advance between reads.
+  * Preserve versioned configuration backups and reject incompatible downgrade.
+
+ -- DXVSI <dxvsi123@gmail.com>  Sun, 06 Sep 2026 16:00:00 +0700
+
+tryx-panorama-manager (2.2.0-1) noble; urgency=medium
+
+  * Add community-tested Panorama 391a:1011 printer-class support.
+  * Add Turris 620 391a:2011 media upload with 1280x720 MXHD preparation.
+  * Select media geometry and capabilities from the exact USB product.
+  * Bind retry, recovery, and firmware gates to the identified device model.
+  * Ship udev and AppStream metadata for all supported printer-class IDs.
+
+ -- DXVSI <dxvsi123@gmail.com>  Sun, 09 Aug 2026 13:26:08 +0700
+
+tryx-panorama-manager (2.1.1-1) noble; urgency=medium
+
+  * Start the sibling API 8 runtime for direct build-tree GUI launches.
+  * Fail closed around systemd startup jobs and D-Bus owner replacement.
+  * Require an explicit restart for an incompatible installed runtime.
+  * Add isolated runtime-bootstrap regression coverage.
+
+ -- DXVSI <dxvsi123@gmail.com>  Mon, 03 Aug 2026 13:03:14 +0700
+
+tryx-panorama-manager (2.1.0-1) noble; urgency=medium
+
+  * Replace the Qt Widgets frontend with one Qt Quick desktop GUI and a
+    separately packaged private runtime.
+  * Add native Linux tray integration through StatusNotifierItem, DBusMenu,
+    and freedesktop Notifications.
+  * Make the tray Quit action terminate the GUI without stopping the separate
+    runtime.
+  * Preserve legacy serial/ADB control while adding the PASE media editor,
+    export, Save as new, Replace, and verified deletion workflows.
+  * Add local firmware validation and the Quick firmware panel with an
+    exclusive device-transport safety gate. Physical flashing is not claimed
+    as verified by this release preparation.
+  * Keep the QML interface compatible with Qt 6.4.
+  * Use project-owned clean-room protocol schemas and ship no bundled vendor
+    media.
+
+ -- DXVSI <dxvsi123@gmail.com>  Sun, 02 Aug 2026 01:48:44 +0700
+
+tryx-panorama-manager (2.0.1-1) noble; urgency=medium
+
+  * Fix checksum generation for native GitHub Release assets.
+
+ -- DXVSI <dxvsi123@gmail.com>  Mon, 27 Jul 2026 02:35:03 +0700
+
+tryx-panorama-manager (2.0.0-1) noble; urgency=medium
+
+  * Initial native package for Ubuntu 24.04 and Linux Mint 22.
+
+ -- DXVSI <dxvsi123@gmail.com>  Mon, 27 Jul 2026 00:11:38 +0700

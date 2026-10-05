@@ -1,0 +1,14 @@
+QT += core dbus testlib
+CONFIG += c++17 console testcase link_pkgconfig
+DEFINES += TRYX_FLATPAK TRYX_PROTOCOL_TESTING
+PKGCONFIG += libusb-1.0 libudev
+TEMPLATE = app
+TARGET = portalusb-tests
+INCLUDEPATH += $$PWD/../../src
+DESTDIR = $$PWD/../../build/portalusb-tests
+OBJECTS_DIR = $$DESTDIR/obj
+MOC_DIR = $$DESTDIR/moc
+HEADERS += ../../src/portalusb.h
+SOURCES += portalusb_tests.cpp ../../src/portalusb.cpp ../../src/printerproductprofile.cpp
+HEADERS += ../../src/printerprotocol.h ../../src/usbprintertransport.h
+SOURCES += ../../src/printerdiscovery.cpp ../../src/usbprintertransport.cpp

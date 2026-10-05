@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.dxvsi.tryx_panorama_manager</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT AND BSD-2-Clause</project_license>
+  <name>TRYX Panorama Manager</name>
+  <summary>Control compatible TRYX cooler displays on Linux</summary>
+  <description>
+    <p>
+      TRYX Panorama Manager controls compatible TRYX Panorama, Panorama SE, and
+      Turris 620 cooler displays from Linux. It uses model-specific media
+      profiles and enables only the capabilities supported by each device.
+    </p>
+  </description>
+  <developer id="io.github.dxvsi">
+    <name>DXVSI</name>
+  </developer>
+  <launchable type="desktop-id">tryx-panorama-manager.desktop</launchable>
+  <provides>
+    <binary>tryx-panorama-manager</binary>
+    <modalias>usb:v391Ap1011d*</modalias>
+    <modalias>usb:v391Ap1021d*</modalias>
+    <modalias>usb:v391Ap1031d*</modalias>
+    <modalias>usb:v391Ap2011d*</modalias>
+  </provides>
+  <url type="homepage">https://github.com/DXVSI/Tryx-Linux-GUI</url>
+  <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="2.5.2" type="stable" date="2026-09-29">
+      <description>
+        <ul>
+          <li>Add Panorama WB (391a:1031) support with the Panorama feature set, confirmed on real hardware.</li>
+          <li>Show GPU names with their vendor on the hardware badge, for example NVIDIA GeForce RTX 4090 on the NVIDIA colours, also inside the Flatpak.</li>
+          <li>Fix the first drag and drop after launch failing with Invalid transfer in the Flatpak.</li>
+          <li>Stop showing a detected device in the Flatpak when the USB portal lists no supported device.</li>
+          <li>Keep a runtime stuck in a kernel USB call from blocking logout and power-off.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.5.1" type="stable" date="2026-09-19">
+      <description>
+        <ul>
+          <li>Play uploaded Turris 620 images, videos, and GIFs: encode them like the official application and keep device file names short enough for the firmware player.</li>
+          <li>Restart Turris playback after Apply and turn the backlight on when media is applied.</li>
+          <li>Stop waiting three seconds for Turris acknowledgements the device never sends on Apply and delete.</li>
+          <li>Resolve Flatpak drag and drop through the FileTransfer portal, without home directory access.</li>
+          <li>Log the Turris file list structure, decoder size, storage folders, and upload stages without media names.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.5.0" type="development" date="2026-09-18">
+      <description>
+        <ul>
+          <li>Run Turris 620 on the PASE display pipeline with a device media library, apply, deletion, brightness, and overlay metrics.</li>
+          <li>Negotiate Turris commands per USB generation and keep uploads working when the device rejects one.</li>
+          <li>Send Turris keepalives unless the device keeps the USB link alive and confirm stored configuration by readback.</li>
+          <li>Stop using the on-disk QML cache so a reinstalled package always shows its own interface.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.4.0" type="stable" date="2026-09-14">
+      <description>
+        <ul>
+          <li>Add an experimental Flatpak with isolated runtime state, USB access, and file dialogs through desktop portals.</li>
+          <li>Load device media automatically after the display session becomes ready.</li>
+          <li>Keep converted media private and reject retry artifacts whose paths change while hashing.</li>
+          <li>Preserve Qt 6.4 compatibility and complete Russian translations for Flatpak workflows.</li>
+          <li>Build Fedora packages only for the current stable Fedora release.</li>
+        </ul>
+        <p>The Flatpak supports printer-class devices only. Bazzite, SteamOS, and GNOME hardware qualification is not claimed, and TURRIS playback looping is not fixed by this release.</p>
+      </description>
+    </release>
+    <release version="2.3.0" type="stable" date="2026-09-06">
+      <description>
+        <ul>
+          <li>Add independent custom CPU and GPU badge text on capable Panorama SE displays.</li>
+          <li>Add saved layouts, split-area media preparation, and independent left/right styling.</li>
+          <li>Add grouped metric selection, device specifications, temperature units, and clock preferences.</li>
+          <li>Add local support reports, safe temporary-file cleanup, and a local command-line client.</li>
+          <li>Add quiet release notifications and independent desktop GUI autostart.</li>
+          <li>Recover display controls when cached connection revisions advance during startup.</li>
+        </ul>
+        <p>New configuration formats require a backup before upgrading and cannot be rolled back by simply installing an older package.</p>
+      </description>
+    </release>
+    <release version="2.2.0" type="stable" date="2026-08-09">
+      <description>
+        <ul>
+          <li>Add community-tested Panorama 391a:1011 printer-class support.</li>
+          <li>Add Turris 620 media preparation and acknowledged upload at 1280 by 720.</li>
+          <li>Adapt media editing and preview geometry to the connected model.</li>
+          <li>Reject unsupported operations before USB dispatch using exact product capabilities.</li>
+          <li>Bind session recovery and prepared-media retries to the exact USB product.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.1.1" type="stable" date="2026-08-03">
+      <description>
+        <ul>
+          <li>Start the matching sibling runtime for direct build-tree GUI launches.</li>
+          <li>Fail closed around systemd startup jobs and D-Bus owner replacement.</li>
+          <li>Require an explicit restart for an incompatible installed runtime.</li>
+          <li>Add isolated runtime-bootstrap regression coverage.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.1.0" type="stable" date="2026-08-02">
+      <description>
+        <ul>
+          <li>Use one Qt Quick desktop interface backed by a private runtime.</li>
+          <li>Add native Linux tray integration and preserve legacy serial/ADB control.</li>
+          <li>Make tray Quit close only the GUI while the runtime stays active.</li>
+          <li>Add PASE media editing, export, save-as-new, replace, and verified deletion.</li>
+          <li>Add local firmware validation, an exclusive transport gate, and a crash-persistent recovery interlock.</li>
+          <li>Keep QML compatible with Qt 6.4 and distribute no bundled vendor media.</li>
+        </ul>
+      </description>
+    </release>
+    <release version="2.0.1" type="stable" date="2026-07-27"/>
+    <release version="2.0.0" type="stable" date="2026-07-27"/>
+  </releases>
+</component>

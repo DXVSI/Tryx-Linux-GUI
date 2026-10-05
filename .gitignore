@@ -1,0 +1,51 @@
+# Build
+build/
+build.tar.xz
+.cache/
+.flatpak-builder/
+*.o
+*.a
+*.so
+*.d
+Makefile
+Makefile.cli
+Makefile.quick
+Makefile.runtime
+tests/cli/target_wrapper.sh
+tests/quick/target_wrapper.sh
+tests/flatpak/target_wrapper.sh
+tests/flatpak/Makefile.*
+tests/Makefile.*
+tests/quick/Makefile.*
+tests/cli/Makefile.*
+.qmake.stash
+moc_*.cpp
+moc_predefs.h
+tryx-panorama-manager
+*.rpm
+*.deb
+*.ddeb
+*.pkg.tar.zst
+*.src.tar.gz
+SHA256SUMS
+
+# Local documentation
+docs/
+
+# Local proprietary flashing tools
+tools/upgrade_tool
+tools/config.ini
+tools/Linux_Upgrade_Tool/
+
+# Vendor video payloads are intentionally not distributed.
+/media/
+/demo.mp4
+
+# Recovered vendor protocol sources are local research input only.
+/proto/
+
+# Qt generated
+ui_*.h
+qrc_*.cpp
+translations/*.qm
+.omc

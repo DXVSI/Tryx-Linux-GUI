@@ -1,0 +1,187 @@
+Name:           tryx-panorama-manager
+Version:        2.5.2
+Release:        1%{?dist}
+Summary:        Linux manager for supported TRYX cooler displays
+
+License:        MIT AND BSD-2-Clause
+URL:            https://github.com/DXVSI/Tryx-Linux-GUI
+Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.xz
+
+# The first native package release is intentionally limited to the architecture
+# covered by the package CI and hardware release gate.
+ExclusiveArch:  x86_64
+
+BuildRequires:  gcc-c++
+BuildRequires:  make
+BuildRequires:  dbus-daemon
+BuildRequires:  ffmpeg
+BuildRequires:  qt6-rpm-macros
+BuildRequires:  qt6-linguist
+BuildRequires:  qt6-qtdeclarative-devel
+BuildRequires:  pkgconfig(Qt6Core)
+BuildRequires:  pkgconfig(Qt6DBus)
+BuildRequires:  pkgconfig(Qt6Gui)
+BuildRequires:  pkgconfig(Qt6Qml)
+BuildRequires:  pkgconfig(Qt6Quick)
+BuildRequires:  pkgconfig(Qt6QuickControls2)
+BuildRequires:  protobuf-compiler
+BuildRequires:  pkgconfig(protobuf)
+BuildRequires:  pkgconfig(libudev)
+BuildRequires:  pkgconfig(libusb-1.0)
+BuildRequires:  pkgconfig(systemd)
+BuildRequires:  systemd-rpm-macros
+BuildRequires:  systemd-udev
+BuildRequires:  desktop-file-utils
+BuildRequires:  appstream
+
+# Shared-library dependencies are generated automatically from the installed
+# ELF binary. These explicit dependencies describe non-ELF runtime contracts.
+Requires:       dbus
+Requires:       systemd
+Requires:       systemd-udev
+Requires:       hicolor-icon-theme
+Requires:       qt6-qtdeclarative%{?_isa}
+# Media preparation uses the libx264 encoder. Fedora's ffmpeg-free may provide
+# /usr/bin/ffmpeg without that encoder, so require RPM Fusion's full package.
+Requires:       ffmpeg
+
+# Native Wayland support and the legacy/firmware discovery helpers are useful
+# but are not required for the printer-class control path.
+Recommends:     qt6-qtwayland%{?_isa}
+Suggests:       /usr/bin/adb
+Suggests:       /usr/bin/unzip
+Suggests:       /usr/sbin/debugfs
+Suggests:       /usr/bin/glxinfo
+Suggests:       /usr/bin/lspci
+
+%{?systemd_requires}
+
+%description
+TRYX Panorama Manager is a Qt 6 application for controlling supported TRYX
+Panorama, Panorama SE, and Turris 620 cooler displays on Linux. It uses
+model-specific media profiles and enables only the printer-class USB
+capabilities supported by each device.
+
+The package contains open-source project components and host integration. It
+does not contain vendor media, firmware archives, or the proprietary Rockchip
+upgrade_tool backend.
+
+%prep
+%autosetup
+
+test "$(tr -d '\r\n' < VERSION)" = "%{version}"
+
+%build
+%qmake_qt6 tryx-panorama-all.pro
+%make_build
+
+%install
+%make_install INSTALL_ROOT=%{buildroot}
+
+%check
+dbus-run-session -- %make_build package-check
+
+packaging/scripts/verify-package-contents.sh %{buildroot}
+desktop-file-validate \
+    %{buildroot}%{_datadir}/applications/tryx-panorama-manager.desktop
+appstreamcli validate --no-net --strict \
+    %{buildroot}%{_metainfodir}/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
+udevadm verify --resolve-names=never \
+    %{buildroot}%{_udevrulesdir}/70-tryx-pase-access.rules \
+    %{buildroot}%{_udevrulesdir}/99-tryx-pase-printer.rules
+
+# Fedora's systemd transaction file triggers reload user-unit and udev
+# configuration. Do not enable or restart a user's service from a root package
+# transaction: the GUI starts it on demand and upgrades may race active USB I/O.
+%post
+%systemd_user_post tryx-panorama.service
+
+%preun
+%systemd_user_preun tryx-panorama.service
+
+%postun
+%systemd_user_postun tryx-panorama.service
+
+%files
+%license %{_licensedir}/%{name}/LICENSE
+%license %{_licensedir}/%{name}/picojson-BSD-2-Clause.txt
+%doc README.md
+%{_bindir}/tryx-panorama-manager
+%{_bindir}/tryx
+%{_prefix}/lib/tryx-panorama-manager/tryx-panorama-runtime
+%{_userunitdir}/tryx-panorama.service
+%{_userpresetdir}/90-tryx-panorama.preset
+%{_udevrulesdir}/70-tryx-pase-access.rules
+%{_udevrulesdir}/99-tryx-pase-printer.rules
+%{_datadir}/applications/tryx-panorama-manager.desktop
+%{_iconsdir}/hicolor/256x256/apps/tryx-panorama.png
+%{_metainfodir}/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
+%{_mandir}/man1/tryx-panorama-manager.1*
+%{_mandir}/man1/tryx.1*
+
+%changelog
+* Tue Sep 29 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.2-1
+- Add Panorama WB (391a:1031) support with the Panorama feature set, confirmed on real hardware
+- Show GPU names with their vendor on the hardware badge, for example NVIDIA GeForce RTX 4090 on the NVIDIA colours, also inside the Flatpak
+- Fix the first drag and drop after launch failing with Invalid transfer in the Flatpak
+- Stop showing a detected device in the Flatpak when the USB portal lists no supported device
+- Keep a runtime stuck in a kernel USB call from blocking logout and power-off
+
+* Sat Sep 19 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.1-1
+- Play uploaded Turris 620 images, videos, and GIFs: encode them like the official application and keep device file names short enough for the firmware player
+- Restart Turris playback after Apply and turn the backlight on when media is applied
+- Stop waiting three seconds for Turris acknowledgements the device never sends on Apply and delete
+- Resolve Flatpak drag and drop through the FileTransfer portal, without home directory access
+- Log the Turris file list structure, decoder size, storage folders, and upload stages without media names
+
+* Fri Sep 18 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.0-1
+- Run Turris 620 on the PASE display pipeline: device media library, apply, deletion, brightness, and overlay metrics
+- Negotiate Turris commands per USB generation and keep uploads working when the device rejects one
+- Send Turris keepalives unless the device keeps the USB link alive and confirm stored configuration by readback
+- Stop using the on-disk QML cache so a reinstalled package always shows its own interface
+
+* Mon Sep 14 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.4.0-1
+- Add experimental Flatpak packaging with USB and file chooser portals
+- Load device media automatically after the display session becomes ready
+- Keep generated media private and revalidate retry artifact path identity
+- Preserve Qt 6.4 compatibility and complete Russian translations
+- Build the RPM only for the current stable Fedora release
+
+* Sun Sep 06 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.3.0-1
+- Add per-badge custom text, saved layouts, and split-area media preparation
+- Add presentation preferences, device details, and grouped metric selection
+- Add local support reports, safe temporary-file cleanup, and the tryx CLI
+- Add quiet release notifications and independent desktop GUI autostart
+- Refactor runtime ownership while preserving API 8 and model capability gates
+- Recover GUI state when cached connection revisions advance between reads
+- Preserve versioned configuration backups and reject incompatible downgrade
+
+* Sun Aug 09 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.2.0-1
+- Add community-tested Panorama 391a:1011 printer-class support
+- Add Turris 620 391a:2011 media upload with 1280x720 MXHD preparation
+- Select media geometry and capabilities from the exact USB product
+- Bind retry, recovery, and firmware gates to the identified device model
+- Ship udev and AppStream metadata for all supported printer-class IDs
+
+* Mon Aug 03 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.1.1-1
+- Start the sibling API 8 runtime for direct build-tree GUI launches
+- Fail closed around systemd startup jobs and D-Bus owner replacement
+- Require an explicit restart for an incompatible installed runtime
+- Add isolated runtime-bootstrap regression coverage
+
+* Sun Aug 02 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.1.0-1
+- Replace the Qt Widgets frontend with one Qt Quick GUI and a private runtime
+- Add StatusNotifierItem, DBusMenu, and freedesktop Notifications integration
+- Make tray Quit terminate the GUI while leaving the private runtime active
+- Preserve legacy serial/ADB control and add PASE media editing, export,
+  save-as-new, replace, and verified deletion workflows
+- Add local firmware validation and a Quick firmware panel protected by an
+  exclusive device-transport gate; physical flashing is not claimed as verified
+- Keep QML compatible with Qt 6.4
+- Use project-owned clean-room protocol schemas and ship no bundled vendor media
+
+* Mon Jul 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.0.1-1
+- Fix checksum generation for native GitHub Release assets
+
+* Mon Jul 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.0.0-1
+- Add the first native Fedora package for the 2.0 release line
