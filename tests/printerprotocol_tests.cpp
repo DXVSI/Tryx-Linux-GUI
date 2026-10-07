@@ -26,6 +26,7 @@
 #include "privateruntimepaths.h"
 #include "runtimeapplyrequestcodec.h"
 #include "paseoverlayconfig.h"
+#include "privatedirectorypath.h"
 #include "runtimebridge.h"
 #include "runtimedowngradestore.h"
 #include "runtimepresentationpreferencesstore.h"
@@ -2706,6 +2707,13 @@ private slots:
     void usbTransportOwnsOnlyItsDataDescriptor();
     void modelClientsBorrowOneBufferedChannel();
     void duplexInputReceivesAckDuringOutput();
+    void idleInputStaysPendingBetweenExchanges();
+    void idleInputErrorsNeverLatchPersistentFailure();
+    void idleInputRearmBacksOffAndRecovers();
+    void idleInputDataIsQueuedAndRearmed();
+    void privateDirectoryPathIgnoresGroupWritableUmask();
+    void runtimeStoresStayUsableUnderGroupWritableUmask();
+    void retryCacheStartupFailureNamesTheUnsafeDirectory();
     void duplexZeroLengthInputDefersRearmUntilOutputCompletes();
     void duplexInputErrorDefersRearmWithoutStarvingOutput();
     void duplexInputRetryBudgetIsBounded();
@@ -11096,6 +11104,10 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QVERIFY(!pano->firmwareFlashSupported);
     QVERIFY(!panoWb->firmwareFlashSupported);
     QCOMPARE(panoWb->productId, quint16{0x1031});
+    QVERIFY(pase->keepBulkInPending);
+    QVERIFY(pano->keepBulkInPending);
+    QVERIFY(panoWb->keepBulkInPending);
+    QVERIFY(!turris->keepBulkInPending);
 
     QCOMPARE(turris->mediaWidth, 1280);
     QCOMPARE(turris->mediaHeight, 720);
@@ -45249,6 +45261,279 @@ void PrinterProtocolTests::modelClientsBorrowOneBufferedChannel() {
     QVERIFY(channel.persistentUsbInputFailure());
     QCOMPARE(::fcntl(ownedFd, F_GETFD), -1);
     QCOMPARE(errno, EBADF);
+}
+
+// Issue #28: Panorama-family firmware drops off the bus when the host stops
+// polling between exchanges. After every reply the IN goes pending again.
+void PrinterProtocolTests::idleInputStaysPendingBetweenExchanges() {
+    using Direction = PrinterProtocol::DuplexTestDirection;
+    QList<PrinterProtocol::DuplexTestEvent> events;
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        PrinterProtocol::DuplexTestEvent output;
+        output.direction = Direction::Output;
+        events.append(output);
+        PrinterProtocol::DuplexTestEvent reply;
+        reply.direction = Direction::Input;
+        reply.payload = QByteArrayLiteral("reply");
+        events.append(reply);
+    }
+    const auto result = PrinterProtocol::runIdleInputScenarioForTesting(events, 3);
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.completedCycles, 3);
+    // One IN per reply plus the idle IN left pending after the last one.
+    QCOMPARE(result.inputSubmissions, 4);
+    QVERIFY(result.inputPendingAtEnd);
+    QCOMPARE(result.idleInputErrors, 0);
+    QVERIFY(!result.persistentInputFailure);
+
+    const auto pase = printerProductProfileForId(0x1021);
+    const auto turris = printerProductProfileForId(0x2011);
+    QVERIFY(pase && pase->keepBulkInPending);
+    QVERIFY(turris && !turris->keepBulkInPending);
+}
+
+// An idle IN that the firmware ends with EPROTO or an empty packet must not
+// accumulate into the persistent input failure that ends the session, however
+// often it happens, and must be re-armed before the next request.
+void PrinterProtocolTests::idleInputErrorsNeverLatchPersistentFailure() {
+    using Direction = PrinterProtocol::DuplexTestDirection;
+    using Status = PrinterProtocol::DuplexTestStatus;
+    constexpr int kCycles = 25;
+    QList<PrinterProtocol::DuplexTestEvent> events;
+    for (int cycle = 0; cycle < kCycles; ++cycle) {
+        PrinterProtocol::DuplexTestEvent output;
+        output.direction = Direction::Output;
+        events.append(output);
+        PrinterProtocol::DuplexTestEvent reply;
+        reply.direction = Direction::Input;
+        reply.payload = QByteArrayLiteral("reply");
+        events.append(reply);
+        PrinterProtocol::DuplexTestEvent idle;
+        idle.direction = Direction::Input;
+        idle.status = cycle % 2 == 0 ? Status::Error : Status::Completed;
+        idle.actualLength = 0;
+        events.append(idle);
+    }
+    const auto result =
+        PrinterProtocol::runIdleInputScenarioForTesting(events, kCycles);
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.completedCycles, kCycles);
+    QCOMPARE(result.idleInputErrors, kCycles);
+    QCOMPARE(result.inputErrors, 0);
+    QVERIFY(!result.persistentInputFailure);
+    // The first request arms one IN. In every cycle the reply ends it, the
+    // idle IN armed after the reply is ended by the device, and the backoff
+    // re-arm leaves an IN pending for the next request to reuse.
+    QCOMPARE(result.inputSubmissions, 1 + 2 * kCycles);
+    QVERIFY(result.inputPendingAtEnd);
+    // Each reply resets the backoff.
+    QCOMPARE(result.idleRearmDelaysMs, QList<int>(kCycles, 20));
+}
+
+// A firmware that ends every idle IN at once gets a growing, capped re-arm
+// delay instead of a spinning host. An idle IN that stayed pending for a while
+// before it failed starts the backoff over.
+void PrinterProtocolTests::idleInputRearmBacksOffAndRecovers() {
+    using Direction = PrinterProtocol::DuplexTestDirection;
+    using Status = PrinterProtocol::DuplexTestStatus;
+    QList<PrinterProtocol::DuplexTestEvent> events;
+    PrinterProtocol::DuplexTestEvent output;
+    output.direction = Direction::Output;
+    events.append(output);
+    PrinterProtocol::DuplexTestEvent reply;
+    reply.direction = Direction::Input;
+    reply.payload = QByteArrayLiteral("reply");
+    events.append(reply);
+    for (int failure = 0; failure < 8; ++failure) {
+        PrinterProtocol::DuplexTestEvent idle;
+        idle.direction = Direction::Input;
+        idle.status = Status::Error;
+        idle.actualLength = 0;
+        events.append(idle);
+    }
+    PrinterProtocol::DuplexTestEvent lateIdle;
+    lateIdle.direction = Direction::Input;
+    lateIdle.status = Status::Error;
+    lateIdle.actualLength = 0;
+    // About 750 ms of scripted time, most of it with the IN pending.
+    lateIdle.deferredDispatches = 150;
+    events.append(lateIdle);
+
+    const auto result = PrinterProtocol::runIdleInputScenarioForTesting(events, 1, 3000);
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.completedCycles, 1);
+    QCOMPARE(result.idleInputErrors, 9);
+    QCOMPARE(result.inputErrors, 0);
+    QVERIFY(!result.persistentInputFailure);
+    QCOMPARE(result.idleRearmDelaysMs,
+             QList<int>({20, 40, 80, 160, 200, 200, 200, 200, 20}));
+    // The request's IN, the idle IN after the reply and one re-arm per failure.
+    QCOMPARE(result.inputSubmissions, 2 + 9);
+    QVERIFY(result.inputPendingAtEnd);
+}
+
+// Data that arrives on the idle IN between requests is kept for the next
+// reader, and the IN is re-armed at once instead of waiting for a request.
+void PrinterProtocolTests::idleInputDataIsQueuedAndRearmed() {
+    using Direction = PrinterProtocol::DuplexTestDirection;
+    QList<PrinterProtocol::DuplexTestEvent> events;
+    PrinterProtocol::DuplexTestEvent output;
+    output.direction = Direction::Output;
+    events.append(output);
+    PrinterProtocol::DuplexTestEvent reply;
+    reply.direction = Direction::Input;
+    reply.payload = QByteArrayLiteral("reply");
+    events.append(reply);
+    PrinterProtocol::DuplexTestEvent unsolicited;
+    unsolicited.direction = Direction::Input;
+    unsolicited.payload = QByteArrayLiteral("unsolicited");
+    events.append(unsolicited);
+
+    const auto result = PrinterProtocol::runIdleInputScenarioForTesting(events, 1);
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.completedCycles, 1);
+    QCOMPARE(result.idleInputErrors, 0);
+    QVERIFY(result.idleRearmDelaysMs.isEmpty());
+    QCOMPARE(result.queuedInputBytesAtEnd, 11);
+    QCOMPARE(result.inputSubmissions, 3);
+    QVERIFY(result.inputPendingAtEnd);
+}
+
+namespace {
+mode_t directoryModeForTesting(const QString &path) {
+    struct stat status {};
+    if (::lstat(QFile::encodeName(path).constData(), &status) != 0) {
+        return 0;
+    }
+    return status.st_mode & 07777;
+}
+}  // namespace
+
+// #32: a 0002 umask made QDir::mkpath() create group-writable runtime
+// directories that the stores then rejected. Every component the helper
+// creates is owner-only, and existing components keep their mode.
+void PrinterProtocolTests::privateDirectoryPathIgnoresGroupWritableUmask() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const mode_t previousMask = ::umask(0002);
+    const auto restoreMask = qScopeGuard([previousMask]() { ::umask(previousMask); });
+
+    const QString existing = directory.filePath(QStringLiteral("existing"));
+    QVERIFY(QDir().mkdir(existing));
+    QVERIFY(::chmod(QFile::encodeName(existing).constData(), 0755) == 0);
+    const QString target = existing + QStringLiteral("/a/b/c");
+    QVERIFY(tryx::makePrivateDirectoryPath(target));
+    QCOMPARE(directoryModeForTesting(existing), mode_t(0755));
+    QCOMPARE(directoryModeForTesting(existing + QStringLiteral("/a")), mode_t(0700));
+    QCOMPARE(directoryModeForTesting(existing + QStringLiteral("/a/b")), mode_t(0700));
+    QCOMPARE(directoryModeForTesting(target), mode_t(0700));
+    QVERIFY(tryx::makePrivateDirectoryPath(target));
+    QVERIFY(!tryx::makePrivateDirectoryPath(QString()));
+
+    const QString file = directory.filePath(QStringLiteral("file"));
+    QFile regular(file);
+    QVERIFY(regular.open(QIODevice::WriteOnly));
+    regular.close();
+    QVERIFY(!tryx::makePrivateDirectoryPath(file + QStringLiteral("/below")));
+
+    QVERIFY(tryx::privateDirectoryProblem(target).isEmpty());
+    QVERIFY(tryx::privateDirectoryProblem(existing).isEmpty());
+    QVERIFY(tryx::privateDirectoryProblem(
+        directory.filePath(QStringLiteral("missing"))).isEmpty());
+    QVERIFY(tryx::privateDirectoryProblem(file).contains(
+        QStringLiteral("is not a directory")));
+    const QString link = directory.filePath(QStringLiteral("link"));
+    QVERIFY(QFile::link(target, link));
+    QVERIFY(tryx::privateDirectoryProblem(link).contains(
+        QStringLiteral("symbolic link")));
+
+    const QString shared = directory.filePath(QStringLiteral("it's shared"));
+    QVERIFY(QDir().mkdir(shared));
+    QVERIFY(::chmod(QFile::encodeName(shared).constData(), 0775) == 0);
+    const QString problem = tryx::privateDirectoryProblem(shared);
+    QVERIFY2(problem.contains(QStringLiteral("mode 0775")), qPrintable(problem));
+    QString quoted = shared;
+    quoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+    QVERIFY2(problem.contains(QStringLiteral("chmod go-w '%1'").arg(quoted)),
+             qPrintable(problem));
+}
+
+// The #32 sequence under a 0002 umask: the media catalog creates the shared
+// data root, preferences and delete intent are read from it on the next start,
+// and media preparation creates the retry-cache root. None of them may end up
+// rejected as unsafe.
+void PrinterProtocolTests::runtimeStoresStayUsableUnderGroupWritableUmask() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const mode_t previousMask = ::umask(0002);
+    const auto restoreMask = qScopeGuard([previousMask]() { ::umask(previousMask); });
+
+    const QString dataRoot =
+        directory.filePath(QStringLiteral("data/DXVSI/TRYX Panorama Manager"));
+    const QString catalogRoot = dataRoot + QStringLiteral("/media-catalog");
+    const QString cacheRoot = directory.filePath(
+        QStringLiteral("cache/DXVSI/TRYX Panorama Runtime/prepared-media"));
+
+    tryx::MediaCatalogStore catalog(catalogRoot);
+    const auto catalogResult = catalog.load();
+    QCOMPARE(catalogResult.status, tryx::MediaCatalogStore::LoadStatus::Empty);
+    QCOMPARE(directoryModeForTesting(dataRoot), mode_t(0700));
+    QCOMPARE(directoryModeForTesting(catalogRoot), mode_t(0700));
+
+    const auto preferences = tryx::RuntimePresentationPreferencesStore(dataRoot).load();
+    QCOMPARE(preferences.status,
+             tryx::RuntimePresentationPreferencesStore::LoadStatus::Empty);
+    const auto deleteIntent =
+        tryx::DeleteIntentStore(catalogRoot + QStringLiteral("/delete-intent.json")).load();
+    QCOMPARE(deleteIntent.status, tryx::DeleteIntentStore::LoadStatus::Missing);
+
+    // printerTempPath() creates the retry-cache root with this helper.
+    QVERIFY(tryx::makePrivateDirectoryPath(cacheRoot));
+    QCOMPARE(directoryModeForTesting(cacheRoot), mode_t(0700));
+    tryx::RetryCacheStore retryCache(cacheRoot);
+    const auto retry = retryCache.load();
+    QCOMPARE(retry.status, tryx::RetryCacheStore::LoadStatus::Missing);
+}
+
+// A retry-cache root that fails the safety check blocks the display session
+// until it is fixed. The status must say so and name the directory with the
+// command that fixes it, not claim that validation is still running.
+void PrinterProtocolTests::retryCacheStartupFailureNamesTheUnsafeDirectory() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString retryRoot = directory.filePath(QStringLiteral("retry-cache"));
+    QVERIFY(QDir().mkdir(retryRoot));
+    QVERIFY(::chmod(QFile::encodeName(retryRoot).constData(), 0775) == 0);
+
+    std::unique_ptr<DeviceManager> manager(DeviceManager::createForTesting(
+        directory.filePath(QStringLiteral("sys")),
+        directory.filePath(QStringLiteral("dev"))));
+    QVERIFY(manager->retryCacheStartupSessionGateActive());
+    const QString detail =
+        manager->operationCoordinator_.retryCacheStartupFailureDetail();
+    QVERIFY2(detail.contains(QStringLiteral(
+                 "Retry-cache root directory has unsafe ownership or permissions")),
+             qPrintable(detail));
+    QVERIFY2(detail.contains(QStringLiteral("chmod go-w '%1'").arg(retryRoot)),
+             qPrintable(detail));
+
+    const QString blocked =
+        manager->sessionController_.retryCacheSessionGateStatusText();
+    QVERIFY2(blocked.contains(QStringLiteral("cannot start")), qPrintable(blocked));
+    QVERIFY2(blocked.contains(detail), qPrintable(blocked));
+    QVERIFY(!blocked.contains(QStringLiteral("still being validated")));
+
+    // The documented fix: once the directory is private, the next load opens
+    // the gate.
+    QVERIFY(::chmod(QFile::encodeName(retryRoot).constData(), 0700) == 0);
+    manager->loadRetryCache();
+    QVERIFY(!manager->retryCacheStartupSessionGateActive());
+    QVERIFY(manager->operationCoordinator_.retryCacheStartupFailureDetail().isEmpty());
+
+    // A load that has not finished yet is still reported as a wait.
+    manager->operationCoordinator_.retryCacheLoadComplete_ = false;
+    QVERIFY(manager->sessionController_.retryCacheSessionGateStatusText().contains(
+        QStringLiteral("still being validated")));
 }
 
 void PrinterProtocolTests::duplexInputReceivesAckDuringOutput() {

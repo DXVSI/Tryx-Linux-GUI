@@ -57,11 +57,20 @@ public:
                         const PrinterProtocol::OperationContext &context,
                         QString *errorMessage);
     bool takeAvailable(QByteArray *bytes, QString *errorMessage, int timeoutMs = 0);
+    // Leave one bulk IN pending after every exchange instead of only around a
+    // request. An error on such an idle IN never counts toward the persistent
+    // input failure; it only postpones the next idle IN to the next request.
+    void setKeepInputPending(bool keep);
 #ifdef TRYX_PROTOCOL_TESTING
     void adoptFileDescriptorForTesting(int fd, const QString &devicePath);
     void setPersistentUsbInputFailureForTesting(bool persistent) {
         persistentUsbInputFailureLatched_ = persistent;
     }
+    // Runs request/response cycles with the idle IN kept pending. Each cycle
+    // writes the request, reads the reply and then dispatches one idle event.
+    static PrinterProtocol::IdleInputTestResult runIdleInputScenarioForTesting(
+        const QList<PrinterProtocol::DuplexTestEvent> &events, int cycles,
+        int idleMs);
     static PrinterProtocol::DuplexTestResult
     runScenarioForTesting(const QList<PrinterProtocol::DuplexTestEvent> &events,
                           const QByteArray &request, int writeTimeoutMs,

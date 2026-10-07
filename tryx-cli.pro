@@ -22,6 +22,7 @@ MOC_DIR = $$PWD/build/cli/moc
 RCC_DIR = $$PWD/build/cli/rcc
 
 HEADERS += \
+    src/privatedirectorypath.h \
     src/runtimecontract.h \
     src/runtimedowngradestore.h \
     src/supportsnapshot.h \

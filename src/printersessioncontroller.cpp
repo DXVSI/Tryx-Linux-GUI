@@ -429,9 +429,7 @@ void PrinterSessionController::handlePrinterSnapshot(
         } else if (!retryCacheValidationComplete &&
                    !state_.printerDisplaySessionLost) {
             state_.printerDisplaySessionLost = false;
-            emit uploadStatus(tryx::DeviceManagerMessages::tr(
-                "Stored retry media is still being validated; the PASE display "
-                "session will start only after validation finishes"));
+            emit uploadStatus(retryCacheSessionGateStatusText());
         } else {
             state_.printerDisplaySessionLost = !restrictedRecoverySession;
             emit uploadStatus(printerMutationUnavailableStatusText());
@@ -649,10 +647,7 @@ void PrinterSessionController::connectDevice(const QString &port) {
             } else if (!retryCacheValidationComplete &&
                        !state_.printerDisplaySessionLost) {
                 state_.printerDisplaySessionLost = false;
-                emit uploadStatus(tryx::DeviceManagerMessages::tr(
-                    "Stored retry media is still being validated; the PASE "
-                    "display session will start only after validation "
-                    "finishes"));
+                emit uploadStatus(retryCacheSessionGateStatusText());
             } else {
                 state_.printerDisplaySessionLost = !restrictedRecoverySession;
                 emit uploadStatus(printerMutationUnavailableStatusText());
@@ -987,6 +982,29 @@ QString PrinterSessionController::printerUnavailableStatusText() const {
             "Reconnect USB or select Auto connection again.");
     }
     return state_.printerSnapshot.statusText();
+}
+
+// The startup gate holds the session back both while stored retry media is
+// validated and when the retry cache cannot be used at all. Only the first is
+// a wait; the second lasts until the cause is fixed and the runtime restarts.
+QString PrinterSessionController::retryCacheSessionGateStatusText() const {
+    if (callbacks_.retryCacheStoreBlocksMutations()) {
+        const QString detail = callbacks_.retryCacheStartupFailureDetail
+            ? callbacks_.retryCacheStartupFailureDetail()
+            : QString();
+        return detail.isEmpty()
+            ? tryx::DeviceManagerMessages::tr(
+                  "The PASE display session cannot start because the stored "
+                  "retry state is invalid or unsafe. Keep the cache and check "
+                  "the runtime log.")
+            : tryx::DeviceManagerMessages::tr(
+                  "The PASE display session cannot start because the stored "
+                  "retry state cannot be used: %1")
+                  .arg(detail);
+    }
+    return tryx::DeviceManagerMessages::tr(
+        "Stored retry media is still being validated; the PASE display "
+        "session will start only after validation finishes");
 }
 
 QString PrinterSessionController::printerMutationUnavailableStatusText() const {

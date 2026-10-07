@@ -8,6 +8,7 @@
 #include "mediatransform.h"
 #include "paseoverlayconfig.h"
 #include "pasemetricsconfigstore.h"
+#include "privatedirectorypath.h"
 #include "privateruntimepaths.h"
 #include "printermediafileintegrity.h"
 #include "printermediaidentity.h"
@@ -2241,7 +2242,13 @@ void DeviceManager::loadRuntimePresentationPreferences() {
         presentationPreferences_ = result.preferences;
         presentationPreferences_.revision = 1;
         if (!result.detail.isEmpty()) {
-            qWarning().noquote() << result.detail;
+            QString detail = result.detail;
+            if (const QString problem = tryx::privateDirectoryProblem(
+                    runtimePresentationPreferencesStore_->directory());
+                !problem.isEmpty()) {
+                detail += QStringLiteral(" (%1)").arg(problem);
+            }
+            qWarning().noquote() << detail;
         }
     }
     const TryxRuntimePresentationPreferencesV1 loaded =
@@ -2945,6 +2952,9 @@ PrinterSessionController::Callbacks DeviceManager::sessionCallbacks() {
     };
     callbacks.retryCacheValidationPending = [this]() {
         return operationCoordinator_.retryCacheValidationPending();
+    };
+    callbacks.retryCacheStartupFailureDetail = [this]() {
+        return operationCoordinator_.retryCacheStartupFailureDetail();
     };
     callbacks.hasUnresolvedRetryOutcomeForFirmware = [this]() {
         return operationCoordinator_.hasUnresolvedRetryOutcomeForFirmware();

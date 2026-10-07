@@ -157,6 +157,7 @@ public:
     bool hasPendingDeleteRecovery() const;
     bool hasPendingReplaceRecovery() const;
     bool retryCacheValidationPending() const;
+    QString retryCacheStartupFailureDetail() const;
     RuntimeDowngradeAssessment runtimeDowngradeAssessment() const;
     SupportState supportState() const;
     void initializeDeviceMediaOutbox();

@@ -13,6 +13,7 @@ PrinterProductProfile paseFamilyProfile(quint16 productId, bool firmwareFlash) {
     profile.overlayLayout = PrinterOverlayLayoutKind::PaseDualArea2240;
     profile.orientationModel = PrinterDisplayOrientationModel::RotationFields;
     profile.fileTransferTrackId = 0;
+    profile.keepBulkInPending = true;
     profile.mediaUploadSupported = true;
     profile.mediaCatalogSupported = true;
     profile.mediaPullSupported = true;
