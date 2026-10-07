@@ -2,6 +2,7 @@
 
 #include "devicemanagermessages.h"
 #include "printermediaidentity.h"
+#include "privatedirectorypath.h"
 
 #include <QDir>
 #include <QFile>
@@ -424,7 +425,7 @@ bool ensureDirectory(const QString &path, QString *errorMessage) {
                 systemErrorText(tryx::DeviceManagerMessages::tr("Cannot inspect the delete intent directory"),
                                 errorNumber));
         }
-        if (!QDir().mkpath(directory)) {
+        if (!tryx::makePrivateDirectoryPath(directory)) {
             return setError(
                 errorMessage,
                 tryx::DeviceManagerMessages::tr("Cannot create the delete intent directory"));

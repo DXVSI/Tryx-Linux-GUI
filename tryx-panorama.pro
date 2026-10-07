@@ -126,6 +126,7 @@ HEADERS += \
     src/mediatransform.h \
     src/paseoverlayconfig.h \
     src/pasemetricsconfigstore.h \
+    src/privatedirectorypath.h \
     src/privateruntimepaths.h \
     src/printermediafileintegrity.h \
     src/printermediaidentity.h \

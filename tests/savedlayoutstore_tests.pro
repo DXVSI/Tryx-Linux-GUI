@@ -14,6 +14,7 @@ MOC_DIR = $$PWD/../build/savedlayoutstore-tests/moc
 
 HEADERS += \
     $$PWD/../src/applicationpaths.h \
+    $$PWD/../src/privatedirectorypath.h \
     $$PWD/../src/runtimeapplyrequestcodec.h \
     $$PWD/../src/runtimecontract.h \
     $$PWD/../src/savedlayoutstore.h

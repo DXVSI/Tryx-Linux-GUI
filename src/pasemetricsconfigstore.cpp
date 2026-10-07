@@ -4,6 +4,7 @@
 #include "configurationformatbackup.h"
 #include "devicemanagermessages.h"
 #include "paseoverlayconfig.h"
+#include "privatedirectorypath.h"
 
 #include <QDir>
 #include <QFile>
@@ -252,7 +253,7 @@ bool PaseMetricsConfigStore::ensureDirectory(
         }
         return false;
     }
-    if (!info.exists() && !QDir().mkpath(directory_)) {
+    if (!info.exists() && !tryx::makePrivateDirectoryPath(directory_)) {
         if (errorMessage) {
             *errorMessage = tryx::DeviceManagerMessages::tr(
                 "Cannot create the PASE metrics configuration directory");

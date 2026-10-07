@@ -1,4 +1,5 @@
 #include "printertransactionchannel.h"
+#include "printerproductprofile.h"
 #include "printerframecodec_p.h"
 #include "printeroperation_p.h"
 #include "turrismediaformat.h"
@@ -40,6 +41,8 @@ PrinterTransactionChannel::PrinterTransactionChannel(quint16 expectedProductId,
     if (nextTrackId_ == 0) {
         nextTrackId_ = 1;
     }
+    const auto profile = printerProductProfileForId(expectedProductId_);
+    libusbTransport_.setKeepInputPending(profile && profile->keepBulkInPending);
 }
 
 PrinterTransactionChannel::~PrinterTransactionChannel() { closeDevice(); }

@@ -1,5 +1,7 @@
 #include "firmwarerecoveryjournal.h"
 
+#include "privatedirectorypath.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -173,7 +175,7 @@ bool openVerifiedDirectory(
         const QString parentPath =
             QFileInfo(directoryPath)
                 .absolutePath();
-        if (!QDir().mkpath(parentPath)) {
+        if (!tryx::makePrivateDirectoryPath(parentPath)) {
             return setError(
                 errorMessage,
                 QStringLiteral(

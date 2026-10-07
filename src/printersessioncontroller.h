@@ -74,6 +74,7 @@ public:
         std::function<bool()> retryCacheRestrictedRecoveryActive;
         std::function<bool()> retryCacheMutationGateActive;
         std::function<bool()> retryCacheValidationPending;
+        std::function<QString()> retryCacheStartupFailureDetail;
         std::function<bool()> hasUnresolvedRetryOutcomeForFirmware;
         std::function<bool()> hasPendingDeleteRecovery;
         std::function<bool()> hasPendingReplaceRecovery;
@@ -136,6 +137,7 @@ public:
     bool firmwareFlashAllowedForCurrentDevice(QString *errorMessage) const;
     QString printerUnavailableStatusText() const;
     QString printerMutationUnavailableStatusText() const;
+    QString retryCacheSessionGateStatusText() const;
     QString firmwareExclusiveStatusText() const;
     void resumePrinterSessionAfterRetryCacheValidation();
     void requirePrinterRecovery(const QString &message);

@@ -1,6 +1,7 @@
 #include "runtimepresentationpreferencesstore.h"
 
 #include "applicationpaths.h"
+#include "privatedirectorypath.h"
 
 #include <QDir>
 #include <QFile>
@@ -110,7 +111,7 @@ bool RuntimePresentationPreferencesStore::ensureDirectory(
         }
         return false;
     }
-    if (!info.exists() && !QDir().mkpath(directory_)) {
+    if (!info.exists() && !tryx::makePrivateDirectoryPath(directory_)) {
         if (errorMessage) {
             *errorMessage = QStringLiteral(
                 "Cannot create the runtime presentation preferences directory");
