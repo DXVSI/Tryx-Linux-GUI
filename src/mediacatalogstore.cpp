@@ -4,6 +4,7 @@
 #include "devicemanagermessages.h"
 #include "printermediafileintegrity.h"
 #include "printermediaidentity.h"
+#include "privatedirectorypath.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -202,7 +203,7 @@ bool MediaCatalogStore::ensureDirectories(QString *errorMessage) const {
             }
             return false;
         }
-        if (!info.exists() && !QDir().mkpath(path)) {
+        if (!info.exists() && !tryx::makePrivateDirectoryPath(path)) {
             if (errorMessage) {
                 *errorMessage = tryx::DeviceManagerMessages::tr(
                     "Cannot create the media catalog directory");

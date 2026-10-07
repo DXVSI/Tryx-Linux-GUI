@@ -43,6 +43,11 @@ struct PrinterProductProfile {
     // 0 keeps the full transaction timeout. Turris firmware never
     // acknowledges these writes and the official app does not wait for them.
     int readbackConfirmedWriteAckWindowMs = 0;
+    // Keep one bulk IN transfer pending between requests, as the official
+    // bridge does. With the IN armed only around each request, the idle link
+    // between exchanges makes Panorama-family firmware drop off the bus until
+    // power is removed (issue #28).
+    bool keepBulkInPending = false;
     // Written into UserConfiguration when the device reports no such section.
     QString defaultPowerOnMedia;
     QString defaultStandbyMedia;

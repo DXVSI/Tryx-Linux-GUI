@@ -2,6 +2,7 @@
 
 #include "applicationpaths.h"
 #include "configurationformatbackup.h"
+#include "privatedirectorypath.h"
 #include "runtimeapplyrequestcodec.h"
 
 #include <QDir>
@@ -1005,7 +1006,7 @@ bool SavedLayoutStore::ensureDirectory(QString *detail) const {
         return false;
     }
     const bool create = !info.exists();
-    if (create && !QDir().mkpath(directory_)) {
+    if (create && !tryx::makePrivateDirectoryPath(directory_)) {
         if (detail) {
             *detail = QStringLiteral(
                 "Cannot create the saved layouts directory");

@@ -18,6 +18,7 @@ OBJECTS_DIR = $$PWD/../build/runtime-downgradestore-tests/obj
 MOC_DIR = $$PWD/../build/runtime-downgradestore-tests/moc
 
 HEADERS += \
+    $$PWD/../src/privatedirectorypath.h \
     $$PWD/../src/runtimedowngradestore.h
 
 SOURCES += \

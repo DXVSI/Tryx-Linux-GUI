@@ -248,6 +248,21 @@ XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
 
+## What's new in 2.5.3
+
+- Panorama `391a:1011`, Panorama SE `391a:1021` and Panorama WB `391a:1031`
+  no longer drop off USB on systems where they used to disappear until the
+  power supply was switched off. The runtime keeps a bulk IN transfer pending
+  between requests, like the official bridge, and re-arms it as soon as it
+  ends. A reporter who had the drops ran the display for hours without a
+  disconnect (#28).
+- The runtime creates its data and cache directories owner-only. With the
+  0002 umask common on Ubuntu and Linux Mint they used to become
+  group-writable; after the first media upload the runtime refused them and
+  the display session no longer started. Directories created by earlier
+  versions are not changed automatically: the status and the log name the
+  directory and the `chmod go-w` command that fixes it (#32).
+
 ## What's new in 2.5.2
 
 - Panorama WB (`391a:1031`) is supported with the same feature set as the
@@ -548,7 +563,7 @@ runtime remote, and a working USB portal backend are required. Stop any other
 TRYX runtime before starting this build.
 
 ```fish
-flatpak install --user ./tryx-panorama-manager-2.5.2-experimental-x86_64.flatpak
+flatpak install --user ./tryx-panorama-manager-2.5.3-experimental-x86_64.flatpak
 flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ```
 
@@ -580,13 +595,13 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.2-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.3-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.5.2-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.5.3-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.5.2-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.5.3-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
@@ -696,6 +711,44 @@ sudo dnf install -y android-tools unzip e2fsprogs ffmpeg mesa-demos
 - Supported printer-class devices use `391a:1011` for Panorama, `391a:1021` for Panorama SE / PASE, `391a:1031` for Panorama WB, and `391a:2011` for Turris 620; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
 - Fedora's generic printer rule must not start CUPS `configure-printer` for this vendor protocol. The qmake install target places an early access rule and a late printer-suppression rule in `/usr/lib/udev/rules.d`; do not create same-named overrides in `/etc/udev/rules.d`, because they would shadow packaged updates.
 
+### Display drops off USB and only returns after a power-off
+
+Some Panorama `391a:1011`, Panorama SE `391a:1021` and Panorama WB
+`391a:1031` displays disappear from the bus during a session and come back
+only after the power supply is switched off. Reports come from AMD 800-series
+chipset USB controllers on Linux and Windows. The firmware fails when the host
+stops polling the device between exchanges; the official bridge keeps a bulk
+IN pending at all times and survives for days. Since 2.5.3 the runtime does
+the same for the Panorama family.
+
+If a display still drops, a kernel parameter that disables USB link power
+management for these devices is a known workaround:
+
+```text
+usbcore.quirks=391a:1011:k,391a:1021:k,391a:1031:k
+```
+
+Add it to the kernel command line of your boot loader, reboot, and switch the
+power supply off once so the display recovers. Details and measurements are in
+issue #28.
+
+### The display session never starts after the first media upload
+
+Before 2.5.3 the runtime created its directories with permissions from the
+umask. With a 0002 umask they became group-writable, and the runtime then
+refused them, so the display stayed on "Waiting for Device". Since 2.5.3 the
+status and the service log name the affected directory with the command that
+fixes it, for example:
+
+```text
+chmod go-w '/home/user/.cache/DXVSI/TRYX Panorama Runtime/prepared-media'
+```
+
+Run the command for each directory the log names, without `-R`, then restart
+the service with `systemctl --user restart tryx-panorama.service`. Do not
+delete the directories: they can hold an interrupted upload that the runtime
+still has to finish.
+
 ## Firmware Updates
 
 Firmware updates are initiated from the firmware panel in Quick Settings, but
@@ -727,7 +780,7 @@ verification. A new flash cannot be started from an unidentified Loader-only
 device; the runtime must first identify a firmware-capable TRYX product before
 authorizing the transition into Loader mode.
 
-After updating to the new KANALI firmware, the cooler no longer exposes ADB by default. It appears as `391a:1021 RK PASE` with a bidirectional printer interface. The app generates C++ types from three minimal, project-owned schemas under `protocol/wire-v1`; recovered vendor descriptor sources are not a build or release dependency. The production path does not read or write `/dev/usb/lp*`: it claims the `07/01/02` interface through usbfs, temporarily detaches `usblp`, arms one bulk IN before each request, never re-arms that endpoint while the matching bulk OUT is still active, drains optional periodic responses to a complete frame boundary after OUT, and releases the interface on shutdown.
+After updating to the new KANALI firmware, the cooler no longer exposes ADB by default. It appears as `391a:1021 RK PASE` with a bidirectional printer interface. The app generates C++ types from three minimal, project-owned schemas under `protocol/wire-v1`; recovered vendor descriptor sources are not a build or release dependency. The production path does not read or write `/dev/usb/lp*`: it claims the `07/01/02` interface through usbfs, temporarily detaches `usblp`, arms one bulk IN before each request and, on the Panorama family, leaves one bulk IN pending between requests as the official bridge does (an idle link made these displays drop off the bus until power was removed, see issue #28), never re-arms that endpoint while the matching bulk OUT is still active, drains optional periodic responses to a complete frame boundary after OUT, and releases the interface on shutdown.
 
 Turris 620 exposes the supported `391a:2011` printer-class identity and runs on
 the same configuration pipeline as PASE with a Turris product profile. Media is

@@ -4,6 +4,7 @@
 #include "printermediafileintegrity.h"
 #include "printermediaidentity.h"
 #include "printerprotocol.h"
+#include "privatedirectorypath.h"
 #include "turrismediaformat.h"
 
 #include <panorama/media.hpp>
@@ -106,7 +107,7 @@ QString printerTempPath(const QString &fileName) {
     const QString directory =
         QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
             .filePath(QStringLiteral("prepared-media"));
-    QDir().mkpath(directory);
+    tryx::makePrivateDirectoryPath(directory);
     return QDir(directory).filePath(fileName);
 }
 

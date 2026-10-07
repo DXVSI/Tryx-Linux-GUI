@@ -1,5 +1,7 @@
 #include "runtimedowngradestore.h"
 
+#include "privatedirectorypath.h"
+
 #include <QByteArrayView>
 #include <QCryptographicHash>
 #include <QDir>
@@ -462,7 +464,7 @@ DirectoryOpenResult openStoreDirectory(const QString &directory,
             return {DirectoryOpenStatus::Missing, {}, {}};
         }
         if (errorNumber == ENOENT && create) {
-            if (!QDir().mkpath(parentPath) ||
+            if (!tryx::makePrivateDirectoryPath(parentPath) ||
                 ::lstat(encodedParent.constData(),
                         &parentStatus) != 0) {
                 return {DirectoryOpenStatus::IoError, {},

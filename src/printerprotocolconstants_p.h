@@ -38,6 +38,11 @@ constexpr int kMaxInputTransferErrorRetries = 10;
 constexpr int kInputTransferErrorRearmInitialBackoffMs = 5;
 constexpr int kInputTransferErrorRearmMaxBackoffMs = 100;
 constexpr int kPersistentInputTransferErrorThreshold = kMaxInputTransferErrorRetries;
+// An idle bulk IN that the firmware ends without data is re-armed after this
+// delay, doubled for each consecutive idle failure up to the maximum. An idle
+// IN that stayed pending longer than the maximum starts the backoff over.
+constexpr int kIdleInputRearmInitialDelayMs = 20;
+constexpr int kIdleInputRearmMaxDelayMs = 200;
 constexpr qsizetype kMaxLibusbReceiveQueueSize =
     (PrinterFrameCodec::MaxPayloadSize + 8) * 4;
 

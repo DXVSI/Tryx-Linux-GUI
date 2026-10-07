@@ -1,3 +1,11 @@
+tryx-panorama-manager (2.5.3-1) noble; urgency=medium
+
+  * Keep a bulk IN pending between requests on the Panorama, Panorama SE and Panorama WB and re-arm it as soon as it ends, as the official bridge does, so the display no longer drops off USB until a power-off.
+  * Create the runtime's data and cache directories owner-only regardless of the umask, so a 0002 umask no longer stops the display session from starting after the first media upload.
+  * When stored retry media cannot be used, report that the display session cannot start and name the directory with the command that fixes it, instead of a validation that never finishes.
+
+ -- DXVSI <dxvsi123@gmail.com>  Wed, 07 Oct 2026 10:00:00 +0000
+
 tryx-panorama-manager (2.5.2-1) noble; urgency=medium
 
   * Add Panorama WB (391a:1031) support with the Panorama feature set, confirmed on real hardware.
