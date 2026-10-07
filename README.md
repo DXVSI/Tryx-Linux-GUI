@@ -248,6 +248,21 @@ XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
 
+## What's new in 2.5.3
+
+- Panorama `391a:1011`, Panorama SE `391a:1021` and Panorama WB `391a:1031`
+  no longer drop off USB on systems where they used to disappear until the
+  power supply was switched off. The runtime keeps a bulk IN transfer pending
+  between requests, like the official bridge, and re-arms it as soon as it
+  ends. A reporter who had the drops ran the display for hours without a
+  disconnect (#28).
+- The runtime creates its data and cache directories owner-only. With the
+  0002 umask common on Ubuntu and Linux Mint they used to become
+  group-writable; after the first media upload the runtime refused them and
+  the display session no longer started. Directories created by earlier
+  versions are not changed automatically: the status and the log name the
+  directory and the `chmod go-w` command that fixes it (#32).
+
 ## What's new in 2.5.2
 
 - Panorama WB (`391a:1031`) is supported with the same feature set as the
@@ -548,7 +563,7 @@ runtime remote, and a working USB portal backend are required. Stop any other
 TRYX runtime before starting this build.
 
 ```fish
-flatpak install --user ./tryx-panorama-manager-2.5.2-experimental-x86_64.flatpak
+flatpak install --user ./tryx-panorama-manager-2.5.3-experimental-x86_64.flatpak
 flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ```
 
@@ -580,13 +595,13 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.2-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.3-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.5.2-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.5.3-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.5.2-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.5.3-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
@@ -703,8 +718,8 @@ Some Panorama `391a:1011`, Panorama SE `391a:1021` and Panorama WB
 only after the power supply is switched off. Reports come from AMD 800-series
 chipset USB controllers on Linux and Windows. The firmware fails when the host
 stops polling the device between exchanges; the official bridge keeps a bulk
-IN pending at all times and survives for days. Since this build the runtime
-does the same for the Panorama family.
+IN pending at all times and survives for days. Since 2.5.3 the runtime does
+the same for the Panorama family.
 
 If a display still drops, a kernel parameter that disables USB link power
 management for these devices is a known workaround:
@@ -716,6 +731,23 @@ usbcore.quirks=391a:1011:k,391a:1021:k,391a:1031:k
 Add it to the kernel command line of your boot loader, reboot, and switch the
 power supply off once so the display recovers. Details and measurements are in
 issue #28.
+
+### The display session never starts after the first media upload
+
+Before 2.5.3 the runtime created its directories with permissions from the
+umask. With a 0002 umask they became group-writable, and the runtime then
+refused them, so the display stayed on "Waiting for Device". Since 2.5.3 the
+status and the service log name the affected directory with the command that
+fixes it, for example:
+
+```text
+chmod go-w '/home/user/.cache/DXVSI/TRYX Panorama Runtime/prepared-media'
+```
+
+Run the command for each directory the log names, without `-R`, then restart
+the service with `systemctl --user restart tryx-panorama.service`. Do not
+delete the directories: they can hold an interrupted upload that the runtime
+still has to finish.
 
 ## Firmware Updates
 

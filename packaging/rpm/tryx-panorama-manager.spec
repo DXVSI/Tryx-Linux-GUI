@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.5.2
+Version:        2.5.3
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -120,6 +120,11 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
+* Wed Oct 07 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.3-1
+- Keep a bulk IN pending between requests on the Panorama, Panorama SE and Panorama WB and re-arm it as soon as it ends, as the official bridge does, so the display no longer drops off USB until a power-off
+- Create the runtime's data and cache directories owner-only regardless of the umask, so a 0002 umask no longer stops the display session from starting after the first media upload
+- When stored retry media cannot be used, report that the display session cannot start and name the directory with the command that fixes it, instead of a validation that never finishes
+
 * Tue Sep 29 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.2-1
 - Add Panorama WB (391a:1031) support with the Panorama feature set, confirmed on real hardware
 - Show GPU names with their vendor on the hardware badge, for example NVIDIA GeForce RTX 4090 on the NVIDIA colours, also inside the Flatpak
