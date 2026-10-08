@@ -18,7 +18,7 @@ TestCase {
         visible: true
 
         QtObject {
-            id: workflow
+            id: workflowMock
 
             property string exportedMediaId: ""
             property string exportedMediaName: ""
@@ -38,7 +38,7 @@ TestCase {
 
         Components.MediaExportPicker {
             id: picker
-            workflow: workflow
+            workflow: workflowMock
             homeFolder: Qt.resolvedUrl(".")
         }
         QtObject {
@@ -55,9 +55,9 @@ TestCase {
     function init() {
         chooser.cancel()
         picker.portalChooser = null
-        workflow.exportedMediaId = ""
-        workflow.exportedMediaName = ""
-        workflow.exportedFileName = ""
+        workflowMock.exportedMediaId = ""
+        workflowMock.exportedMediaName = ""
+        workflowMock.exportedFileName = ""
         picker.close()
         wait(0)
     }
@@ -71,10 +71,10 @@ TestCase {
         chooser.busy = false
         chooser.selected(Qt.resolvedUrl("."))
         tryVerify(() => picker.opened)
-        compare(workflow.exportedMediaId, "")
+        compare(workflowMock.exportedMediaId, "")
         picker.exportCopy()
-        tryCompare(workflow, "exportedMediaId", "original-id")
-        compare(workflow.exportedMediaName, "original-media")
+        tryCompare(workflowMock, "exportedMediaId", "original-id")
+        compare(workflowMock.exportedMediaName, "original-media")
     }
 
     function test_suggestedNameAndExplicitExport() {
@@ -91,9 +91,9 @@ TestCase {
         verify(exportButton.enabled)
 
         mouseClick(exportButton)
-        tryCompare(workflow, "exportedMediaId", "media-id")
-        compare(workflow.exportedMediaName, "device-media")
-        compare(workflow.exportedFileName,
+        tryCompare(workflowMock, "exportedMediaId", "media-id")
+        compare(workflowMock.exportedMediaName, "device-media")
+        compare(workflowMock.exportedFileName,
                 "suggested-device-copy.h264")
     }
 }
