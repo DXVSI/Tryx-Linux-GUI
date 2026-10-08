@@ -651,6 +651,36 @@ makepkg --cleanbuild --check
 popd
 ```
 
+## NixOS
+
+The repository is a Nix flake, contributed by @Yuna404. It builds the same
+files as the native packages: the GUI, the `tryx` client, the runtime with
+ffmpeg on its `PATH`, the udev rules and the user service. CI builds it on
+every change; NixOS itself is community-tested. The flake ships with releases
+after 2.5.3. `github:DXVSI/Tryx-Linux-GUI` follows the latest release; add a
+release tag to the URL to pin one.
+
+Add the flake as an input:
+
+```nix
+tryx.url = "github:DXVSI/Tryx-Linux-GUI";
+```
+
+Then enable the package, its udev rules and the user service in the NixOS
+configuration. Without the udev rules the application cannot open the display.
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  nixpkgs.overlays = [ inputs.tryx.overlays.default ];
+
+  environment.systemPackages = [ pkgs.tryx-panorama-manager ];
+  services.udev.packages = [ pkgs.tryx-panorama-manager ];
+  systemd.packages = [ pkgs.tryx-panorama-manager ];
+  systemd.user.services.tryx-panorama.wantedBy = [ "graphical-session.target" ];
+}
+```
+
 ## Requirements
 
 **Build:**
