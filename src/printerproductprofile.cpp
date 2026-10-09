@@ -9,7 +9,7 @@ PrinterProductProfile paseFamilyProfile(quint16 productId, bool firmwareFlash) {
     profile.mediaHeight = 1080;
     profile.family = PrinterProtocolFamily::Pase;
     profile.mediaContainer = PrinterMediaContainer::RawH264;
-    profile.keepalive = PrinterSessionKeepalive::Ping;
+    profile.keepalive = PrinterSessionKeepalive::MetricBatch;
     profile.overlayLayout = PrinterOverlayLayoutKind::PaseDualArea2240;
     profile.orientationModel = PrinterDisplayOrientationModel::RotationFields;
     profile.fileTransferTrackId = 0;

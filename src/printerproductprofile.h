@@ -12,12 +12,16 @@ enum class PrinterProtocolFamily { Pase, Turris };
 // How prepared media is wrapped before FileTransmit.
 enum class PrinterMediaContainer { RawH264, MxhdH264 };
 
-// Ping (10) policy for an idle session.
-//   Ping: always send periodic Ping frames (PASE behaviour).
+// Keepalive policy for an idle session.
+//   Ping: always send periodic Ping (10) frames.
+//   MetricBatch: always send a MetricBatch (300) with an empty header every
+//   second, carrying the overlay metric labels when there are any. This is
+//   the only steady traffic of the official app; Panorama SE firmware
+//   v2.0.6 stopped answering after hours of 2 s Pings (#37).
 //   Negotiated: decide per session from the device system configuration and
 //   stop after a device rejection.
-//   None: never send Ping frames.
-enum class PrinterSessionKeepalive { Ping, Negotiated, None };
+//   None: never send keepalive frames.
+enum class PrinterSessionKeepalive { Ping, MetricBatch, Negotiated, None };
 
 // Geometry table used to build RunConfig label groups.
 enum class PrinterOverlayLayoutKind { PaseDualArea2240, TurrisSingleArea1280 };

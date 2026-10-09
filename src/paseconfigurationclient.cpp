@@ -30,11 +30,17 @@ PaseConfigurationClient::PaseConfigurationClient(
     : channel_(channel), productProfile_(profile), negotiated_(negotiated),
       deviceInfoReadyTimeoutMs_(
           qBound(1, deviceInfoReadyTimeoutMs, kDeviceInformationReadinessDeadlineMs)) {
-    // The Ping frame factory is installed for every profile: a Negotiated
+    // A keepalive frame factory is installed for every profile: a Negotiated
     // keepalive may be enabled after the system configuration probe. Whether a
-    // Ping is injected during a wait is decided per operation through
+    // keepalive is injected during a wait is decided per operation through
     // OperationContext::maintainKeepalive.
-    channel_.setKeepaliveFrameFactory(&PaseConfigurationClient::makeKeepaliveFrame);
+    if (productProfile_.keepalive == PrinterSessionKeepalive::MetricBatch) {
+        channel_.setKeepaliveFrameFactory(
+            &PaseConfigurationClient::makeMetricBatchKeepaliveFrame);
+        channel_.setKeepaliveIntervalMs(kMetricBatchKeepaliveIntervalMs);
+    } else {
+        channel_.setKeepaliveFrameFactory(&PaseConfigurationClient::makeKeepaliveFrame);
+    }
 }
 
 bool PaseConfigurationClient::bootstrapSession(
@@ -446,7 +452,20 @@ QByteArray PaseConfigurationClient::makeKeepaliveFrame(QString *errorMessage) {
     panorama::wire::v1::Request request;
     request.mutable_header();
     request.mutable_ping()->set_payload("hello?");
+    return encodeKeepaliveRequest(request, errorMessage);
+}
 
+// The official app's steady traffic: a MetricBatch with an empty header. With
+// no labels this is 0a 00 e2 12 00.
+QByteArray PaseConfigurationClient::makeMetricBatchKeepaliveFrame(QString *errorMessage) {
+    panorama::wire::v1::Request request;
+    request.mutable_header();
+    request.mutable_metric_batch();
+    return encodeKeepaliveRequest(request, errorMessage);
+}
+
+QByteArray PaseConfigurationClient::encodeKeepaliveRequest(
+    const panorama::wire::v1::Request &request, QString *errorMessage) {
     std::string serializedRequest;
     if (!request.SerializeToString(&serializedRequest) ||
         serializedRequest.size() >
@@ -1029,6 +1048,61 @@ void addPaseLabelUpdate(panorama::wire::v1::MetricBatch *batch, quint32 groupId,
     auto *labelUpdate = groupUpdate->add_label_texts();
     labelUpdate->set_label_id(labelId);
     labelUpdate->set_text(text.toStdString());
+}
+
+// Appends the label updates for the overlay's selected metrics. Appends
+// nothing when the overlay selects no metric.
+void appendPaseMetricLabels(panorama::wire::v1::MetricBatch *batch,
+                            const PrinterProtocol::PaseOverlayConfig &overlay,
+                            const QStringList &labels, const QStringList &values,
+                            const QStringList &units) {
+    const QList<const PaseMetricDefinition *> leftSelected =
+        paseSelectedMetrics(overlay.left);
+    const QList<const PaseMetricDefinition *> rightSelected =
+        overlay.dualMode ? paseSelectedMetrics(overlay.right)
+                         : QList<const PaseMetricDefinition *>{};
+    const QDateTime now = QDateTime::currentDateTime();
+    const auto appendArea = [batch, &labels, &values, &units, &now, &overlay](
+                                const QList<const PaseMetricDefinition *> &selected,
+                                quint32 idOffset) {
+        for (const PaseMetricDefinition *definition : selected) {
+            const quint32 groupId = definition->groupId + idOffset;
+            const quint32 titleId = definition->titleId + idOffset;
+            const quint32 valueId = definition->valueId + idOffset;
+            const quint32 unitId =
+                definition->unitId == 0 ? 0 : definition->unitId + idOffset;
+            if (definition->dateTime) {
+                addPaseLabelUpdate(
+                    batch, groupId, titleId,
+                    QLocale().toString(now.date(), QLocale::ShortFormat));
+                addPaseLabelUpdate(
+                    batch, groupId, valueId,
+                    tryxFormatLocalTime(now.time(), overlay.timeFormat, QLocale()));
+                continue;
+            }
+            const int valueIndex =
+                labels.indexOf(QString::fromLatin1(definition->name));
+            const bool valueAvailable = valueIndex >= 0 && valueIndex < values.size() &&
+                                        !values.at(valueIndex).isEmpty();
+            addPaseLabelUpdate(batch, groupId, valueId,
+                               valueAvailable ? values.at(valueIndex)
+                                              : QStringLiteral("--"));
+            const bool temperatureMetric =
+                definition->groupId == 100 || definition->groupId == 104;
+            if (temperatureMetric) {
+                const QString unit =
+                    valueIndex >= 0 && valueIndex < units.size() &&
+                            !units.at(valueIndex).isEmpty()
+                        ? units.at(valueIndex)
+                        : tryxTemperatureUnitSymbol(overlay.temperatureUnit);
+                addPaseLabelUpdate(batch, groupId, unitId, unit);
+            }
+        }
+    };
+    appendArea(leftSelected, 0);
+    if (overlay.dualMode) {
+        appendArea(rightSelected, 100);
+    }
 }
 
 } // namespace
@@ -1780,59 +1854,9 @@ bool PaseConfigurationClient::sendPaseMetricBatch(
             overlay, productProfile_.productId, errorMessage)) {
         return false;
     }
-    const QList<const PaseMetricDefinition *> leftSelected =
-        paseSelectedMetrics(overlay.left);
-    const QList<const PaseMetricDefinition *> rightSelected =
-        overlay.dualMode ? paseSelectedMetrics(overlay.right)
-                         : QList<const PaseMetricDefinition *>{};
-    if (leftSelected.isEmpty() && rightSelected.isEmpty()) {
-        return true;
-    }
-
     panorama::wire::v1::Request request;
     auto *batch = request.mutable_metric_batch();
-    const QDateTime now = QDateTime::currentDateTime();
-    const auto appendArea = [batch, &labels, &values, &units, &now, &overlay](
-                                const QList<const PaseMetricDefinition *> &selected,
-                                quint32 idOffset) {
-        for (const PaseMetricDefinition *definition : selected) {
-            const quint32 groupId = definition->groupId + idOffset;
-            const quint32 titleId = definition->titleId + idOffset;
-            const quint32 valueId = definition->valueId + idOffset;
-            const quint32 unitId =
-                definition->unitId == 0 ? 0 : definition->unitId + idOffset;
-            if (definition->dateTime) {
-                addPaseLabelUpdate(
-                    batch, groupId, titleId,
-                    QLocale().toString(now.date(), QLocale::ShortFormat));
-                addPaseLabelUpdate(
-                    batch, groupId, valueId,
-                    tryxFormatLocalTime(now.time(), overlay.timeFormat, QLocale()));
-                continue;
-            }
-            const int valueIndex =
-                labels.indexOf(QString::fromLatin1(definition->name));
-            const bool valueAvailable = valueIndex >= 0 && valueIndex < values.size() &&
-                                        !values.at(valueIndex).isEmpty();
-            addPaseLabelUpdate(batch, groupId, valueId,
-                               valueAvailable ? values.at(valueIndex)
-                                              : QStringLiteral("--"));
-            const bool temperatureMetric =
-                definition->groupId == 100 || definition->groupId == 104;
-            if (temperatureMetric) {
-                const QString unit =
-                    valueIndex >= 0 && valueIndex < units.size() &&
-                            !units.at(valueIndex).isEmpty()
-                        ? units.at(valueIndex)
-                        : tryxTemperatureUnitSymbol(overlay.temperatureUnit);
-                addPaseLabelUpdate(batch, groupId, unitId, unit);
-            }
-        }
-    };
-    appendArea(leftSelected, 0);
-    if (overlay.dualMode) {
-        appendArea(rightSelected, 100);
-    }
+    appendPaseMetricLabels(batch, overlay, labels, values, units);
     if (batch->label_groups().empty()) {
         return true;
     }
@@ -2106,8 +2130,10 @@ PaseConfigurationClient::sendKeepalive(const QString &devicePath, QString *error
     }
     TransactionOutcome drainOutcome = TransactionOutcome::NotSent;
     const KeepaliveOutcome outcome = channel_.sendPeriodicFrame(
-        PaseConfigurationClient::makeKeepaliveFrame(errorMessage), devicePath, context,
-        errorMessage, &drainOutcome);
+        productProfile_.keepalive == PrinterSessionKeepalive::MetricBatch
+            ? PaseConfigurationClient::makeMetricBatchKeepaliveFrame(errorMessage)
+            : PaseConfigurationClient::makeKeepaliveFrame(errorMessage),
+        devicePath, context, errorMessage, &drainOutcome);
     if (outcome == KeepaliveOutcome::FatalFailure &&
         drainOutcome == TransactionOutcome::Rejected &&
         productProfile_.keepalive == PrinterSessionKeepalive::Negotiated) {
@@ -2116,6 +2142,22 @@ PaseConfigurationClient::sendKeepalive(const QString &devicePath, QString *error
         return KeepaliveOutcome::Unsupported;
     }
     return outcome;
+}
+
+PrinterProtocol::KeepaliveOutcome PaseConfigurationClient::sendMetricBatchKeepalive(
+    const QString &devicePath, QString *errorMessage, const OperationContext &context,
+    const PaseOverlayConfig *overlay, const QStringList &labels,
+    const QStringList &values, const QStringList &units) {
+    panorama::wire::v1::Request request;
+    request.mutable_header();
+    auto *batch = request.mutable_metric_batch();
+    if (overlay && overlayAvailable() &&
+        paseOverlayMetricSelectionIsValid(*overlay, nullptr) &&
+        tryx::pase_overlay_config::paseOverlayIsSupportedByProduct(
+            *overlay, productProfile_.productId, nullptr)) {
+        appendPaseMetricLabels(batch, *overlay, labels, values, units);
+    }
+    return channel_.sendPeriodicRequest(request, devicePath, context, errorMessage);
 }
 
 PrinterProtocol::KeepaliveOutcome PaseConfigurationClient::sendDisplayKeepalive(

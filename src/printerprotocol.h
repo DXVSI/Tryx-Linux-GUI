@@ -376,6 +376,11 @@ public:
     KeepaliveOutcome sendKeepalive(const QString &devicePath,
                                    QString *errorMessage,
                                    const OperationContext &context);
+    KeepaliveOutcome sendMetricBatchKeepalive(
+        const QString &devicePath, QString *errorMessage,
+        const OperationContext &context, const PaseOverlayConfig *overlay,
+        const QStringList &labels, const QStringList &values,
+        const QStringList &units);
     KeepaliveOutcome sendDisplayKeepalive(
         const QString &devicePath, QString *errorMessage,
         const OperationContext &context,

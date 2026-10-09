@@ -178,6 +178,7 @@ void PrinterClassSession::setPrinterOverlayLeaseMode(
     printerOverlayLeaseMode_ = mode;
     if (mode == PrinterOverlayLeaseMode::PingOnly) {
         printerOverlayLeaseRefreshNext_ = false;
+        printerKeepalivesSinceLease_ = 0;
     }
 }
 
@@ -209,6 +210,7 @@ void PrinterClassSession::adoptPrinterFileDescriptorForTesting(
     printerSessionRecoveryAttempt_ = 0;
     printerOverlayActivationPending_ = false;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     printerProtocol_->adoptFileDescriptorForTesting(fd, devicePath);
 }
 #endif
@@ -354,6 +356,7 @@ void PrinterClassSession::configurePrinterDevice(const QString &devicePath,
     printerSessionRecoveryAttempt_ = 0;
     printerOverlayActivationPending_ = false;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     printerKeepaliveState_ = PrinterKeepaliveState::Disabled;
     printerKeepaliveDisableReason_.clear();
     publishedNegotiated_ = {};
@@ -415,6 +418,7 @@ void PrinterClassSession::restorePrinterOverlay(
             QStringLiteral("overlay_activation_pending"));
         printerOverlayActivationPending_ = true;
         printerOverlayLeaseRefreshNext_ = false;
+        printerKeepalivesSinceLease_ = 0;
         printerMetricsTimer_->stop();
         emit events_.printerSessionStopped(generation);
         if (printerKeepaliveActive()) {
@@ -489,6 +493,7 @@ void PrinterClassSession::quiesce(quint64 generation) {
     printerSessionRecoveryAttempt_ = 0;
     printerOverlayActivationPending_ = false;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     printerKeepaliveState_ = PrinterKeepaliveState::Disabled;
     printerKeepaliveDisableReason_.clear();
     publishedNegotiated_ = {};
@@ -1356,6 +1361,7 @@ void PrinterClassSession::applyPrinterMedia(const QString &devicePath,
         printerOverlayConfig_ = overlay;
         printerGpuPin_ = candidateGpuPin;
         printerOverlayLeaseRefreshNext_ = false;
+        printerKeepalivesSinceLease_ = 0;
     }
     publishNegotiatedCapabilityChanges(generation);
     startPrinterMetrics();
@@ -1455,6 +1461,7 @@ void PrinterClassSession::configurePrinterMetrics(
     printerOverlayConfig_ = overlay;
     printerGpuPin_ = candidateGpuPin;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     startPrinterMetrics();
     emit events_.printerMetricsConfigured(
         operationId, true, PrinterProtocol::MutationOutcome::Succeeded,
@@ -1514,7 +1521,11 @@ void PrinterClassSession::startPrinterMetrics() {
     QStringList values;
     QStringList units;
     collectCurrentPrinterMetrics(&labels, &values, &units);
-    printerMetricsTimer_->start();
+    // With a MetricBatch keepalive the labels are sent with every keepalive.
+    if (printerProtocol_->productProfile().keepalive !=
+        PrinterSessionKeepalive::MetricBatch) {
+        printerMetricsTimer_->start();
+    }
 }
 
 void PrinterClassSession::sendPrinterMetrics() {
@@ -1698,13 +1709,18 @@ void PrinterClassSession::sendPrinterKeepalive() {
             PrinterOverlayLeaseMode::PingAndOverlayLease &&
         printerOverlayLeaseRefreshNext_ &&
         paseOverlayHasContent(printerOverlayConfig_);
+    const bool metricBatchKeepalive =
+        printerProtocol_->productProfile().keepalive ==
+        PrinterSessionKeepalive::MetricBatch;
+    const QString keepaliveClass = metricBatchKeepalive
+        ? QStringLiteral("metric-batch")
+        : QStringLiteral("ping");
     const QString commandClass =
         printerSessionState_ ==
                 PrinterSessionState::AwaitingOverlayActivation
-            ? QStringLiteral("post-bootstrap-ping")
-            : (refreshOverlayLease
-                   ? QStringLiteral("overlay-lease")
-                   : QStringLiteral("ping"));
+            ? QStringLiteral("post-bootstrap-") + keepaliveClass
+            : (refreshOverlayLease ? QStringLiteral("overlay-lease")
+                                   : keepaliveClass);
     logPrinterLifecycleEvent(
         QStringLiteral("command_started"), generation,
         {
@@ -1714,13 +1730,30 @@ void PrinterClassSession::sendPrinterKeepalive() {
             {QStringLiteral("retry_attempt"),
              QString::number(printerKeepaliveRetryCount_)}
         });
-    const PrinterProtocol::KeepaliveOutcome outcome =
-        refreshOverlayLease
-            ? printerProtocol_->sendDisplayKeepalive(
-                  printerDevicePath_, &errorMessage, context,
-                  &printerOverlayConfig_)
-            : printerProtocol_->sendKeepalive(
-                  printerDevicePath_, &errorMessage, context);
+    PrinterProtocol::KeepaliveOutcome outcome =
+        PrinterProtocol::KeepaliveOutcome::FatalFailure;
+    if (refreshOverlayLease) {
+        outcome = printerProtocol_->sendDisplayKeepalive(
+            printerDevicePath_, &errorMessage, context, &printerOverlayConfig_);
+    } else if (metricBatchKeepalive) {
+        // The metric labels ride on the keepalive, as in the official app;
+        // the separate metrics timer stays off in this mode.
+        QStringList labels;
+        QStringList values;
+        QStringList units;
+        const bool sendLabels =
+            printerSessionState_ == PrinterSessionState::Active &&
+            printerProtocol_->productProfile().overlayMetricsSupported;
+        if (sendLabels) {
+            collectCurrentPrinterMetrics(&labels, &values, &units);
+        }
+        outcome = printerProtocol_->sendMetricBatchKeepalive(
+            printerDevicePath_, &errorMessage, context,
+            sendLabels ? &printerOverlayConfig_ : nullptr, labels, values, units);
+    } else {
+        outcome = printerProtocol_->sendKeepalive(printerDevicePath_, &errorMessage,
+                                                  context);
+    }
     logPrinterLifecycleEvent(
         QStringLiteral("command_completed"), generation,
         {
@@ -1807,10 +1840,22 @@ void PrinterClassSession::sendPrinterKeepalive() {
         printerProtocol_->productProfile().overlayMetricsSupported &&
         printerProtocol_->productProfile().overlayLeaseSupported &&
         paseOverlayHasContent(printerOverlayConfig_)) {
-        printerOverlayLeaseRefreshNext_ =
-            !printerOverlayLeaseRefreshNext_;
+        // Refresh the overlay lease about every 4 s: every other 2 s Ping,
+        // every fourth 1 s MetricBatch.
+        const int keepalivesBetweenLeases =
+            printerProtocol_->productProfile().keepalive ==
+                    PrinterSessionKeepalive::MetricBatch
+                ? 3
+                : 1;
+        if (printerOverlayLeaseRefreshNext_) {
+            printerOverlayLeaseRefreshNext_ = false;
+            printerKeepalivesSinceLease_ = 0;
+        } else if (++printerKeepalivesSinceLease_ >= keepalivesBetweenLeases) {
+            printerOverlayLeaseRefreshNext_ = true;
+        }
     } else {
         printerOverlayLeaseRefreshNext_ = false;
+        printerKeepalivesSinceLease_ = 0;
     }
     restartPrinterKeepaliveAfterActivity();
     emit events_.printerTransportReady(generation);
@@ -2073,6 +2118,7 @@ bool PrinterClassSession::ensurePrinterSession(
             : QStringLiteral("overlay_activation_pending"));
     printerOverlayActivationPending_ = true;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     printerKeepaliveRetryCount_ = 0;
     if (!printerKeepaliveActive()) {
         // No keepalive barrier: restore the overlay (or just activate the
@@ -2190,6 +2236,7 @@ void PrinterClassSession::stopPrinterSession() {
     }
     printerOverlayActivationPending_ = false;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     pendingPrinterDeviceSpecifications_ = {};
     printerDeviceSpecificationsPending_ = false;
     printerKeepaliveRetryCount_ = 0;
@@ -2268,6 +2315,7 @@ bool PrinterClassSession::printerKeepaliveActive() const {
     }
     switch (printerProtocol_->productProfile().keepalive) {
     case PrinterSessionKeepalive::Ping:
+    case PrinterSessionKeepalive::MetricBatch:
         return true;
     case PrinterSessionKeepalive::None:
         return false;
@@ -2285,6 +2333,7 @@ void PrinterClassSession::selectPrinterKeepalivePolicy(
     bool active = false;
     switch (printerProtocol_->productProfile().keepalive) {
     case PrinterSessionKeepalive::Ping:
+    case PrinterSessionKeepalive::MetricBatch:
         active = true;
         reason = QStringLiteral("static-profile");
         break;
@@ -2313,7 +2362,11 @@ void PrinterClassSession::selectPrinterKeepalivePolicy(
         QStringLiteral("keepalive_policy_selected"), generation,
         {
             {QStringLiteral("keepalive_policy"),
-             active ? QStringLiteral("ping") : QStringLiteral("disabled")},
+             !active ? QStringLiteral("disabled")
+                     : (printerProtocol_->productProfile().keepalive ==
+                                PrinterSessionKeepalive::MetricBatch
+                            ? QStringLiteral("metric-batch")
+                            : QStringLiteral("ping"))},
             {QStringLiteral("keepalive_reason"), reason},
             {QStringLiteral("device_info_confirmed"),
              result.negotiatedCapabilities.deviceInformation
@@ -2329,6 +2382,7 @@ void PrinterClassSession::disablePrinterKeepalive(const QString &reason,
     printerKeepaliveTimer_->stop();
     printerKeepaliveRetryCount_ = 0;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     logPrinterLifecycleEvent(
         QStringLiteral("keepalive_disabled"), generation,
         {
@@ -2390,6 +2444,7 @@ void PrinterClassSession::disableRejectedOverlayAndStayActive(
     printerSessionRecoveryAttempt_ = 0;
     printerKeepaliveRetryCount_ = 0;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     publishPendingPrinterDeviceSpecifications(generation);
     emit events_.printerSessionStarted(generation);
     emit events_.printerUploadProgress(
@@ -2503,6 +2558,7 @@ void PrinterClassSession::activateRestoredPrinterOverlay(
     printerSessionRecoveryAttempt_ = 0;
     printerKeepaliveRetryCount_ = 0;
     printerOverlayLeaseRefreshNext_ = false;
+    printerKeepalivesSinceLease_ = 0;
     startPrinterMetrics();
     publishPendingPrinterDeviceSpecifications(generation);
     emit events_.printerSessionStarted(generation);

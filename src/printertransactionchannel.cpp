@@ -619,13 +619,13 @@ PrinterTransactionChannel::sendPeriodicRequest(
 
 int PrinterTransactionChannel::millisecondsUntilKeepalive() const {
     if (!lastOutboundTimer_.isValid()) {
-        return kPrinterKeepaliveIntervalMs;
+        return keepaliveIntervalMs_;
     }
     const qint64 elapsed = lastOutboundTimer_.elapsed();
-    if (elapsed >= kPrinterKeepaliveIntervalMs) {
+    if (elapsed >= keepaliveIntervalMs_) {
         return 0;
     }
-    return kPrinterKeepaliveIntervalMs - static_cast<int>(elapsed);
+    return keepaliveIntervalMs_ - static_cast<int>(elapsed);
 }
 
 bool PrinterTransactionChannel::openSessionTransport(const QString &devicePath,

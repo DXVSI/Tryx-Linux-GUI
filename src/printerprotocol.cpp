@@ -195,6 +195,14 @@ PrinterProtocol::sendKeepalive(const QString &devicePath, QString *errorMessage,
     return configuration_->sendKeepalive(devicePath, errorMessage, context);
 }
 
+PrinterProtocol::KeepaliveOutcome PrinterProtocol::sendMetricBatchKeepalive(
+    const QString &devicePath, QString *errorMessage, const OperationContext &context,
+    const PaseOverlayConfig *overlay, const QStringList &labels,
+    const QStringList &values, const QStringList &units) {
+    return configuration_->sendMetricBatchKeepalive(devicePath, errorMessage, context,
+                                                    overlay, labels, values, units);
+}
+
 PrinterProtocol::KeepaliveOutcome
 PrinterProtocol::sendDisplayKeepalive(const QString &devicePath, QString *errorMessage,
                                       const OperationContext &context,

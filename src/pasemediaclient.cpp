@@ -839,9 +839,11 @@ bool PaseMediaClient::uploadMedia(const QString &devicePath, const QString &loca
         return false;
     }
     PrinterMediaUploadOptions options;
-    // Only the static PASE Ping profile may interleave keepalives with a file
+    // Only the static PASE keepalives may be interleaved with a file
     // transfer; the official Turris app never does.
-    options.allowKeepalive = productProfile_.keepalive == PrinterSessionKeepalive::Ping;
+    options.allowKeepalive =
+        productProfile_.keepalive == PrinterSessionKeepalive::Ping ||
+        productProfile_.keepalive == PrinterSessionKeepalive::MetricBatch;
     options.fixedTrackId = productProfile_.fileTransferTrackId;
     options.logTransferStages = productProfile_.family == PrinterProtocolFamily::Turris;
     if (productProfile_.mediaContainer == PrinterMediaContainer::MxhdH264) {

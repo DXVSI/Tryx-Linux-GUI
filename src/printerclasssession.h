@@ -181,6 +181,7 @@ private:
     int printerSessionRecoveryAttempt_ = 0;
     bool printerOverlayActivationPending_ = false;
     bool printerOverlayLeaseRefreshNext_ = false;
+    int printerKeepalivesSinceLease_ = 0;
     PrinterOverlayLeaseMode printerOverlayLeaseMode_ =
         PrinterOverlayLeaseMode::PingAndOverlayLease;
     PrinterKeepaliveState printerKeepaliveState_ =

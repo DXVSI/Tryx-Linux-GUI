@@ -92,6 +92,9 @@ public:
     void setKeepaliveFrameFactory(KeepaliveFrameFactory factory) {
         keepaliveFrameFactory_ = factory;
     }
+    void setKeepaliveIntervalMs(int intervalMs) {
+        keepaliveIntervalMs_ = qMax(1, intervalMs);
+    }
 
     quint64 allocateTrackId();
 
@@ -181,5 +184,7 @@ private:
     bool unframedRecoveryEligibleForTesting_ = false;
 #endif
     KeepaliveFrameFactory keepaliveFrameFactory_ = nullptr;
+    int keepaliveIntervalMs_ =
+        tryx::printer_protocol_constants::kPrinterKeepaliveIntervalMs;
     QElapsedTimer lastOutboundTimer_;
 };

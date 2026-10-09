@@ -2663,6 +2663,9 @@ private slots:
     void udbSessionBootstrapSendsPostReadinessExchangesOnce();
     void udbKeepaliveUsesExactUntrackedFrame();
     void udbKeepaliveDrainsOptionalPong();
+    void metricBatchKeepaliveMatchesOfficialFrame();
+    void metricBatchKeepaliveCarriesOverlayLabels();
+    void supportLifecycleEventsKeepMetricBatchKeepalive();
     void udbKeepaliveZeroByteWriteFailureIsRetryable();
     void displayKeepaliveIsWriteDrivenAndDrainsOptionalAck();
     void displayKeepaliveTransportFailureIsRetryable();
@@ -5661,6 +5664,54 @@ void PrinterProtocolTests::
                           QStringLiteral("session_state")}));
     QCOMPARE(lastFields.value(QStringLiteral("retry_attempt")).toInt(),
              299);
+    tryx::clearSupportLifecycleEventsForTesting();
+}
+
+// Support reports keep the MetricBatch keepalive values instead of
+// dropping them as unknown.
+void PrinterProtocolTests::supportLifecycleEventsKeepMetricBatchKeepalive() {
+    tryx::clearSupportLifecycleEventsForTesting();
+    const qint64 now = QDateTime::fromString(
+        QStringLiteral("2026-10-09T12:00:00.000Z"),
+        Qt::ISODateWithMs).toMSecsSinceEpoch();
+    tryx::appendSupportLifecycleEvent(
+        QStringLiteral("keepalive_policy_selected"), 1,
+        {{QStringLiteral("keepalive_policy"), QStringLiteral("metric-batch")},
+         {QStringLiteral("keepalive_reason"), QStringLiteral("static-profile")}},
+        now - 2000, 1);
+    tryx::appendSupportLifecycleEvent(
+        QStringLiteral("command_completed"), 1,
+        {{QStringLiteral("command_class"),
+          QStringLiteral("post-bootstrap-metric-batch")},
+         {QStringLiteral("outcome"), QStringLiteral("sent")}},
+        now - 1000, 2);
+    tryx::appendSupportLifecycleEvent(
+        QStringLiteral("command_completed"), 1,
+        {{QStringLiteral("command_class"), QStringLiteral("metric-batch")},
+         {QStringLiteral("outcome"), QStringLiteral("sent")}},
+        now, 3);
+
+    tryx::SupportSnapshotSourceV1 source;
+    source.generatedAtUtcMs = now;
+    source.runtimeVersion = QStringLiteral("2.5.3");
+    source.runtimeApiVersion = 8;
+    const QJsonArray events =
+        QJsonDocument::fromJson(tryx::buildSupportSnapshotV1(source).toUtf8())
+            .object()
+            .value(QStringLiteral("events"))
+            .toArray();
+    QCOMPARE(events.size(), 3);
+    const auto field = [&events](int index, const QString &name) {
+        return events.at(index).toObject()
+            .value(QStringLiteral("fields")).toObject()
+            .value(name).toString();
+    };
+    QCOMPARE(field(0, QStringLiteral("keepalive_policy")),
+             QStringLiteral("metric-batch"));
+    QCOMPARE(field(1, QStringLiteral("command_class")),
+             QStringLiteral("post-bootstrap-metric-batch"));
+    QCOMPARE(field(2, QStringLiteral("command_class")),
+             QStringLiteral("metric-batch"));
     tryx::clearSupportLifecycleEventsForTesting();
 }
 
@@ -11082,7 +11133,7 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
         QCOMPARE(profile->mediaHeight, 1080);
         QCOMPARE(profile->family, PrinterProtocolFamily::Pase);
         QCOMPARE(profile->mediaContainer, PrinterMediaContainer::RawH264);
-        QCOMPARE(profile->keepalive, PrinterSessionKeepalive::Ping);
+        QCOMPARE(profile->keepalive, PrinterSessionKeepalive::MetricBatch);
         QCOMPARE(profile->overlayLayout,
                  PrinterOverlayLayoutKind::PaseDualArea2240);
         QCOMPARE(profile->orientationModel,
@@ -16182,7 +16233,9 @@ void PrinterProtocolTests::foregroundOperationPausesMetricsAndKeepalive() {
     worker.endPrinterForegroundOperation(operationId, generation);
     QVERIFY(worker.printerSession_->foregroundPrinterOperationId_.isEmpty());
     QVERIFY(worker.printerSession_->printerKeepaliveTimer_->isActive());
-    QVERIFY(worker.printerSession_->printerMetricsTimer_->isActive());
+    // The PASE MetricBatch keepalive carries the metric labels, so the
+    // separate metrics timer stays off.
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
 
     QSignalSpy availabilitySpy(
         &worker, &DeviceWorker::printerMetricsAvailabilityChanged);
@@ -42123,7 +42176,9 @@ void PrinterProtocolTests::udbKeepaliveUsesExactUntrackedFrame() {
         }
     });
 
-    PrinterProtocol protocol(500);
+    PrinterProductProfile pingProfile = *printerProductProfileForId(0x1021);
+    pingProfile.keepalive = PrinterSessionKeepalive::Ping;
+    PrinterProtocol protocol(pingProfile, 500);
     protocol.adoptFileDescriptorForTesting(sockets[0], QStringLiteral("test-endpoint"));
     QString error;
     const PrinterProtocol::OperationContext context;
@@ -42186,7 +42241,9 @@ void PrinterProtocolTests::udbKeepaliveDrainsOptionalPong() {
         }
     });
 
-    PrinterProtocol protocol(500);
+    PrinterProductProfile pingProfile = *printerProductProfileForId(0x1021);
+    pingProfile.keepalive = PrinterSessionKeepalive::Ping;
+    PrinterProtocol protocol(pingProfile, 500);
     protocol.adoptFileDescriptorForTesting(sockets[0], QStringLiteral("test-endpoint"));
     QString error;
     const PrinterProtocol::OperationContext context;
@@ -42213,6 +42270,106 @@ void PrinterProtocolTests::udbKeepaliveDrainsOptionalPong() {
     ::close(responseReadyFd);
     ::close(sockets[1]);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+
+// #37: the Panorama family keeps the link busy the way the official app
+// does, with a MetricBatch carrying an empty header once a second instead of
+// a Ping every two seconds. The device answers it with an acknowledgement.
+void PrinterProtocolTests::metricBatchKeepaliveMatchesOfficialFrame() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        const QByteArray expected = QByteArray::fromHex("0a00e21200");
+        for (int frame = 0; frame < 2; ++frame) {
+            QByteArray payload;
+            if (!readFrameFd(sockets[1], &payload, &peerError)) {
+                return;
+            }
+            if (payload != expected) {
+                peerError = QStringLiteral("keepalive %1 is not the official frame: %2")
+                                .arg(frame)
+                                .arg(QString::fromLatin1(payload.toHex()));
+                return;
+            }
+            panorama::wire::v1::Response acknowledgement;
+            acknowledgement.mutable_header()->set_version(1);
+            acknowledgement.mutable_error();
+            acknowledgement.mutable_acknowledgement()->set_dummy("ok");
+            if (!writeResponse(sockets[1], acknowledgement, &peerError)) {
+                return;
+            }
+        }
+    });
+
+    PrinterProtocol protocol(500);
+    QCOMPARE(protocol.millisecondsUntilKeepalive(), 1000);
+    protocol.adoptFileDescriptorForTesting(sockets[0], QStringLiteral("test-endpoint"));
+    QString error;
+    const PrinterProtocol::OperationContext context;
+    QCOMPARE(protocol.sendKeepalive(QStringLiteral("test-endpoint"), &error, context),
+             PrinterProtocol::KeepaliveOutcome::Sent);
+    QCOMPARE(protocol.sendKeepalive(QStringLiteral("test-endpoint"), &error, context),
+             PrinterProtocol::KeepaliveOutcome::Sent);
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    // Both acknowledgements were consumed by the keepalive drains.
+    pollfd endpointDescriptor{};
+    endpointDescriptor.fd = sockets[0];
+    endpointDescriptor.events = POLLIN;
+    QCOMPARE(::poll(&endpointDescriptor, 1, 0), 0);
+    ::close(sockets[1]);
+
+    PrinterProductProfile pingProfile = *printerProductProfileForId(0x1021);
+    pingProfile.keepalive = PrinterSessionKeepalive::Ping;
+    PrinterProtocol pingProtocol(pingProfile, 500);
+    QCOMPARE(pingProtocol.millisecondsUntilKeepalive(), 2000);
+}
+
+// With overlay metrics the labels ride on the keepalive, as in the official
+// app; without them the keepalive is the empty official frame.
+void PrinterProtocolTests::metricBatchKeepaliveCarriesOverlayLabels() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    QString peerError;
+    int labelGroups = -1;
+    QByteArray emptyKeepalive;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request labelled;
+        if (!readRequest(sockets[1], &labelled, &peerError)) {
+            return;
+        }
+        if (!labelled.has_header() || labelled.header().ByteSizeLong() != 0 ||
+            labelled.body_case() != panorama::wire::v1::Request::kMetricBatch) {
+            peerError = QStringLiteral("labelled keepalive is not an untracked MetricBatch");
+            return;
+        }
+        labelGroups = labelled.metric_batch().label_groups_size();
+        readFrameFd(sockets[1], &emptyKeepalive, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    protocol.adoptFileDescriptorForTesting(sockets[0], QStringLiteral("test-endpoint"));
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.left.metrics = {QStringLiteral("Date&Time")};
+    QString error;
+    const PrinterProtocol::OperationContext context;
+    QCOMPARE(protocol.sendMetricBatchKeepalive(QStringLiteral("test-endpoint"), &error,
+                                               context, &overlay, {}, {}, {}),
+             PrinterProtocol::KeepaliveOutcome::Sent);
+    QCOMPARE(protocol.sendMetricBatchKeepalive(QStringLiteral("test-endpoint"), &error,
+                                               context, nullptr, {}, {}, {}),
+             PrinterProtocol::KeepaliveOutcome::Sent);
+    peer.join();
+    ::close(sockets[1]);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(labelGroups > 0);
+    QCOMPARE(emptyKeepalive, QByteArray::fromHex("0a00e21200"));
 }
 
 void PrinterProtocolTests::udbKeepaliveZeroByteWriteFailureIsRetryable() {
@@ -42689,10 +42846,10 @@ void PrinterProtocolTests::slowTrackedResponseGetsInFlightKeepalive() {
         if (!readRequest(sockets[1], &keepalive, &peerError, 3000) ||
             !keepalive.has_header() ||
             keepalive.header().ByteSizeLong() != 0 ||
-            keepalive.body_case() != panorama::wire::v1::Request::kPing ||
-            keepalive.ping().payload() != "hello?") {
+            keepalive.body_case() != panorama::wire::v1::Request::kMetricBatch ||
+            keepalive.metric_batch().label_groups_size() != 0) {
             if (peerError.isEmpty()) {
-                peerError = QStringLiteral("missing in-flight UDB keepalive");
+                peerError = QStringLiteral("missing in-flight MetricBatch keepalive");
             }
             return;
         }
@@ -42719,8 +42876,9 @@ void PrinterProtocolTests::slowTrackedResponseGetsInFlightKeepalive() {
     peer.join();
     ::close(sockets[1]);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
-    QVERIFY(keepaliveDelayMs >= 1500);
-    QVERIFY(keepaliveDelayMs < 3000);
+    // The Panorama family keeps the link busy once a second.
+    QVERIFY(keepaliveDelayMs >= 750);
+    QVERIFY(keepaliveDelayMs < 2000);
 }
 
 void PrinterProtocolTests::unrelatedTrackIsSkipped() {
@@ -43883,12 +44041,11 @@ void PrinterProtocolTests::printerRefreshStartsSessionAndKeepalive() {
                 file->set_file_ext(".h264_2240x1080");
                 file->set_file_size(1234);
             } else if (request.body_case() ==
-                       panorama::wire::v1::Request::kPing) {
+                       panorama::wire::v1::Request::kMetricBatch) {
                 if (!activationSeen || !request.has_header() ||
-                    request.header().ByteSizeLong() != 0 ||
-                    request.ping().payload() != "hello?") {
+                    request.header().ByteSizeLong() != 0) {
                     peerError = QStringLiteral(
-                        "periodic keepalive did not match UDB Ping");
+                        "periodic keepalive was not an untracked MetricBatch");
                     return;
                 }
                 pingKeepaliveSeen = true;
@@ -43900,8 +44057,7 @@ void PrinterProtocolTests::printerRefreshStartsSessionAndKeepalive() {
                         "first keepalive readiness signal failed");
                     return;
                 }
-                response.mutable_pong()->set_payload(
-                    request.ping().payload());
+                response.mutable_acknowledgement()->set_dummy("ok");
             } else {
                 peerError = QStringLiteral("unexpected session request body %1")
                                 .arg(static_cast<int>(
@@ -44113,17 +44269,16 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
                 sockets[1], &keepaliveRequest, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             keepaliveRequest.body_case() !=
-                panorama::wire::v1::Request::kPing ||
+                panorama::wire::v1::Request::kMetricBatch ||
             !keepaliveRequest.has_header() ||
-            keepaliveRequest.header().ByteSizeLong() != 0 ||
-            keepaliveRequest.ping().payload() != "hello?") {
+            keepaliveRequest.header().ByteSizeLong() != 0) {
             peerError = QStringLiteral(
-                "restored overlay test did not receive the readiness Ping");
+                "restored overlay test did not receive the readiness keepalive");
             return;
         }
         panorama::wire::v1::Response keepaliveResponse;
-        keepaliveResponse.mutable_header();
-        keepaliveResponse.mutable_pong()->set_payload("Hey!");
+        keepaliveResponse.mutable_header()->set_version(1);
+        keepaliveResponse.mutable_acknowledgement()->set_dummy("ok");
         if (!writeResponse(sockets[1], keepaliveResponse,
                            &peerError)) {
             return;
@@ -44206,24 +44361,34 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
             return;
         }
 
-        panorama::wire::v1::Request activePing;
-        if (!readRequest(
-                sockets[1], &activePing, &peerError,
-                kPeerTimeoutMs, &requestBuffer) ||
-            activePing.body_case() !=
-                panorama::wire::v1::Request::kPing ||
-            !activePing.has_header() ||
-            activePing.header().ByteSizeLong() != 0) {
-            peerError = QStringLiteral(
-                "active overlay session did not send Ping first");
-            return;
-        }
-        panorama::wire::v1::Response activePong;
-        activePong.mutable_header();
-        activePong.mutable_pong()->set_payload("Hey!");
-        if (!writeResponse(sockets[1], activePong,
-                           &peerError)) {
-            return;
+        // The active session sends three MetricBatch keepalives carrying the
+        // metric labels, then refreshes the overlay lease: about every 4 s.
+        for (int keepalive = 0; keepalive < 3; ++keepalive) {
+            panorama::wire::v1::Request activeKeepalive;
+            if (!readRequest(
+                    sockets[1], &activeKeepalive, &peerError,
+                    kPeerTimeoutMs, &requestBuffer) ||
+                activeKeepalive.body_case() !=
+                    panorama::wire::v1::Request::kMetricBatch ||
+                !activeKeepalive.has_header() ||
+                activeKeepalive.header().ByteSizeLong() != 0 ||
+                activeKeepalive.metric_batch().label_groups_size() == 0) {
+                if (peerError.isEmpty()) {
+                    peerError = QStringLiteral(
+                        "active overlay session keepalive %1 was not a labelled MetricBatch: body %2, labels %3")
+                                    .arg(keepalive)
+                                    .arg(static_cast<int>(activeKeepalive.body_case()))
+                                    .arg(activeKeepalive.metric_batch().label_groups_size());
+                }
+                return;
+            }
+            panorama::wire::v1::Response activeAcknowledgement;
+            activeAcknowledgement.mutable_header()->set_version(1);
+            activeAcknowledgement.mutable_acknowledgement()->set_dummy("ok");
+            if (!writeResponse(sockets[1], activeAcknowledgement,
+                               &peerError)) {
+                return;
+            }
         }
 
         panorama::wire::v1::Request overlayLease;
@@ -44304,15 +44469,12 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
     QCOMPARE(lostSpy.count(), 0);
     QCOMPARE(errorSpy.count(), 0);
 
-    QVERIFY(QMetaObject::invokeMethod(
-        &worker, "sendPrinterKeepalive",
-        Qt::DirectConnection));
-    QVERIFY(QMetaObject::invokeMethod(
-        &worker, "sendPrinterKeepalive",
-        Qt::DirectConnection));
-    QVERIFY(QMetaObject::invokeMethod(
-        &worker, "sendPrinterKeepalive",
-        Qt::DirectConnection));
+    // Readiness keepalive, three MetricBatch keepalives, then the lease.
+    for (int keepalive = 0; keepalive < 5; ++keepalive) {
+        QVERIFY(QMetaObject::invokeMethod(
+            &worker, "sendPrinterKeepalive",
+            Qt::DirectConnection));
+    }
 
     peer.join();
     ::close(sockets[1]);
@@ -44344,9 +44506,10 @@ restoredOverlayWaitsForKeepaliveBeforeSessionReady() {
     QCOMPARE(specificationsArguments.at(4).toULongLong(), generation);
     QCOMPARE(lostSpy.count(), 0);
     QCOMPARE(errorSpy.count(), 0);
-    QCOMPARE(readySpy.count(), 3);
+    QCOMPARE(readySpy.count(), 5);
     QVERIFY(worker.printerSessionActiveForTesting());
-    QVERIFY(worker.printerSession_->printerMetricsTimer_->isActive());
+    // The metric labels ride on the MetricBatch keepalive.
+    QVERIFY(!worker.printerSession_->printerMetricsTimer_->isActive());
     QVERIFY(!worker.printerSession_->printerRecoveryTimer_->isActive());
 }
 
@@ -44395,14 +44558,14 @@ restoredOverlayFailureBecomesLostWithoutReplay() {
                 sockets[1], &keepaliveRequest, &peerError,
                 kPeerTimeoutMs, &requestBuffer) ||
             keepaliveRequest.body_case() !=
-                panorama::wire::v1::Request::kPing) {
+                panorama::wire::v1::Request::kMetricBatch) {
             peerError = QStringLiteral(
-                "overlay failure test did not receive readiness Ping");
+                "overlay failure test did not receive the readiness keepalive");
             return;
         }
         panorama::wire::v1::Response keepaliveResponse;
-        keepaliveResponse.mutable_header();
-        keepaliveResponse.mutable_pong()->set_payload("Hey!");
+        keepaliveResponse.mutable_header()->set_version(1);
+        keepaliveResponse.mutable_acknowledgement()->set_dummy("ok");
         if (!writeResponse(sockets[1], keepaliveResponse,
                            &peerError)) {
             return;
@@ -46127,48 +46290,53 @@ void PrinterProtocolTests::uploadWaitsForDelayedBoundaryAckWithIdleKeepalive() {
                     ::close(timerFd);
                     return;
                 }
-                pollfd waits[2]{};
-                waits[0].fd = sockets[1];
-                waits[0].events = POLLIN;
-                waits[1].fd = timerFd;
-                waits[1].events = POLLIN;
-                const int pollResult = ::poll(waits, 2, 3000);
-                if (pollResult < 1 ||
-                    (waits[0].revents & POLLIN) == 0) {
-                    peerError = QStringLiteral(
-                        "FileTransmit did not send idle Ping before delayed DataStatus");
-                    ::close(timerFd);
-                    return;
-                }
-                panorama::wire::v1::Request keepalive;
-                if (!readRequest(sockets[1], &keepalive, &peerError) ||
-                    !keepalive.has_header() ||
-                    keepalive.header().ByteSizeLong() != 0 ||
-                    keepalive.body_case() !=
-                        panorama::wire::v1::Request::kPing ||
-                    keepalive.ping().payload() != "hello?") {
-                    if (peerError.isEmpty()) {
+                // Until the delayed DataStatus is due, the uploader keeps the
+                // link busy with untracked empty MetricBatch keepalives, one
+                // per second.
+                int idleKeepalives = 0;
+                bool timerFired = false;
+                while (!timerFired) {
+                    pollfd waits[2]{};
+                    waits[0].fd = sockets[1];
+                    waits[0].events = POLLIN;
+                    waits[1].fd = timerFd;
+                    waits[1].events = POLLIN;
+                    if (::poll(waits, 2, 3000) < 1) {
                         peerError = QStringLiteral(
-                            "FileTransmit idle frame was not UDB Ping");
+                            "neither an idle keepalive nor the delayed DataStatus timer arrived");
+                        ::close(timerFd);
+                        return;
                     }
-                    ::close(timerFd);
-                    return;
+                    if ((waits[1].revents & POLLIN) != 0) {
+                        timerFired = true;
+                        continue;
+                    }
+                    panorama::wire::v1::Request keepalive;
+                    if (!readRequest(sockets[1], &keepalive, &peerError) ||
+                        !keepalive.has_header() ||
+                        keepalive.header().ByteSizeLong() != 0 ||
+                        keepalive.body_case() !=
+                            panorama::wire::v1::Request::kMetricBatch ||
+                        keepalive.metric_batch().label_groups_size() != 0) {
+                        if (peerError.isEmpty()) {
+                            peerError = QStringLiteral(
+                                "FileTransmit idle frame was not an empty MetricBatch");
+                        }
+                        ::close(timerFd);
+                        return;
+                    }
+                    ++idleKeepalives;
+                    auto keepaliveResponse = baseResponse(keepalive);
+                    keepaliveResponse.mutable_acknowledgement()->set_dummy("ok");
+                    if (!writeResponse(sockets[1], keepaliveResponse,
+                                       &peerError)) {
+                        ::close(timerFd);
+                        return;
+                    }
                 }
-                auto keepaliveResponse = baseResponse(keepalive);
-                keepaliveResponse.mutable_pong()->set_payload(
-                    keepalive.ping().payload());
-                if (!writeResponse(sockets[1], keepaliveResponse,
-                                   &peerError)) {
-                    ::close(timerFd);
-                    return;
-                }
-                pollfd timerReady{};
-                timerReady.fd = timerFd;
-                timerReady.events = POLLIN;
-                if (::poll(&timerReady, 1, 1000) != 1 ||
-                    (timerReady.revents & POLLIN) == 0) {
+                if (idleKeepalives == 0) {
                     peerError = QStringLiteral(
-                        "delayed DataStatus timer did not fire after idle Ping");
+                        "FileTransmit did not keep the link busy before delayed DataStatus");
                     ::close(timerFd);
                     return;
                 }

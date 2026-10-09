@@ -60,6 +60,7 @@ public:
 #endif
 
     static QByteArray makeKeepaliveFrame(QString *errorMessage);
+    static QByteArray makeMetricBatchKeepaliveFrame(QString *errorMessage);
 
     Result startDisplaySession(const QString &devicePath,
                                const OperationContext &context);
@@ -127,12 +128,24 @@ public:
     KeepaliveOutcome sendKeepalive(const QString &devicePath, QString *errorMessage,
                                    const OperationContext &context);
 
+    // MetricBatch keepalive carrying the labels of the overlay's selected
+    // metrics, or none when overlay is null or selects no metric.
+    KeepaliveOutcome sendMetricBatchKeepalive(const QString &devicePath,
+                                              QString *errorMessage,
+                                              const OperationContext &context,
+                                              const PaseOverlayConfig *overlay,
+                                              const QStringList &labels,
+                                              const QStringList &values,
+                                              const QStringList &units);
+
     KeepaliveOutcome sendDisplayKeepalive(const QString &devicePath,
                                           QString *errorMessage,
                                           const OperationContext &context,
                                           const PaseOverlayConfig *overlay = nullptr);
 
 private:
+    static QByteArray encodeKeepaliveRequest(const panorama::wire::v1::Request &request,
+                                             QString *errorMessage);
     bool displayAvailable() const {
         return productProfile_.displayConfigurationSupported &&
                negotiated_.displayConfiguration;

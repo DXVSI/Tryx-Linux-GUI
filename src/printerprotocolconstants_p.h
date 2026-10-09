@@ -21,6 +21,8 @@ constexpr int kMaxSkippedResponseFrames = 256;
 constexpr qsizetype kMaxSkippedResponseBytes = 4 * 1024 * 1024;
 constexpr int kQueuedResponseDrainTimeoutMs = 250;
 constexpr int kPrinterKeepaliveIntervalMs = 2000;
+// The official app sends its MetricBatch once a second.
+constexpr int kMetricBatchKeepaliveIntervalMs = 1000;
 constexpr int kPrinterKeepaliveWriteTimeoutMs = 2000;
 constexpr int kUdbBootstrapWriteTimeoutMs = 2000;
 constexpr int kDeviceInformationReadinessDeadlineMs = 20000;
