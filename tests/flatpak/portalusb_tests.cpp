@@ -311,23 +311,28 @@ private slots:
         QVERIFY(!registry.snapshot().monitoring);
     }
 
-    void permissionTimeoutClosesRequestAndIgnoresLateSuccess() {
+    // An unanswered permission dialog stays open: a user who only allows
+    // access later, for example after login, still gets the device (#37).
+    void unansweredPermissionRequestStaysOpenUntilAllowed() {
         FakePortal portal;
         portal.replyAutomatically = false;
         QVERIFY(portal.install());
         Registry registry;
         Access::Options options;
-        options.permissionTimeoutMs = 100;
+        options.pendingNoticeMs = 50;
         Access access(registry, options);
         QVERIFY(access.start());
         QTRY_COMPARE(portal.acquisitions, 1);
-        QTRY_VERIFY(!registry.snapshot().error.isEmpty());
-        QTRY_VERIFY(portal.request.closed);
-        QVERIFY(!registry.snapshot().acquisitionPending);
+        QTest::qWait(200);
+        QVERIFY(!portal.request.closed);
+        QVERIFY(registry.snapshot().acquisitionPending);
+        QVERIFY(registry.snapshot().error.isEmpty());
+        QVERIFY(registry.snapshot().monitoring);
         emit portal.request.Response(0, {});
-        QTest::qWait(25);
-        QCOMPARE(portal.finishes, 0);
-        QVERIFY(!registry.snapshot().monitoring);
+        QTRY_VERIFY(registry.snapshot().devices.size() == 1 &&
+                    registry.snapshot().devices.first().granted);
+        QVERIFY(!registry.snapshot().acquisitionPending);
+        QCOMPARE(portal.acquisitions, 1);
     }
 
     void portalOwnerLossRevokesWithoutReacquiring() {
@@ -511,7 +516,7 @@ private slots:
                                 "product=\"391a:1021\" readable=\"true\" writable=\"true\" "
                                 "same_identity=\"false\" granted=\"false\"$"),
                  QStringLiteral("^tryx_usb_portal event=\"acquire_requested\" "
-                                "product=\"391a:1021\" timeout_ms=\"[0-9]+\"$"),
+                                "product=\"391a:1021\"$"),
                  QStringLiteral("^tryx_usb_portal event=\"acquire_acknowledged\"$"),
                  QStringLiteral("^tryx_usb_portal event=\"acquire_response\" code=\"0\"$"),
                  QStringLiteral("^tryx_usb_portal event=\"acquire_granted\"$"),
