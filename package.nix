@@ -61,7 +61,11 @@ stdenv.mkDerivation {
   meta = {
     description = "Qt6 GUI and runtime for TRYX Panorama cooler displays";
     homepage = "https://github.com/DXVSI/Tryx-Linux-GUI";
-    license = lib.licenses.mit;
+    license = with lib.licenses; [
+      gpl3Plus
+      mit
+      bsd2
+    ];
     platforms = [ "x86_64-linux" ];
     mainProgram = "tryx-panorama-manager";
   };

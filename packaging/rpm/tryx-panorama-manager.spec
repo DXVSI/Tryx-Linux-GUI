@@ -3,7 +3,7 @@ Version:        2.5.3
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
-License:        MIT AND BSD-2-Clause
+License:        GPL-3.0-or-later AND MIT AND BSD-2-Clause
 URL:            https://github.com/DXVSI/Tryx-Linux-GUI
 Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.xz
 
@@ -104,6 +104,7 @@ udevadm verify --resolve-names=never \
 
 %files
 %license %{_licensedir}/%{name}/LICENSE
+%license %{_licensedir}/%{name}/MIT.txt
 %license %{_licensedir}/%{name}/picojson-BSD-2-Clause.txt
 %doc README.md
 %{_bindir}/tryx-panorama-manager

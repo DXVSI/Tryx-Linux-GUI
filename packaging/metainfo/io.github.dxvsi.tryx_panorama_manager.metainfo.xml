@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.github.dxvsi.tryx_panorama_manager</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT AND BSD-2-Clause</project_license>
+  <project_license>GPL-3.0-or-later AND MIT AND BSD-2-Clause</project_license>
   <name>TRYX Panorama Manager</name>
   <summary>Control compatible TRYX cooler displays on Linux</summary>
   <description>

@@ -7,7 +7,7 @@ pkgrel=1
 pkgdesc='Control compatible TRYX cooler displays on Linux'
 arch=('x86_64')
 url='https://github.com/DXVSI/Tryx-Linux-GUI'
-license=('MIT' 'BSD-2-Clause')
+license=('GPL-3.0-or-later' 'MIT' 'BSD-2-Clause')
 depends=(
   'dbus'
   'ffmpeg'

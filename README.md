@@ -467,7 +467,7 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
 - Optional, independent XDG Autostart for the desktop GUI with safe tray fallback
 - Settings persistence between sessions
 - Runtime-owned Celsius/Fahrenheit and 24-hour/12-hour presentation preferences
-- About shortcuts to the project home and its published MIT license
+- About shortcuts to the project home and its published license
 - Quiet startup/hourly checks for new stable application releases, with a
   desktop notification and a release link in Settings/About
 - Async device communication (non-blocking GUI)
@@ -990,4 +990,11 @@ tryx-panorama.pro       # Headless runtime qmake project
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+GNU General Public License, version 3 or (at your option) any later version.
+See [LICENSE](LICENSE).
+
+The project started from Fadli Arsani's MIT-licensed code, and releases up to
+and including 2.5.3 were published under the MIT License. Those releases stay
+available under MIT, and its notice is kept in [LICENSES/MIT.txt](LICENSES/MIT.txt).
+`include/panorama/picojson.h` is under the BSD 2-Clause License, see
+[LICENSES/picojson-BSD-2-Clause.txt](LICENSES/picojson-BSD-2-Clause.txt).
