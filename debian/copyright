@@ -5,16 +5,32 @@ Source: https://github.com/DXVSI/Tryx-Linux-GUI
 Files: *
 Copyright: 2025 Fadli Arsani
            2026 DXVSI
-License: MIT
+License: GPL-3+ and MIT
+Comment: Releases up to and including 2.5.3 were published under the MIT
+ License. Later changes are under GPL-3+; code from those releases keeps its
+ MIT notice, shipped as LICENSES/MIT.txt.
 
 Files: include/panorama/picojson.h
 Copyright: 2009-2010 Cybozu Labs, Inc.
            2011-2014 Kazuho Oku
 License: BSD-2-Clause-picojson
 
-Files: debian/*
-Copyright: 2026 DXVSI
-License: MIT
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in "/usr/share/common-licenses/GPL-3".
 
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy

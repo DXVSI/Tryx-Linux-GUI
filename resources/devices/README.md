@@ -17,8 +17,8 @@ neutral dashboard fallback.
 ## Third-party rights
 
 Images and product marks belong to their respective TRYX rightsholders. These
-files are not project-authored and are not relicensed under the project's MIT
-or BSD licenses. No redistribution permission is asserted here; the official
+files are not project-authored and are not relicensed under the project's GPL,
+MIT or BSD licenses. No redistribution permission is asserted here; the official
 [store terms](https://shop.tryx.com/pages/terms-of-service) reserve rights in
 site materials. Attribution is provenance, not a substitute for permission.
 
