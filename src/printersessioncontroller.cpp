@@ -1393,7 +1393,8 @@ TryxRuntimeDeviceSpecificationsV1 PrinterSessionController::
     const bool turris = state_.printerProductId == 0x2011;
     if (state_.printerProductId != 0x1011 &&
         state_.printerProductId != 0x1021 &&
-        state_.printerProductId != 0x1031 && !turris) {
+        state_.printerProductId != 0x1031 &&
+        state_.printerProductId != 0x1051 && !turris) {
         snapshot.status = QStringLiteral("Unsupported");
         return snapshot;
     }
@@ -1820,7 +1821,7 @@ void PrinterSessionController::handleWorkerPrinterDeviceSpecificationsReady(
         identity != state_.printerDeviceSerial.trimmed() ||
         productId != state_.printerProductId ||
         (productId != 0x1011 && productId != 0x1021 && productId != 0x1031 &&
-         productId != 0x2011) ||
+         productId != 0x1051 && productId != 0x2011) ||
         !exactDiscoveryContext) {
         return;
     }

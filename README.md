@@ -48,7 +48,7 @@ the maintainer; roadmap entries do not imply current compatibility.
 | [PANORAMA WB](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-wb/black) | Custom-loop CPU water block | 6.5-inch curved AMOLED, 2240 × 1080 | Community-tested; not maintainer-tested |
 | [STAGE ARGB 360](https://www.tryx.com/en/products/liquid-cooling/stage/stage/white) | AIO liquid cooler | Dual 4.0-inch IPS, 720 × 720 each | Planned; hardware and protocol research required |
 | [TURRIS 620](https://www.tryx.com/en/products/liquid-cooling/turris/turris-620/black) | Dual-tower air cooler | 5.0-inch IPS, 1280 × 720 | Community-tested; not maintainer-tested |
-| [HOLO ARGB 360](https://www.tryx.com/en/products/liquid-cooling/holo/holo/white-360) | AIO liquid cooler | Holographic display, 640 × 480 | Planned; hardware and protocol research required |
+| [HOLO ARGB 360](https://www.tryx.com/en/products/liquid-cooling/holo/holo/white-360) | AIO liquid cooler | Holographic display, 640 × 480 | Read-only test profile; hardware confirmation required |
 | [PANORAMA V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
 | [PANORAMA SE V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
 
@@ -67,6 +67,7 @@ that every TRYX display has the same geometry or capabilities:
 | `391a:1021` | Panorama SE / PASE | 2240 × 1080 | Current PASE printer-class features |
 | `391a:1011` | Panorama | 2240 × 1080 | PASE media, display, and overlay features; firmware flashing disabled; community-tested |
 | `391a:1031` | Panorama WB | 2240 × 1080 | Same feature set as Panorama `391a:1011`, following the official application's shared Panorama layout; firmware flashing disabled; community-tested |
+| `391a:1051` | HOLO | 640 × 480 (not yet prepared) | Read-only test profile: device information and the media catalog over the Panorama protocol; no media upload, Apply, brightness, overlay or firmware until the device's replies are confirmed |
 | `391a:2011` | Turris 620 | 1280 × 720 | MXHD media upload, FileList catalog with read-only device presets, single-media Apply with Single/Loop/Shuffle, brightness, backlight and mirror, overlay metrics with hardware badges; no split screen, waterfall, custom badge text, media pull (Save as new/Replace), saved layouts, or firmware; community-tested |
 
 Turris support follows the command set of the official desktop application.

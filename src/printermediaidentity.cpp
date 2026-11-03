@@ -276,6 +276,9 @@ bool isSafePrinterUploadMediaName(const QString &fileName) {
              QStringLiteral(".mp4.h264_1280x720"),
              QStringLiteral(".png.h264_1280x720"),
              QStringLiteral(".gif.h264_1280x720"),
+             QStringLiteral(".mp4.h264_640x480"),
+             QStringLiteral(".png.h264_640x480"),
+             QStringLiteral(".gif.h264_640x480"),
          }) {
         if (lowerName.endsWith(suffix)) {
             return true;

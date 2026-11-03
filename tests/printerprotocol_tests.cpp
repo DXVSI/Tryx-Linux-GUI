@@ -11116,6 +11116,29 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QVERIFY(panoWb->keepBulkInPending);
     QVERIFY(!turris->keepBulkInPending);
 
+    const auto holo = printerProductProfileForId(0x1051);
+    QVERIFY(holo.has_value());
+    QCOMPARE(holo->productId, quint16{0x1051});
+    QCOMPARE(holo->mediaWidth, 640);
+    QCOMPARE(holo->mediaHeight, 480);
+    QCOMPARE(holo->family, PrinterProtocolFamily::Pase);
+    QCOMPARE(holo->keepalive, PrinterSessionKeepalive::Ping);
+    QVERIFY(holo->keepBulkInPending);
+    QCOMPARE(holo->defaultPowerOnMedia,
+             QStringLiteral("default_poweron.mp4.h264_640x480"));
+    QCOMPARE(holo->defaultStandbyMedia,
+             QStringLiteral("default_standby.mp4.h264_640x480"));
+    // Read-only until the HOLO's replies are confirmed on hardware.
+    QVERIFY(holo->mediaCatalogSupported);
+    QVERIFY(!holo->mediaUploadSupported);
+    QVERIFY(!holo->mediaPullSupported);
+    QVERIFY(!holo->displayConfigurationSupported);
+    QVERIFY(!holo->splitAreaMediaSupported);
+    QVERIFY(!holo->waterfallSupported);
+    QVERIFY(!holo->overlayMetricsSupported);
+    QVERIFY(!holo->overlayLeaseSupported);
+    QVERIFY(!holo->firmwareFlashSupported);
+
     QCOMPARE(turris->mediaWidth, 1280);
     QCOMPARE(turris->mediaHeight, 720);
     QCOMPARE(turris->family, PrinterProtocolFamily::Turris);
@@ -11446,6 +11469,11 @@ void PrinterProtocolTests::turrisMediaNamesFollowOfficialLayout() {
     QCOMPARE(uploadName.size(), 41);
     QVERIFY(uploadName.endsWith(QStringLiteral(".png.h264_1280x720")));
     QVERIFY(identity::isSafePrinterUploadMediaName(uploadName));
+    // HOLO presets in the device catalog use the 640x480 suffix.
+    QVERIFY(identity::isSafePrinterUploadMediaName(
+        QStringLiteral("default_01.mp4.h264_640x480")));
+    QVERIFY(!identity::isSafePrinterUploadMediaName(
+        QStringLiteral("default_01.mp4.h264_640x481")));
 
     // Other products keep the random suffix.
     const QRegularExpression suffixedLayout(QStringLiteral(

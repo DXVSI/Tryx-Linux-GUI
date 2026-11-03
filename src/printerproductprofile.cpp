@@ -55,6 +55,38 @@ PrinterProductProfile turrisProfile() {
     return profile;
 }
 
+// HOLO: the official application drives it with the same manager as the
+// Panorama family, with one 640x480 screen area. This test profile only
+// reads: media upload, Apply, brightness and the overlay stay off until the
+// device's replies are confirmed on hardware.
+PrinterProductProfile holoProfile() {
+    PrinterProductProfile profile;
+    profile.productId = 0x1051;
+    profile.mediaWidth = 640;
+    profile.mediaHeight = 480;
+    profile.family = PrinterProtocolFamily::Pase;
+    profile.mediaContainer = PrinterMediaContainer::RawH264;
+    profile.keepalive = PrinterSessionKeepalive::Ping;
+    profile.overlayLayout = PrinterOverlayLayoutKind::PaseDualArea2240;
+    profile.orientationModel = PrinterDisplayOrientationModel::RotationFields;
+    profile.fileTransferTrackId = 0;
+    profile.keepBulkInPending = true;
+    profile.defaultPowerOnMedia =
+        QStringLiteral("default_poweron.mp4.h264_640x480");
+    profile.defaultStandbyMedia =
+        QStringLiteral("default_standby.mp4.h264_640x480");
+    profile.mediaUploadSupported = false;
+    profile.mediaCatalogSupported = true;
+    profile.mediaPullSupported = false;
+    profile.displayConfigurationSupported = false;
+    profile.splitAreaMediaSupported = false;
+    profile.waterfallSupported = false;
+    profile.overlayMetricsSupported = false;
+    profile.overlayLeaseSupported = false;
+    profile.firmwareFlashSupported = false;
+    return profile;
+}
+
 } // namespace
 
 std::optional<PrinterProductProfile> printerProductProfileForId(quint16 productId) {
@@ -67,6 +99,8 @@ std::optional<PrinterProductProfile> printerProductProfileForId(quint16 productI
         // Panorama WB: the official application drives it with the Panorama
         // manager, the same 2240x1080 layout and the same presets.
         return paseFamilyProfile(0x1031, false);
+    case 0x1051:
+        return holoProfile();
     case 0x2011:
         return turrisProfile();
     default:
