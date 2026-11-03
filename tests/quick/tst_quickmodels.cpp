@@ -1286,6 +1286,11 @@ void QuickClientTests::runtimeDeviceSummaryFollowsLiveSnapshot() {
         QCOMPARE(runtime.deviceModel(), model);
     }
 
+    snapshot.revision = mappedRevision++;
+    snapshot.productId = QStringLiteral("391a:1051");
+    runtime.applyConnectionSnapshot(snapshot);
+    QCOMPARE(runtime.deviceModel(), QStringLiteral("HOLO"));
+
     snapshot.revision = mappedRevision;
     snapshot.connected = false;
     snapshot.productId.clear();

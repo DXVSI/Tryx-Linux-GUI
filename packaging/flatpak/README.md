@@ -11,8 +11,8 @@ maintainer-tested. SteamOS has not been tested on a physical device.
 - Media conversion uses KDE Platform's `org.freedesktop.Platform.codecs-extra`
   extension. Keep the runtime's related extensions enabled when installing.
 - Printer-class product profiles `391a:1011`, `391a:1021`, `391a:1031`, `391a:2011` and,
-  mapped like the official application but not tested on hardware, `391a:1061`,
-  `391a:1071`, `391a:10a1`, `391a:10b1` only.
+  mapped like the official application but not tested on hardware, `391a:1051`,
+  `391a:1061`, `391a:1071`, `391a:10a1`, `391a:10b1` only.
   Legacy serial/ADB identities, including `18d1:2d04`, are not exposed in this build.
 - USB enumeration is narrowly scoped. The portal asks for device access once per
   device identity; denial does not trigger a loop of permission prompts.
