@@ -2583,6 +2583,9 @@ private slots:
     void productionEndpointValidationWithOfflineSysfs();
     void paseUdevReadinessUsesUsbDeviceEvents();
     void samePathEndpointEventForcesNewEpochSignal();
+#ifndef TRYX_FLATPAK
+    void deniedEndpointIsRescannedWhenAccessIsGranted();
+#endif
     void unrelatedUsbRemoveDoesNotRestartPaseSession();
     void passivePrinterReconnectDoesNotRequestSessionResume();
     void samePathReenumerationCancelsOldGeneration();
@@ -35933,6 +35936,38 @@ void PrinterProtocolTests::samePathEndpointEventForcesNewEpochSignal() {
     QCOMPARE(snapshotSpy.count(), 2);
     QVERIFY(monitor.snapshot() == first);
 }
+
+#ifndef TRYX_FLATPAK
+void PrinterProtocolTests::deniedEndpointIsRescannedWhenAccessIsGranted() {
+    if (::geteuid() == 0) {
+        QSKIP("root ignores the file mode that makes the endpoint inaccessible");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot = QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot,
+                                  QStringLiteral("1-1"), QStringLiteral("lp0")));
+    const QString endpointPath = QDir(devRoot).filePath(QStringLiteral("usb/lp0"));
+    QVERIFY(QFile::setPermissions(endpointPath, QFileDevice::Permissions()));
+
+    PrinterDeviceMonitor monitor;
+    monitor.setDiscoveryRootsForTesting(sysRoot, devRoot);
+    QSignalSpy snapshotSpy(&monitor, &PrinterDeviceMonitor::snapshotChanged);
+    monitor.rescanForTesting(false);
+    QCOMPARE(snapshotSpy.count(), 1);
+    QVERIFY(monitor.snapshot().state ==
+            PrinterProtocol::DiscoveryState::PermissionDenied);
+
+    // A seat ACL arrives as an attribute change on the node, with no udev
+    // event. The watch must notice it before the first fallback recheck.
+    QVERIFY(QFile::setPermissions(endpointPath,
+                                  QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    QTRY_COMPARE_WITH_TIMEOUT(snapshotSpy.count(), 2, 800);
+    QVERIFY(monitor.snapshot().state == PrinterProtocol::DiscoveryState::Ready);
+}
+#endif
 
 void PrinterProtocolTests::paseUdevReadinessUsesUsbDeviceEvents() {
     for (const QByteArray &productId :
