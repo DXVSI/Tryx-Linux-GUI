@@ -762,6 +762,20 @@ Add it to the kernel command line of your boot loader, reboot, and switch the
 power supply off once so the display recovers. Details and measurements are in
 issue #28.
 
+### Display stops answering during a Loop or Shuffle of still images
+
+With Loop or Shuffle, the runtime hands the playlist to the display, and the
+firmware switches media on its own. On a Panorama SE `391a:1021` with firmware
+v2.0.6 and a carousel of still images, the display stopped answering anywhere
+from half an hour to several hours into a session. It stays on USB but no
+longer accepts data, and the runtime reports that the keepalive stopped after
+3 retries. Restarting the runtime or rebinding the USB device does not help;
+only switching the power supply off does. On the same setup, one still image
+and a Loop of two videos each ran for more than 10 hours.
+
+Until TRYX fixes the firmware, put only videos in a Loop or Shuffle playlist,
+or show a single image. Details are in issue #37.
+
 ### The display session never starts after the first media upload
 
 Before 2.5.3 the runtime created its directories with permissions from the

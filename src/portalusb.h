@@ -87,7 +87,9 @@ public:
     struct Options {
         QString service = QStringLiteral("org.freedesktop.portal.Desktop");
         int callTimeoutMs = 2000;
-        int permissionTimeoutMs = 120000;
+        // The permission request stays open until the user answers it; after
+        // this long the runtime only logs once that it is still waiting.
+        int pendingNoticeMs = 120000;
     };
     explicit Access(Registry &registry, QObject *parent = nullptr);
     Access(Registry &registry, const Options &options, QObject *parent = nullptr);
@@ -128,7 +130,7 @@ private:
     QString connectionName_;
     QDBusConnection bus_;
     QDBusServiceWatcher *watcher_ = nullptr;
-    QTimer permissionDeadline_;
+    QTimer pendingNotice_;
     QTimer connectionCheck_;
     QString owner_;
     QString sessionPath_;
