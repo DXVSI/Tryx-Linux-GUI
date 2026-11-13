@@ -69,6 +69,11 @@ class Device {
                                        bool wait_response = true);
 
   std::optional<DeviceInfo> handshake();
+  // Up to `attempts` handshakes, 300 ms apart, until one names a productId.
+  // After a success that needed a retry, waits for late replies to earlier
+  // attempts and discards them. Without such a success, returns the last reply
+  // that parsed, like handshake().
+  std::optional<DeviceInfo> handshake_with_retry(int attempts = 3);
   std::optional<Response> set_screen_config(const ScreenConfig& config);
   std::optional<Response> set_sysinfo_display(const ScreenConfig& config);
   std::optional<Response> set_temperature_unit(const std::string& unit = "Celsius");
@@ -88,6 +93,7 @@ class Device {
   int seq_number_ = 0;
 
   std::vector<uint8_t> read_response(int timeout_ms = 1000);
+  void discard_input();
 };
 
 }  // namespace panorama

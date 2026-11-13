@@ -1,44 +1,23 @@
 #include "panorama/adb.hpp"
 
-#include <algorithm>
-#include <cstdio>
-#include <cstring>
+#include "panorama/process.hpp"
+
+#include <utility>
 
 namespace panorama {
 
-std::string Adb::escape_shell_arg(const std::string& input) {
-  bool needs_quoting = false;
-  const char* unsafe_chars = " \t'\"\\$`!#&|;(){}[]<>?*~";
-  for (char ch : input) {
-    if (std::strchr(unsafe_chars, ch) != nullptr) {
-      needs_quoting = true;
-      break;
-    }
-  }
-  if (!needs_quoting) {
-    return input;
-  }
-
-  std::string escaped = "\"";
-  for (char ch : input) {
-    if (ch == '"' || ch == '\\' || ch == '$' || ch == '`') {
-      escaped += '\\';
-    }
-    escaped += ch;
-  }
-  escaped += '"';
-  return escaped;
+bool Adb::is_plain_media_name(const std::string& name) {
+  return !name.empty() && name != "." && name != ".." &&
+         name.find('/') == std::string::npos &&
+         name.find('\0') == std::string::npos &&
+         name.find('\n') == std::string::npos;
 }
 
 std::string Adb::find_tryx_serial() {
   // Find TRYX device serial among connected ADB devices
-  FILE* proc = popen("adb devices 2>&1", "r");
-  if (!proc) return {};
-  char chunk[2048];
-  std::string output;
-  while (fgets(chunk, sizeof(chunk), proc))
-    output += chunk;
-  pclose(proc);
+  auto result = run_process({"adb", "devices"}, true);
+  if (!result) return {};
+  const std::string& output = result->output;
 
   std::string::size_type pos = 0;
   while (pos < output.size()) {
@@ -60,7 +39,7 @@ std::string Adb::find_tryx_serial() {
 
 std::optional<std::string> Adb::run_command(
     const std::vector<std::string>& args) {
-  std::string commandline = "adb";
+  std::vector<std::string> argv{"adb"};
 
   // Auto-select TRYX device if multiple devices connected
   static std::string cached_serial;
@@ -68,28 +47,31 @@ std::optional<std::string> Adb::run_command(
     cached_serial = find_tryx_serial();
   }
   if (!cached_serial.empty() && (args.empty() || args[0] != "devices")) {
-    commandline += " -s " + escape_shell_arg(cached_serial);
+    argv.push_back("-s");
+    argv.push_back(cached_serial);
   }
+  argv.insert(argv.end(), args.begin(), args.end());
 
-  for (const auto& token : args) {
-    commandline += ' ';
-    commandline += escape_shell_arg(token);
-  }
-  commandline += " 2>&1";
-
-  FILE* proc = popen(commandline.c_str(), "r");
-  if (proc == nullptr) {
+  // adb runs without a local shell, so no argument here is parsed by one.
+  auto result = run_process(argv, true);
+  if (!result) {
     return std::nullopt;
   }
+  return std::move(result->output);
+}
 
-  std::string collected;
-  char chunk[2048];
-  while (std::fgets(chunk, sizeof(chunk), proc) != nullptr) {
-    collected.append(chunk);
+std::optional<std::string> Adb::run_device_shell(
+    const std::vector<std::string>& remote_args) {
+  // adb joins the words after "shell" and the device shell parses them, so
+  // quote every word for that shell and pass the command as one argument.
+  std::string remote_command;
+  for (const auto& arg : remote_args) {
+    if (!remote_command.empty()) {
+      remote_command.push_back(' ');
+    }
+    remote_command += shell_quote(arg);
   }
-  pclose(proc);
-
-  return collected;
+  return run_command({"shell", remote_command});
 }
 
 bool Adb::is_device_connected() {
@@ -125,6 +107,9 @@ bool Adb::is_device_connected() {
 
 bool Adb::push(const std::string& local_path,
                const std::string& remote_name) {
+  if (!is_plain_media_name(remote_name)) {
+    return false;
+  }
   std::string dest = std::string(MEDIA_PATH) + remote_name;
   auto output = run_command({"push", local_path, dest});
   if (!output.has_value()) {
@@ -136,7 +121,7 @@ bool Adb::push(const std::string& local_path,
 }
 
 std::optional<std::vector<std::string>> Adb::list_media() {
-  auto output = run_command({"shell", "ls", "-1", MEDIA_PATH});
+  auto output = run_device_shell({"ls", "-1", MEDIA_PATH});
   if (!output.has_value()) {
     return std::nullopt;
   }
@@ -172,17 +157,31 @@ std::optional<std::vector<std::string>> Adb::list_media() {
 }
 
 bool Adb::file_exists(const std::string& filename) {
+  if (!is_plain_media_name(filename)) {
+    return false;
+  }
   std::string target = std::string(MEDIA_PATH) + filename;
-  auto output = run_command({"shell", "ls", target});
+  auto output = run_device_shell({"ls", target});
   return output.has_value() &&
          output.value().find("No such file") == std::string::npos;
 }
 
 bool Adb::remove(const std::string& filename) {
+  if (!is_plain_media_name(filename)) {
+    return false;
+  }
   std::string target = std::string(MEDIA_PATH) + filename;
-  auto output = run_command({"shell", "rm", target});
+  auto output = run_device_shell({"rm", target});
   return output.has_value() &&
          output.value().find("No such file") == std::string::npos;
+}
+
+bool Adb::reboot() {
+  // Never reboot whatever other Android device adb would pick by default.
+  if (find_tryx_serial().empty()) {
+    return false;
+  }
+  return run_command({"reboot"}).has_value();
 }
 
 }  // namespace panorama

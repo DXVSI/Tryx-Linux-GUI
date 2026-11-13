@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace panorama {
 
@@ -23,8 +24,7 @@ class Media {
   static bool is_ffmpeg_available();
 
  private:
-  static std::string quote_for_shell(const std::string& arg);
-  static bool run_ffmpeg(const std::string& args);
+  static bool run_ffmpeg(const std::vector<std::string>& args);
   static std::string normalize_ext(const std::string& filepath);
 };
 

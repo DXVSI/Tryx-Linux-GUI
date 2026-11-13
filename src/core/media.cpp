@@ -1,8 +1,9 @@
 #include "panorama/media.hpp"
 
+#include "panorama/process.hpp"
+
 #include <array>
 #include <cctype>
-#include <cstdlib>
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
@@ -62,52 +63,27 @@ std::string Media::get_converted_name(const std::string& original) {
   return get_basename(original) + ".mp4";
 }
 
-std::string Media::quote_for_shell(const std::string& arg) {
-  std::string safe;
-  safe.reserve(arg.size() + 16);
-  safe.push_back('"');
-  for (const char ch : arg) {
-    switch (ch) {
-      case '"':
-      case '\\':
-      case '$':
-      case '`':
-      case '!':
-        safe.push_back('\\');
-        [[fallthrough]];
-      default:
-        safe.push_back(ch);
-        break;
-    }
-  }
-  safe.push_back('"');
-  return safe;
-}
-
-bool Media::run_ffmpeg(const std::string& args) {
-  std::string invocation = "ffmpeg " + args + " >/dev/null 2>&1";
-  int rc = std::system(invocation.c_str());
-  return rc == 0;
+bool Media::run_ffmpeg(const std::vector<std::string>& args) {
+  std::vector<std::string> argv{"ffmpeg"};
+  argv.insert(argv.end(), args.begin(), args.end());
+  // ffmpeg runs without a shell, so file names reach it unchanged.
+  auto result = run_process(argv, false);
+  return result.has_value() && result->exit_code == 0;
 }
 
 bool Media::is_ffmpeg_available() {
-  return run_ffmpeg("-version");
+  return run_ffmpeg({"-version"});
 }
 
 bool Media::convert_gif_to_mp4(const std::string& input,
                                const std::string& output) {
   std::filesystem::create_directories(TMP_DIR);
 
-  auto src = quote_for_shell(input);
-  auto dst = quote_for_shell(output);
-
-  std::string params = "-y -i " + src +
-      " -movflags faststart"
-      " -pix_fmt yuv420p"
-      " -vf " + std::string("\"") + kScaleFilter + "\"" +
-      " " + dst;
-
-  if (!run_ffmpeg(params)) {
+  if (!run_ffmpeg({"-y", "-i", input,
+                   "-movflags", "faststart",
+                   "-pix_fmt", "yuv420p",
+                   "-vf", kScaleFilter,
+                   output})) {
     return false;
   }
   return std::filesystem::exists(output);
@@ -117,20 +93,15 @@ bool Media::convert_to_mp4(const std::string& input,
                            const std::string& output) {
   std::filesystem::create_directories(TMP_DIR);
 
-  auto src = quote_for_shell(input);
-  auto dst = quote_for_shell(output);
-
-  std::string params = "-y -i " + src +
-      " -c:v libx264"
-      " -preset fast"
-      " -crf 23"
-      " -movflags faststart"
-      " -pix_fmt yuv420p"
-      " -vf " + std::string("\"") + kScaleFilter + "\"" +
-      " -an"
-      " " + dst;
-
-  if (!run_ffmpeg(params)) {
+  if (!run_ffmpeg({"-y", "-i", input,
+                   "-c:v", "libx264",
+                   "-preset", "fast",
+                   "-crf", "23",
+                   "-movflags", "faststart",
+                   "-pix_fmt", "yuv420p",
+                   "-vf", kScaleFilter,
+                   "-an",
+                   output})) {
     return false;
   }
   return std::filesystem::exists(output);
