@@ -16,12 +16,18 @@ class Adb {
   static std::optional<std::vector<std::string>> list_media();
   static bool file_exists(const std::string& filename);
   static bool remove(const std::string& filename);
+  static bool reboot();
+
+  // A name directly inside MEDIA_PATH: not empty, not "." or "..", and
+  // without '/', NUL or line feed.
+  static bool is_plain_media_name(const std::string& name);
 
  private:
   static std::string find_tryx_serial();
-  static std::string escape_shell_arg(const std::string& input);
   static std::optional<std::string> run_command(
       const std::vector<std::string>& args);
+  static std::optional<std::string> run_device_shell(
+      const std::vector<std::string>& remote_args);
 };
 
 }  // namespace panorama

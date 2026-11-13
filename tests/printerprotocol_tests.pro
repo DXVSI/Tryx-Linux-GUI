@@ -176,4 +176,5 @@ SOURCES += \
     $$PWD/../src/core/device.cpp \
     $$PWD/../src/core/adb.cpp \
     $$PWD/../src/core/media.cpp \
+    $$PWD/../src/core/process.cpp \
     $$PWD/../src/core/config.cpp

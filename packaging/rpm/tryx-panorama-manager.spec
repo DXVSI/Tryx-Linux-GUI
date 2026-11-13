@@ -1,9 +1,9 @@
 Name:           tryx-panorama-manager
-Version:        2.5.3
+Version:        2.5.4
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
-License:        MIT AND BSD-2-Clause
+License:        GPL-3.0-or-later AND MIT AND BSD-2-Clause
 URL:            https://github.com/DXVSI/Tryx-Linux-GUI
 Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.xz
 
@@ -104,6 +104,7 @@ udevadm verify --resolve-names=never \
 
 %files
 %license %{_licensedir}/%{name}/LICENSE
+%license %{_licensedir}/%{name}/MIT.txt
 %license %{_licensedir}/%{name}/picojson-BSD-2-Clause.txt
 %doc README.md
 %{_bindir}/tryx-panorama-manager
@@ -120,6 +121,13 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
+* Fri Nov 13 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.4-1
+- Keep the uaccess tag on every udev event except remove, so logind grants the seat ACL to supported displays at login and users outside the lp group no longer stay on Waiting for Device after every boot
+- Notice USB access that is granted after the runtime started, without waiting for the next USB event
+- In the Flatpak, keep the USB permission request open until the user allows or denies access, instead of giving up after two minutes
+- On legacy cm01 displays, start adb and ffmpeg without a shell so file names reach them unchanged, and retry a handshake that gets no reply up to three times
+- Relicense under GPL-3.0-or-later; code from 2.5.3 and earlier keeps its MIT notice in LICENSES/MIT.txt
+
 * Wed Oct 07 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.3-1
 - Keep a bulk IN pending between requests on the Panorama, Panorama SE and Panorama WB and re-arm it as soon as it ends, as the official bridge does, so the display no longer drops off USB until a power-off
 - Create the runtime's data and cache directories owner-only regardless of the umask, so a 0002 umask no longer stops the display session from starting after the first media upload

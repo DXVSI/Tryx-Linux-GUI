@@ -248,6 +248,32 @@ XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
 
+## What's new in 2.5.4
+
+- Users outside the `lp` group no longer stay on "Waiting for Device" after
+  every boot. The udev rule marked the display for the login session only on
+  the first USB event, the kernel's next event dropped the mark, and logind
+  then gave the session no access to the display. The rule now keeps the mark
+  on every event, and the runtime also notices access that arrives after it
+  has started (#41). Reboot once after installing, or apply the rule right
+  away:
+
+  ```fish
+  sudo udevadm trigger --action=change --subsystem-match=usb --attr-match=idVendor=391a
+  ```
+
+- In the Flatpak, the USB permission request stays open until you allow or
+  deny access. It used to give up after two minutes, and the runtime then had
+  no access until it was restarted.
+- On legacy `cm01` displays, `adb` and `ffmpeg` start without a shell, so file
+  names reach them unchanged (#44), and a handshake that gets no reply is
+  retried up to three times (#45).
+- The repository is a Nix flake, contributed by @Yuna404; see
+  [NixOS](#nixos).
+- The project is now licensed under GPL-3.0-or-later. Releases up to and
+  including 2.5.3 stay under MIT, and code from them keeps its MIT notice in
+  `LICENSES/MIT.txt`.
+
 ## What's new in 2.5.3
 
 - Panorama `391a:1011`, Panorama SE `391a:1021` and Panorama WB `391a:1031`
@@ -467,7 +493,7 @@ Turris `391a:2011` have not been reproduced on maintainer-owned hardware.
 - Optional, independent XDG Autostart for the desktop GUI with safe tray fallback
 - Settings persistence between sessions
 - Runtime-owned Celsius/Fahrenheit and 24-hour/12-hour presentation preferences
-- About shortcuts to the project home and its published MIT license
+- About shortcuts to the project home and its published license
 - Quiet startup/hourly checks for new stable application releases, with a
   desktop notification and a release link in Settings/About
 - Async device communication (non-blocking GUI)
@@ -563,7 +589,7 @@ runtime remote, and a working USB portal backend are required. Stop any other
 TRYX runtime before starting this build.
 
 ```fish
-flatpak install --user ./tryx-panorama-manager-2.5.3-experimental-x86_64.flatpak
+flatpak install --user ./tryx-panorama-manager-2.5.4-experimental-x86_64.flatpak
 flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ```
 
@@ -595,13 +621,13 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.3-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.4-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.5.3-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.5.4-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.5.3-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.5.4-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
@@ -649,6 +675,36 @@ set -lx TRYX_LOCAL_SOURCE_SHA256 (sha256sum $archive | cut -d ' ' -f 1)
 pushd packaging/arch
 makepkg --cleanbuild --check
 popd
+```
+
+## NixOS
+
+The repository is a Nix flake, contributed by @Yuna404. It builds the same
+files as the native packages: the GUI, the `tryx` client, the runtime with
+ffmpeg on its `PATH`, the udev rules and the user service. CI builds it on
+every change; NixOS itself is community-tested. The flake ships with releases
+after 2.5.3. `github:DXVSI/Tryx-Linux-GUI` follows the latest release; add a
+release tag to the URL to pin one.
+
+Add the flake as an input:
+
+```nix
+tryx.url = "github:DXVSI/Tryx-Linux-GUI";
+```
+
+Then enable the package, its udev rules and the user service in the NixOS
+configuration. Without the udev rules the application cannot open the display.
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  nixpkgs.overlays = [ inputs.tryx.overlays.default ];
+
+  environment.systemPackages = [ pkgs.tryx-panorama-manager ];
+  services.udev.packages = [ pkgs.tryx-panorama-manager ];
+  systemd.packages = [ pkgs.tryx-panorama-manager ];
+  systemd.user.services.tryx-panorama.wantedBy = [ "graphical-session.target" ];
+}
 ```
 
 ## Requirements
@@ -731,6 +787,20 @@ usbcore.quirks=391a:1011:k,391a:1021:k,391a:1031:k
 Add it to the kernel command line of your boot loader, reboot, and switch the
 power supply off once so the display recovers. Details and measurements are in
 issue #28.
+
+### Display stops answering during a Loop or Shuffle of still images
+
+With Loop or Shuffle, the runtime hands the playlist to the display, and the
+firmware switches media on its own. On a Panorama SE `391a:1021` with firmware
+v2.0.6 and a carousel of still images, the display stopped answering anywhere
+from half an hour to several hours into a session. It stays on USB but no
+longer accepts data, and the runtime reports that the keepalive stopped after
+3 retries. Restarting the runtime or rebinding the USB device does not help;
+only switching the power supply off does. On the same setup, one still image
+and a Loop of two videos each ran for more than 10 hours.
+
+Until TRYX fixes the firmware, put only videos in a Loop or Shuffle playlist,
+or show a single image. Details are in issue #37.
 
 ### The display session never starts after the first media upload
 
@@ -960,4 +1030,11 @@ tryx-panorama.pro       # Headless runtime qmake project
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+GNU General Public License, version 3 or (at your option) any later version.
+See [LICENSE](LICENSE).
+
+The project started from Fadli Arsani's MIT-licensed code, and releases up to
+and including 2.5.3 were published under the MIT License. Those releases stay
+available under MIT, and its notice is kept in [LICENSES/MIT.txt](LICENSES/MIT.txt).
+`include/panorama/picojson.h` is under the BSD 2-Clause License, see
+[LICENSES/picojson-BSD-2-Clause.txt](LICENSES/picojson-BSD-2-Clause.txt).

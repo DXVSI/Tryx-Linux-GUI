@@ -57,6 +57,7 @@ require_file /usr/share/applications/tryx-panorama-manager.desktop
 require_file /usr/share/icons/hicolor/256x256/apps/tryx-panorama.png
 require_file /usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
 require_file /usr/share/licenses/tryx-panorama-manager/LICENSE
+require_file /usr/share/licenses/tryx-panorama-manager/MIT.txt
 require_file /usr/share/licenses/tryx-panorama-manager/picojson-BSD-2-Clause.txt
 
 desktop_entry=$staged_root/usr/share/applications/tryx-panorama-manager.desktop
@@ -106,6 +107,14 @@ do
     if [ "$packaged_usb_product_ids" != "$expected_usb_product_ids" ]; then
         echo "unexpected supported USB product IDs in ${usb_product_source#"$staged_root"}:" >&2
         printf '%s\n' "$packaged_usb_product_ids" >&2
+        exit 1
+    fi
+    # A rule limited to add or change events loses the uaccess tag on the
+    # bind event that follows add, and logind then skips the device at login.
+    if grep 'ATTR{idVendor}=="391a"' "$usb_product_source" |
+        grep -qv '^ACTION!="remove", '
+    then
+        echo "TRYX udev rules must match every event except remove: ${usb_product_source#"$staged_root"}" >&2
         exit 1
     fi
 done

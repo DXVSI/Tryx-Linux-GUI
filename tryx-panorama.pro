@@ -100,6 +100,7 @@ SOURCES += \
     src/core/device.cpp \
     src/core/adb.cpp \
     src/core/media.cpp \
+    src/core/process.cpp \
     src/core/config.cpp
 
 HEADERS += \
@@ -223,6 +224,7 @@ DISTFILES += \
     tests/pasebadgestore_tests.cpp \
     VERSION \
     LICENSE \
+    LICENSES/MIT.txt \
     LICENSES/picojson-BSD-2-Clause.txt \
     packaging/70-tryx-pase-access.rules \
     packaging/99-tryx-pase-printer.rules \
@@ -276,6 +278,7 @@ unix:!contains(CONFIG, flatpak) {
     tryx_license.path = /usr/share/licenses/tryx-panorama-manager
     tryx_license.files = \
         LICENSE \
+        LICENSES/MIT.txt \
         LICENSES/picojson-BSD-2-Clause.txt
     INSTALLS += target pase_udev_rules tryx_systemd_user_unit \
         tryx_systemd_user_preset \

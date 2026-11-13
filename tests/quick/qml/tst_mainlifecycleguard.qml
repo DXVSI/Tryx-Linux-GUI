@@ -14,7 +14,7 @@ TestCase {
     height: 760
 
     ListModel {
-        id: mediaModel
+        id: mediaModelMock
         ListElement {
             mediaName: "one.mp4.h264_2240x1080"
             mediaId: "media-one"
@@ -37,7 +37,7 @@ TestCase {
     }
 
     ListModel {
-        id: operationModel
+        id: operationModelMock
     }
 
     QtObject {
@@ -115,8 +115,8 @@ TestCase {
         property var savedLayoutModel: []
         property string metricsAlignment: "Left"
         property string metricsColor: "#dcdcdc"
-        property var mediaModel: mediaModel
-        property var operationModel: operationModel
+        property var mediaModel: mediaModelMock
+        property var operationModel: operationModelMock
         property int fullSubmitCount: 0
         property int splitSubmitCount: 0
         property string lastSubmissionId: ""

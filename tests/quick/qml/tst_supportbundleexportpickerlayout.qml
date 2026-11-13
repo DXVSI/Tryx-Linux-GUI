@@ -23,7 +23,7 @@ TestCase {
         }
 
         QtObject {
-            id: controller
+            id: controllerMock
             property bool busy: false
             property int exportCount: 0
             property url exportedFolder
@@ -45,7 +45,7 @@ TestCase {
 
         Components.SupportBundleExportPicker {
             id: picker
-            controller: controller
+            controller: controllerMock
             homeFolder: Qt.resolvedUrl("..")
             focusReturnItem: launcher
         }
@@ -56,9 +56,9 @@ TestCase {
         picker.portalChooser = null
         host.requestActivate()
         tryVerify(() => host.active)
-        controller.busy = false
-        controller.exportCount = 0
-        controller.exportedFolder = ""
+        controllerMock.busy = false
+        controllerMock.exportCount = 0
+        controllerMock.exportedFolder = ""
         picker.close()
         picker.currentFolder = picker.homeFolder
         wait(0)
@@ -71,10 +71,10 @@ TestCase {
         const selectedFolder = Qt.resolvedUrl(".")
         chooser.busy = false
         chooser.selected(selectedFolder)
-        compare(controller.exportCount, 0)
+        compare(controllerMock.exportCount, 0)
         picker.currentFolder = picker.homeFolder
-        tryCompare(controller, "exportCount", 1)
-        compare(controller.exportedFolder, selectedFolder)
+        tryCompare(controllerMock, "exportCount", 1)
+        compare(controllerMock.exportedFolder, selectedFolder)
     }
 
     function test_folderOnlyExportAndAccessibility() {
@@ -116,8 +116,8 @@ TestCase {
         saveButton.forceActiveFocus()
         tryVerify(() => saveButton.activeFocus)
         keyClick(Qt.Key_Space)
-        tryCompare(controller, "exportCount", 1)
-        compare(String(controller.exportedFolder),
+        tryCompare(controllerMock, "exportCount", 1)
+        compare(String(controllerMock.exportedFolder),
                 String(picker.currentFolder))
         tryVerify(() => launcher.activeFocus)
     }
@@ -135,16 +135,16 @@ TestCase {
         tryVerify(() => !saveButton.enabled)
         saveButton.forceActiveFocus()
         keyClick(Qt.Key_Space)
-        compare(controller.exportCount, 0)
+        compare(controllerMock.exportCount, 0)
 
         picker.navigate(picker.homeFolder)
         tryVerify(() => saveButton.enabled)
-        controller.busy = true
+        controllerMock.busy = true
         tryVerify(() => !saveButton.enabled)
         verify(!saveButton.enabled)
         keyClick(Qt.Key_Escape)
         tryVerify(() => !picker.opened)
         tryVerify(() => launcher.activeFocus)
-        compare(controller.exportCount, 0)
+        compare(controllerMock.exportCount, 0)
     }
 }

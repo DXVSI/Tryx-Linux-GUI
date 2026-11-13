@@ -18,7 +18,7 @@ TestCase {
         visible: true
 
         QtObject {
-            id: controller
+            id: controllerMock
 
             property bool open: false
             property bool busy: false
@@ -62,59 +62,59 @@ TestCase {
 
         Components.MediaEditor {
             id: editor
-            controller: controller
+            controller: controllerMock
         }
     }
 
     function init() {
         host.width = 1060
         host.height = 700
-        controller.recoveredDeviceCopy = false
-        controller.sourceKind = "LocalMedia"
-        controller.originalMediaName = ""
-        controller.replaceAllowed = false
-        controller.replaceBlockReason = ""
-        controller.submissionPending = false
-        controller.submissionAction = ""
-        controller.targetWidth = 2240
-        controller.targetHeight = 1080
-        controller.mode = "Fit"
-        controller.zoomPercent = 100
-        controller.focusX = 5000
-        controller.focusY = 5000
-        controller.rotation = 0
-        controller.backgroundColor = "#000000"
-        controller.preparationTarget = "FullFrame"
-        controller.splitTargetAvailable = true
-        controller.deviceCopyMetadataStatus = "NotSupported"
-        controller.deviceCopyDimensionsAvailable = false
-        controller.deviceCopyWidth = 0
-        controller.deviceCopyHeight = 0
-        controller.deviceCopyDurationAvailable = false
-        controller.deviceCopyDurationMilliseconds = 0
-        controller.deviceCopyFrameRateAvailable = false
-        controller.deviceCopyFrameRateNumerator = 0
-        controller.deviceCopyFrameRateDenominator = 0
-        controller.open = false
+        controllerMock.recoveredDeviceCopy = false
+        controllerMock.sourceKind = "LocalMedia"
+        controllerMock.originalMediaName = ""
+        controllerMock.replaceAllowed = false
+        controllerMock.replaceBlockReason = ""
+        controllerMock.submissionPending = false
+        controllerMock.submissionAction = ""
+        controllerMock.targetWidth = 2240
+        controllerMock.targetHeight = 1080
+        controllerMock.mode = "Fit"
+        controllerMock.zoomPercent = 100
+        controllerMock.focusX = 5000
+        controllerMock.focusY = 5000
+        controllerMock.rotation = 0
+        controllerMock.backgroundColor = "#000000"
+        controllerMock.preparationTarget = "FullFrame"
+        controllerMock.splitTargetAvailable = true
+        controllerMock.deviceCopyMetadataStatus = "NotSupported"
+        controllerMock.deviceCopyDimensionsAvailable = false
+        controllerMock.deviceCopyWidth = 0
+        controllerMock.deviceCopyHeight = 0
+        controllerMock.deviceCopyDurationAvailable = false
+        controllerMock.deviceCopyDurationMilliseconds = 0
+        controllerMock.deviceCopyFrameRateAvailable = false
+        controllerMock.deviceCopyFrameRateNumerator = 0
+        controllerMock.deviceCopyFrameRateDenominator = 0
+        controllerMock.open = false
         wait(0)
-        controller.open = true
+        controllerMock.open = true
         tryVerify(() => editor.opened)
     }
 
     function setReadyDeviceCopyMetadata() {
-        controller.deviceCopyMetadataStatus = "Ready"
-        controller.deviceCopyDimensionsAvailable = true
-        controller.deviceCopyWidth = 2240
-        controller.deviceCopyHeight = 1080
-        controller.deviceCopyDurationAvailable = true
-        controller.deviceCopyDurationMilliseconds = 60000
-        controller.deviceCopyFrameRateAvailable = true
-        controller.deviceCopyFrameRateNumerator = 30
-        controller.deviceCopyFrameRateDenominator = 1
+        controllerMock.deviceCopyMetadataStatus = "Ready"
+        controllerMock.deviceCopyDimensionsAvailable = true
+        controllerMock.deviceCopyWidth = 2240
+        controllerMock.deviceCopyHeight = 1080
+        controllerMock.deviceCopyDurationAvailable = true
+        controllerMock.deviceCopyDurationMilliseconds = 60000
+        controllerMock.deviceCopyFrameRateAvailable = true
+        controllerMock.deviceCopyFrameRateNumerator = 30
+        controllerMock.deviceCopyFrameRateDenominator = 1
     }
 
     function cleanup() {
-        controller.open = false
+        controllerMock.open = false
         wait(0)
     }
 
@@ -141,8 +141,8 @@ TestCase {
             {"width": 1280, "height": 720}
         ]
         for (const profile of profiles) {
-            controller.targetWidth = profile.width
-            controller.targetHeight = profile.height
+            controllerMock.targetWidth = profile.width
+            controllerMock.targetHeight = profile.height
             wait(0)
             const expectedRatio =
                 profile.width / profile.height
@@ -209,9 +209,9 @@ TestCase {
         split.forceActiveFocus()
         tryVerify(() => split.activeFocus)
         keyClick(Qt.Key_Space)
-        compare(controller.preparationTarget, "SplitArea")
-        controller.targetWidth = 1120
-        controller.targetHeight = 1080
+        compare(controllerMock.preparationTarget, "SplitArea")
+        controllerMock.targetWidth = 1120
+        controllerMock.targetHeight = 1080
         wait(0)
 
         verify(!full.checked)
@@ -225,14 +225,14 @@ TestCase {
         verify(resolution.text.indexOf("Split area") >= 0)
         verify(resolution.text.indexOf("1120 × 1080") >= 0)
 
-        controller.submissionPending = true
+        controllerMock.submissionPending = true
         wait(0)
         verify(!full.enabled)
         verify(!split.enabled)
     }
 
     function test_unavailableSplitTargetHasVisibleAccessibleReason() {
-        controller.splitTargetAvailable = false
+        controllerMock.splitTargetAvailable = false
         wait(0)
 
         const full = findChild(editor, "fullFramePreparationTarget")
@@ -252,7 +252,7 @@ TestCase {
     }
 
     function test_preparationTargetSelectorReflowsAtNarrowWidth() {
-        controller.splitTargetAvailable = false
+        controllerMock.splitTargetAvailable = false
         host.width = 360
         host.height = 640
         wait(0)
@@ -309,36 +309,36 @@ TestCase {
         verify(horizontal !== null)
         verify(vertical !== null)
 
-        controller.mode = "Stretch"
+        controllerMock.mode = "Stretch"
         wait(0)
         verify(description.text.indexOf("distorted") >= 0)
 
-        controller.mode = "Crop"
-        controller.zoomPercent = 100
-        controller.focusX = 2500
-        controller.focusY = 7500
+        controllerMock.mode = "Crop"
+        controllerMock.zoomPercent = 100
+        controllerMock.focusX = 2500
+        controllerMock.focusY = 7500
         wait(0)
         compare(horizontal.value, 25)
         compare(vertical.value, 75)
         verify(!horizontal.enabled)
         verify(!vertical.enabled)
 
-        controller.zoomPercent = 160
+        controllerMock.zoomPercent = 160
         wait(0)
         verify(horizontal.enabled)
         verify(vertical.enabled)
 
-        controller.mode = "Fit"
+        controllerMock.mode = "Fit"
         wait(0)
         verify(!horizontal.enabled)
         verify(!vertical.enabled)
     }
 
     function test_recoveredCopyUsesExplicitActions() {
-        controller.recoveredDeviceCopy = true
-        controller.sourceKind = "RecoveredDeviceCopy"
-        controller.originalMediaName = "device-video.h264_2240x1080"
-        controller.replaceAllowed = true
+        controllerMock.recoveredDeviceCopy = true
+        controllerMock.sourceKind = "RecoveredDeviceCopy"
+        controllerMock.originalMediaName = "device-video.h264_2240x1080"
+        controllerMock.replaceAllowed = true
         setReadyDeviceCopyMetadata()
         wait(0)
 
@@ -372,15 +372,15 @@ TestCase {
         verify(replace.visible)
         verify(replace.enabled)
 
-        controller.targetWidth = 1280
-        controller.targetHeight = 720
+        controllerMock.targetWidth = 1280
+        controllerMock.targetHeight = 720
         wait(0)
         verify(noticeText.text.indexOf("2240") >= 0)
         verify(noticeText.text.indexOf("1080") >= 0)
         verify(noticeText.text.indexOf("1280") < 0)
 
-        controller.submissionPending = true
-        controller.submissionAction = "Replace"
+        controllerMock.submissionPending = true
+        controllerMock.submissionAction = "Replace"
         wait(0)
         verify(!saveAsNew.enabled)
         verify(!replace.enabled)
@@ -388,8 +388,8 @@ TestCase {
     }
 
     function test_actionRowRemainsVisibleInShortWindow() {
-        controller.recoveredDeviceCopy = true
-        controller.replaceAllowed = true
+        controllerMock.recoveredDeviceCopy = true
+        controllerMock.replaceAllowed = true
         wait(0)
 
         const content =
@@ -412,10 +412,10 @@ TestCase {
     }
 
     function test_recoveredCopyWarnsOnlyForNeutralGeometry() {
-        controller.recoveredDeviceCopy = true
-        controller.mode = "Crop"
-        controller.zoomPercent = 100
-        controller.rotation = 0
+        controllerMock.recoveredDeviceCopy = true
+        controllerMock.mode = "Crop"
+        controllerMock.zoomPercent = 100
+        controllerMock.rotation = 0
         wait(0)
 
         const noticeText =
@@ -425,15 +425,15 @@ TestCase {
         verify(noticeText.text.indexOf(
                    "will not visibly change") >= 0)
 
-        controller.zoomPercent = 160
+        controllerMock.zoomPercent = 160
         wait(0)
         verify(!editor.recoveredTransformIsGeometryNeutral)
         verify(noticeText.text.indexOf(
                    "Save as new stores") >= 0)
 
-        controller.mode = "Stretch"
-        controller.zoomPercent = 100
-        controller.rotation = 180
+        controllerMock.mode = "Stretch"
+        controllerMock.zoomPercent = 100
+        controllerMock.rotation = 180
         wait(0)
         verify(!editor.recoveredTransformIsGeometryNeutral)
     }
@@ -474,21 +474,21 @@ TestCase {
     }
 
     function test_deviceCopyMetadataStates(data) {
-        controller.recoveredDeviceCopy = true
-        controller.sourceKind = "RecoveredDeviceCopy"
-        controller.originalMediaName =
+        controllerMock.recoveredDeviceCopy = true
+        controllerMock.sourceKind = "RecoveredDeviceCopy"
+        controllerMock.originalMediaName =
             "device-copy.mp4.h264_1280x720"
-        controller.deviceCopyMetadataStatus = data.status
-        controller.deviceCopyDimensionsAvailable = data.dimensions
-        controller.deviceCopyWidth = data.dimensions ? 2240 : 0
-        controller.deviceCopyHeight = data.dimensions ? 1080 : 0
-        controller.deviceCopyDurationAvailable = data.duration
-        controller.deviceCopyDurationMilliseconds =
+        controllerMock.deviceCopyMetadataStatus = data.status
+        controllerMock.deviceCopyDimensionsAvailable = data.dimensions
+        controllerMock.deviceCopyWidth = data.dimensions ? 2240 : 0
+        controllerMock.deviceCopyHeight = data.dimensions ? 1080 : 0
+        controllerMock.deviceCopyDurationAvailable = data.duration
+        controllerMock.deviceCopyDurationMilliseconds =
             data.duration ? 60000 : 0
-        controller.deviceCopyFrameRateAvailable = data.frameRate
-        controller.deviceCopyFrameRateNumerator =
+        controllerMock.deviceCopyFrameRateAvailable = data.frameRate
+        controllerMock.deviceCopyFrameRateNumerator =
             data.frameRate ? 30 : 0
-        controller.deviceCopyFrameRateDenominator =
+        controllerMock.deviceCopyFrameRateDenominator =
             data.frameRate ? 1 : 0
         wait(0)
 
@@ -535,8 +535,8 @@ TestCase {
     }
 
     function test_deviceCopyMetadataIsHiddenForLocalMedia() {
-        controller.recoveredDeviceCopy = false
-        controller.sourceKind = "LocalMedia"
+        controllerMock.recoveredDeviceCopy = false
+        controllerMock.sourceKind = "LocalMedia"
         setReadyDeviceCopyMetadata()
         wait(0)
 
@@ -546,10 +546,10 @@ TestCase {
     }
 
     function test_deviceCopyMetadataFormatsLongDuration() {
-        controller.recoveredDeviceCopy = true
-        controller.sourceKind = "RecoveredDeviceCopy"
+        controllerMock.recoveredDeviceCopy = true
+        controllerMock.sourceKind = "RecoveredDeviceCopy"
         setReadyDeviceCopyMetadata()
-        controller.deviceCopyDurationMilliseconds = 3723000
+        controllerMock.deviceCopyDurationMilliseconds = 3723000
         wait(0)
 
         const duration = findChild(editor, "deviceCopyDurationValue")
@@ -562,12 +562,12 @@ TestCase {
     }
 
     function test_recoveredResolutionUsesProbeNotFilenameOrTarget() {
-        controller.recoveredDeviceCopy = true
-        controller.sourceKind = "RecoveredDeviceCopy"
-        controller.originalMediaName =
+        controllerMock.recoveredDeviceCopy = true
+        controllerMock.sourceKind = "RecoveredDeviceCopy"
+        controllerMock.originalMediaName =
             "misleading-name.mp4.h264_1280x720"
-        controller.targetWidth = 800
-        controller.targetHeight = 480
+        controllerMock.targetWidth = 800
+        controllerMock.targetHeight = 480
         setReadyDeviceCopyMetadata()
         wait(0)
 
@@ -581,10 +581,10 @@ TestCase {
         verify(noticeText.text.indexOf("800") < 0)
         verify(noticeText.text.indexOf("480") < 0)
 
-        controller.deviceCopyMetadataStatus = "Partial"
-        controller.deviceCopyDimensionsAvailable = false
-        controller.deviceCopyWidth = 0
-        controller.deviceCopyHeight = 0
+        controllerMock.deviceCopyMetadataStatus = "Partial"
+        controllerMock.deviceCopyDimensionsAvailable = false
+        controllerMock.deviceCopyWidth = 0
+        controllerMock.deviceCopyHeight = 0
         wait(0)
         verify(noticeText.text.indexOf("1280") < 0)
         verify(noticeText.text.indexOf("720") < 0)
@@ -593,9 +593,9 @@ TestCase {
     }
 
     function test_deviceCopyMetadataIsNarrowAndAccessible() {
-        controller.recoveredDeviceCopy = true
-        controller.sourceKind = "RecoveredDeviceCopy"
-        controller.originalMediaName = "device-copy.h264"
+        controllerMock.recoveredDeviceCopy = true
+        controllerMock.sourceKind = "RecoveredDeviceCopy"
+        controllerMock.originalMediaName = "device-copy.h264"
         setReadyDeviceCopyMetadata()
         host.width = 360
         host.height = 640
@@ -635,9 +635,9 @@ TestCase {
     }
 
     function test_deviceCopyMetadataRussianTranslation() {
-        controller.recoveredDeviceCopy = true
-        controller.sourceKind = "RecoveredDeviceCopy"
-        controller.originalMediaName = "device-copy.h264"
+        controllerMock.recoveredDeviceCopy = true
+        controllerMock.sourceKind = "RecoveredDeviceCopy"
+        controllerMock.originalMediaName = "device-copy.h264"
         setReadyDeviceCopyMetadata()
         wait(0)
 
@@ -671,24 +671,24 @@ TestCase {
         compare(frameRateLabel.text, "Частота кадров")
         compare(frameRate.text, "30 FPS")
 
-        controller.deviceCopyMetadataStatus = "Loading"
+        controllerMock.deviceCopyMetadataStatus = "Loading"
         wait(0)
         compare(state.text, "Загрузка")
-        controller.deviceCopyMetadataStatus = "Partial"
+        controllerMock.deviceCopyMetadataStatus = "Partial"
         wait(0)
         compare(state.text, "Частично")
-        controller.deviceCopyMetadataStatus = "Unavailable"
+        controllerMock.deviceCopyMetadataStatus = "Unavailable"
         wait(0)
         compare(state.text, "Недоступно")
-        controller.deviceCopyMetadataStatus = "NotSupported"
+        controllerMock.deviceCopyMetadataStatus = "NotSupported"
         wait(0)
         compare(state.text, "Не поддерживается")
     }
 
     function test_preparationTargetRussianTranslation() {
-        controller.preparationTarget = "SplitArea"
-        controller.targetWidth = 1120
-        controller.targetHeight = 1080
+        controllerMock.preparationTarget = "SplitArea"
+        controllerMock.targetWidth = 1120
+        controllerMock.targetHeight = 1080
         wait(0)
 
         const group = findChild(editor, "mediaPreparationTargetGroup")
@@ -724,7 +724,7 @@ TestCase {
             resolution.text,
             "Область разделения: 1120 × 1080")
 
-        controller.splitTargetAvailable = false
+        controllerMock.splitTargetAvailable = false
         wait(0)
         verify(unavailable.visible)
         compare(

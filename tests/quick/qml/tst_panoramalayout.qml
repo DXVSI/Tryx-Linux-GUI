@@ -14,7 +14,7 @@ TestCase {
     height: 760
 
     ListModel {
-        id: mediaModel
+        id: mediaModelMock
 
         function canDelete(mediaName) {
             return mediaName.length > 0
@@ -65,7 +65,7 @@ TestCase {
     }
 
     ListModel {
-        id: operationModel
+        id: operationModelMock
         ListElement {
             operationId: "one"
             subject: "Upload"
@@ -97,8 +97,8 @@ TestCase {
         property string activeOperationId: ""
         property string operationSummary: ""
         property real operationProgress: 0
-        property var mediaModel: mediaModel
-        property var operationModel: operationModel
+        property var mediaModel: mediaModelMock
+        property var operationModel: operationModelMock
         property var availableMetrics: [
             "CPU Temperature", "GPU Temperature"
         ]
@@ -427,19 +427,19 @@ TestCase {
     }
 
     function init() {
-        runtimeMock.mediaModel = mediaModel
-        mediaModel.setProperty(0, "mediaName",
+        runtimeMock.mediaModel = mediaModelMock
+        mediaModelMock.setProperty(0, "mediaName",
                                "one.mp4.h264_2240x1080")
-        mediaModel.setProperty(0, "mediaSize", 1024)
-        mediaModel.setProperty(0, "mediaSource", 1)
-        mediaModel.setProperty(0, "managedOrigin", true)
-        mediaModel.setProperty(0, "readOnly", false)
-        mediaModel.setProperty(1, "mediaName",
+        mediaModelMock.setProperty(0, "mediaSize", 1024)
+        mediaModelMock.setProperty(0, "mediaSource", 1)
+        mediaModelMock.setProperty(0, "managedOrigin", true)
+        mediaModelMock.setProperty(0, "readOnly", false)
+        mediaModelMock.setProperty(1, "mediaName",
                                "two.mp4.h264_2240x1080")
-        mediaModel.setProperty(1, "mediaSize", 2048)
-        mediaModel.setProperty(1, "mediaSource", 2)
-        mediaModel.setProperty(1, "managedOrigin", false)
-        mediaModel.setProperty(1, "readOnly", true)
+        mediaModelMock.setProperty(1, "mediaSize", 2048)
+        mediaModelMock.setProperty(1, "mediaSource", 2)
+        mediaModelMock.setProperty(1, "managedOrigin", false)
+        mediaModelMock.setProperty(1, "readOnly", true)
         runtimeMock.legacyConnected = false
         runtimeMock.currentScreenMode = "Full Screen"
         runtimeMock.currentPlayMode = "Single"
@@ -901,26 +901,26 @@ TestCase {
         verify(origin !== null)
         verify(size !== null)
 
-        mediaModel.setProperty(0, "mediaSource", 0)
-        mediaModel.setProperty(0, "mediaSize", 0)
+        mediaModelMock.setProperty(0, "mediaSource", 0)
+        mediaModelMock.setProperty(0, "mediaSize", 0)
         wait(0)
         compare(origin.text, "Unknown origin")
         compare(size.text, "Unknown size")
 
-        mediaModel.setProperty(0, "mediaSource", 99)
+        mediaModelMock.setProperty(0, "mediaSource", 99)
         wait(0)
         compare(origin.text, "Unknown origin")
 
-        mediaModel.setProperty(0, "mediaSource", 1)
+        mediaModelMock.setProperty(0, "mediaSource", 1)
         runtimeMock.legacyConnected = true
         wait(0)
         compare(origin.text, "Unknown origin")
 
         runtimeMock.legacyConnected = false
-        mediaModel.setProperty(0, "readOnly", true)
-        mediaModel.setProperty(0, "managedOrigin", false)
-        mediaModel.setProperty(1, "readOnly", false)
-        mediaModel.setProperty(1, "managedOrigin", true)
+        mediaModelMock.setProperty(0, "readOnly", true)
+        mediaModelMock.setProperty(0, "managedOrigin", false)
+        mediaModelMock.setProperty(1, "readOnly", false)
+        mediaModelMock.setProperty(1, "managedOrigin", true)
         wait(0)
         compare(origin.text, "User media")
         compare(findChild(page, "mediaOriginLabel-media-two").text,
@@ -931,7 +931,7 @@ TestCase {
         const longName =
             "a-very-long-user-media-name-that-must-remain-accessible" +
             ".mp4.h264_2240x1080"
-        mediaModel.setProperty(0, "mediaName", longName)
+        mediaModelMock.setProperty(0, "mediaName", longName)
 
         const page = createTemporaryObject(
             panoramaComponent, testCase,

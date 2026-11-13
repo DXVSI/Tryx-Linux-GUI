@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.github.dxvsi.tryx_panorama_manager</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT AND BSD-2-Clause</project_license>
+  <project_license>GPL-3.0-or-later AND MIT AND BSD-2-Clause</project_license>
   <name>TRYX Panorama Manager</name>
   <summary>Control compatible TRYX cooler displays on Linux</summary>
   <description>
@@ -27,6 +27,17 @@
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.5.4" type="stable" date="2026-11-13">
+      <description>
+        <ul>
+          <li>Keep the uaccess tag on every udev event except remove, so logind grants the seat ACL to supported displays at login and users outside the lp group no longer stay on Waiting for Device after every boot.</li>
+          <li>Notice USB access that is granted after the runtime started, without waiting for the next USB event.</li>
+          <li>In the Flatpak, keep the USB permission request open until the user allows or denies access, instead of giving up after two minutes.</li>
+          <li>On legacy cm01 displays, start adb and ffmpeg without a shell so file names reach them unchanged, and retry a handshake that gets no reply up to three times.</li>
+          <li>Relicense under GPL-3.0-or-later; code from 2.5.3 and earlier keeps its MIT notice in LICENSES/MIT.txt.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.5.3" type="stable" date="2026-10-07">
       <description>
         <ul>

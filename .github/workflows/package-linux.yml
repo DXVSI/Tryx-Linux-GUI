@@ -689,3 +689,46 @@ jobs:
           ffmpeg -hide_banner -encoders \
             > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
           grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
+
+  nix:
+    name: Nix flake
+    # Tagged releases build only the published package formats; a change in
+    # nixpkgs must not block them.
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build the flake and check its output
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix build .#default --print-build-logs
+          version=$(tr -d '\r\n' < VERSION)
+          test "$(result/bin/tryx --version)" = "tryx $version"
+          test "$(result/bin/tryx-panorama-manager --version)" = \
+            "tryx-panorama-manager $version"
+          test -x result/lib/tryx-panorama-manager/tryx-panorama-runtime
+          test -f result/lib/udev/rules.d/70-tryx-pase-access.rules
+          test -f result/lib/udev/rules.d/99-tryx-pase-printer.rules
+          unit=result/share/systemd/user/tryx-panorama.service
+          grep -qx "ExecStart=$(readlink -f result)/lib/tryx-panorama-manager/tryx-panorama-runtime" "$unit"
+          grep -qx 'KillMode=mixed' "$unit"
+          # The runtime finds ffmpeg through PATH; its wrapper must provide
+          # one with the libx264 encoder that media preparation needs.
+          ffmpeg_bin=$(grep -a -o '/nix/store/[^:]*-ffmpeg-[^:]*/bin' \
+            result/lib/tryx-panorama-manager/tryx-panorama-runtime | sort -u)
+          test "$(printf '%s\n' "$ffmpeg_bin" | wc -l)" -eq 1
+          "$ffmpeg_bin/ffmpeg" -hide_banner -encoders \
+            > "$RUNNER_TEMP/ffmpeg-encoders.txt" 2>&1
+          grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"

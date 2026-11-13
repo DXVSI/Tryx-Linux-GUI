@@ -16,7 +16,9 @@
 #include <memory>
 #include <optional>
 
+class QFileSystemWatcher;
 class QSocketNotifier;
+class QTimer;
 struct udev;
 struct udev_monitor;
 #ifdef TRYX_FLATPAK
@@ -539,6 +541,10 @@ private:
     void finishEventBatch(bool relevantEvent, bool currentEndpointEvent);
     void rescan(bool forceSignal = false);
     void stop();
+#ifndef TRYX_FLATPAK
+    void updateAccessWatch();
+    void recheckAccess();
+#endif
 
     udev *udev_ = nullptr;
     udev_monitor *monitor_ = nullptr;
@@ -549,6 +555,11 @@ private:
     bool hasSnapshot_ = false;
 #ifdef TRYX_FLATPAK
     tryx::portal_usb::Access *portalAccess_ = nullptr;
+#else
+    QFileSystemWatcher *accessWatcher_ = nullptr;
+    QTimer *accessRecheckTimer_ = nullptr;
+    QString accessWatchPath_;
+    int accessRecheckSpentMs_ = 0;
 #endif
 #ifdef TRYX_PROTOCOL_TESTING
     bool forceStartFailureForTesting_ = false;
