@@ -53,6 +53,8 @@
 #include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <panorama/adb.hpp>
+#include <panorama/process.hpp>
 #include <QTemporaryFile>
 
 #include <google/protobuf/descriptor.h>
@@ -2613,6 +2615,8 @@ private slots:
     void firmwareExclusiveGateSuppressesReconnectUntilRelease();
     void firmwareWorkerQuiesceClosesTransport();
     void legacyWorkerSerialLifecycleAndQuiesce();
+    void legacyHelpersPassArgumentsWithoutShellParsing();
+    void legacyHandshakeRetriesAndDropsLateReplies();
     void workerSessionsShareIoContextAndTeardown();
     void workerGateInterruptsBlockedForegroundResponse_data();
     void workerGateInterruptsBlockedForegroundResponse();
@@ -38066,6 +38070,140 @@ void PrinterProtocolTests::
         QStringLiteral("firmware-replace-file-lease"),
         QStringLiteral("replacement"));
     QVERIFY(replaceIntent.remove());
+}
+
+void PrinterProtocolTests::legacyHelpersPassArgumentsWithoutShellParsing() {
+    QTemporaryDir scratch;
+    QVERIFY(scratch.isValid());
+    const std::string marker = (scratch.path() + QStringLiteral("/ran")).toStdString();
+
+    const std::vector<std::string> samples{
+        std::string(),
+        "plain.mp4",
+        "two words.mp4",
+        "clip\ntouch " + marker + "\n.mp4",
+        "bang!.gif",
+        "it's.png",
+        "quote\"d.png",
+        "$(touch " + marker + ").png",
+        "`touch " + marker + "`.png",
+        "back\\slash; touch " + marker,
+        "-n",
+        "tab\tand*glob?.png",
+    };
+
+    for (const auto &sample : samples) {
+        // No local shell: the program receives the argument unchanged.
+        const auto direct = panorama::run_process({"printf", "%s", sample}, true);
+        QVERIFY(direct.has_value());
+        QCOMPARE(direct->exit_code, 0);
+        QCOMPARE(QByteArray::fromStdString(direct->output),
+                 QByteArray::fromStdString(sample));
+
+        // The quoting used for the device shell behind `adb shell` survives
+        // a POSIX shell unchanged.
+        const auto quoted = panorama::run_process(
+            {"/bin/sh", "-c", "printf %s " + panorama::shell_quote(sample)}, true);
+        QVERIFY(quoted.has_value());
+        QCOMPARE(quoted->exit_code, 0);
+        QCOMPARE(QByteArray::fromStdString(quoted->output),
+                 QByteArray::fromStdString(sample));
+    }
+    QVERIFY2(!QFileInfo::exists(QString::fromStdString(marker)),
+             "a quoted argument ran a command");
+
+    QVERIFY(!panorama::run_process({"tryx-no-such-program-for-tests"}, true).has_value());
+    const auto failing = panorama::run_process({"/bin/sh", "-c", "exit 3"}, false);
+    QVERIFY(failing.has_value());
+    QCOMPARE(failing->exit_code, 3);
+    QVERIFY(failing->output.empty());
+
+    QVERIFY(panorama::Adb::is_plain_media_name("clip.mp4"));
+    QVERIFY(panorama::Adb::is_plain_media_name("two words!.mp4"));
+    QVERIFY(!panorama::Adb::is_plain_media_name(""));
+    QVERIFY(!panorama::Adb::is_plain_media_name("."));
+    QVERIFY(!panorama::Adb::is_plain_media_name(".."));
+    QVERIFY(!panorama::Adb::is_plain_media_name("../clip.mp4"));
+    QVERIFY(!panorama::Adb::is_plain_media_name("clip\n.mp4"));
+}
+
+void PrinterProtocolTests::legacyHandshakeRetriesAndDropsLateReplies() {
+    const int master = ::posix_openpt(
+        O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    QVERIFY(master >= 0);
+    const auto closeMaster = qScopeGuard([master]() { ::close(master); });
+    QCOMPARE(::grantpt(master), 0);
+    QCOMPARE(::unlockpt(master), 0);
+    const char *slaveName = ::ptsname(master);
+    QVERIFY(slaveName != nullptr);
+
+    const auto writeFrame = [master](const std::string &body, QString *error) {
+        const auto frame = panorama::build_frame("1", "OK", body);
+        return writeAllFd(master,
+            QByteArray(reinterpret_cast<const char *>(frame.data()),
+                       static_cast<qsizetype>(frame.size())),
+            error);
+    };
+
+    QString peerError;
+    int requests = 0;
+    std::thread peer([&]() {
+        for (int index = 0; index < 3; ++index) {
+            QByteArray frame;
+            QElapsedTimer deadline;
+            deadline.start();
+            while (deadline.elapsed() < kPeerTimeoutMs) {
+                pollfd descriptor{master, POLLIN, 0};
+                const int ready = ::poll(&descriptor, 1, 10);
+                if (ready <= 0 || !(descriptor.revents & POLLIN))
+                    continue;
+                char byte = 0;
+                if (::read(master, &byte, 1) != 1)
+                    continue;
+                frame.append(byte);
+                if (frame.size() > 1 &&
+                    static_cast<uint8_t>(byte) == panorama::FRAME_MARKER)
+                    break;
+            }
+            if (frame.size() < 2) {
+                peerError = QStringLiteral("Missing legacy request %1").arg(index);
+                return;
+            }
+            ++requests;
+            if (index == 0)
+                continue;  // The first handshake gets no reply.
+            if (index == 1) {
+                if (!writeFrame(R"({"productId":"cm01","sn":"retry-test","version":{"firmware":"V1.0.11","app":"1.4"}})",
+                                &peerError))
+                    return;
+                // A late reply to the unanswered first attempt.
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                if (!writeFrame(R"({"productId":"cm01","late":true})", &peerError))
+                    return;
+                continue;
+            }
+            if (!writeFrame(R"({"reply":"fresh"})", &peerError))
+                return;
+        }
+    });
+    auto joinPeer = qScopeGuard([&]() { peer.join(); });
+
+    panorama::Device device(slaveName, false);
+    QVERIFY(device.connect());
+    const auto info = device.handshake_with_retry();
+    QVERIFY(info.has_value());
+    QCOMPARE(QString::fromStdString(info->product_id), QStringLiteral("cm01"));
+    QCOMPARE(QString::fromStdString(info->firmware), QStringLiteral("V1.0.11"));
+
+    const auto next = device.send_command("POST", "probe", "");
+    QVERIFY(next.has_value());
+    QCOMPARE(QString::fromStdString(next->body), QStringLiteral(R"({"reply":"fresh"})"));
+
+    device.disconnect();
+    joinPeer.dismiss();
+    peer.join();
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(requests, 3);
 }
 
 void PrinterProtocolTests::legacyWorkerSerialLifecycleAndQuiesce() {

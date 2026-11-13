@@ -109,6 +109,14 @@ do
         printf '%s\n' "$packaged_usb_product_ids" >&2
         exit 1
     fi
+    # A rule limited to add or change events loses the uaccess tag on the
+    # bind event that follows add, and logind then skips the device at login.
+    if grep 'ATTR{idVendor}=="391a"' "$usb_product_source" |
+        grep -qv '^ACTION!="remove", '
+    then
+        echo "TRYX udev rules must match every event except remove: ${usb_product_source#"$staged_root"}" >&2
+        exit 1
+    fi
 done
 
 metainfo_path=$staged_root/usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml

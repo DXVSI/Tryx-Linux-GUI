@@ -73,7 +73,7 @@ void LegacyDeviceSession::doHandshake() {
         return;
     }
 
-    auto info = device_->handshake();
+    auto info = device_->handshake_with_retry();
     if (!info) {
         emit events_.error(DeviceWorker::tr("Handshake failed"));
         return;
@@ -268,7 +268,7 @@ void LegacyDeviceSession::setRotation(int degrees) {
 
 void LegacyDeviceSession::rebootDevice() {
     // ADB reboot works, POST reboot doesn't
-    std::system("adb -s $(adb devices 2>/dev/null | grep TRYX | cut -f1) reboot 2>/dev/null");
+    panorama::Adb::reboot();
 }
 
 void LegacyDeviceSession::deleteMedia(const QStringList &files) {

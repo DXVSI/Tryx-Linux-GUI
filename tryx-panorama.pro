@@ -100,6 +100,7 @@ SOURCES += \
     src/core/device.cpp \
     src/core/adb.cpp \
     src/core/media.cpp \
+    src/core/process.cpp \
     src/core/config.cpp
 
 HEADERS += \
