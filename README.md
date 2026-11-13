@@ -248,6 +248,32 @@ XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
 
+## What's new in 2.5.4
+
+- Users outside the `lp` group no longer stay on "Waiting for Device" after
+  every boot. The udev rule marked the display for the login session only on
+  the first USB event, the kernel's next event dropped the mark, and logind
+  then gave the session no access to the display. The rule now keeps the mark
+  on every event, and the runtime also notices access that arrives after it
+  has started (#41). Reboot once after installing, or apply the rule right
+  away:
+
+  ```fish
+  sudo udevadm trigger --action=change --subsystem-match=usb --attr-match=idVendor=391a
+  ```
+
+- In the Flatpak, the USB permission request stays open until you allow or
+  deny access. It used to give up after two minutes, and the runtime then had
+  no access until it was restarted.
+- On legacy `cm01` displays, `adb` and `ffmpeg` start without a shell, so file
+  names reach them unchanged (#44), and a handshake that gets no reply is
+  retried up to three times (#45).
+- The repository is a Nix flake, contributed by @Yuna404; see
+  [NixOS](#nixos).
+- The project is now licensed under GPL-3.0-or-later. Releases up to and
+  including 2.5.3 stay under MIT, and code from them keeps its MIT notice in
+  `LICENSES/MIT.txt`.
+
 ## What's new in 2.5.3
 
 - Panorama `391a:1011`, Panorama SE `391a:1021` and Panorama WB `391a:1031`
@@ -563,7 +589,7 @@ runtime remote, and a working USB portal backend are required. Stop any other
 TRYX runtime before starting this build.
 
 ```fish
-flatpak install --user ./tryx-panorama-manager-2.5.3-experimental-x86_64.flatpak
+flatpak install --user ./tryx-panorama-manager-2.5.4-experimental-x86_64.flatpak
 flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ```
 
@@ -595,13 +621,13 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.3-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.4-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.5.3-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.5.4-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.5.3-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.5.4-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
