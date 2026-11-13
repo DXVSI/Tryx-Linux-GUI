@@ -84,7 +84,7 @@ std::optional<std::string> Device::find_device(bool verbose) {
       continue;
     }
 
-    auto info = dev.handshake();
+    auto info = dev.handshake_with_retry();
     if (info && !info->product_id.empty() && info->product_id != "unknown") {
       if (verbose) {
         std::cout << "found " << info->product_id << "\n";
@@ -276,6 +276,39 @@ std::optional<Response> Device::send_command(const std::string& request_state,
   }
 
   return parsed;
+}
+
+void Device::discard_input() {
+  if (fd_ >= 0) {
+    tcflush(fd_, TCIFLUSH);
+  }
+}
+
+std::optional<DeviceInfo> Device::handshake_with_retry(int attempts) {
+  constexpr auto kRetryGap = std::chrono::milliseconds(300);
+  constexpr auto kLateReplySettle = std::chrono::milliseconds(800);
+
+  std::optional<DeviceInfo> last_reply;
+  for (int attempt = 1; attempt <= attempts && is_connected(); ++attempt) {
+    if (attempt > 1) {
+      std::this_thread::sleep_for(kRetryGap);
+      discard_input();
+    }
+    auto info = handshake();
+    if (info && !info->product_id.empty() && info->product_id != "unknown") {
+      if (attempt > 1) {
+        // A reply to an earlier attempt can still arrive and would otherwise
+        // be read as the reply to the next command.
+        std::this_thread::sleep_for(kLateReplySettle);
+        discard_input();
+      }
+      return info;
+    }
+    if (info) {
+      last_reply = std::move(info);
+    }
+  }
+  return last_reply;
 }
 
 std::optional<DeviceInfo> Device::handshake() {
