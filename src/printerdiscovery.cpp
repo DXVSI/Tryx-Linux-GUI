@@ -6,8 +6,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QSet>
 #include <QSocketNotifier>
+#include <QTimer>
 #include <libudev.h>
 #include <algorithm>
 #include <array>
@@ -377,6 +379,38 @@ bool validatePrinterEndpoint(const QString &devicePath, int openFd,
     }
     return true;
 }
+
+#ifndef TRYX_FLATPAK
+// logind grants the seat ACL on the usbfs node without a udev event, for
+// example a moment after login, so a denied node is watched and rechecked.
+constexpr int kAccessRecheckInitialMs = 1000;
+constexpr int kAccessRecheckMaxIntervalMs = 30000;
+constexpr int kAccessRecheckLimitMs = 300000;
+
+QString accessNodePath(const QString &devRoot,
+                       const PrinterProtocol::UsbPrinterDevice &device) {
+    if (QDir::isAbsolutePath(device.devicePath)) {
+        return device.devicePath;
+    }
+    if (device.sysfsPath.isEmpty()) {
+        return {};
+    }
+    bool busOk = false;
+    bool addressOk = false;
+    const int bus =
+        readTextFile(QDir(device.sysfsPath).filePath(QStringLiteral("busnum")))
+            .toInt(&busOk);
+    const int address =
+        readTextFile(QDir(device.sysfsPath).filePath(QStringLiteral("devnum")))
+            .toInt(&addressOk);
+    if (!busOk || !addressOk) {
+        return {};
+    }
+    return QDir(devRoot).filePath(QStringLiteral("bus/usb/%1/%2")
+                                      .arg(bus, 3, 10, QLatin1Char('0'))
+                                      .arg(address, 3, 10, QLatin1Char('0')));
+}
+#endif
 
 } // namespace tryx::printer_discovery
 
@@ -831,12 +865,71 @@ void PrinterDeviceMonitor::finishEventBatch(bool relevantEvent,
 void PrinterDeviceMonitor::rescan(bool forceSignal) {
     const PrinterProtocol::DiscoverySnapshot current =
         PrinterProtocol::discover(sysfsRoot_, devRoot_);
-    if (forceSignal || !hasSnapshot_ || !(current == snapshot_)) {
+    const bool changed = forceSignal || !hasSnapshot_ || !(current == snapshot_);
+    if (changed) {
         snapshot_ = current;
         hasSnapshot_ = true;
+    }
+#ifndef TRYX_FLATPAK
+    updateAccessWatch();
+#endif
+    if (changed) {
         emit snapshotChanged(snapshot_);
     }
 }
+
+#ifndef TRYX_FLATPAK
+void PrinterDeviceMonitor::updateAccessWatch() {
+    const QString path =
+        snapshot_.state == PrinterProtocol::DiscoveryState::PermissionDenied &&
+                snapshot_.devices.size() == 1
+            ? accessNodePath(devRoot_, snapshot_.devices.first())
+            : QString();
+    if (path != accessWatchPath_) {
+        if (accessWatcher_ && !accessWatcher_->directories().isEmpty()) {
+            accessWatcher_->removePaths(accessWatcher_->directories());
+        }
+        accessWatchPath_ = path;
+        accessRecheckSpentMs_ = 0;
+        if (path.isEmpty()) {
+            if (accessRecheckTimer_) {
+                accessRecheckTimer_->stop();
+            }
+            return;
+        }
+        if (!accessWatcher_) {
+            accessWatcher_ = new QFileSystemWatcher(this);
+            connect(accessWatcher_, &QFileSystemWatcher::directoryChanged, this,
+                    [this]() { rescan(); });
+        }
+        if (!accessRecheckTimer_) {
+            accessRecheckTimer_ = new QTimer(this);
+            accessRecheckTimer_->setSingleShot(true);
+            connect(accessRecheckTimer_, &QTimer::timeout, this,
+                    &PrinterDeviceMonitor::recheckAccess);
+        }
+        accessRecheckTimer_->start(kAccessRecheckInitialMs);
+    }
+    // inotify cannot watch a node the user cannot read, so the watch is on
+    // its directory, which reports attribute changes of its entries.
+    const QString directory = QFileInfo(accessWatchPath_).absolutePath();
+    if (!accessWatchPath_.isEmpty() &&
+        !accessWatcher_->directories().contains(directory)) {
+        accessWatcher_->addPath(directory);
+    }
+}
+
+void PrinterDeviceMonitor::recheckAccess() {
+    accessRecheckSpentMs_ += accessRecheckTimer_->interval();
+    rescan();
+    if (accessWatchPath_.isEmpty() || accessRecheckTimer_->isActive() ||
+        accessRecheckSpentMs_ >= kAccessRecheckLimitMs) {
+        return;
+    }
+    accessRecheckTimer_->start(
+        qMin(accessRecheckTimer_->interval() * 2, kAccessRecheckMaxIntervalMs));
+}
+#endif
 
 void PrinterDeviceMonitor::stop() {
 #ifdef TRYX_FLATPAK
@@ -844,6 +937,14 @@ void PrinterDeviceMonitor::stop() {
         disconnect(portalAccess_, nullptr, this, nullptr);
     delete portalAccess_;
     portalAccess_ = nullptr;
+#else
+    if (accessRecheckTimer_) {
+        accessRecheckTimer_->stop();
+    }
+    if (accessWatcher_ && !accessWatcher_->directories().isEmpty()) {
+        accessWatcher_->removePaths(accessWatcher_->directories());
+    }
+    accessWatchPath_.clear();
 #endif
     if (notifier_) {
         delete notifier_;
