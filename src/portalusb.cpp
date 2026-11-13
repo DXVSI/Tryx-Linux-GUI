@@ -157,10 +157,12 @@ Access::Access(Registry &registry, QObject *parent) : Access(registry, Options{}
 Access::Access(Registry &registry, const Options &options, QObject *parent)
     : QObject(parent), registry_(registry), options_(options), bus_(QString()) {
     registerTypes();
-    permissionDeadline_.setSingleShot(true);
-    connect(&permissionDeadline_, &QTimer::timeout, this, [this]() {
-        logPortalEvent(QStringLiteral("acquire_timeout"));
-        fail(tr("The USB permission request timed out. Restart the Flatpak background runtime to try again."));
+    // A permission dialog that nobody answered after boot used to time out
+    // and leave the runtime without USB access until it was restarted (#37).
+    // The dialog now stays open until the user allows or denies access.
+    pendingNotice_.setSingleShot(true);
+    connect(&pendingNotice_, &QTimer::timeout, this, [this]() {
+        logPortalEvent(QStringLiteral("acquire_still_pending"));
     });
     connectionCheck_.setInterval(250);
     connect(&connectionCheck_, &QTimer::timeout, this, [this]() {
@@ -440,7 +442,7 @@ bool Access::maybeAcquire() {
         // fail() already published the terminal state.
         return true;
     }
-    permissionDeadline_.start(qMax(1, options_.permissionTimeoutMs));
+    pendingNotice_.start(qMax(1, options_.pendingNoticeMs));
     {
         QMutexLocker lock(&registry_.mutex_);
         // A new open request supersedes an earlier denial text.
@@ -448,9 +450,7 @@ bool Access::maybeAcquire() {
         registry_.error_.clear();
     }
     logPortalEvent(QStringLiteral("acquire_requested"),
-                   {{QStringLiteral("product"), printerProductIdString(device.productId)},
-                    {QStringLiteral("timeout_ms"),
-                     QString::number(qMax(1, options_.permissionTimeoutMs))}});
+                   {{QStringLiteral("product"), printerProductIdString(device.productId)}});
     const QString request = requestPath_;
     call(owner_, kDesktopPath, kUsbInterface, QStringLiteral("AcquireDevices"),
          {QString(), QVariant::fromValue(Devices{{device.id, {{QStringLiteral("writable"), true}}}}),
@@ -499,7 +499,7 @@ void Access::processAcquisitionResponse(uint response) {
     logPortalEvent(QStringLiteral("acquire_response"),
                    {{QStringLiteral("code"), QString::number(response)}});
     if (response != 0) {
-        permissionDeadline_.stop();
+        pendingNotice_.stop();
         requestPath_.clear();
         pendingId_.clear();
         pendingEndpoint_.clear();
@@ -579,7 +579,7 @@ void Access::finishAcquire() {
                                     : QStringLiteral("acquire_discarded"));
             if (!accepted)
                 releaseDevices({pendingId_});
-            permissionDeadline_.stop();
+            pendingNotice_.stop();
             requestPath_.clear();
             pendingId_.clear();
             pendingEndpoint_.clear();
@@ -641,7 +641,7 @@ void Access::stop() {
     running_ = false;
     ++generation_;
     sessionReady_ = false;
-    permissionDeadline_.stop();
+    pendingNotice_.stop();
     connectionCheck_.stop();
     closeRemote(requestPath_, kRequestInterface);
     closeRemote(sessionPath_, kSessionInterface);
