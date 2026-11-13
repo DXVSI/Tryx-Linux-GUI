@@ -57,6 +57,7 @@ require_file /usr/share/applications/tryx-panorama-manager.desktop
 require_file /usr/share/icons/hicolor/256x256/apps/tryx-panorama.png
 require_file /usr/share/metainfo/io.github.dxvsi.tryx_panorama_manager.metainfo.xml
 require_file /usr/share/licenses/tryx-panorama-manager/LICENSE
+require_file /usr/share/licenses/tryx-panorama-manager/MIT.txt
 require_file /usr/share/licenses/tryx-panorama-manager/picojson-BSD-2-Clause.txt
 
 desktop_entry=$staged_root/usr/share/applications/tryx-panorama-manager.desktop
