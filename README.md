@@ -580,8 +580,10 @@ for testing on immutable desktops such as Bazzite and SteamOS Desktop Mode.
 It includes the GUI, background runtime, and CLI, with file dialogs
 and printer-class USB access through desktop portals. Firmware flashing,
 autostart, and legacy serial/ADB devices are not supported by this package.
-Physical-device testing on Bazzite and SteamOS is still required; this is not a
-Flathub release. See the [Flatpak build instructions and limitations](packaging/flatpak/README.md).
+On Bazzite 44 KDE it is community-tested with a PANORAMA SE ARGB 360
+([#19](https://github.com/DXVSI/Tryx-Linux-GUI/issues/19)), not
+maintainer-tested. SteamOS Desktop Mode has not been tested on a physical
+device. This is not a Flathub release. See the [Flatpak build instructions and limitations](packaging/flatpak/README.md).
 
 After downloading the bundle and verifying it against the release's
 `SHA256SUMS`, install it for your user. Flatpak 1.15.11 or newer, the Flathub

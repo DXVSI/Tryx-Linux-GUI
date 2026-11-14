@@ -2,7 +2,8 @@
 
 Desktop-mode packaging for immutable systems such as Bazzite and SteamOS.
 The package contains the Qt Quick GUI, a separate background runtime, and `tryx`.
-Hardware acceptance on these systems is still required before declaring support.
+Bazzite 44 KDE is community-tested with a PANORAMA SE ARGB 360 (issue #19), not
+maintainer-tested. SteamOS has not been tested on a physical device.
 
 ## Requirements and boundaries
 
