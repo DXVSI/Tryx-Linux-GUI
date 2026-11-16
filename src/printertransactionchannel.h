@@ -44,6 +44,14 @@ public:
 
     static QString transactionProfileName(TransactionProfile profile);
 
+    // A frame the device sends on its own never answers a host request: the
+    // playback event (987), the KANALI 2.6.0 notifications 820 to 822, and
+    // any body this wire schema does not know (parsed as BODY_NOT_SET with
+    // unknown fields). Returns true for such a frame, whatever its header.
+    // An application exception (822) is logged as a warning, the other
+    // notifications at info level, an unknown body field once per process.
+    static bool skipUnsolicitedResponse(const panorama::wire::v1::Response &response);
+
     explicit PrinterTransactionChannel(quint16 expectedProductId,
                                        int transactionTimeoutMs,
                                        int fileTransmitResponseTimeoutMs);

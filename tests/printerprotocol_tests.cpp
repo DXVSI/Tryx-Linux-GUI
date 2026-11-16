@@ -2667,6 +2667,7 @@ private slots:
     void udbSessionBootstrapWaitsForLateDeviceInfo();
     void udbSessionBootstrapResynchronizesAfterStaleTail();
     void udbSessionBootstrapSkipsStaleTrackedResponse();
+    void udbSessionBootstrapSkipsUnsolicitedNotifications();
     void udbSessionBootstrapRejectsUnboundedStaleResponses();
     void udbSessionDeviceInfoReadinessTimeoutSendsOnce();
     void udbSessionBootstrapPartialResponseIsTerminal();
@@ -2681,6 +2682,8 @@ private slots:
     void displayKeepaliveMalformedResponseIsDiscarded();
     void displayKeepaliveIncompleteResponseIsDiscarded();
     void notificationBeforeExpectedResponse();
+    void unsolicitedNotificationsBeforeTrackedResponseAreSkipped();
+    void optionalSetterRejectionSurvivesUnsolicitedNotification();
     void headerlessPongBeforeTrackedResponseIsSkipped();
     void boundedResponseBurstBeforeFileListIsSkipped();
     void slowTrackedResponseGetsInFlightKeepalive();
@@ -42088,6 +42091,144 @@ void PrinterProtocolTests::udbSessionBootstrapSkipsStaleTrackedResponse() {
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
 }
 
+// KANALI 2.6.0 notifications (820 to 822) and bodies this schema does not
+// know arrive on their own, possibly with a header.
+static panorama::wire::v1::Response appExceptionNotification(
+    const panorama::wire::v1::Request &request) {
+    auto notification = baseResponse(request);
+    auto *exception = notification.mutable_app_exception();
+    exception->set_exception_type(
+        panorama::wire::v1::AppException::EXCEPTION_STORAGE);
+    exception->set_error_code(-28);
+    exception->set_source("media_service");
+    exception->set_message("userdata\nnearly full");
+    exception->set_timestamp(1763337600);
+    return notification;
+}
+
+static panorama::wire::v1::Response unknownBodyNotification(
+    const panorama::wire::v1::Request &request) {
+    auto notification = baseResponse(request);
+    // Vendor storage_status (510): available_bytes = 1024.
+    notification.GetReflection()
+        ->MutableUnknownFields(&notification)
+        ->AddLengthDelimited(510, std::string("\x10\x80\x08", 3));
+    return notification;
+}
+
+static QRegularExpression appExceptionWarningPattern() {
+    return QRegularExpression(QStringLiteral(
+        "^TRYX device reported an application exception: type=Storage "
+        "code=-28 source=\"media_service\" message=\"userdata nearly full\" "
+        "timestamp=1763337600 track_id=\\d+$"));
+}
+
+void PrinterProtocolTests::udbSessionBootstrapSkipsUnsolicitedNotifications() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request deviceInfoRequest;
+        if (!readRequest(sockets[1], &deviceInfoRequest, &peerError) ||
+            deviceInfoRequest.body_case() !=
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral(
+                    "notification bootstrap did not receive DeviceInfo");
+            }
+            return;
+        }
+
+        // Same track-zero header as the DeviceInfo answer itself.
+        if (!writeResponse(sockets[1], appExceptionNotification(deviceInfoRequest),
+                           &peerError)) {
+            return;
+        }
+        panorama::wire::v1::Response headerlessVolume;
+        headerlessVolume.mutable_host_volume_set()->set_volume(35);
+        if (!writeResponse(sockets[1], headerlessVolume, &peerError)) {
+            return;
+        }
+        auto launch = baseResponse(deviceInfoRequest);
+        launch.mutable_quick_launcher_shortcut_launch()->set_slot_index(2);
+        launch.mutable_quick_launcher_shortcut_launch()->set_program_path(
+            "C:\\Games\\launcher.exe");
+        if (!writeResponse(sockets[1], launch, &peerError)) {
+            return;
+        }
+
+        auto deviceInfoResponse = baseResponse(deviceInfoRequest);
+        auto *deviceInfo = deviceInfoResponse.mutable_device_information();
+        deviceInfo->set_product_name("PANORAMA SE");
+        deviceInfo->set_firmware_version("notification-firmware");
+        deviceInfo->set_serial_number("notification-serial");
+        if (!writeResponse(sockets[1], deviceInfoResponse, &peerError)) {
+            return;
+        }
+
+        const auto respond = [&](auto expectedBody, auto populateResponse,
+                                 bool unknownBodyFirst) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError) ||
+                request.body_case() != expectedBody) {
+                if (peerError.isEmpty()) {
+                    peerError = QStringLiteral(
+                        "notification bootstrap sequence was incomplete");
+                }
+                return false;
+            }
+            if (unknownBodyFirst &&
+                !writeResponse(sockets[1], unknownBodyNotification(request),
+                               &peerError)) {
+                return false;
+            }
+            auto response = baseResponse(request);
+            populateResponse(&response);
+            return writeResponse(sockets[1], response, &peerError);
+        };
+
+        if (!respond(
+                panorama::wire::v1::Request::kSystemConfigurationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_system_configuration();
+                },
+                true) ||
+            !respond(
+                panorama::wire::v1::Request::kDeviceAuthenticationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_device_authentication()->set_auth("ok");
+                },
+                false) ||
+            !respond(
+                panorama::wire::v1::Request::kOverlayLayout,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_acknowledgement();
+                },
+                false)) {
+            return;
+        }
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol protocol(500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("test-endpoint"));
+    const PrinterProtocol::Result result = protocol.startDisplaySession(
+        QStringLiteral("test-endpoint"), {});
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.deviceInfo.firmwareVersion,
+             QStringLiteral("notification-firmware"));
+    QCOMPARE(result.deviceInfo.serialNumber,
+             QStringLiteral("notification-serial"));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
 void PrinterProtocolTests::udbSessionBootstrapRejectsUnboundedStaleResponses() {
     int sockets[2] = {-1, -1};
     QString socketError;
@@ -43035,6 +43176,118 @@ void PrinterProtocolTests::notificationBeforeExpectedResponse() {
     peer.join();
     ::close(sockets[1]);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+void PrinterProtocolTests::unsolicitedNotificationsBeforeTrackedResponseAreSkipped() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("missing tracked file-list request");
+            }
+            return;
+        }
+
+        // The notifications even carry the track id of the request in flight.
+        if (!writeResponse(sockets[1], appExceptionNotification(request),
+                           &peerError)) {
+            return;
+        }
+        panorama::wire::v1::Response headerlessLaunch;
+        headerlessLaunch.mutable_quick_launcher_shortcut_launch()->set_slot_index(1);
+        if (!writeResponse(sockets[1], headerlessLaunch, &peerError)) {
+            return;
+        }
+        auto volume = baseResponse(request);
+        volume.mutable_host_volume_set()->set_mute(true);
+        if (!writeResponse(sockets[1], volume, &peerError) ||
+            !writeResponse(sockets[1], unknownBodyNotification(request),
+                           &peerError)) {
+            return;
+        }
+
+        auto response = baseResponse(request);
+        auto *file = response.mutable_media_catalog()->add_media_file_list();
+        file->set_file_path("/userdata/user/after-notification.png");
+        file->set_file_ext(".h264_2240x1080");
+        file->set_file_size(321);
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol protocol(500);
+    protocol.adoptFileDescriptorForTesting(sockets[0],
+                                           QStringLiteral("test-endpoint"));
+    const PrinterProtocol::OperationContext context;
+    const auto result =
+        protocol.readMediaList(QStringLiteral("test-endpoint"), context);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.files.size(), 1);
+    QCOMPARE(result.files.first().name,
+             QStringLiteral("after-notification.png.h264_2240x1080"));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+// A tracked setter takes its optional answer from the drain. A notification
+// with the setter's track id must neither acknowledge it nor hide the
+// rejection that follows.
+void PrinterProtocolTests::optionalSetterRejectionSurvivesUnsolicitedNotification() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    PrinterProtocol protocol;
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-notification-setter");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("missing overlay layout setter");
+            }
+            return;
+        }
+        if (!writeResponse(sockets[1], appExceptionNotification(request),
+                           &peerError)) {
+            return;
+        }
+        auto rejection = baseResponse(request);
+        rejection.mutable_error()->set_code(
+            panorama::wire::v1::ProtocolError::FAILURE);
+        rejection.mutable_error()->set_why("layout refused");
+        writeResponse(sockets[1], rejection, &peerError);
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.left.metrics = {QStringLiteral("CPU Power")};
+    overlay.left.alignment = QStringLiteral("Right");
+    overlay.left.textColor = 0x000000U;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool configured = protocol.configurePaseOverlay(
+        devicePath, overlay, &error, PrinterProtocol::OperationContext{},
+        &mutation);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(!configured);
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QCOMPARE(error, QStringLiteral("layout refused"));
 }
 
 void PrinterProtocolTests::headerlessPongBeforeTrackedResponseIsSkipped() {

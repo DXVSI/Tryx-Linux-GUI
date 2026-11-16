@@ -103,6 +103,13 @@ bool PaseConfigurationClient::bootstrapSession(
                 }
                 return false;
             }
+            // Device notifications may carry the same track-zero header as
+            // the bootstrap answers; their body tells them apart.
+            if (PrinterTransactionChannel::skipUnsolicitedResponse(response)) {
+                ++skippedFrames;
+                skippedResponseBytes += payload.size() + 8;
+                continue;
+            }
             const bool expectedBootstrapHeader = response.has_header() &&
                                                  response.header().version() == 1 &&
                                                  response.header().track_id() == 0 &&
@@ -111,12 +118,10 @@ bool PaseConfigurationClient::bootstrapSession(
                                               response.header().version() == 1 &&
                                               response.header().track_id() != 0 &&
                                               response.header().payload_crc32() == 0;
-            const bool headerlessAsynchronousResponse =
+            const bool headerlessPong =
                 !response.has_header() &&
-                (response.body_case() == panorama::wire::v1::Response::kPong ||
-                 response.body_case() ==
-                     panorama::wire::v1::Response::kAsynchronousEvent);
-            if (staleTrackedResponse || headerlessAsynchronousResponse) {
+                response.body_case() == panorama::wire::v1::Response::kPong;
+            if (staleTrackedResponse || headerlessPong) {
                 ++skippedFrames;
                 skippedResponseBytes += payload.size() + 8;
                 continue;
