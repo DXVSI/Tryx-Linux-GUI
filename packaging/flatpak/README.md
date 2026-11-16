@@ -14,6 +14,10 @@ maintainer-tested. SteamOS has not been tested on a physical device.
   mapped like the official application but not tested on hardware, `391a:1051`,
   `391a:1061`, `391a:1071`, `391a:10a1`, `391a:10b1` only.
   Legacy serial/ADB identities, including `18d1:2d04`, are not exposed in this build.
+- HOLO 360 (`391a:1051`) follows the official application 2.6.0 and is not tested
+  on hardware. Media upload, the device catalog, full-screen Apply, brightness,
+  backlight, overlay metrics and saved layouts are on; split screen, mirror,
+  waterfall, light controls, media pull (Save as new/Replace) and firmware are off.
 - USB enumeration is narrowly scoped. The portal asks for device access once per
   device identity; denial does not trigger a loop of permission prompts.
   Portal permission does not bypass the host's existing USB access controls.
