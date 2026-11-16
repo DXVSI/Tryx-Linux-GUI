@@ -191,6 +191,11 @@ bool printerConversionProfileMatchesMediaName(
     return !conversionProfile.isEmpty() && !fileName.isEmpty();
 }
 
+bool isPasePrinterConversionProfile(const QString &conversionProfile) {
+    return conversionProfile.startsWith(QStringLiteral("pase-h264-")) ||
+           conversionProfile.startsWith(QStringLiteral("pase-mxhd-"));
+}
+
 }  // namespace tryx::printer_media_identity
 
 class CacheCleanupStoreTests final : public QObject {

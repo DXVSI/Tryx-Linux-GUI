@@ -50,6 +50,34 @@ QString paseSplitConversionProfileBase(const QString &typeName) {
         .arg(typeName);
 }
 
+// A PASE still is what the official converter makes for every product: one
+// frame at 30 fps with CRF 18, wrapped in the media header. Earlier
+// generations (raw minute-long "image-60s" clips) stay canonical below.
+QString paseImageConversionProfileBase(bool splitArea) {
+    return splitArea
+        ? QStringLiteral(
+              "pase-mxhd-v1-image-split-area-1120x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali")
+        : QStringLiteral(
+              "pase-mxhd-v1-image-2240x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
+}
+
+bool paseProfileIsSplitArea(const QString &profile) {
+    if (profile.startsWith(QStringLiteral("pase-h264-v3-"))) {
+        return true;
+    }
+    return profile.startsWith(QStringLiteral("pase-mxhd-v1-")) &&
+           profile.contains(QStringLiteral("-split-area-1120x1080-"));
+}
+
+bool paseProfileIsFullFrame(const QString &profile) {
+    if (profile.startsWith(QStringLiteral("pase-h264-v1-")) ||
+        profile.startsWith(QStringLiteral("pase-h264-v2-"))) {
+        return true;
+    }
+    return profile.startsWith(QStringLiteral("pase-mxhd-v1-")) &&
+           !profile.contains(QStringLiteral("-split-area-"));
+}
+
 bool splitPreparationSupported(
     const PrinterProductProfile &profile) {
     return profile.mediaUploadSupported &&
@@ -131,9 +159,10 @@ QString printerConversionProfile(
     QString typeName;
     switch (panorama::Media::detect_type(path.toStdString())) {
     case panorama::MediaType::Image:
-        typeName = productId == turris_media::kProductId
-            ? QStringLiteral("image")
-            : QStringLiteral("image-60s");
+        if (productId != turris_media::kProductId) {
+            return paseImageConversionProfile(profile);
+        }
+        typeName = QStringLiteral("image");
         break;
     case panorama::MediaType::Video:
         typeName = QStringLiteral("video");
@@ -161,6 +190,29 @@ QString printerConversionProfile(
     }
     return paseConversionProfileBase(QStringLiteral("v2"), typeName) +
            QStringLiteral("-transform-") + transformFingerprint;
+}
+
+QString paseImageConversionProfile(
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    if (!tryxMediaPreparationProfileV1IsValid(profile)) {
+        return {};
+    }
+    const QString transformFingerprint =
+        tryxMediaTransformFingerprint(profile.transform);
+    if (transformFingerprint.isEmpty()) {
+        return {};
+    }
+    const bool splitArea = profile.target == QStringLiteral("SplitArea");
+    const QString base = paseImageConversionProfileBase(splitArea);
+    if (!splitArea && tryxMediaTransformIsLegacyFit(profile.transform)) {
+        return base;
+    }
+    return base + QStringLiteral("-transform-") + transformFingerprint;
+}
+
+bool isPaseImageConversionProfile(const QString &conversionProfile) {
+    return conversionProfile.startsWith(
+        QStringLiteral("pase-mxhd-v1-image-"));
 }
 
 QString paseRecoveredConversionProfile(
@@ -315,6 +367,20 @@ bool isCanonicalPrinterConversionProfile(
             return true;
         }
     }
+    if (profileMatchesBaseOrTransform(
+            conversionProfile, paseImageConversionProfileBase(false))) {
+        return true;
+    }
+    const QString paseSplitImageTransformPrefix =
+        paseImageConversionProfileBase(true) +
+        QStringLiteral("-transform-");
+    if (conversionProfile.startsWith(paseSplitImageTransformPrefix) &&
+        printer_media_file_integrity::isSha256Hex(
+            conversionProfile.mid(paseSplitImageTransformPrefix.size()))) {
+        return true;
+    }
+    // "image-60s" is the earlier PASE still: a raw minute-long clip. It stays
+    // canonical so stored records load, but never matches a new upload.
     for (const QString &typeName : {
              QStringLiteral("image-60s"),
              QStringLiteral("video"),
@@ -375,13 +441,9 @@ bool printerConversionProfileMatchesMediaName(
     if (conversionProfile.startsWith(
             QStringLiteral("turris-mxhd-v1-"))) {
         expectedGeometry = QStringLiteral("1280x720");
-    } else if (conversionProfile.startsWith(
-                   QStringLiteral("pase-h264-v1-")) ||
-               conversionProfile.startsWith(
-                   QStringLiteral("pase-h264-v2-"))) {
+    } else if (paseProfileIsFullFrame(conversionProfile)) {
         expectedGeometry = QStringLiteral("2240x1080");
-    } else if (conversionProfile.startsWith(
-                   QStringLiteral("pase-h264-v3-")) &&
+    } else if (paseProfileIsSplitArea(conversionProfile) &&
                conversionProfile.contains(
                    QStringLiteral("-split-area-1120x1080-"))) {
         expectedGeometry = QStringLiteral("1120x1080");
@@ -507,19 +569,14 @@ bool printerConversionProfileMatchesProduct(
         return conversionProfile.startsWith(
             QStringLiteral("turris-mxhd-v1-"));
     }
-    const bool full = conversionProfile.startsWith(
-                          QStringLiteral("pase-h264-v1-")) ||
-                      conversionProfile.startsWith(
-                          QStringLiteral("pase-h264-v2-"));
-    if (full) {
+    if (paseProfileIsFullFrame(conversionProfile)) {
         return conversionProfile.contains(
             QStringLiteral("-%1x%2-yuv420p-30fps-")
                 .arg(profile.mediaWidth)
                 .arg(profile.mediaHeight));
     }
     return splitPreparationSupported(profile) &&
-           conversionProfile.startsWith(
-               QStringLiteral("pase-h264-v3-")) &&
+           paseProfileIsSplitArea(conversionProfile) &&
            conversionProfile.contains(
                QStringLiteral("-split-area-%1x%2-yuv420p-30fps-")
                    .arg(profile.mediaWidth / 2)
@@ -540,11 +597,28 @@ bool printerConversionProfileMatchesConversion(
         return false;
     }
     if (size.width() == profile.mediaWidth) {
-        return !conversionProfile.startsWith(
-            QStringLiteral("pase-h264-v3-"));
+        return !paseProfileIsSplitArea(conversionProfile);
     }
-    return conversionProfile.startsWith(
-        QStringLiteral("pase-h264-v3-"));
+    return paseProfileIsSplitArea(conversionProfile);
+}
+
+bool printerMediaUsesMediaHeader(quint16 productId, bool stillImage) {
+    const std::optional<PrinterProductProfile> profile =
+        printerProductProfileForId(productId);
+    if (!profile || !profile->mediaUploadSupported) {
+        return false;
+    }
+    if (profile->mediaContainer == PrinterMediaContainer::MxhdH264) {
+        return true;
+    }
+    // The PASE family keeps video and GIF as raw H.264, which loop on the
+    // display, and wraps a still the way the official converter does.
+    return stillImage;
+}
+
+bool isPasePrinterConversionProfile(const QString &conversionProfile) {
+    return conversionProfile.startsWith(QStringLiteral("pase-h264-")) ||
+           conversionProfile.startsWith(QStringLiteral("pase-mxhd-"));
 }
 
 bool printerMediaOriginRequired(const PrinterProductProfile &profile) {

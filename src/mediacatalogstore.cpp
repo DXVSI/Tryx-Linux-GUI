@@ -33,6 +33,7 @@ using tryx::printer_media_file_integrity::isSha256Hex;
 using tryx::printer_media_file_integrity::kMaximumThumbnailBytes;
 using tryx::printer_media_file_integrity::sha256File;
 using tryx::printer_media_identity::isCanonicalPrinterConversionProfile;
+using tryx::printer_media_identity::isPasePrinterConversionProfile;
 using tryx::printer_media_identity::isSafePrinterUploadMediaName;
 using tryx::printer_media_identity::
     printerConversionProfileMatchesMediaName;
@@ -586,8 +587,7 @@ QString MediaCatalogStore::managedOriginPreparedSha256(
         found->deviceIdentity != normalizedDevice ||
         !remoteEntriesMatch(found->remote, remote) ||
         !found->hasOrigin() ||
-        !found->conversionProfile.startsWith(
-            QStringLiteral("pase-h264-"))) {
+        !isPasePrinterConversionProfile(found->conversionProfile)) {
         return {};
     }
     return found->preparedSha256;

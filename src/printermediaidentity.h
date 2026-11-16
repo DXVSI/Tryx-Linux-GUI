@@ -22,6 +22,11 @@ QString printerConversionProfile(
     const QString &path,
     const TryxRuntimeMediaPreparationProfileV1 &profile,
     quint16 productId);
+// The PASE-family still identity (one frame with the media header), also
+// used when a still pulled from the device is prepared again.
+QString paseImageConversionProfile(
+    const TryxRuntimeMediaPreparationProfileV1 &profile);
+bool isPaseImageConversionProfile(const QString &conversionProfile);
 QString paseRecoveredConversionProfile(
     const QString &transformFingerprint);
 QString paseRecoveredConversionProfile(
@@ -68,6 +73,12 @@ bool printerConversionProfileMatchesConversion(
     const QString &conversionProfile,
     const PrinterProductProfile &profile,
     const QString &conversion);
+// Whether prepared media of this kind carries the official media header
+// ("u32 length + MediaHeaderPb + raw H.264"): every Turris upload, and PASE
+// stills; PASE video and GIF stay raw H.264.
+bool printerMediaUsesMediaHeader(quint16 productId, bool stillImage);
+// Any PASE-family generation: raw "pase-h264-" and header "pase-mxhd-".
+bool isPasePrinterConversionProfile(const QString &conversionProfile);
 // Whether durable retry state for this product must carry the source origin
 // identity (content hash, size, and conversion profile) before dispatch.
 bool printerMediaOriginRequired(const PrinterProductProfile &profile);

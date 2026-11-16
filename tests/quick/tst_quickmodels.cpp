@@ -14,6 +14,7 @@
 #include "supportbundle.h"
 #include "supportsnapshot.h"
 #include "systemmetricsmodel.h"
+#include "turrismediaformat.h"
 #include "windowchromecontroller.h"
 
 #include <panorama/config.hpp>
@@ -33,6 +34,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QSettings>
+#include <QScopeGuard>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -603,7 +605,9 @@ private slots:
     void drainingStageHelperBlocksRepeatedStart();
     void previewControllerRendersImmutableExactFrame();
     void publicPreviewRejectsRawDeviceH264();
+    void recoveredPreviewSkipsStillMediaHeader();
     void exportHelperIsAtomicAndDoesNotClobber();
+    void exportHelperWritesStillWithoutMediaHeader();
     void supportBundleReportUsesHostAllowlist();
     void supportBundleWriterCreatesPrivateFileWithoutClobbering();
     void supportBundleWriterRejectsBeforePublishGuardFails();
@@ -2640,6 +2644,134 @@ void QuickClientTests::publicPreviewRejectsRawDeviceH264() {
         QStringLiteral("mp4")));
 }
 
+// Edit opens a copy pulled from the device. A still in the official format
+// starts with the media header; the preview decodes only the raw stream.
+void QuickClientTests::recoveredPreviewSkipsStillMediaHeader() {
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    if (ffmpeg.isEmpty()) {
+        QSKIP("ffmpeg is optional for the unit-test environment");
+    }
+    QTemporaryDir sourceDirectory;
+    QVERIFY(sourceDirectory.isValid());
+    const QString sourcePath = QDir(sourceDirectory.path()).filePath(
+        QStringLiteral("still.png"));
+    QImage source(320, 240, QImage::Format_RGB32);
+    source.fill(QColor(QStringLiteral("#1144dd")));
+    QVERIFY(source.save(sourcePath, "PNG"));
+    const QString rawPath = QDir(sourceDirectory.path()).filePath(
+        QStringLiteral("still.raw.h264"));
+    QProcess encode;
+    encode.start(ffmpeg,
+                 {QStringLiteral("-nostdin"), QStringLiteral("-loglevel"),
+                  QStringLiteral("error"), QStringLiteral("-i"), sourcePath,
+                  QStringLiteral("-vf"), QStringLiteral("scale=2240:1080"),
+                  QStringLiteral("-frames:v"), QStringLiteral("1"),
+                  QStringLiteral("-c:v"), QStringLiteral("libx264"),
+                  QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+                  QStringLiteral("-f"), QStringLiteral("h264"), rawPath});
+    QVERIFY(encode.waitForFinished(30000));
+    QCOMPARE(encode.exitCode(), 0);
+    const QString blobPath = QDir(sourceDirectory.path()).filePath(
+        QStringLiteral("still.png.h264_2240x1080"));
+    const tryx::turris_media::WriteResult written =
+        tryx::turris_media::writeBlob(
+            rawPath, blobPath, tryx::turris_media::kImageKind, 1, 2240,
+            1080, {});
+    QVERIFY2(!written.sha256.isEmpty(), qPrintable(written.error));
+    QFile rawFile(rawPath);
+    QVERIFY(rawFile.open(QIODevice::ReadOnly));
+    const QByteArray rawStill = rawFile.readAll();
+    rawFile.close();
+    QFile blobFile(blobPath);
+    QVERIFY(blobFile.open(QIODevice::ReadOnly));
+    const QByteArray deviceStill = blobFile.readAll();
+    blobFile.close();
+    QCOMPARE(deviceStill.size(), rawStill.size() + 70);
+
+    QTemporaryDir runtimeDirectory;
+    QVERIFY(runtimeDirectory.isValid());
+    QVERIFY(QFile::setPermissions(
+        runtimeDirectory.path(),
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner));
+    ScopedEnvironmentVariable runtimeRoot("XDG_RUNTIME_DIR");
+    runtimeRoot.set(QFile::encodeName(
+        QFileInfo(runtimeDirectory.path()).canonicalFilePath()));
+    const QString outbox = tryxRuntimeDeviceMediaOutboxPath();
+    QVERIFY(!outbox.isEmpty());
+    QString directoryError;
+    QVERIFY2(MediaPreviewController::ensurePrivateDirectoryTree(
+                 outbox, &directoryError),
+             qPrintable(directoryError));
+    QStringList outboxFiles;
+    const auto removeOutboxFiles = qScopeGuard([&outboxFiles]() {
+        for (const QString &path : outboxFiles) {
+            QFile::remove(path);
+        }
+    });
+    const auto renderRecovered =
+        [&](const QByteArray &payload, QStringList *arguments,
+            QColor *center) {
+            const QString path = QDir(outbox).filePath(
+                QUuid::createUuid().toString(QUuid::WithoutBraces) +
+                QStringLiteral(".h264"));
+            outboxFiles.append(path);
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+            QCOMPARE(file.write(payload), static_cast<qint64>(payload.size()));
+            file.close();
+            QVERIFY(QFile::setPermissions(
+                path, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+            TryxRuntimeDeviceMediaArtifact artifact = deviceMediaArtifact(
+                QStringLiteral("stage-operation"),
+                QStringLiteral("artifact-a"), QStringLiteral("media-a"),
+                QStringLiteral("still.png.h264_2240x1080"),
+                QStringLiteral("device-a"));
+            artifact.localPath = QFileInfo(path).canonicalFilePath();
+            artifact.size = static_cast<quint64>(payload.size());
+            artifact.decodedSha256 = QString::fromLatin1(
+                QCryptographicHash::hash(payload,
+                                         QCryptographicHash::Sha256)
+                    .toHex());
+            MediaPreviewController preview;
+            preview.loadRecoveredVideo(artifact);
+            QTRY_VERIFY_WITH_TIMEOUT(!preview.busy(), 30000);
+            QVERIFY2(preview.ready(), qPrintable(preview.error()));
+            *arguments = preview.process_.arguments();
+            const QImage rendered(preview.previewUrl().toLocalFile());
+            QVERIFY(!rendered.isNull());
+            *center = rendered.pixelColor(rendered.width() / 2,
+                                          rendered.height() / 2);
+            preview.cancel();
+        };
+
+    QStringList arguments;
+    QColor center;
+    renderRecovered(deviceStill, &arguments, &center);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const qsizetype skip =
+        arguments.indexOf(QStringLiteral("-skip_initial_bytes"));
+    QVERIFY(skip >= 0);
+    QCOMPARE(arguments.value(skip + 1), QStringLiteral("70"));
+    QCOMPARE(arguments.value(skip + 2), QStringLiteral("-f"));
+    QCOMPARE(arguments.value(skip + 3), QStringLiteral("h264"));
+    QVERIFY2(center.blue() > 180 && center.red() < 60,
+             qPrintable(center.name()));
+
+    // A raw device copy is decoded as H.264 from its first byte.
+    renderRecovered(rawStill, &arguments, &center);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    QVERIFY(!arguments.contains(QStringLiteral("-skip_initial_bytes")));
+    QVERIFY(arguments.contains(QStringLiteral("h264")));
+    QVERIFY2(center.blue() > 180 && center.red() < 60,
+             qPrintable(center.name()));
+}
+
 void QuickClientTests::
     exportHelperIsAtomicAndDoesNotClobber() {
     const QString outbox =
@@ -2720,6 +2852,83 @@ void QuickClientTests::
     QCOMPARE(exported.readAll(), payload);
     exported.close();
     QVERIFY(QFile::remove(sourcePath));
+}
+
+void QuickClientTests::exportHelperWritesStillWithoutMediaHeader() {
+    const QString outbox =
+        tryxRuntimeDeviceMediaOutboxPath();
+    QVERIFY(!outbox.isEmpty());
+    QVERIFY(QDir().mkpath(outbox));
+    QVERIFY(QFile::setPermissions(
+        outbox,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner));
+
+    // A PASE still pulled from the device: the official media header for
+    // 2240x1080, then the raw H.264 stream.
+    const QByteArray header = QByteArray::fromHex(
+        "4200000008c490e1ea04122c54727978206d65646961206865616465722076"
+        "312c206670733d33302c2073697a653d32323430783130383018022001281e"
+        "30c01138b8084001");
+    const QByteArray rawH264 = QByteArray::fromHex(
+        "000000016764001facd9405005bb0110000003001000000303c0f1831960"
+        "0000000168ebe3cb22c0"
+        "00000001658884000affff");
+    const QByteArray deviceCopy = header + rawH264;
+    const QString sourcePath =
+        QDir(outbox).filePath(
+            QUuid::createUuid().toString(
+                QUuid::WithoutBraces) +
+            QStringLiteral(".h264"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(
+        QIODevice::WriteOnly | QIODevice::NewOnly));
+    QCOMPARE(source.write(deviceCopy),
+             static_cast<qint64>(deviceCopy.size()));
+    source.close();
+    QVERIFY(QFile::setPermissions(
+        sourcePath,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner));
+    const auto removeSource = qScopeGuard([&sourcePath]() {
+        QFile::remove(sourcePath);
+    });
+
+    QTemporaryDir destinationDirectory;
+    QVERIFY(destinationDirectory.isValid());
+    const QString destinationPath =
+        QDir(destinationDirectory.path()).filePath(
+            QStringLiteral("still.h264"));
+    const QString deviceCopySha =
+        QString::fromLatin1(
+            QCryptographicHash::hash(
+                deviceCopy, QCryptographicHash::Sha256)
+                .toHex());
+    QStringList arguments{
+        sourcePath,
+        destinationPath,
+        QString::number(deviceCopy.size()),
+        deviceCopySha,
+        QStringLiteral("0"),
+    };
+    QCOMPARE(
+        DeviceMediaWorkflowController::runExportHelper(
+            arguments),
+        0);
+    QFile exported(destinationPath);
+    QVERIFY(exported.open(QIODevice::ReadOnly));
+    QCOMPARE(exported.readAll(), rawH264);
+    exported.close();
+
+    // The whole device copy is still verified against its hash.
+    QVERIFY(QFile::remove(destinationPath));
+    arguments[3] = QString(64, QLatin1Char('0'));
+    QCOMPARE(
+        DeviceMediaWorkflowController::runExportHelper(
+            arguments),
+        5);
+    QVERIFY(!QFileInfo::exists(destinationPath));
 }
 
 void QuickClientTests::supportBundleReportUsesHostAllowlist() {

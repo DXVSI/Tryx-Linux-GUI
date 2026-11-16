@@ -8,6 +8,7 @@
 #include "privatedirectorypath.h"
 #include "privateruntimepaths.h"
 #include "runtimeapplyrequestcodec.h"
+#include "turrismediaformat.h"
 
 #include <QDebug>
 #include <QDateTime>
@@ -4604,9 +4605,17 @@ QString PrinterOperationCoordinator::queueRecoveredOperation(
     record.sourcePath = artifact.canonicalPath;
     record.sourceContentSha256 = artifact.metadata.decodedSha256;
     record.sourceSize = static_cast<qint64>(artifact.metadata.size);
+    // A still pulled from the device (media header with a JPEG or PNG
+    // original) is prepared again as a still; the preparer reads the same
+    // hash-pinned copy and makes the same choice.
     record.conversionProfile =
-        tryx::printer_media_identity::paseRecoveredConversionProfile(
-            profile);
+        tryx::turris_media::isStillImageMediaHeader(
+            tryx::turris_media::readMediaHeaderPrefix(
+                artifact.canonicalPath))
+            ? tryx::printer_media_identity::paseImageConversionProfile(
+                  profile)
+            : tryx::printer_media_identity::paseRecoveredConversionProfile(
+                  profile);
     record.mediaConversion =
         tryx::printer_media_identity::printerMediaConversionIdentity(
             *productProfile, profile);
@@ -6407,6 +6416,20 @@ void PrinterOperationCoordinator::handlePrepared(
             QStringLiteral("SourceChanged"), QString(),
             tryx::DeviceManagerMessages::tr(
                 "Source media changed while it was being converted"));
+        return;
+    }
+    if (record.recoveredSource &&
+        tryx::printer_media_identity::isPaseImageConversionProfile(
+            record.conversionProfile) !=
+            remoteName.contains(QStringLiteral(".png.h264_"),
+                                Qt::CaseInsensitive)) {
+        releasePrinterPreparationPath(uploadPath);
+        releasePrinterPreparationPath(stagedThumbnailPath);
+        finishOperation(
+            operationId, QStringLiteral("Failed"),
+            QStringLiteral("PreparedMediaKindMismatch"), QString(),
+            tryx::DeviceManagerMessages::tr(
+                "The prepared device copy is not the expected kind of media"));
         return;
     }
     record.sourcePath = sourcePath;

@@ -101,6 +101,9 @@ private:
     };
     struct RecoveredValidationResult {
         QString sourcePath;
+        // Length of the media header in front of a still pulled from the
+        // device; 0 for raw H.264.
+        qint64 mediaHeaderBytes = 0;
         QString error;
     };
 
@@ -181,6 +184,7 @@ private:
     qsizetype cleanupPlanEntryLimitForTesting_ = 4096;
     quint64 recoveredValidationGeneration_ = 0;
     SourceKind sourceKind_ = SourceKind::None;
+    qint64 recoveredMediaHeaderBytes_ = 0;
     std::function<int(int, const QByteArray &)>
         cleanupUnlinkFunctionForTesting_;
     std::function<int(int)> cleanupFsyncFunctionForTesting_;

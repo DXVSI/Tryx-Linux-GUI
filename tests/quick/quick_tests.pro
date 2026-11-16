@@ -24,6 +24,7 @@ HEADERS += \
     ../../src/quick/supportbundle.h \
     ../../src/quick/supportbundlecontroller.h \
     ../../src/mediatransform.h \
+    ../../src/turrismediaformat.h \
     ../../src/quick/appsettingscontroller.h \
     ../../src/quick/cachemanagementcontroller.h \
     ../../src/quick/guiautostart.h \
@@ -50,6 +51,7 @@ SOURCES += \
     ../../src/quick/supportbundle.cpp \
     ../../src/quick/supportbundlecontroller.cpp \
     ../../src/mediatransform.cpp \
+    ../../src/turrismediaformat.cpp \
     ../../src/core/config.cpp \
     ../../src/quick/appsettingscontroller.cpp \
     ../../src/quick/cachemanagementcontroller.cpp \
