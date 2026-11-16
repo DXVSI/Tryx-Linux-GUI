@@ -35,6 +35,7 @@ ScrollView {
     readonly property bool splitScreenSupported: !("splitScreenSupported" in runtime) || runtime.splitScreenSupported
     readonly property bool overlayMetricsSupported: !("overlayMetricsSupported" in runtime) || runtime.overlayMetricsSupported
     readonly property bool waterfallOrientationSupported: !("waterfallOrientationSupported" in runtime) || runtime.waterfallOrientationSupported
+    readonly property bool mirrorOrientationSupported: !("mirrorOrientationSupported" in runtime) || runtime.mirrorOrientationSupported
     readonly property bool uploadStoresOnly: ("deviceModel" in runtime) && runtime.deviceModel === "TURRIS 620"
     onSplitScreenSupportedChanged: {
         if (!splitScreenSupported && splitMode) {
@@ -2090,8 +2091,11 @@ ScrollView {
                 }
 
                 RowLayout {
+                    objectName: "orientationRow"
                     Layout.fillWidth: true
                     spacing: 12
+                    visible: root.mirrorOrientationSupported ||
+                             root.waterfallOrientationSupported
 
                     Label {
                         Layout.preferredWidth: 92
@@ -2100,6 +2104,7 @@ ScrollView {
                     CheckBox {
                         objectName: "mirrorDraftCheckBox"
                         text: qsTr("Mirror")
+                        visible: root.mirrorOrientationSupported
                         checked: root.mirrorDraft
                         enabled: root.confirmedSnapshotReady
                         onClicked: root.mirrorDraft = checked
@@ -2118,8 +2123,19 @@ ScrollView {
                 Label {
                     objectName: "waterfallUnavailableHint"
                     Layout.fillWidth: true
-                    visible: !root.waterfallOrientationSupported
+                    visible: root.mirrorOrientationSupported &&
+                             !root.waterfallOrientationSupported
                     text: qsTr("Waterfall orientation is not available for this display model.")
+                    color: "#8d91a1"
+                    wrapMode: Text.WordWrap
+                }
+
+                Label {
+                    objectName: "orientationUnavailableHint"
+                    Layout.fillWidth: true
+                    visible: !root.mirrorOrientationSupported &&
+                             !root.waterfallOrientationSupported
+                    text: qsTr("Orientation settings are not available for this display model.")
                     color: "#8d91a1"
                     wrapMode: Text.WordWrap
                 }

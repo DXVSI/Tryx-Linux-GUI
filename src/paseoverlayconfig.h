@@ -8,7 +8,8 @@
 
 namespace tryx::pase_overlay_config {
 
-QString printerPresetMediaFile(const QString &presetId);
+// Media file of a device preset of this product, empty for an unknown id.
+QString printerPresetMediaFile(const QString &presetId, quint16 productId);
 QString printerMediaConfigName(const QString &mediaFile);
 bool isSupportedPaseMetricLabel(const QString &label);
 bool hasDuplicateMetricLabels(const QStringList &labels);

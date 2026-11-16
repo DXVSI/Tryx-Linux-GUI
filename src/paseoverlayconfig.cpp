@@ -111,24 +111,16 @@ bool paseMetricsRequestIsSupportedByProduct(
                                            productId, error);
 }
 
-QString printerPresetMediaFile(const QString &presetId) {
-    if (presetId == QStringLiteral("Pre-set 1: Cooling delivery")) {
-        return QStringLiteral("default_01.mp4.h264_2240x1080");
+QString printerPresetMediaFile(const QString &presetId, quint16 productId) {
+    const std::optional<PrinterProductProfile> profile =
+        printerProductProfileForId(productId);
+    if (!profile) {
+        return {};
     }
-    if (presetId == QStringLiteral("Pre-set 2: Migration")) {
-        return QStringLiteral("default_02.mp4.h264_2240x1080");
-    }
-    if (presetId == QStringLiteral("Pre-set 3: Quantum time capsule")) {
-        return QStringLiteral("default_04.mp4.h264_2240x1080");
-    }
-    if (presetId == QStringLiteral("Pre-set 4: Exo-Ecologies")) {
-        return QStringLiteral("default_03.mp4.h264_2240x1080");
-    }
-    if (presetId == QStringLiteral("Pre-set 5: Racing")) {
-        return QStringLiteral("default_05.mp4.h264_2240x1080");
-    }
-    if (presetId == QStringLiteral("Pre-set 6: Shuttle")) {
-        return QStringLiteral("default_06.mp4.h264_2240x1080");
+    for (const PrinterPresetMedia &preset : profile->presets) {
+        if (preset.presetId == presetId) {
+            return preset.mediaFile;
+        }
     }
     return {};
 }
@@ -361,8 +353,8 @@ bool paseBadgeUploadContinuationIsValid(const TryxRuntimeApplyWithBadgesV1 &enve
     TryxRuntimeOverlayBadgesV1 normalized;
     auto request = envelope.request;
     return (productId == 0x1021 || productId == 0x1011 || productId == 0x1031
-            || productId == 0x1061 || productId == 0x1071 || productId == 0x10a1
-            || productId == 0x10b1)
+            || productId == 0x1051 || productId == 0x1061 || productId == 0x1071
+            || productId == 0x10a1 || productId == 0x10b1)
         && (productId == 0x1021 || !tryxOverlayBadgesHaveCustomText(envelope.badges))
         && runtimeApplyWithBadgesV1FromJson(runtimeApplyWithBadgesV1ToJson(envelope), &decoded)
         && decoded == envelope

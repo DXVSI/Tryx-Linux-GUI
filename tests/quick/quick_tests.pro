@@ -19,6 +19,7 @@ HEADERS += \
     ../../src/nvidiasmiparser.h \
     ../../src/nvidiasmiprovider.h \
     ../../src/systemmonitor.h \
+    ../../src/printerproductprofile.h \
     ../../src/runtimecontract.h \
     ../../src/supportsnapshot.h \
     ../../src/quick/supportbundle.h \
@@ -46,6 +47,7 @@ SOURCES += \
     ../../src/nvidiasmiprovider.cpp \
     ../../src/systemmonitor.cpp \
     ../../src/runtimebadgetext.cpp \
+    ../../src/printerproductprofile.cpp \
     ../../src/runtimecontract.cpp \
     ../../src/supportsnapshot.cpp \
     ../../src/quick/supportbundle.cpp \

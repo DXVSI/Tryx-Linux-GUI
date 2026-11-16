@@ -103,6 +103,50 @@ SourceVideoInfo probeSourceVideo(const QString &ffprobe, const QString &path) {
     return info;
 }
 
+// Which words describe media prepared with the official media header:
+// every Turris kind, a PASE-family still, or a HOLO video, GIF or still.
+enum class OfficialMediaWording { Turris, Still, Media };
+
+OfficialMediaWording officialMediaWording(quint16 productId, quint32 kind) {
+    const std::optional<PrinterProductProfile> profile =
+        printerProductProfileForId(productId);
+    if (profile && profile->family == PrinterProtocolFamily::Turris) {
+        return OfficialMediaWording::Turris;
+    }
+    return tryx::turris_media::isStillImageKind(kind)
+        ? OfficialMediaWording::Still
+        : OfficialMediaWording::Media;
+}
+
+QString ffprobeRequiredMessage(OfficialMediaWording wording) {
+    switch (wording) {
+    case OfficialMediaWording::Turris:
+        return PrinterMediaPreparer::tr(
+            "ffprobe is required to prepare Turris media");
+    case OfficialMediaWording::Still:
+        return PrinterMediaPreparer::tr(
+            "ffprobe is required to prepare still images");
+    case OfficialMediaWording::Media:
+        break;
+    }
+    return PrinterMediaPreparer::tr(
+        "ffprobe is required to prepare this media");
+}
+
+QString preparationTimedOutMessage(OfficialMediaWording wording) {
+    switch (wording) {
+    case OfficialMediaWording::Turris:
+        return PrinterMediaPreparer::tr(
+            "Turris media preparation timed out");
+    case OfficialMediaWording::Still:
+        return PrinterMediaPreparer::tr(
+            "Still image preparation timed out");
+    case OfficialMediaWording::Media:
+        break;
+    }
+    return PrinterMediaPreparer::tr("Media preparation timed out");
+}
+
 QString printerTempPath(const QString &fileName) {
     const QString directory =
         QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation))
@@ -465,18 +509,19 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
                     generation);
         return;
     }
-    const bool turrisMedia = productId == turris_media::kProductId;
     const bool stillImage = type == panorama::MediaType::Image;
     // Media with the official header is encoded with the official
-    // converter's settings: every Turris kind and PASE stills.
+    // converter's settings: every kind for products with the MxhdH264
+    // container (Turris, HOLO) and PASE-family stills.
     const bool mediaHeader =
         printerMediaUsesMediaHeader(productId, stillImage);
     if (mediaHeader &&
         QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
         emit failed(operationId,
-                    turrisMedia
-                        ? tr("ffprobe is required to prepare Turris media")
-                        : tr("ffprobe is required to prepare still images"),
+                    ffprobeRequiredMessage(officialMediaWording(
+                        productId,
+                        stillImage ? turris_media::kImageKind
+                                   : turris_media::kVideoKind)),
                     generation);
         return;
     }
@@ -530,8 +575,8 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         // the converter's source-derived bitrate; a still uses CRF 18; GIF
         // uses CRF 18 with the animation tune and without scene cuts. The
         // sample aspect ratio is left unset, so the SPS carries no
-        // aspect-ratio VUI, like the official output. Turris takes every
-        // kind through here, the PASE family only stills.
+        // aspect-ratio VUI, like the official output. Turris and HOLO take
+        // every kind through here, the PASE family only stills.
         const bool officialImage = stillImage;
         const bool officialGif = type == panorama::MediaType::Gif;
         const quint32 officialKind = officialImage
@@ -832,10 +877,9 @@ QSize PrinterMediaPreparer::preparedMediaSize() const {
 
 void PrinterMediaPreparer::startTurrisFrameCountPreparation(
     const QString &thumbnailSha256) {
-    const bool turris = productId_ == turris_media::kProductId;
-    const QString timedOut = turris
-        ? tr("Turris media preparation timed out")
-        : tr("Still image preparation timed out");
+    const OfficialMediaWording wording =
+        officialMediaWording(productId_, turrisMediaKind_);
+    const QString timedOut = preparationTimedOutMessage(wording);
     if (mediaPreparationDeadline_.hasExpired()) {
         failPreparation(timedOut, false);
         return;
@@ -843,10 +887,7 @@ void PrinterMediaPreparer::startTurrisFrameCountPreparation(
     const QString ffprobe =
         QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
     if (ffprobe.isEmpty()) {
-        failPreparation(
-            turris ? tr("ffprobe is required to prepare Turris media")
-                   : tr("ffprobe is required to prepare still images"),
-            false);
+        failPreparation(ffprobeRequiredMessage(wording), false);
         return;
     }
     const qint64 remainingMs = mediaPreparationDeadline_.remainingTime();
@@ -860,8 +901,11 @@ void PrinterMediaPreparer::startTurrisFrameCountPreparation(
     preparationTimedOut_ = false;
     phase_ = PreparationPhase::FrameCount;
     emit progress(operationId_,
-                  turris ? tr("Counting exact Turris media frames...")
-                         : tr("Checking the still image frame..."),
+                  wording == OfficialMediaWording::Turris
+                      ? tr("Counting exact Turris media frames...")
+                  : wording == OfficialMediaWording::Still
+                      ? tr("Checking the still image frame...")
+                      : tr("Counting exact media frames..."),
                   generation_);
     process_->setProgram(ffprobe);
     process_->setArguments(
@@ -909,11 +953,16 @@ bool PrinterMediaPreparer::startProcessIfCurrent() {
 
 void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
     int exitCode, bool normalExit) {
-    const bool turris = productId_ == turris_media::kProductId;
+    const OfficialMediaWording wording =
+        officialMediaWording(productId_, turrisMediaKind_);
+    const bool turris = wording == OfficialMediaWording::Turris;
     if (preparationTimedOut_) {
-        failPreparation(turris ? tr("Turris frame counting timed out")
-                               : tr("Still image frame check timed out"),
-                        false);
+        failPreparation(
+            turris ? tr("Turris frame counting timed out")
+            : wording == OfficialMediaWording::Still
+                ? tr("Still image frame check timed out")
+                : tr("Media frame counting timed out"),
+            false);
         return;
     }
     const bool cancelled = cancelling_ || shuttingDown_;
@@ -941,11 +990,18 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
                     : tr("Could not determine the exact Turris frame count: %1")
                           .arg(detail),
                 false);
-        } else {
+        } else if (wording == OfficialMediaWording::Still) {
             failPreparation(
                 detail.isEmpty()
                     ? tr("The prepared still image is not exactly one frame")
                     : tr("The prepared still image is not exactly one frame: %1")
+                          .arg(detail),
+                false);
+        } else {
+            failPreparation(
+                detail.isEmpty()
+                    ? tr("Could not determine the exact media frame count")
+                    : tr("Could not determine the exact media frame count: %1")
                           .arg(detail),
                 false);
         }
@@ -978,10 +1034,7 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
         static_cast<quint32>(mediaSize.height()), isCancelled);
     if (blob.sha256.isEmpty()) {
         if (mediaPreparationDeadline_.hasExpired()) {
-            failPreparation(turris
-                                ? tr("Turris media preparation timed out")
-                                : tr("Still image preparation timed out"),
-                            false);
+            failPreparation(preparationTimedOutMessage(wording), false);
         } else if (blob.cancelled || isCancelled()) {
             failPreparation(QString(), true);
         } else {
@@ -994,9 +1047,13 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
         }
         return;
     }
-    if (!turris) {
-        // Turris checks the container again right before the upload; the
-        // PASE upload path sends raw files as they are, so check here.
+    const std::optional<PrinterProductProfile> productProfile =
+        printerProductProfileForId(productId_);
+    if (!productProfile ||
+        productProfile->mediaContainer != PrinterMediaContainer::MxhdH264) {
+        // MxhdH264 uploads check the container again right before the
+        // upload; the PASE upload path sends raw files as they are, so
+        // check its stills here.
         QFile written(uploadPath_);
         QString containerError;
         if (!written.open(QIODevice::ReadOnly) ||

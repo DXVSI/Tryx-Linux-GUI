@@ -60,6 +60,8 @@ class RuntimeClient final : public QObject, protected QDBusContext {
                    NOTIFY capabilitiesChanged)
     Q_PROPERTY(bool waterfallOrientationSupported
                    READ waterfallOrientationSupported NOTIFY connectionChanged)
+    Q_PROPERTY(bool mirrorOrientationSupported
+                   READ mirrorOrientationSupported NOTIFY connectionChanged)
     Q_PROPERTY(QVariantMap displayBadgeChoices READ displayBadgeChoices NOTIFY displayChanged)
     Q_PROPERTY(bool deviceSpecificationsSupported
                    READ deviceSpecificationsSupported
@@ -211,6 +213,7 @@ public:
     bool splitScreenSupported() const;
     bool overlayMetricsSupported() const;
     bool waterfallOrientationSupported() const;
+    bool mirrorOrientationSupported() const;
     QVariantMap displayBadgeChoices() const;
     Q_INVOKABLE QString badgeTextError(const QString &mode, const QString &text) const;
     bool deviceSpecificationsSupported() const;

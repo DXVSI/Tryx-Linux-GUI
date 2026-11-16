@@ -578,6 +578,7 @@ private slots:
     void recoveredTargetPreselectionRequiresExactActiveLayout();
     void mediaPreparationProfileDispatchIsCapabilityBound();
     void runtimeMediaTargetFollowsProductId();
+    void runtimeHoloProfileSetsTargetAndHidesOrientation();
     void runtimeDeviceSummaryFollowsLiveSnapshot();
     void offlinePrinterLifecycleEventsDoNotReadOwnerlessSnapshots();
     void capabilityLifecycleSignalsInvalidatePresentationGates();
@@ -1204,6 +1205,40 @@ void QuickClientTests::runtimeMediaTargetFollowsProductId() {
     QCOMPARE(targetChanged.count(), 5);
 }
 
+void QuickClientTests::runtimeHoloProfileSetsTargetAndHidesOrientation() {
+    RuntimeClient runtime(true);
+    MediaEditorController editor(&runtime);
+    QVERIFY(runtime.waterfallOrientationSupported());
+    QVERIFY(runtime.mirrorOrientationSupported());
+
+    TryxRuntimeSnapshot snapshot;
+    snapshot.revision = 1;
+    snapshot.connected = true;
+    snapshot.productId = QStringLiteral("391a:1051");
+    runtime.applyConnectionSnapshot(snapshot);
+    QCOMPARE(runtime.deviceModel(), QStringLiteral("HOLO 360"));
+    QCOMPARE(runtime.mediaTargetWidth(), 640);
+    QCOMPARE(runtime.mediaTargetHeight(), 480);
+    QCOMPARE(editor.targetWidth(), 640);
+    QCOMPARE(editor.targetHeight(), 480);
+    QVERIFY(!runtime.waterfallOrientationSupported());
+    QVERIFY(!runtime.mirrorOrientationSupported());
+
+    snapshot.revision = 2;
+    snapshot.productId = QStringLiteral("391a:2011");
+    runtime.applyConnectionSnapshot(snapshot);
+    QVERIFY(!runtime.waterfallOrientationSupported());
+    QVERIFY(runtime.mirrorOrientationSupported());
+
+    snapshot.revision = 3;
+    snapshot.productId = QStringLiteral("391a:1021");
+    runtime.applyConnectionSnapshot(snapshot);
+    QCOMPARE(runtime.mediaTargetWidth(), 2240);
+    QCOMPARE(runtime.mediaTargetHeight(), 1080);
+    QVERIFY(runtime.waterfallOrientationSupported());
+    QVERIFY(runtime.mirrorOrientationSupported());
+}
+
 void QuickClientTests::runtimeDeviceSummaryFollowsLiveSnapshot() {
     RuntimeClient runtime(true);
 
@@ -1285,6 +1320,11 @@ void QuickClientTests::runtimeDeviceSummaryFollowsLiveSnapshot() {
         runtime.applyConnectionSnapshot(snapshot);
         QCOMPARE(runtime.deviceModel(), model);
     }
+
+    snapshot.revision = mappedRevision++;
+    snapshot.productId = QStringLiteral("391a:1051");
+    runtime.applyConnectionSnapshot(snapshot);
+    QCOMPARE(runtime.deviceModel(), QStringLiteral("HOLO 360"));
 
     snapshot.revision = mappedRevision;
     snapshot.connected = false;

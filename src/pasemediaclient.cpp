@@ -845,11 +845,15 @@ bool PaseMediaClient::uploadMedia(const QString &devicePath, const QString &loca
     options.fixedTrackId = productProfile_.fileTransferTrackId;
     options.logTransferStages = productProfile_.family == PrinterProtocolFamily::Turris;
     if (productProfile_.mediaContainer == PrinterMediaContainer::MxhdH264) {
-        options.validateSource = [&remoteFileName, errorMessage, mutationDetails](
+        const quint32 width = static_cast<quint32>(productProfile_.mediaWidth);
+        const quint32 height = static_cast<quint32>(productProfile_.mediaHeight);
+        const bool turris = productProfile_.family == PrinterProtocolFamily::Turris;
+        options.validateSource = [&remoteFileName, errorMessage, mutationDetails,
+                                  width, height, turris](
                                      QFile &file, qint64 declaredSize,
                                      const std::function<bool()> &sourceIsUnchanged) {
             if (!tryx::turris_media::validateBlob(&file, declaredSize, remoteFileName,
-                                                  errorMessage)) {
+                                                  width, height, errorMessage)) {
                 if (mutationDetails) {
                     mutationDetails->outcome = MutationOutcome::Rejected;
                 }
@@ -858,7 +862,10 @@ bool PaseMediaClient::uploadMedia(const QString &devicePath, const QString &loca
             if (!sourceIsUnchanged() || !file.seek(0)) {
                 if (errorMessage) {
                     *errorMessage =
-                        QObject::tr("Prepared Turris media changed during validation");
+                        turris ? QObject::tr(
+                                     "Prepared Turris media changed during validation")
+                               : QObject::tr(
+                                     "Prepared media changed during validation");
                 }
                 return false;
             }
