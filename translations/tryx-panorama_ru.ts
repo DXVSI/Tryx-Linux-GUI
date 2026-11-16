@@ -910,6 +910,10 @@
         <translation>Исходный медиафайл изменился во время конвертации</translation>
     </message>
     <message>
+        <source>The prepared device copy is not the expected kind of media</source>
+        <translation>Подготовленная копия с устройства не того типа, который ожидался</translation>
+    </message>
+    <message>
         <location filename="../src/devicemanager.cpp" line="7153"/>
         <source>Prepared media is ready for upload</source>
         <translation>Подготовленный медиафайл готов к загрузке</translation>
@@ -8374,68 +8378,68 @@
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="223"/>
-        <source>Turris media attributes are invalid</source>
-        <translation>Недопустимые атрибуты медиафайла Turris</translation>
+        <source>Media header attributes are invalid</source>
+        <translation>Недопустимые атрибуты заголовка медиафайла</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="230"/>
-        <source>Turris media metadata is invalid</source>
-        <translation>Недопустимые метаданные медиафайла Turris</translation>
+        <source>Media header metadata is invalid</source>
+        <translation>Недопустимые метаданные заголовка медиафайла</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="245"/>
-        <source>Prepared Turris H264 is not a bounded regular file</source>
-        <translation>Подготовленный H264-файл Turris не является допустимым обычным файлом ограниченного размера</translation>
+        <source>The prepared H264 stream is not a bounded regular file</source>
+        <translation>Подготовленный поток H264 не является обычным файлом допустимого размера</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="252"/>
-        <source>Cannot open prepared Turris H264: %1</source>
-        <translation>Не удалось открыть подготовленный H264-файл Turris: %1</translation>
+        <source>Cannot open the prepared H264 stream: %1</source>
+        <translation>Не удалось открыть подготовленный поток H264: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="259"/>
-        <source>Cannot create Turris media blob: %1</source>
-        <translation>Не удалось создать медиафайл Turris: %1</translation>
+        <source>Cannot create the media file with header: %1</source>
+        <translation>Не удалось создать медиафайл с заголовком: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="265"/>
-        <source>Cannot restrict Turris media blob permissions</source>
-        <translation>Не удалось ограничить права доступа к медиафайлу Turris</translation>
+        <source>Cannot restrict the permissions of the media file with header</source>
+        <translation>Не удалось ограничить права доступа к медиафайлу с заголовком</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="274"/>
-        <source>Cannot write Turris media metadata: %1</source>
-        <translation>Не удалось записать метаданные медиафайла Turris: %1</translation>
+        <source>Cannot write the media header: %1</source>
+        <translation>Не удалось записать заголовок медиафайла: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="292"/>
-        <source>Cannot read prepared Turris H264: %1</source>
-        <translation>Не удалось прочитать подготовленный H264-файл Turris: %1</translation>
+        <source>Cannot read the prepared H264 stream: %1</source>
+        <translation>Не удалось прочитать подготовленный поток H264: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="301"/>
-        <source>Cannot write Turris media payload: %1</source>
-        <translation>Не удалось записать данные медиафайла Turris: %1</translation>
+        <source>Cannot write the media payload: %1</source>
+        <translation>Не удалось записать данные медиафайла: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="312"/>
-        <source>Prepared Turris H264 changed while it was wrapped</source>
-        <translation>Подготовленный H264-файл Turris изменился во время упаковки</translation>
+        <source>The prepared H264 stream changed while the media header was added</source>
+        <translation>Подготовленный поток H264 изменился во время добавления заголовка</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="323"/>
-        <source>Cannot commit Turris media blob: %1</source>
-        <translation>Не удалось завершить запись медиафайла Turris: %1</translation>
+        <source>Cannot commit the media file with header: %1</source>
+        <translation>Не удалось завершить запись медиафайла с заголовком: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="333"/>
-        <source>Committed Turris media blob failed size verification</source>
-        <translation>Записанный медиафайл Turris не прошёл проверку размера</translation>
+        <source>The media file with header failed its size check</source>
+        <translation>Медиафайл с заголовком не прошёл проверку размера</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="393"/>
-        <source>Turris media container is invalid: %1</source>
-        <translation>Недопустимый контейнер медиафайла Turris: %1</translation>
+        <source>The media container is invalid: %1</source>
+        <translation>Недопустимый контейнер медиафайла: %1</translation>
     </message>
     <message>
         <location filename="../src/printerprotocol.cpp" line="6205"/>

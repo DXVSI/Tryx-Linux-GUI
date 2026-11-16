@@ -160,16 +160,7 @@ QString printerConversionProfile(
     switch (panorama::Media::detect_type(path.toStdString())) {
     case panorama::MediaType::Image:
         if (productId != turris_media::kProductId) {
-            const bool splitArea =
-                profile.target == QStringLiteral("SplitArea");
-            const QString base =
-                paseImageConversionProfileBase(splitArea);
-            if (!splitArea &&
-                tryxMediaTransformIsLegacyFit(profile.transform)) {
-                return base;
-            }
-            return base + QStringLiteral("-transform-") +
-                   transformFingerprint;
+            return paseImageConversionProfile(profile);
         }
         typeName = QStringLiteral("image");
         break;
@@ -199,6 +190,29 @@ QString printerConversionProfile(
     }
     return paseConversionProfileBase(QStringLiteral("v2"), typeName) +
            QStringLiteral("-transform-") + transformFingerprint;
+}
+
+QString paseImageConversionProfile(
+    const TryxRuntimeMediaPreparationProfileV1 &profile) {
+    if (!tryxMediaPreparationProfileV1IsValid(profile)) {
+        return {};
+    }
+    const QString transformFingerprint =
+        tryxMediaTransformFingerprint(profile.transform);
+    if (transformFingerprint.isEmpty()) {
+        return {};
+    }
+    const bool splitArea = profile.target == QStringLiteral("SplitArea");
+    const QString base = paseImageConversionProfileBase(splitArea);
+    if (!splitArea && tryxMediaTransformIsLegacyFit(profile.transform)) {
+        return base;
+    }
+    return base + QStringLiteral("-transform-") + transformFingerprint;
+}
+
+bool isPaseImageConversionProfile(const QString &conversionProfile) {
+    return conversionProfile.startsWith(
+        QStringLiteral("pase-mxhd-v1-image-"));
 }
 
 QString paseRecoveredConversionProfile(

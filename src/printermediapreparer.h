@@ -166,7 +166,6 @@ private:
     TryxRuntimeMediaPreparationProfileV1 preparationProfile_;
     quint16 productId_ = 0x1021;
     quint32 turrisMediaKind_ = 0;
-    bool recoveredVideo_ = false;
     quint64 generation_ = 0;
     QByteArray processOutput_;
     PreparationPhase phase_ = PreparationPhase::Idle;

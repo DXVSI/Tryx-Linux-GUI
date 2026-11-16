@@ -1960,8 +1960,9 @@ QByteArray turrisMediaMetadata(quint32 mediaKind,
                                quint64 frameCount,
                                quint32 width = 1280,
                                quint32 height = 720) {
-    // Stills are declared at 30 fps, video and GIF at 60 fps.
-    const quint32 framesPerSecond = mediaKind == 2 ? 30 : 60;
+    // Stills (JPEG 1, PNG 2) are declared at 30 fps, video and GIF at 60.
+    const quint32 framesPerSecond =
+        mediaKind == 1 || mediaKind == 2 ? 30 : 60;
     QByteArray metadata;
     appendTurrisVarintField(&metadata, 1, 0x4D584844U);
     appendTurrisBytesField(
@@ -1994,6 +1995,39 @@ QByteArray officialStillMediaHeader(quint32 width) {
               "4200000008c490e1ea04122c54727978206d65646961206865616465722076"
               "312c206670733d33302c2073697a653d32323430783130383018022001281e"
               "30c01138b8084001");
+}
+
+// A full-screen PASE still as the device stores it: prepared from a PNG
+// through the upload path. Callers check QTest::currentTestFailed().
+void preparePaseStillBlob(const QString &directory, const QColor &color,
+                          QByteArray *blob) {
+    const QString sourcePath =
+        QDir(directory).filePath(QStringLiteral("device-still.png"));
+    QImage image(160, 90, QImage::Format_RGB32);
+    image.fill(color);
+    QVERIFY(image.save(sourcePath));
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    preparer.prepareWithPreparationProfile(
+        QStringLiteral("37373737-3737-4737-8737-373737373737"),
+        QStringLiteral("pase-endpoint"), sourcePath, QString(), 37,
+        tryxFullFrameMediaPreparationProfile(), 0x1021);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    QVERIFY2(failedSpy.isEmpty(),
+             qPrintable(failedSpy.isEmpty()
+                            ? QString()
+                            : failedSpy.first().at(1).toString()));
+    const QString outputPath = preparedSpy.first().at(3).toString();
+    const QString thumbnailPath = preparedSpy.first().at(6).toString();
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    *blob = output.readAll();
+    output.close();
+    preparer.releasePreparedFile(outputPath);
+    preparer.releasePreparedFile(thumbnailPath);
+    QCOMPARE(blob->left(70), officialStillMediaHeader(2240));
 }
 
 QByteArray wrapTurrisMediaBlob(const QByteArray &metadata,
@@ -2296,6 +2330,10 @@ private slots:
     void paseMediaHeaderMatchesOfficialConverter();
     void paseImagePreparationBuildsOfficialStill_data();
     void paseImagePreparationBuildsOfficialStill();
+    void mediaHeaderPrefixRecognisesDeviceStills();
+    void recoveredDeviceStillStaysStill_data();
+    void recoveredDeviceStillStaysStill();
+    void recoveredStillSaveAsNewUsesImageIdentity();
     void pasePreparationProfilesProduceExactGeometry();
     void mediaPreparationKeepsRetryArtifactsPrivate_data();
     void mediaPreparationKeepsRetryArtifactsPrivate();
@@ -12004,6 +12042,409 @@ void PrinterProtocolTests::paseImagePreparationBuildsOfficialStill() {
                  qPrintable(expected + QLatin1Char(' ') +
                             properties.join(QLatin1Char(','))));
     }
+}
+
+// KANALI 2.6.0 MediaX.dll declares enOriginalMediaType JPEG=1, PNG=2,
+// GIF=3, MP4=4. A copy pulled from the device that starts with a header
+// for a JPEG or PNG original is a still.
+void PrinterProtocolTests::mediaHeaderPrefixRecognisesDeviceStills() {
+    namespace media = tryx::turris_media;
+    const QByteArray payload = QByteArray::fromHex("0000000167640028ac");
+
+    const media::MediaHeaderPrefix png = media::parseMediaHeaderPrefix(
+        officialStillMediaHeader(2240) + payload);
+    QCOMPARE(png.size, qint64{70});
+    QCOMPARE(png.kind, media::kImageKind);
+    QCOMPARE(png.width, 2240U);
+    QCOMPARE(png.height, 1080U);
+    QCOMPARE(png.frameCount, quint64{1});
+    QVERIFY(media::isStillImageMediaHeader(png));
+
+    const QByteArray jpegMetadata = turrisMediaMetadata(1, 1, 1120, 1080);
+    const media::MediaHeaderPrefix jpeg = media::parseMediaHeaderPrefix(
+        wrapTurrisMediaBlob(jpegMetadata, payload));
+    QCOMPARE(jpeg.size, qint64{4 + jpegMetadata.size()});
+    QCOMPARE(jpeg.kind, media::kJpegImageKind);
+    QCOMPARE(jpeg.width, 1120U);
+    QVERIFY(media::isStillImageMediaHeader(jpeg));
+    QCOMPARE(media::framesPerSecondForKind(media::kJpegImageKind), 30U);
+
+    for (const quint32 kind : {media::kGifKind, media::kVideoKind}) {
+        const media::MediaHeaderPrefix moving =
+            media::parseMediaHeaderPrefix(wrapTurrisMediaBlob(
+                turrisMediaMetadata(kind, 90, 2240, 1080), payload));
+        QVERIFY(moving.size > 0);
+        QCOMPARE(moving.kind, kind);
+        QVERIFY(!media::isStillImageMediaHeader(moving));
+    }
+
+    const media::MediaHeaderPrefix raw =
+        media::parseMediaHeaderPrefix(payload);
+    QCOMPARE(raw.size, qint64{0});
+    QVERIFY(!media::isStillImageMediaHeader(raw));
+    // The upload validator still expects this application's PNG kind.
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString jpegPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("jpeg-still.h264"));
+    QVERIFY(writeTextFile(jpegPath, wrapTurrisMediaBlob(
+                                        turrisMediaMetadata(1, 1, 2240, 1080),
+                                        payload)));
+    QCOMPARE(media::readMediaHeaderPrefix(jpegPath).kind,
+             media::kJpegImageKind);
+    QFile jpegFile(jpegPath);
+    QVERIFY(jpegFile.open(QIODevice::ReadOnly));
+    QString error;
+    QVERIFY(!media::validateBlob(
+        &jpegFile, jpegFile.size(),
+        QStringLiteral("still.png.h264_2240x1080"), 2240, 1080, &error));
+    QVERIFY(error.startsWith(QStringLiteral("The media container is invalid")));
+}
+
+void PrinterProtocolTests::recoveredDeviceStillStaysStill_data() {
+    QTest::addColumn<QString>("copyKind");
+    QTest::addColumn<bool>("splitArea");
+    QTest::addColumn<bool>("expectStill");
+    QTest::newRow("png-header-full")
+        << QStringLiteral("png-header") << false << true;
+    QTest::newRow("png-header-to-split")
+        << QStringLiteral("png-header") << true << true;
+    QTest::newRow("jpeg-header-full")
+        << QStringLiteral("jpeg-header") << false << true;
+    // A headerless copy (video, or a minute-long still from an earlier
+    // version) is prepared as video, as before.
+    QTest::newRow("raw-copy-full")
+        << QStringLiteral("raw") << false << false;
+}
+
+// Edit, Save as new and Replace prepare the copy pulled from the device
+// again. A still in the official format stays one frame with the header.
+void PrinterProtocolTests::recoveredDeviceStillStaysStill() {
+    QFETCH(QString, copyKind);
+    QFETCH(bool, splitArea);
+    QFETCH(bool, expectStill);
+    if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty() ||
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray deviceStill;
+    preparePaseStillBlob(temporaryDirectory.path(),
+                         QColor(QStringLiteral("#2266aa")), &deviceStill);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const QByteArray rawStill = deviceStill.mid(70);
+    QByteArray deviceCopy = deviceStill;
+    if (copyKind == QStringLiteral("jpeg-header")) {
+        deviceCopy = wrapTurrisMediaBlob(
+            turrisMediaMetadata(1, 1, 2240, 1080), rawStill);
+    } else if (copyKind == QStringLiteral("raw")) {
+        deviceCopy = rawStill;
+    }
+    const QString copyPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("device-copy.h264"));
+    QVERIFY(writeTextFile(copyPath, deviceCopy));
+    const QString copySha256 = QString::fromLatin1(
+        QCryptographicHash::hash(deviceCopy, QCryptographicHash::Sha256)
+            .toHex());
+
+    TryxRuntimeMediaPreparationProfileV1 profile;
+    profile.target = splitArea ? QStringLiteral("SplitArea")
+                               : QStringLiteral("FullFrame");
+    if (splitArea) {
+        profile.transform.mode = QStringLiteral("Crop");
+    }
+    const int width = splitArea ? 1120 : 2240;
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    preparer.prepareRecoveredWithPreparationProfile(
+        QStringLiteral("38383838-3838-4838-8838-383838383838"),
+        QStringLiteral("pase-endpoint"), copyPath, copySha256, 38,
+        profile, 0x1021);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    const QString outputPath = preparedSpy.first().at(3).toString();
+    const QString remoteName = preparedSpy.first().at(4).toString();
+    const QString thumbnailPath = preparedSpy.first().at(6).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(thumbnailPath);
+    });
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    output.close();
+    const QImage thumbnail(thumbnailPath);
+    QVERIFY(!thumbnail.isNull());
+    const QColor center =
+        thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2);
+    QVERIFY2(center.blue() > 120 && center.red() < 80,
+             qPrintable(center.name()));
+
+    if (!expectStill) {
+        QVERIFY(remoteName.endsWith(
+            QStringLiteral(".mp4.h264_%1x1080").arg(width)));
+        QVERIFY(blob.startsWith(QByteArray::fromHex("00000001")));
+        QCOMPARE(tryx::turris_media::mediaHeaderPrefixSize(blob),
+                 qint64{0});
+        return;
+    }
+    QVERIFY(remoteName.endsWith(
+        QStringLiteral(".png.h264_%1x1080").arg(width)));
+    QCOMPARE(blob.left(70),
+             officialStillMediaHeader(static_cast<quint32>(width)));
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata,
+             turrisMediaMetadata(2, 1, static_cast<quint32>(width), 1080));
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("recovered-still.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")),
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-count_frames"),
+         QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,width,height,nb_read_frames"),
+         QStringLiteral("-of"),
+         QStringLiteral("default=noprint_wrappers=1"), rawPath});
+    QVERIFY(probe.waitForFinished(10000));
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("width=%1").arg(width),
+             QStringLiteral("height=1080"),
+             QStringLiteral("nb_read_frames=1")}) {
+        QVERIFY2(properties.contains(expected),
+                 qPrintable(expected + QLatin1Char(' ') +
+                            properties.join(QLatin1Char(','))));
+    }
+}
+
+// Save as new of a still pulled from the device records the still
+// identity, so the catalog and later reuse treat it as a picture. A raw
+// copy keeps the recovered-video identity.
+void PrinterProtocolTests::recoveredStillSaveAsNewUsesImageIdentity() {
+    if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty() ||
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray deviceStill;
+    preparePaseStillBlob(temporaryDirectory.path(),
+                         QColor(QStringLiteral("#22aa66")), &deviceStill);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->operationCoordinator_.mediaCatalogStore_ =
+        std::make_unique<tryx::MediaCatalogStore>(
+            QDir(temporaryDirectory.path()).filePath(
+                QStringLiteral("media-catalog")));
+    manager->loadMediaCatalogStore();
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId,
+             quint16{0x1021});
+
+    PrinterProtocol::MediaFile still;
+    still.name = QStringLiteral("2026-11-17_05-00-00-000-aa.png.h264_2240x1080");
+    still.size = deviceStill.size();
+    still.source = PrinterProtocol::MediaSource::User;
+    still.readOnly = false;
+    PrinterProtocol::MediaFile legacy;
+    legacy.name = QStringLiteral("legacy-still.png.h264_2240x1080");
+    legacy.size = deviceStill.size() - 70;
+    legacy.source = PrinterProtocol::MediaSource::User;
+    legacy.readOnly = false;
+    manager->updateMediaCatalog({still, legacy});
+    const auto &entries = manager->operationCoordinator_.mediaCatalog_.entries;
+    QCOMPARE(entries.size(), 2);
+
+    const QString connectionName = QStringLiteral("tryx-recovered-still-%1")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    QDBusConnection artifactCaller = QDBusConnection::connectToBus(
+        QDBusConnection::SessionBus, connectionName);
+    QVERIFY2(artifactCaller.isConnected(),
+             qPrintable(artifactCaller.lastError().message()));
+    const auto disconnectBus = qScopeGuard([&]() {
+        manager.reset();
+        QDBusConnection::disconnectFromBus(connectionName);
+    });
+    const QString owner = artifactCaller.baseService();
+    auto *store =
+        manager->operationCoordinator_.deviceMediaArtifactStore_.get();
+    const auto stage = [&](const QString &artifactId,
+                           const QString &stageOperationId,
+                           const QString &remoteName,
+                           const QByteArray &payload, QString *leaseId) {
+        const auto entry = std::find_if(
+            entries.cbegin(), entries.cend(),
+            [&remoteName](const TryxRuntimeMediaEntry &candidate) {
+                return candidate.name == remoteName;
+            });
+        QVERIFY(entry != entries.cend());
+        tryx::DeviceMediaArtifactStore::ReservationInput reservation;
+        reservation.artifactId = artifactId;
+        reservation.operationId = stageOperationId;
+        reservation.mediaId = entry->mediaId;
+        reservation.deviceIdentity =
+            manager->sessionController_.state_.printerDeviceSerial.trimmed();
+        reservation.remoteName = remoteName;
+        reservation.expectedSize = static_cast<quint64>(payload.size());
+        reservation.logicalType = QStringLiteral("Video");
+        reservation.ownerUniqueName = owner;
+        const auto reserved = store->reserve(reservation);
+        QVERIFY(reserved.ok());
+        QVERIFY(writeTextFile(reserved.artifact.canonicalPath, payload));
+        QVERIFY(QFile::setPermissions(
+            reserved.artifact.canonicalPath,
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        const QString digest = QString::fromLatin1(
+            QCryptographicHash::hash(payload, QCryptographicHash::Sha256)
+                .toHex());
+        tryx::DeviceMediaArtifactStore::FinalizeInput completion;
+        completion.artifactId = artifactId;
+        completion.operationId = stageOperationId;
+        completion.remoteName = remoteName;
+        completion.outputPath = reserved.artifact.canonicalPath;
+        completion.fileSize = payload.size();
+        completion.chunkCount = 1;
+        completion.rawSha256 = digest;
+        completion.decodedSha256 = digest;
+        QVERIFY(store->finalize(completion).ok());
+        QVERIFY(store->releaseOperationHold(artifactId, stageOperationId)
+                    .ok());
+        const auto claimed =
+            store->claim(artifactId, stageOperationId, owner);
+        QVERIFY(claimed.ok());
+        *leaseId = claimed.leaseId;
+    };
+
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPrepareRecoveredPrinterMedia,
+        manager->printerMediaPreparer_,
+        &PrinterMediaPreparer::prepareRecovered);
+    QSignalSpy prepareSpy(
+        manager.get(), &DeviceManager::requestPrepareRecoveredPrinterMedia);
+    const TryxRuntimeMediaTransform fit;
+
+    const QString stillArtifactId =
+        QStringLiteral("39393939-3939-4939-8939-393939393939");
+    QString stillLease;
+    stage(stillArtifactId,
+          QStringLiteral("40404040-4040-4040-8040-404040404040"),
+          still.name, deviceStill, &stillLease);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const QString stillOperationId =
+        QStringLiteral("41414141-4141-4141-8141-414141414141");
+    QCOMPARE(manager->queueRecoveredMediaUploadOperation(
+                 stillOperationId, stillArtifactId, stillLease, owner, fit),
+             stillOperationId);
+    QCOMPARE(prepareSpy.count(), 1);
+    const PrinterOperationCoordinator::OperationRecord &stillRecord =
+        manager->operationCoordinator_.operations_[stillOperationId];
+    QCOMPARE(stillRecord.conversionProfile,
+             QStringLiteral(
+                 "pase-mxhd-v1-image-2240x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali"));
+
+    // The runtime hands the copy to the preparer; the result is a still.
+    const QList<QVariant> request = prepareSpy.first();
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    preparer.prepareRecovered(
+        request.at(0).toString(), request.at(1).toString(),
+        request.at(2).toString(), request.at(3).toString(),
+        request.at(4).toULongLong(),
+        request.at(5).value<TryxRuntimeMediaTransform>(),
+        static_cast<quint16>(request.at(6).toUInt()));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    const QString outputPath = preparedSpy.first().at(3).toString();
+    const QString remoteName = preparedSpy.first().at(4).toString();
+    const QString thumbnailPath = preparedSpy.first().at(6).toString();
+    QVERIFY(remoteName.endsWith(QStringLiteral(".png.h264_2240x1080")));
+    QVERIFY(tryx::printer_media_identity::
+                printerConversionProfileMatchesMediaName(
+                    stillRecord.conversionProfile, remoteName));
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.read(70), officialStillMediaHeader(2240));
+    output.close();
+    preparer.releasePreparedFile(outputPath);
+    preparer.releasePreparedFile(thumbnailPath);
+
+    // A prepared copy of the wrong kind is refused before upload.
+    QSignalSpy dispatchSpy(
+        &manager->operationCoordinator_,
+        &PrinterOperationCoordinator::requestDispatchPreparedUpload);
+    manager->operationCoordinator_.handlePrepared(
+        manager->operationContext(), stillOperationId,
+        request.at(1).toString(), request.at(2).toString(),
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("wrong.mp4.h264_2240x1080")),
+        QStringLiteral("wrong.mp4.h264_2240x1080"),
+        QString(64, QLatin1Char('d')), QString(), QString(),
+        request.at(4).toULongLong());
+    QCOMPARE(dispatchSpy.count(), 0);
+    QCOMPARE(manager->operationInfo(stillOperationId).errorCategory,
+             QStringLiteral("PreparedMediaKindMismatch"));
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+
+    // A headerless copy, here a minute-long still from an earlier version,
+    // keeps the recovered-video identity and is prepared as video.
+    const QString legacyArtifactId =
+        QStringLiteral("42424242-4242-4242-8242-424242424242");
+    QString legacyLease;
+    stage(legacyArtifactId,
+          QStringLiteral("43434343-4343-4343-8343-434343434343"),
+          legacy.name, deviceStill.mid(70), &legacyLease);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const QString legacyOperationId =
+        QStringLiteral("44444444-4444-4444-8444-444444444444");
+    QCOMPARE(manager->queueRecoveredMediaUploadOperation(
+                 legacyOperationId, legacyArtifactId, legacyLease, owner,
+                 fit),
+             legacyOperationId);
+    QCOMPARE(prepareSpy.count(), 2);
+    QCOMPARE(manager->operationCoordinator_.operations_[legacyOperationId]
+                 .conversionProfile,
+             tryx::printer_media_identity::paseRecoveredConversionProfile(
+                 tryxFullFrameMediaPreparationProfile(fit)));
+    manager->operationCoordinator_.finishOperation(
+        legacyOperationId, QStringLiteral("Cancelled"),
+        QStringLiteral("TestBoundary"), QString(),
+        QStringLiteral("test cleanup"));
 }
 
 void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate_data() {

@@ -22,6 +22,11 @@ QString printerConversionProfile(
     const QString &path,
     const TryxRuntimeMediaPreparationProfileV1 &profile,
     quint16 productId);
+// The PASE-family still identity (one frame with the media header), also
+// used when a still pulled from the device is prepared again.
+QString paseImageConversionProfile(
+    const TryxRuntimeMediaPreparationProfileV1 &profile);
+bool isPaseImageConversionProfile(const QString &conversionProfile);
 QString paseRecoveredConversionProfile(
     const QString &transformFingerprint);
 QString paseRecoveredConversionProfile(

@@ -429,8 +429,18 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         return;
     }
 
+    // A copy pulled from the device is raw H.264 or, for a still in the
+    // official format, the media header followed by raw H.264. A still stays
+    // a still: one frame with the header, named and identified like an
+    // uploaded picture. A headerless copy, including a minute-long still
+    // from earlier versions, is prepared as video.
+    const turris_media::MediaHeaderPrefix recoveredHeader = recoveredVideo
+        ? turris_media::readMediaHeaderPrefix(localPath)
+        : turris_media::MediaHeaderPrefix{};
     const auto type = recoveredVideo
-        ? panorama::MediaType::Video
+        ? (turris_media::isStillImageMediaHeader(recoveredHeader)
+               ? panorama::MediaType::Image
+               : panorama::MediaType::Video)
         : panorama::Media::detect_type(localPath.toStdString());
     QString baseExtension;
     switch (type) {
@@ -494,6 +504,11 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
 
     QStringList arguments{QStringLiteral("-y")};
     if (recoveredVideo) {
+        // The decoder reads only the raw stream after a media header.
+        if (recoveredHeader.size > 0) {
+            arguments << QStringLiteral("-skip_initial_bytes")
+                      << QString::number(recoveredHeader.size);
+        }
         arguments << QStringLiteral("-f") << QStringLiteral("h264")
                   << QStringLiteral("-framerate") << QStringLiteral("30");
     }
@@ -605,7 +620,6 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     expectedSourceSha256_ = expectedSourceSha256;
     transform_ = profile.transform;
     preparationProfile_ = profile;
-    recoveredVideo_ = recoveredVideo;
     productId_ = productId;
     turrisMediaKind_ = type == panorama::MediaType::Image
         ? turris_media::kImageKind
@@ -802,7 +816,7 @@ void PrinterMediaPreparer::finishThumbnailPreparation(int exitCode,
 bool PrinterMediaPreparer::preparesMediaHeader() const {
     return printerMediaUsesMediaHeader(
         productId_,
-        !recoveredVideo_ && turrisMediaKind_ == turris_media::kImageKind);
+        turrisMediaKind_ == turris_media::kImageKind);
 }
 
 QSize PrinterMediaPreparer::preparedMediaSize() const {
@@ -1078,7 +1092,6 @@ void PrinterMediaPreparer::resetPreparationState() {
     transform_ = tryxLegacyFitMediaTransform();
     preparationProfile_ =
         tryxFullFrameMediaPreparationProfile();
-    recoveredVideo_ = false;
     productId_ = 0x1021;
     turrisMediaKind_ = 0;
     generation_ = 0;

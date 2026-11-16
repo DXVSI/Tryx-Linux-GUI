@@ -11,8 +11,11 @@ class QFile;
 namespace tryx::turris_media {
 
 inline constexpr quint16 kProductId = 0x2011;
-// MediaHeaderPb.original_media_type: PNG=2, GIF=3, MP4=4. Still images are
-// always delivered as PNG-derived single frames, matching the official app.
+// MediaHeaderPb.original_media_type (Tryx.Media.enOriginalMediaType in
+// KANALI 2.6.0 MediaX.dll): JPEG=1, PNG=2, GIF=3, MP4=4. This application
+// declares every still it writes as PNG; a JPEG still from the official
+// application is still recognised when it is read back.
+inline constexpr quint32 kJpegImageKind = 1U;
 inline constexpr quint32 kImageKind = 2U;
 inline constexpr quint32 kGifKind = 3U;
 // The official converter overlays a still on its background with
@@ -21,6 +24,9 @@ inline constexpr quint64 kStillImageFrames = 1ULL;
 inline constexpr quint32 kVideoKind = 4U;
 inline constexpr quint32 kWidth = 1280U;
 inline constexpr quint32 kHeight = 720U;
+
+// A JPEG or PNG still: one frame at 30 fps.
+bool isStillImageKind(quint32 kind);
 
 // Frame rate the official application encodes and declares per media kind:
 // stills at 30 fps, video and animated GIF at 60 fps.
@@ -72,11 +78,25 @@ bool validateBlob(QFile *file, qint64 declaredSize,
                   quint32 width, quint32 height,
                   QString *errorMessage);
 
-// Size of the "u32 length + MediaHeaderPb" prefix when the bytes start with
-// a well-formed media header of any size, followed by an Annex-B start
-// code; 0 for headerless raw H.264 or anything else. Used to hand only the
-// raw stream to tools outside the device path.
-qint64 mediaHeaderPrefixSize(const QByteArray &leadingBytes);
+// A well-formed media header at the start of a file, followed by an
+// Annex-B start code. size is the length of the "u32 length +
+// MediaHeaderPb" prefix, 0 for headerless raw H.264 or anything else.
+struct MediaHeaderPrefix {
+    qint64 size = 0;
+    quint32 kind = 0;
+    quint32 width = 0;
+    quint32 height = 0;
+    quint64 frameCount = 0;
+};
 inline constexpr qint64 kMaximumMediaHeaderPrefixBytes = 4 + 4096 + 5;
+MediaHeaderPrefix parseMediaHeaderPrefix(const QByteArray &leadingBytes);
+// Reads the first kMaximumMediaHeaderPrefixBytes of a file.
+MediaHeaderPrefix readMediaHeaderPrefix(const QString &path);
+// Size of the prefix, used to hand only the raw stream to tools outside the
+// device path.
+qint64 mediaHeaderPrefixSize(const QByteArray &leadingBytes);
+// Whether a file pulled from the device is a still: it starts with a media
+// header that declares a JPEG or PNG original.
+bool isStillImageMediaHeader(const MediaHeaderPrefix &header);
 
 }  // namespace tryx::turris_media

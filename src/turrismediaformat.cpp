@@ -252,8 +252,12 @@ bool parseMediaMetadata(const QByteArray &bytes,
 
 namespace tryx::turris_media {
 
+bool isStillImageKind(quint32 kind) {
+    return kind == kJpegImageKind || kind == kImageKind;
+}
+
 quint32 framesPerSecondForKind(quint32 kind) {
-    return kind == kImageKind ? 30U : 60U;
+    return isStillImageKind(kind) ? 30U : 60U;
 }
 
 int videoBitrateKbps(qint64 sourceKbps, double sourceFps, int sourceWidth,
@@ -308,7 +312,7 @@ WriteResult writeBlob(
         frameCount == 0 || frameCount > 0xffffffffULL ||
         (kind == kImageKind && frameCount != kStillImageFrames) ||
         !mediaSizeIsValid(width, height)) {
-        result.error = QObject::tr("Turris media attributes are invalid");
+        result.error = QObject::tr("Media header attributes are invalid");
         return result;
     }
 
@@ -316,7 +320,7 @@ WriteResult writeBlob(
         mediaMetadata(kind, frameCount, width, height);
     if (metadata.isEmpty() ||
         metadata.size() > static_cast<qsizetype>(0xffffffffU)) {
-        result.error = QObject::tr("Turris media metadata is invalid");
+        result.error = QObject::tr("Media header metadata is invalid");
         return result;
     }
     QByteArray metadataLength(4, Qt::Uninitialized);
@@ -332,27 +336,27 @@ WriteResult writeBlob(
         rawInfo.size() <= 0 ||
         rawInfo.size() > kMaximumBlobBytes - prefixSize) {
         result.error = QObject::tr(
-            "Prepared Turris H264 is not a bounded regular file");
+            "The prepared H264 stream is not a bounded regular file");
         return result;
     }
 
     QFile rawFile(rawPath);
     if (!rawFile.open(QIODevice::ReadOnly)) {
-        result.error = QObject::tr("Cannot open prepared Turris H264: %1")
+        result.error = QObject::tr("Cannot open the prepared H264 stream: %1")
                            .arg(rawFile.errorString());
         return result;
     }
     QSaveFile outputFile(outputPath);
     outputFile.setDirectWriteFallback(false);
     if (!outputFile.open(QIODevice::WriteOnly)) {
-        result.error = QObject::tr("Cannot create Turris media blob: %1")
+        result.error = QObject::tr("Cannot create the media file with header: %1")
                            .arg(outputFile.errorString());
         return result;
     }
     if (!outputFile.setPermissions(QFileDevice::ReadOwner |
                                    QFileDevice::WriteOwner)) {
         result.error = QObject::tr(
-            "Cannot restrict Turris media blob permissions");
+            "Cannot restrict the permissions of the media file with header");
         outputFile.cancelWriting();
         return result;
     }
@@ -360,7 +364,7 @@ WriteResult writeBlob(
     QCryptographicHash hash(QCryptographicHash::Sha256);
     if (!writeAll(&outputFile, metadataLength) ||
         !writeAll(&outputFile, metadata)) {
-        result.error = QObject::tr("Cannot write Turris media metadata: %1")
+        result.error = QObject::tr("Cannot write the media header: %1")
                            .arg(outputFile.errorString());
         outputFile.cancelWriting();
         return result;
@@ -379,7 +383,7 @@ WriteResult writeBlob(
         if (chunk.isEmpty()) {
             if (rawFile.error() != QFileDevice::NoError) {
                 result.error = QObject::tr(
-                    "Cannot read prepared Turris H264: %1")
+                    "Cannot read the prepared H264 stream: %1")
                                    .arg(rawFile.errorString());
                 outputFile.cancelWriting();
                 return result;
@@ -388,7 +392,7 @@ WriteResult writeBlob(
         }
         if (!writeAll(&outputFile, chunk)) {
             result.error = QObject::tr(
-                "Cannot write Turris media payload: %1")
+                "Cannot write the media payload: %1")
                                .arg(outputFile.errorString());
             outputFile.cancelWriting();
             return result;
@@ -399,7 +403,7 @@ WriteResult writeBlob(
     if (copied != rawInfo.size() ||
         QFileInfo(rawPath).size() != rawInfo.size()) {
         result.error = QObject::tr(
-            "Prepared Turris H264 changed while it was wrapped");
+            "The prepared H264 stream changed while the media header was added");
         outputFile.cancelWriting();
         return result;
     }
@@ -409,7 +413,7 @@ WriteResult writeBlob(
         return result;
     }
     if (!outputFile.flush() || !outputFile.commit()) {
-        result.error = QObject::tr("Cannot commit Turris media blob: %1")
+        result.error = QObject::tr("Cannot commit the media file with header: %1")
                            .arg(outputFile.errorString());
         return result;
     }
@@ -420,7 +424,7 @@ WriteResult writeBlob(
         outputInfo.size() != prefixSize + rawInfo.size()) {
         QFile::remove(outputPath);
         result.error = QObject::tr(
-            "Committed Turris media blob failed size verification");
+            "The media file with header failed its size check");
         return result;
     }
     result.sha256 = QString::fromLatin1(hash.result().toHex());
@@ -496,7 +500,7 @@ bool validateBlob(QFile *file, qint64 declaredSize,
     const auto reject = [errorMessage](const QString &reason) {
         if (errorMessage) {
             *errorMessage = QObject::tr(
-                "Turris media container is invalid: %1")
+                "The media container is invalid: %1")
                                 .arg(reason);
         }
         return false;
@@ -580,9 +584,9 @@ bool validateBlob(QFile *file, qint64 declaredSize,
     return true;
 }
 
-qint64 mediaHeaderPrefixSize(const QByteArray &leadingBytes) {
+MediaHeaderPrefix parseMediaHeaderPrefix(const QByteArray &leadingBytes) {
     if (leadingBytes.size() < 4) {
-        return 0;
+        return {};
     }
     const auto byteAt = [&leadingBytes](qsizetype index) {
         return static_cast<quint32>(
@@ -595,19 +599,20 @@ qint64 mediaHeaderPrefixSize(const QByteArray &leadingBytes) {
     // length is far beyond the metadata bound.
     if (metadataLength == 0 ||
         metadataLength > static_cast<quint32>(kMaximumMetadataBytes)) {
-        return 0;
+        return {};
     }
     const qint64 prefixSize = 4 + static_cast<qint64>(metadataLength);
     if (leadingBytes.size() < prefixSize + 4) {
-        return 0;
+        return {};
     }
     MediaMetadata metadata;
     if (!parseMediaMetadata(
             leadingBytes.mid(4, static_cast<qsizetype>(metadataLength)),
             &metadata, 0, nullptr)) {
-        return 0;
+        return {};
     }
-    const bool knownKind = metadata.kind == kImageKind ||
+    const bool knownKind = metadata.kind == kJpegImageKind ||
+                           metadata.kind == kImageKind ||
                            metadata.kind == kGifKind ||
                            metadata.kind == kVideoKind;
     if (metadata.magic != kMediaMagic ||
@@ -626,9 +631,32 @@ qint64 mediaHeaderPrefixSize(const QByteArray &leadingBytes) {
         metadata.frameCount > std::numeric_limits<quint32>::max() ||
         !startsWithAnnexBStartCode(
             leadingBytes.mid(static_cast<qsizetype>(prefixSize), 5))) {
-        return 0;
+        return {};
     }
-    return prefixSize;
+    MediaHeaderPrefix header;
+    header.size = prefixSize;
+    header.kind = static_cast<quint32>(metadata.kind);
+    header.width = static_cast<quint32>(metadata.width);
+    header.height = static_cast<quint32>(metadata.height);
+    header.frameCount = metadata.frameCount;
+    return header;
+}
+
+MediaHeaderPrefix readMediaHeaderPrefix(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    return parseMediaHeaderPrefix(
+        file.read(kMaximumMediaHeaderPrefixBytes));
+}
+
+qint64 mediaHeaderPrefixSize(const QByteArray &leadingBytes) {
+    return parseMediaHeaderPrefix(leadingBytes).size;
+}
+
+bool isStillImageMediaHeader(const MediaHeaderPrefix &header) {
+    return header.size > 0 && isStillImageKind(header.kind);
 }
 
 }  // namespace tryx::turris_media
