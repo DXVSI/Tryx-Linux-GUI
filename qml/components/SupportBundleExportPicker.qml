@@ -15,8 +15,12 @@ Popup {
     property var portalChooser: null
     property Item focusReturnItem: null
     property url currentFolder: homeFolder
+    // FolderListModel keeps its previous status when the folder changes and
+    // reports Loading and Ready later from its worker thread, so right after
+    // navigation it can still say Ready for the folder that was left.
     readonly property bool currentFolderReady:
-        folderModel.status === FolderListModel.Ready
+        folderModel.status === FolderListModel.Ready &&
+        String(folderModel.readyFolder) === String(currentFolder)
 
     function scheduleExport(folder) {
         // Qt 6.4 exposes callLater as a callable QJSValue property.
@@ -77,6 +81,9 @@ Popup {
     FolderListModel {
         id: folderModel
 
+        // The folder the model last reported Ready for.
+        property url readyFolder
+
         folder: root.currentFolder
         showFiles: false
         showDirs: true
@@ -86,6 +93,10 @@ Popup {
         showOnlyReadable: true
         sortField: FolderListModel.Name
         sortCaseSensitive: false
+
+        onStatusChanged: folderModel.readyFolder =
+            folderModel.status === FolderListModel.Ready
+                ? folderModel.folder : ""
     }
 
     Connections {
