@@ -807,7 +807,8 @@ minute-long clip. This version uploads it the way the official application
 does: one frame with the official media header. This is meant to fix the
 Loop and Shuffle stall, but it is not yet confirmed on hardware. Pictures
 uploaded by an earlier version stay on the device in the old format; delete
-and upload them again before you use Loop or Shuffle. Until the fix is
+and upload them again from the original file before you use Loop or Shuffle.
+`Edit` of such an older picture keeps it a minute-long clip. Until the fix is
 confirmed, a playlist of videos or a single image is the safe choice. Details
 are in issue #37.
 
