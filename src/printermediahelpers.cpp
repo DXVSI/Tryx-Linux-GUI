@@ -86,7 +86,10 @@ QString normalizedMediaReference(const std::string &value) {
 
 bool decodePaseActiveLayout(const panorama::wire::v1::WorkConfiguration &work,
                             QString *screenMode, QString *playMode, QStringList *media,
-                            QString *errorMessage) {
+                            QString *errorMessage, bool *presetPlayback) {
+    if (presetPlayback) {
+        *presetPlayback = false;
+    }
     if (!screenMode || !playMode || !media) {
         if (errorMessage) {
             *errorMessage =
@@ -98,6 +101,7 @@ bool decodePaseActiveLayout(const panorama::wire::v1::WorkConfiguration &work,
     QString decodedScreenMode;
     QString decodedPlayMode;
     QStringList decodedMedia;
+    bool decodedPresetPlayback = false;
     switch (work.media_mode()) {
     case panorama::wire::v1::WorkConfiguration::MEDIA_DUAL:
         decodedScreenMode = QStringLiteral("Screen Splitting");
@@ -118,6 +122,17 @@ bool decodePaseActiveLayout(const panorama::wire::v1::WorkConfiguration &work,
             break;
         case panorama::wire::v1::WorkConfiguration::LOOP_RANDOM:
             decodedPlayMode = QStringLiteral("Shuffle");
+            break;
+        // The display model has no preset playback state: show the preset
+        // loops as the user-media loops they mirror. Apply never writes
+        // them back (replacePresetLoopMode).
+        case panorama::wire::v1::WorkConfiguration::LOOP_PRESET_ALL:
+            decodedPlayMode = QStringLiteral("Loop");
+            decodedPresetPlayback = true;
+            break;
+        case panorama::wire::v1::WorkConfiguration::LOOP_PRESET_RANDOM:
+            decodedPlayMode = QStringLiteral("Shuffle");
+            decodedPresetPlayback = true;
             break;
         case panorama::wire::v1::WorkConfiguration::LOOP_SINGLE:
             decodedPlayMode = QStringLiteral("Single");
@@ -142,7 +157,26 @@ bool decodePaseActiveLayout(const panorama::wire::v1::WorkConfiguration &work,
     *screenMode = decodedScreenMode;
     *playMode = decodedPlayMode;
     *media = decodedMedia;
+    if (presetPlayback) {
+        *presetPlayback = decodedPresetPlayback;
+    }
     return true;
+}
+
+bool replacePresetLoopMode(panorama::wire::v1::WorkConfiguration *work) {
+    if (!work) {
+        return false;
+    }
+    switch (work->loop_mode()) {
+    case panorama::wire::v1::WorkConfiguration::LOOP_PRESET_ALL:
+        work->set_loop_mode(panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+        return true;
+    case panorama::wire::v1::WorkConfiguration::LOOP_PRESET_RANDOM:
+        work->set_loop_mode(panorama::wire::v1::WorkConfiguration::LOOP_RANDOM);
+        return true;
+    default:
+        return false;
+    }
 }
 
 bool isSafeDeviceMediaName(const QString &fileName) {

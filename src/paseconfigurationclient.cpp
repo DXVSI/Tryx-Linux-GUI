@@ -103,6 +103,13 @@ bool PaseConfigurationClient::bootstrapSession(
                 }
                 return false;
             }
+            // Device notifications may carry the same track-zero header as
+            // the bootstrap answers; their body tells them apart.
+            if (PrinterTransactionChannel::skipUnsolicitedResponse(response)) {
+                ++skippedFrames;
+                skippedResponseBytes += payload.size() + 8;
+                continue;
+            }
             const bool expectedBootstrapHeader = response.has_header() &&
                                                  response.header().version() == 1 &&
                                                  response.header().track_id() == 0 &&
@@ -111,12 +118,10 @@ bool PaseConfigurationClient::bootstrapSession(
                                               response.header().version() == 1 &&
                                               response.header().track_id() != 0 &&
                                               response.header().payload_crc32() == 0;
-            const bool headerlessAsynchronousResponse =
+            const bool headerlessPong =
                 !response.has_header() &&
-                (response.body_case() == panorama::wire::v1::Response::kPong ||
-                 response.body_case() ==
-                     panorama::wire::v1::Response::kAsynchronousEvent);
-            if (staleTrackedResponse || headerlessAsynchronousResponse) {
+                response.body_case() == panorama::wire::v1::Response::kPong;
+            if (staleTrackedResponse || headerlessPong) {
                 ++skippedFrames;
                 skippedResponseBytes += payload.size() + 8;
                 continue;
@@ -1407,8 +1412,16 @@ PaseConfigurationClient::readPaseDisplayState(const QString &devicePath,
             QString::fromStdString(config.standby_config().media_file());
     }
     if (!decodePaseActiveLayout(work, &result.state.screenMode, &result.state.playMode,
-                                &result.state.media, &result.error)) {
+                                &result.state.media, &result.error,
+                                &result.presetPlayback)) {
         return result;
+    }
+    if (result.presetPlayback) {
+        qInfo().noquote()
+            << QStringLiteral(
+                   "TRYX device reports preset playlist loop mode %1; shown as %2")
+                   .arg(static_cast<int>(work.loop_mode()))
+                   .arg(result.state.playMode);
     }
     result.success = true;
     return result;
@@ -1564,6 +1577,19 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
     }
     applyProfileUserConfigDefaults(&userConfig, productProfile_,
                                    deviceDefaultPowerOnMedia_, deviceDefaultStandbyMedia_);
+    // The display state shows a preset loop as "Loop" or "Shuffle". Write that
+    // shown mode instead of echoing the preset loop mode on a display-only
+    // Apply; KANALI 2.6.0 never writes preset loop modes either.
+    if (userConfig.has_work_config()) {
+        const int deviceLoopMode = static_cast<int>(userConfig.work_config().loop_mode());
+        if (replacePresetLoopMode(userConfig.mutable_work_config())) {
+            qInfo().noquote()
+                << QStringLiteral(
+                       "TRYX Apply replaces preset playlist loop mode %1 with %2")
+                       .arg(deviceLoopMode)
+                       .arg(static_cast<int>(userConfig.work_config().loop_mode()));
+        }
+    }
     if (negotiatesCapabilities() && !config.mediaPresent &&
         userConfig.work_config().media_mode() ==
             panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE &&
@@ -1697,7 +1723,9 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
         if (readback.state.screenMode != config.screenMode) {
             mismatches.append(QObject::tr("screen mode"));
         }
-        if (readback.state.playMode != config.playMode) {
+        // A preset loop reads as the same "Loop" or "Shuffle" that was
+        // requested, but the host only writes user-media loop modes.
+        if (readback.state.playMode != config.playMode || readback.presetPlayback) {
             mismatches.append(QObject::tr("play mode"));
         }
         if (readback.state.media != config.media) {

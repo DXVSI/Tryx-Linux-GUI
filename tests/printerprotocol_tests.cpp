@@ -2316,6 +2316,8 @@ private slots:
     void mediaTransformValidationAndFilters();
     void mediaTransformChangesConversionProfile();
     void productProfilesExposeExactCapabilities();
+    void kanaliMappedProductIdsReusePanoramaProfiles_data();
+    void kanaliMappedProductIdsReusePanoramaProfiles();
     void turrisMediaAnalysisUses1280Profile();
     void turrisMediaFormatFrameCountParserIsStrict();
     void turrisMediaFormatWriterIsAtomicAndRewinds();
@@ -2382,6 +2384,11 @@ private slots:
     void paseDisplayMutationMatrix_data();
     void paseDisplayMutationMatrix();
     void readPaseDisplayStateDecodesDualConfiguration();
+    void readPaseDisplayStateReadsPresetLoopModes_data();
+    void readPaseDisplayStateReadsPresetLoopModes();
+    void paseDisplayApplyReplacesPresetLoopMode_data();
+    void paseDisplayApplyReplacesPresetLoopMode();
+    void paseMediaApplyRejectsPresetLoopReadback();
     void standalonePaseMetricsConfigurationIsAcknowledged();
     void displayKeepalivePreservesPaseOverlayValues();
     void paseMetricBatchMatchesHeaderlessWireFrame();
@@ -2723,6 +2730,7 @@ private slots:
     void udbSessionBootstrapWaitsForLateDeviceInfo();
     void udbSessionBootstrapResynchronizesAfterStaleTail();
     void udbSessionBootstrapSkipsStaleTrackedResponse();
+    void udbSessionBootstrapSkipsUnsolicitedNotifications();
     void udbSessionBootstrapRejectsUnboundedStaleResponses();
     void udbSessionDeviceInfoReadinessTimeoutSendsOnce();
     void udbSessionBootstrapPartialResponseIsTerminal();
@@ -2737,6 +2745,8 @@ private slots:
     void displayKeepaliveMalformedResponseIsDiscarded();
     void displayKeepaliveIncompleteResponseIsDiscarded();
     void notificationBeforeExpectedResponse();
+    void unsolicitedNotificationsBeforeTrackedResponseAreSkipped();
+    void optionalSetterRejectionSurvivesUnsolicitedNotification();
     void headerlessPongBeforeTrackedResponseIsSkipped();
     void boundedResponseBurstBeforeFileListIsSkipped();
     void slowTrackedResponseGetsInFlightKeepalive();
@@ -11179,6 +11189,93 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
         QStringLiteral("scale=2240:1080")));
 }
 
+void PrinterProtocolTests::kanaliMappedProductIdsReusePanoramaProfiles_data() {
+    QTest::addColumn<int>("productId");
+    QTest::addColumn<int>("baseProductId");
+    QTest::addColumn<QString>("model");
+
+    // KANALI 2.6.0 main bundle device table, by USB PID.
+    QTest::newRow("1061-pase") << 0x1061 << 0x1021 << QStringLiteral("PANORAMA SE");
+    QTest::newRow("1071-pase-v2") << 0x1071 << 0x1021 << QStringLiteral("PANORAMA SE V2");
+    QTest::newRow("10a1-pawb") << 0x10a1 << 0x1031 << QStringLiteral("PANORAMA WB");
+    QTest::newRow("10b1-pano") << 0x10b1 << 0x1011 << QStringLiteral("PANORAMA");
+}
+
+void PrinterProtocolTests::kanaliMappedProductIdsReusePanoramaProfiles() {
+    QFETCH(int, productId);
+    QFETCH(int, baseProductId);
+    QFETCH(QString, model);
+
+    const auto profile = printerProductProfileForId(static_cast<quint16>(productId));
+    const auto base = printerProductProfileForId(static_cast<quint16>(baseProductId));
+    QVERIFY(profile.has_value());
+    QVERIFY(base.has_value());
+    QCOMPARE(profile->productId, static_cast<quint16>(productId));
+    // Unverified firmware packages: no validation and no flashing.
+    QVERIFY(!profile->firmwareFlashSupported);
+    QCOMPARE(profile->mediaWidth, base->mediaWidth);
+    QCOMPARE(profile->mediaHeight, base->mediaHeight);
+    QCOMPARE(profile->family, base->family);
+    QCOMPARE(profile->mediaContainer, base->mediaContainer);
+    QCOMPARE(profile->keepalive, base->keepalive);
+    QCOMPARE(profile->overlayLayout, base->overlayLayout);
+    QCOMPARE(profile->orientationModel, base->orientationModel);
+    QCOMPARE(profile->fileTransferTrackId, base->fileTransferTrackId);
+    QCOMPARE(profile->readbackConfirmedWriteAckWindowMs,
+             base->readbackConfirmedWriteAckWindowMs);
+    QCOMPARE(profile->keepBulkInPending, base->keepBulkInPending);
+    QCOMPARE(profile->defaultPowerOnMedia, base->defaultPowerOnMedia);
+    QCOMPARE(profile->defaultStandbyMedia, base->defaultStandbyMedia);
+    QCOMPARE(profile->mediaUploadSupported, base->mediaUploadSupported);
+    QCOMPARE(profile->mediaCatalogSupported, base->mediaCatalogSupported);
+    QCOMPARE(profile->mediaPullSupported, base->mediaPullSupported);
+    QCOMPARE(profile->displayConfigurationSupported,
+             base->displayConfigurationSupported);
+    QCOMPARE(profile->splitAreaMediaSupported, base->splitAreaMediaSupported);
+    QCOMPARE(profile->waterfallSupported, base->waterfallSupported);
+    QCOMPARE(profile->overlayMetricsSupported, base->overlayMetricsSupported);
+    QCOMPARE(profile->overlayLeaseSupported, base->overlayLeaseSupported);
+
+    const QString product = printerProductIdString(static_cast<quint16>(productId));
+    QVERIFY(tryxSavedLayoutProductIdIsSupported(product));
+    QVERIFY(tryxDisplaySnapshotProductIdIsSupported(product));
+
+    tryx::SupportSnapshotSourceV1 source;
+    source.generatedAtUtcMs =
+        QDateTime::fromString(QStringLiteral("2026-11-17T12:00:00.000Z"),
+                              Qt::ISODateWithMs)
+            .toMSecsSinceEpoch();
+    source.runtimeVersion = QStringLiteral("2.5.4");
+    source.runtimeApiVersion = 8;
+    source.connection.revision = 1;
+    source.connection.connected = true;
+    source.connection.printerClassConnected = true;
+    source.connection.productId = product;
+    const QString json = tryx::buildSupportSnapshotV1(source);
+    QString validationError;
+    QVERIFY2(tryx::supportSnapshotV1IsValid(json, &validationError),
+             qPrintable(validationError));
+    const QJsonObject device = QJsonDocument::fromJson(json.toUtf8())
+                                   .object()
+                                   .value(QStringLiteral("device"))
+                                   .toObject();
+    QCOMPARE(device.value(QStringLiteral("product_id")).toString(), product);
+    QCOMPARE(device.value(QStringLiteral("model")).toString(), model);
+
+    QTemporaryDir fixture;
+    QVERIFY(fixture.isValid());
+    const QString sysRoot = QDir(fixture.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(fixture.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"),
+                            product.mid(5).toLatin1()));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot, QStringLiteral("1-1"),
+                                  QStringLiteral("lp0")));
+    const auto snapshot = PrinterProtocol::discover(sysRoot, devRoot);
+    QVERIFY(snapshot.state == PrinterProtocol::DiscoveryState::Ready);
+    QCOMPARE(snapshot.devices.size(), 1);
+    QCOMPARE(snapshot.devices.first().productId, static_cast<quint16>(productId));
+}
+
 void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     const auto pase = printerProductProfileForId(0x1021);
     const auto pano = printerProductProfileForId(0x1011);
@@ -11189,7 +11286,8 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QVERIFY(panoWb.has_value());
     QVERIFY(turris.has_value());
     QVERIFY(!printerProductProfileForId(0x9999).has_value());
-    QVERIFY(!printerProductProfileForId(0x10a1).has_value());
+    QVERIFY(!printerProductProfileForId(0x1041).has_value());
+    QVERIFY(!printerProductProfileForId(0x10c1).has_value());
 
     for (const auto &profile : {pase, pano, panoWb}) {
         QCOMPARE(profile->mediaWidth, 2240);
@@ -16330,6 +16428,298 @@ void PrinterProtocolTests::readPaseDisplayStateDecodesDualConfiguration() {
     QCOMPARE(result.state.media,
              QStringList({QStringLiteral("left.h264"),
                           QStringLiteral("right.h264")}));
+}
+
+static void addPresetLoopModeRows() {
+    QTest::addColumn<int>("deviceLoopMode");
+    QTest::addColumn<QString>("playMode");
+    QTest::addColumn<int>("writtenLoopMode");
+    QTest::newRow("preset-all")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_PRESET_ALL)
+        << QStringLiteral("Loop")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QTest::newRow("preset-random")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_PRESET_RANDOM)
+        << QStringLiteral("Shuffle")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_RANDOM);
+}
+
+void PrinterProtocolTests::readPaseDisplayStateReadsPresetLoopModes_data() {
+    addPresetLoopModeRows();
+}
+
+// KANALI 2.6.0 loop modes 3 and 4 used to fail the whole active-layout
+// decode with "unknown playback mode".
+void PrinterProtocolTests::readPaseDisplayStateReadsPresetLoopModes() {
+    QFETCH(int, deviceLoopMode);
+    QFETCH(QString, playMode);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop read did not request user config");
+            return;
+        }
+        auto response = baseResponse(request);
+        auto *userConfig = response.mutable_user_configuration();
+        userConfig->mutable_display_config()->set_backlight_enable(true);
+        userConfig->mutable_display_config()->set_backlight_brightness(40);
+        auto *work = userConfig->mutable_work_config();
+        work->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        work->set_loop_mode(
+            static_cast<panorama::wire::v1::WorkConfiguration::LoopMode>(
+                deviceLoopMode));
+        work->set_single_mode_media_file("default_1_2240x1080.mp4.h264");
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    const PrinterProtocol::PaseDisplayStateResult result =
+        protocol.readPaseDisplayState(
+            devicePath, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(result.presetPlayback);
+    QCOMPARE(result.state.screenMode, QStringLiteral("Full Screen"));
+    QCOMPARE(result.state.playMode, playMode);
+    QCOMPARE(result.state.media,
+             QStringList{QStringLiteral("default_1_2240x1080.mp4.h264")});
+    QCOMPARE(result.state.brightness, 40);
+}
+
+void PrinterProtocolTests::paseDisplayApplyReplacesPresetLoopMode_data() {
+    addPresetLoopModeRows();
+}
+
+// A display-only Apply is a read-modify-write of the device configuration.
+// The preset loop mode the device reported must not be echoed back: the host
+// writes the user-media mode the display state shows.
+void PrinterProtocolTests::paseDisplayApplyReplacesPresetLoopMode() {
+    QFETCH(int, deviceLoopMode);
+    QFETCH(QString, playMode);
+    QFETCH(int, writtenLoopMode);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::Request capturedUserConfig;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request getRequest;
+        if (!readRequest(sockets[1], &getRequest, &peerError) ||
+            getRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop apply did not read user config");
+            return;
+        }
+        auto getResponse = baseResponse(getRequest);
+        auto *userConfig = getResponse.mutable_user_configuration();
+        userConfig->mutable_display_config()->set_backlight_enable(true);
+        userConfig->mutable_display_config()->set_backlight_brightness(21);
+        auto *work = userConfig->mutable_work_config();
+        work->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        work->set_loop_mode(
+            static_cast<panorama::wire::v1::WorkConfiguration::LoopMode>(
+                deviceLoopMode));
+        work->set_single_mode_media_file("keep-media.h264");
+        if (!writeResponse(sockets[1], getResponse, &peerError)) {
+            return;
+        }
+
+        if (!readRequest(sockets[1], &capturedUserConfig, &peerError) ||
+            capturedUserConfig.body_case() !=
+                panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral(
+                "preset loop apply did not send user config");
+            return;
+        }
+        auto userResponse = baseResponse(capturedUserConfig);
+        userResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], userResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request runRequest;
+        if (!readRequest(sockets[1], &runRequest, &peerError) ||
+            runRequest.body_case() !=
+                panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral(
+                "preset loop apply did not activate run config");
+            return;
+        }
+        auto runResponse = baseResponse(runRequest);
+        runResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], runResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request readbackRequest;
+        if (!readRequest(sockets[1], &readbackRequest, &peerError) ||
+            readbackRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop apply did not verify user config");
+            return;
+        }
+        auto readbackResponse = baseResponse(readbackRequest);
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
+        writeResponse(sockets[1], readbackResponse, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop-apply");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.display.brightnessPresent = true;
+    config.display.brightness = 68;
+    QString error;
+    PrinterProtocol::PaseDisplayState appliedState;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &error, PrinterProtocol::OperationContext{},
+        nullptr, &appliedState);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(capturedUserConfig.body_case(),
+             panorama::wire::v1::Request::kUserConfiguration);
+    const auto &written = capturedUserConfig.user_configuration();
+    QCOMPARE(static_cast<int>(written.work_config().loop_mode()), writtenLoopMode);
+    QCOMPARE(written.work_config().media_mode(),
+             panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+    QCOMPARE(QString::fromStdString(written.work_config().single_mode_media_file()),
+             QStringLiteral("keep-media.h264"));
+    QCOMPARE(written.display_config().backlight_brightness(), 68U);
+    QVERIFY2(applied, qPrintable(error));
+    QCOMPARE(appliedState.playMode, playMode);
+    QCOMPARE(appliedState.brightness, 68);
+}
+
+// The host writes LOOP_ALL for "Loop". A device that still reports a preset
+// loop afterwards decodes to the same "Loop" text, so the readback check has
+// to look at the preset flag to notice it.
+void PrinterProtocolTests::paseMediaApplyRejectsPresetLoopReadback() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::Request capturedUserConfig;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request getRequest;
+        if (!readRequest(sockets[1], &getRequest, &peerError) ||
+            getRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not read user config");
+            return;
+        }
+        auto getResponse = baseResponse(getRequest);
+        auto *initial = getResponse.mutable_user_configuration();
+        initial->mutable_display_config()->set_backlight_brightness(50);
+        auto *initialWork = initial->mutable_work_config();
+        initialWork->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        initialWork->set_loop_mode(
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+        initialWork->set_single_mode_media_file("old.h264");
+        if (!writeResponse(sockets[1], getResponse, &peerError)) {
+            return;
+        }
+
+        if (!readRequest(sockets[1], &capturedUserConfig, &peerError) ||
+            capturedUserConfig.body_case() !=
+                panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not write user config");
+            return;
+        }
+        auto userResponse = baseResponse(capturedUserConfig);
+        userResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], userResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request runRequest;
+        if (!readRequest(sockets[1], &runRequest, &peerError) ||
+            runRequest.body_case() !=
+                panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not write run config");
+            return;
+        }
+        auto runResponse = baseResponse(runRequest);
+        runResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], runResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request readbackRequest;
+        if (!readRequest(sockets[1], &readbackRequest, &peerError) ||
+            readbackRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not request readback");
+            return;
+        }
+        auto readbackResponse = baseResponse(readbackRequest);
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
+        readbackResponse.mutable_user_configuration()
+            ->mutable_work_config()
+            ->set_loop_mode(
+                panorama::wire::v1::WorkConfiguration::LOOP_PRESET_ALL);
+        writeResponse(sockets[1], readbackResponse, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop-readback");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.media = {QStringLiteral("new.h264")};
+    config.screenMode = QStringLiteral("Full Screen");
+    config.playMode = QStringLiteral("Loop");
+    config.mediaPresent = true;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &error, PrinterProtocol::OperationContext{},
+        &mutation);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(capturedUserConfig.user_configuration().work_config().loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QVERIFY(!applied);
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::VerificationFailed);
+    QVERIFY2(error.contains(QStringLiteral("play mode"), Qt::CaseInsensitive),
+             qPrintable(error));
 }
 
 void PrinterProtocolTests::standalonePaseMetricsConfigurationIsAcknowledged() {
@@ -42512,6 +42902,144 @@ void PrinterProtocolTests::udbSessionBootstrapSkipsStaleTrackedResponse() {
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
 }
 
+// KANALI 2.6.0 notifications (820 to 822) and bodies this schema does not
+// know arrive on their own, possibly with a header.
+static panorama::wire::v1::Response appExceptionNotification(
+    const panorama::wire::v1::Request &request) {
+    auto notification = baseResponse(request);
+    auto *exception = notification.mutable_app_exception();
+    exception->set_exception_type(
+        panorama::wire::v1::AppException::EXCEPTION_STORAGE);
+    exception->set_error_code(-28);
+    exception->set_source("media_service");
+    exception->set_message("userdata\nnearly full");
+    exception->set_timestamp(1763337600);
+    return notification;
+}
+
+static panorama::wire::v1::Response unknownBodyNotification(
+    const panorama::wire::v1::Request &request) {
+    auto notification = baseResponse(request);
+    // Vendor storage_status (510): available_bytes = 1024.
+    notification.GetReflection()
+        ->MutableUnknownFields(&notification)
+        ->AddLengthDelimited(510, std::string("\x10\x80\x08", 3));
+    return notification;
+}
+
+static QRegularExpression appExceptionWarningPattern() {
+    return QRegularExpression(QStringLiteral(
+        "^TRYX device reported an application exception: type=Storage "
+        "code=-28 source=\"media_service\" message=\"userdata nearly full\" "
+        "timestamp=1763337600 track_id=\\d+$"));
+}
+
+void PrinterProtocolTests::udbSessionBootstrapSkipsUnsolicitedNotifications() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request deviceInfoRequest;
+        if (!readRequest(sockets[1], &deviceInfoRequest, &peerError) ||
+            deviceInfoRequest.body_case() !=
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral(
+                    "notification bootstrap did not receive DeviceInfo");
+            }
+            return;
+        }
+
+        // Same track-zero header as the DeviceInfo answer itself.
+        if (!writeResponse(sockets[1], appExceptionNotification(deviceInfoRequest),
+                           &peerError)) {
+            return;
+        }
+        panorama::wire::v1::Response headerlessVolume;
+        headerlessVolume.mutable_host_volume_set()->set_volume(35);
+        if (!writeResponse(sockets[1], headerlessVolume, &peerError)) {
+            return;
+        }
+        auto launch = baseResponse(deviceInfoRequest);
+        launch.mutable_quick_launcher_shortcut_launch()->set_slot_index(2);
+        launch.mutable_quick_launcher_shortcut_launch()->set_program_path(
+            "C:\\Games\\launcher.exe");
+        if (!writeResponse(sockets[1], launch, &peerError)) {
+            return;
+        }
+
+        auto deviceInfoResponse = baseResponse(deviceInfoRequest);
+        auto *deviceInfo = deviceInfoResponse.mutable_device_information();
+        deviceInfo->set_product_name("PANORAMA SE");
+        deviceInfo->set_firmware_version("notification-firmware");
+        deviceInfo->set_serial_number("notification-serial");
+        if (!writeResponse(sockets[1], deviceInfoResponse, &peerError)) {
+            return;
+        }
+
+        const auto respond = [&](auto expectedBody, auto populateResponse,
+                                 bool unknownBodyFirst) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError) ||
+                request.body_case() != expectedBody) {
+                if (peerError.isEmpty()) {
+                    peerError = QStringLiteral(
+                        "notification bootstrap sequence was incomplete");
+                }
+                return false;
+            }
+            if (unknownBodyFirst &&
+                !writeResponse(sockets[1], unknownBodyNotification(request),
+                               &peerError)) {
+                return false;
+            }
+            auto response = baseResponse(request);
+            populateResponse(&response);
+            return writeResponse(sockets[1], response, &peerError);
+        };
+
+        if (!respond(
+                panorama::wire::v1::Request::kSystemConfigurationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_system_configuration();
+                },
+                true) ||
+            !respond(
+                panorama::wire::v1::Request::kDeviceAuthenticationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_device_authentication()->set_auth("ok");
+                },
+                false) ||
+            !respond(
+                panorama::wire::v1::Request::kOverlayLayout,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_acknowledgement();
+                },
+                false)) {
+            return;
+        }
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol protocol(500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("test-endpoint"));
+    const PrinterProtocol::Result result = protocol.startDisplaySession(
+        QStringLiteral("test-endpoint"), {});
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.deviceInfo.firmwareVersion,
+             QStringLiteral("notification-firmware"));
+    QCOMPARE(result.deviceInfo.serialNumber,
+             QStringLiteral("notification-serial"));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
 void PrinterProtocolTests::udbSessionBootstrapRejectsUnboundedStaleResponses() {
     int sockets[2] = {-1, -1};
     QString socketError;
@@ -43459,6 +43987,118 @@ void PrinterProtocolTests::notificationBeforeExpectedResponse() {
     peer.join();
     ::close(sockets[1]);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+void PrinterProtocolTests::unsolicitedNotificationsBeforeTrackedResponseAreSkipped() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("missing tracked file-list request");
+            }
+            return;
+        }
+
+        // The notifications even carry the track id of the request in flight.
+        if (!writeResponse(sockets[1], appExceptionNotification(request),
+                           &peerError)) {
+            return;
+        }
+        panorama::wire::v1::Response headerlessLaunch;
+        headerlessLaunch.mutable_quick_launcher_shortcut_launch()->set_slot_index(1);
+        if (!writeResponse(sockets[1], headerlessLaunch, &peerError)) {
+            return;
+        }
+        auto volume = baseResponse(request);
+        volume.mutable_host_volume_set()->set_mute(true);
+        if (!writeResponse(sockets[1], volume, &peerError) ||
+            !writeResponse(sockets[1], unknownBodyNotification(request),
+                           &peerError)) {
+            return;
+        }
+
+        auto response = baseResponse(request);
+        auto *file = response.mutable_media_catalog()->add_media_file_list();
+        file->set_file_path("/userdata/user/after-notification.png");
+        file->set_file_ext(".h264_2240x1080");
+        file->set_file_size(321);
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol protocol(500);
+    protocol.adoptFileDescriptorForTesting(sockets[0],
+                                           QStringLiteral("test-endpoint"));
+    const PrinterProtocol::OperationContext context;
+    const auto result =
+        protocol.readMediaList(QStringLiteral("test-endpoint"), context);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.files.size(), 1);
+    QCOMPARE(result.files.first().name,
+             QStringLiteral("after-notification.png.h264_2240x1080"));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+// A tracked setter takes its optional answer from the drain. A notification
+// with the setter's track id must neither acknowledge it nor hide the
+// rejection that follows.
+void PrinterProtocolTests::optionalSetterRejectionSurvivesUnsolicitedNotification() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    PrinterProtocol protocol;
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-notification-setter");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("missing overlay layout setter");
+            }
+            return;
+        }
+        if (!writeResponse(sockets[1], appExceptionNotification(request),
+                           &peerError)) {
+            return;
+        }
+        auto rejection = baseResponse(request);
+        rejection.mutable_error()->set_code(
+            panorama::wire::v1::ProtocolError::FAILURE);
+        rejection.mutable_error()->set_why("layout refused");
+        writeResponse(sockets[1], rejection, &peerError);
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.left.metrics = {QStringLiteral("CPU Power")};
+    overlay.left.alignment = QStringLiteral("Right");
+    overlay.left.textColor = 0x000000U;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool configured = protocol.configurePaseOverlay(
+        devicePath, overlay, &error, PrinterProtocol::OperationContext{},
+        &mutation);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(!configured);
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QCOMPARE(error, QStringLiteral("layout refused"));
 }
 
 void PrinterProtocolTests::headerlessPongBeforeTrackedResponseIsSkipped() {

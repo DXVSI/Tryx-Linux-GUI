@@ -22,7 +22,8 @@ ScrollView {
         case "TURRIS 620":
             return {file: "turris-620.png", crop: Qt.rect(114, 106, 452, 468)}
         // "PANORAMA WB" has no illustration yet; the AIO artwork would be
-        // misleading for a water block.
+        // misleading for a water block. "PANORAMA SE V2" (391a:1071) has none
+        // either: its look is not known.
         default:
             return null
         }

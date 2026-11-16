@@ -67,6 +67,17 @@ std::optional<PrinterProductProfile> printerProductProfileForId(quint16 productI
         // Panorama WB: the official application drives it with the Panorama
         // manager, the same 2240x1080 layout and the same presets.
         return paseFamilyProfile(0x1031, false);
+    // KANALI 2.6.0 drives these product ids with the same generic screen
+    // manager and 2240x1080 screen profile: 0x1061 as PASE (0x1021), 0x1071
+    // as PANORAMA SE V2 (manager PASEV2, PASE screen profile, no cooler),
+    // 0x10a1 as PAWB (0x1031) and 0x10b1 as PANO (0x1011). None was tested
+    // on hardware, and the official firmware packages differ (0x1071 uses
+    // updatePaseV2), so flashing stays off.
+    case 0x1061:
+    case 0x1071:
+    case 0x10a1:
+    case 0x10b1:
+        return paseFamilyProfile(productId, false);
     case 0x2011:
         return turrisProfile();
     default:

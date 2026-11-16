@@ -22,6 +22,10 @@ finish-args:
   - --usb=vnd:391a+dev:1011
   - --usb=vnd:391a+dev:1021
   - --usb=vnd:391a+dev:1031
+  - --usb=vnd:391a+dev:1061
+  - --usb=vnd:391a+dev:1071
+  - --usb=vnd:391a+dev:10a1
+  - --usb=vnd:391a+dev:10b1
   - --usb=vnd:391a+dev:2011
 modules:
   # Test-only private session bus. Removed completely before export.

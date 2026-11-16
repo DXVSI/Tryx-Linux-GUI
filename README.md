@@ -50,7 +50,7 @@ the maintainer; roadmap entries do not imply current compatibility.
 | [TURRIS 620](https://www.tryx.com/en/products/liquid-cooling/turris/turris-620/black) | Dual-tower air cooler | 5.0-inch IPS, 1280 × 720 | Community-tested; not maintainer-tested |
 | [HOLO ARGB 360](https://www.tryx.com/en/products/liquid-cooling/holo/holo/white-360) | AIO liquid cooler | Holographic display, 640 × 480 | Planned; hardware and protocol research required |
 | [PANORAMA V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
-| [PANORAMA SE V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
+| [PANORAMA SE V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; `391a:1071` mapped like the official application, not tested on hardware |
 
 **Status definitions:**
 
@@ -67,6 +67,10 @@ that every TRYX display has the same geometry or capabilities:
 | `391a:1021` | Panorama SE / PASE | 2240 × 1080 | Current PASE printer-class features |
 | `391a:1011` | Panorama | 2240 × 1080 | PASE media, display, and overlay features; firmware flashing disabled; community-tested |
 | `391a:1031` | Panorama WB | 2240 × 1080 | Same feature set as Panorama `391a:1011`, following the official application's shared Panorama layout; firmware flashing disabled; community-tested |
+| `391a:1061` | Panorama SE / PASE | 2240 × 1080 | Same feature set as Panorama `391a:1011` (custom badge text stays `391a:1021` only); mapped to PASE like the official application 2.6.0; firmware flashing disabled; not tested on hardware |
+| `391a:1071` | Panorama SE V2 | 2240 × 1080 | Same feature set as Panorama `391a:1011`; the official application 2.6.0 drives it with the PASE screen profile; firmware flashing disabled, its firmware package differs; not tested on hardware |
+| `391a:10a1` | Panorama WB | 2240 × 1080 | Same feature set as Panorama `391a:1011`; mapped to Panorama WB like the official application 2.6.0; firmware flashing disabled; not tested on hardware |
+| `391a:10b1` | Panorama | 2240 × 1080 | Same feature set as Panorama `391a:1011`; mapped to Panorama like the official application 2.6.0; firmware flashing disabled; not tested on hardware |
 | `391a:2011` | Turris 620 | 1280 × 720 | MXHD media upload, FileList catalog with read-only device presets, single-media Apply with Single/Loop/Shuffle, brightness, backlight and mirror, overlay metrics with hardware badges; no split screen, waterfall, custom badge text, media pull (Save as new/Replace), saved layouts, or firmware; community-tested |
 
 Turris support follows the command set of the official desktop application.
@@ -767,7 +771,7 @@ sudo dnf install -y android-tools unzip e2fsprogs ffmpeg mesa-demos
 
 **Permissions:**
 - User must be in `dialout` group (or `uucp` on Arch) for serial access
-- Supported printer-class devices use `391a:1011` for Panorama, `391a:1021` for Panorama SE / PASE, `391a:1031` for Panorama WB, and `391a:2011` for Turris 620; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
+- Supported printer-class devices use `391a:1011` for Panorama, `391a:1021` for Panorama SE / PASE, `391a:1031` for Panorama WB, and `391a:2011` for Turris 620; `391a:1061`, `391a:1071`, `391a:10a1` and `391a:10b1` are mapped like the official application but not tested on hardware; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
 - Fedora's generic printer rule must not start CUPS `configure-printer` for this vendor protocol. The qmake install target places an early access rule and a late printer-suppression rule in `/usr/lib/udev/rules.d`; do not create same-named overrides in `/etc/udev/rules.d`, because they would shadow packaged updates.
 
 ### Display drops off USB and only returns after a power-off
