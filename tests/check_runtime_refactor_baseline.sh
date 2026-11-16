@@ -995,6 +995,7 @@ require_qml_tests \
     SupportBundleExportPickerLayout <<'EOF'
 test_folderOnlyExportAndAccessibility
 test_busyDisablesSaveAndEscapeRestoresFocus
+test_saveWaitsForTheNewFolderListing
 EOF
 
 require_qml_tests \
