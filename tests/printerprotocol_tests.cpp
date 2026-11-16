@@ -1957,23 +1957,43 @@ void appendTurrisBytesField(QByteArray *output, quint32 field,
 }
 
 QByteArray turrisMediaMetadata(quint32 mediaKind,
-                               quint64 frameCount) {
+                               quint64 frameCount,
+                               quint32 width = 1280,
+                               quint32 height = 720) {
     // Stills are declared at 30 fps, video and GIF at 60 fps.
     const quint32 framesPerSecond = mediaKind == 2 ? 30 : 60;
     QByteArray metadata;
     appendTurrisVarintField(&metadata, 1, 0x4D584844U);
     appendTurrisBytesField(
         &metadata, 2,
-        QStringLiteral("Tryx media header v1, fps=%1, size=1280x720")
+        QStringLiteral("Tryx media header v1, fps=%1, size=%2x%3")
             .arg(framesPerSecond)
+            .arg(width)
+            .arg(height)
             .toLatin1());
     appendTurrisVarintField(&metadata, 3, mediaKind);
     appendTurrisVarintField(&metadata, 4, 1);
     appendTurrisVarintField(&metadata, 5, framesPerSecond);
-    appendTurrisVarintField(&metadata, 6, 1280);
-    appendTurrisVarintField(&metadata, 7, 720);
+    appendTurrisVarintField(&metadata, 6, width);
+    appendTurrisVarintField(&metadata, 7, height);
     appendTurrisVarintField(&metadata, 8, frameCount);
     return metadata;
+}
+
+// Container header ("u32 length + MediaHeaderPb") that KANALI 2.6.0's
+// MediaX.dll (MX_ConvertToH264Raw, run under Wine on 2026-11-17) wrote for
+// a PNG converted at 30 fps. The official converter writes it for every
+// product; only the size differs.
+QByteArray officialStillMediaHeader(quint32 width) {
+    return width == 1120
+        ? QByteArray::fromHex(
+              "4200000008c490e1ea04122c54727978206d65646961206865616465722076"
+              "312c206670733d33302c2073697a653d31313230783130383018022001281e"
+              "30e00838b8084001")
+        : QByteArray::fromHex(
+              "4200000008c490e1ea04122c54727978206d65646961206865616465722076"
+              "312c206670733d33302c2073697a653d32323430783130383018022001281e"
+              "30c01138b8084001");
 }
 
 QByteArray wrapTurrisMediaBlob(const QByteArray &metadata,
@@ -2273,6 +2293,9 @@ private slots:
     void turrisMediaFormatValidatorRejectsMalformedMetadata();
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
+    void paseMediaHeaderMatchesOfficialConverter();
+    void paseImagePreparationBuildsOfficialStill_data();
+    void paseImagePreparationBuildsOfficialStill();
     void pasePreparationProfilesProduceExactGeometry();
     void mediaPreparationKeepsRetryArtifactsPrivate_data();
     void mediaPreparationKeepsRetryArtifactsPrivate();
@@ -10999,7 +11022,7 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
     QCOMPARE(
         legacyProfile,
         QStringLiteral(
-            "pase-h264-v1-image-60s-2240x1080-yuv420p-30fps-libx264-veryfast-crf23"));
+            "pase-mxhd-v1-image-2240x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali"));
 
     TryxRuntimeMediaTransform crop = legacy;
     crop.mode = QStringLiteral("Crop");
@@ -11014,7 +11037,7 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
         analyzedSpy.at(1).at(4).toString();
     QVERIFY(cropProfile.startsWith(
         QStringLiteral(
-            "pase-h264-v2-image-60s-2240x1080-yuv420p-30fps-libx264-veryfast-crf23-transform-")));
+            "pase-mxhd-v1-image-2240x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali-transform-")));
     QVERIFY(cropProfile.endsWith(
         tryxMediaTransformFingerprint(crop)));
     QVERIFY(cropProfile != legacyProfile);
@@ -11031,10 +11054,56 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
         analyzedSpy.at(2).at(4).toString();
     QVERIFY(splitConversionProfile.startsWith(
         QStringLiteral(
-            "pase-h264-v3-image-60s-split-area-1120x1080-yuv420p-30fps-libx264-veryfast-crf23-transform-")));
+            "pase-mxhd-v1-image-split-area-1120x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali-transform-")));
     QVERIFY(splitConversionProfile.endsWith(
         tryxMediaTransformFingerprint(crop)));
     QVERIFY(splitConversionProfile != cropProfile);
+
+    // Minute-long raw stills from earlier versions stay canonical, so their
+    // stored records load, but no longer match a new upload.
+    using tryx::printer_media_identity::isCanonicalPrinterConversionProfile;
+    using tryx::printer_media_identity::
+        printerConversionProfileMatchesMediaName;
+    const QString cropFingerprint = tryxMediaTransformFingerprint(crop);
+    const QString legacyFullStill = QStringLiteral(
+        "pase-h264-v1-image-60s-2240x1080-yuv420p-30fps-libx264-veryfast-crf23");
+    const QString legacyTransformedStill =
+        QStringLiteral(
+            "pase-h264-v2-image-60s-2240x1080-yuv420p-30fps-libx264-veryfast-crf23-transform-") +
+        cropFingerprint;
+    const QString legacySplitStill =
+        QStringLiteral(
+            "pase-h264-v3-image-60s-split-area-1120x1080-yuv420p-30fps-libx264-veryfast-crf23-transform-") +
+        cropFingerprint;
+    for (const QString &profile : {legacyFullStill, legacyTransformedStill,
+                                   legacySplitStill, legacyProfile,
+                                   cropProfile, splitConversionProfile}) {
+        QVERIFY2(isCanonicalPrinterConversionProfile(profile),
+                 qPrintable(profile));
+    }
+    QVERIFY(legacyProfile != legacyFullStill);
+    QVERIFY(cropProfile != legacyTransformedStill);
+    QVERIFY(splitConversionProfile != legacySplitStill);
+    QVERIFY(!isCanonicalPrinterConversionProfile(
+        QStringLiteral(
+            "pase-mxhd-v1-image-split-area-1120x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali")));
+    QVERIFY(printerConversionProfileMatchesMediaName(
+        legacyProfile, QStringLiteral("a.png.h264_2240x1080")));
+    QVERIFY(!printerConversionProfileMatchesMediaName(
+        legacyProfile, QStringLiteral("a.png.h264_1120x1080")));
+    QVERIFY(printerConversionProfileMatchesMediaName(
+        splitConversionProfile, QStringLiteral("a.png.h264_1120x1080")));
+    QVERIFY(!printerConversionProfileMatchesMediaName(
+        splitConversionProfile, QStringLiteral("a.png.h264_2240x1080")));
+    QVERIFY(printerConversionProfileMatchesMediaName(
+        legacySplitStill, QStringLiteral("a.png.h264_1120x1080")));
+    QVERIFY(tryx::printer_media_identity::isPasePrinterConversionProfile(
+        legacyProfile));
+    QVERIFY(tryx::printer_media_identity::isPasePrinterConversionProfile(
+        legacyFullStill));
+    QVERIFY(!tryx::printer_media_identity::isPasePrinterConversionProfile(
+        QStringLiteral(
+            "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali2")));
 
     const auto pase = printerProductProfileForId(0x1021);
     QVERIFY(pase.has_value());
@@ -11724,6 +11793,217 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
         QString::fromLatin1(
             QCryptographicHash::hash(blob, QCryptographicHash::Sha256)
                 .toHex()));
+}
+
+void PrinterProtocolTests::paseMediaHeaderMatchesOfficialConverter() {
+    namespace turris = tryx::turris_media;
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray rawH264;
+    QVERIFY(splitTurrisMediaBlob(
+        turrisMediaBlob(turris::kImageKind, 1), nullptr, &rawH264));
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("still.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, rawH264));
+    QCOMPARE(turris::mediaHeaderPrefixSize(rawH264), qint64{0});
+    QCOMPARE(turris::mediaHeaderPrefixSize(
+                 QByteArrayLiteral("validated recovered H264 test bytes")),
+             qint64{0});
+    QCOMPARE(turris::mediaHeaderPrefixSize(
+                 turrisMediaBlob(turris::kVideoKind, 2)),
+             qint64{4} + turrisMediaMetadata(turris::kVideoKind, 2).size());
+
+    for (const quint32 width : {2240U, 1120U}) {
+        const QString suffix =
+            QStringLiteral(".h264_%1x1080").arg(width);
+        const QByteArray officialHeader =
+            officialStillMediaHeader(width);
+        QCOMPARE(officialHeader.size(), 70);
+        QCOMPARE(officialHeader.mid(4),
+                 turrisMediaMetadata(turris::kImageKind, 1, width, 1080));
+
+        const QString outputPath =
+            QDir(temporaryDirectory.path()).filePath(
+                QStringLiteral("still-%1.mxhd").arg(width));
+        const turris::WriteResult written = turris::writeBlob(
+            rawPath, outputPath, turris::kImageKind, 1, width, 1080, {});
+        QVERIFY2(written.error.isEmpty(), qPrintable(written.error));
+        QFile output(outputPath);
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        const QByteArray blob = output.readAll();
+        QCOMPARE(blob.left(officialHeader.size()), officialHeader);
+        QCOMPARE(blob.mid(officialHeader.size()), rawH264);
+        QCOMPARE(turris::mediaHeaderPrefixSize(blob),
+                 qint64{officialHeader.size()});
+
+        QString error;
+        QVERIFY2(turris::validateBlob(
+                     &output, blob.size(),
+                     QStringLiteral("still.png") + suffix, width, 1080,
+                     &error),
+                 qPrintable(error));
+        QVERIFY(!turris::validateBlob(
+            &output, blob.size(), QStringLiteral("still.png") + suffix,
+            &error));
+        QVERIFY(!turris::validateBlob(
+            &output, blob.size(),
+            QStringLiteral("still.png.h264_%1x1080")
+                .arg(width == 2240 ? 1120 : 2240),
+            width, 1080, &error));
+        QVERIFY(!turris::validateBlob(
+            &output, blob.size(), QStringLiteral("still.mp4") + suffix,
+            width, 1080, &error));
+        output.close();
+
+        QVERIFY(!turris::writeBlob(
+                     rawPath, outputPath, turris::kImageKind, 2, width,
+                     1080, {})
+                     .error.isEmpty());
+    }
+    QVERIFY(!turris::writeBlob(
+                 rawPath,
+                 QDir(temporaryDirectory.path()).filePath(
+                     QStringLiteral("odd.mxhd")),
+                 turris::kImageKind, 1, 2239, 1080, {})
+                 .error.isEmpty());
+}
+
+void PrinterProtocolTests::paseImagePreparationBuildsOfficialStill_data() {
+    QTest::addColumn<quint16>("productId");
+    QTest::addColumn<bool>("splitArea");
+    QTest::addColumn<QString>("sourceName");
+    QTest::addColumn<int>("width");
+    QTest::newRow("pase-full-png")
+        << quint16{0x1021} << false << QStringLiteral("still.png") << 2240;
+    QTest::newRow("pase-split-png")
+        << quint16{0x1021} << true << QStringLiteral("still.png") << 1120;
+    QTest::newRow("pase-full-jpg")
+        << quint16{0x1021} << false << QStringLiteral("photo.jpg") << 2240;
+    QTest::newRow("panorama-full-png")
+        << quint16{0x1011} << false << QStringLiteral("still.png") << 2240;
+    QTest::newRow("panorama-wb-split-png")
+        << quint16{0x1031} << true << QStringLiteral("still.png") << 1120;
+}
+
+// A PASE-family still is what the official converter makes: one frame at
+// 30 fps, main 4.1 without B-frames, wrapped in the media header. Earlier
+// versions uploaded a raw minute-long clip, and the display stopped
+// answering USB when Loop or Shuffle switched between such stills (#37).
+void PrinterProtocolTests::paseImagePreparationBuildsOfficialStill() {
+    QFETCH(quint16, productId);
+    QFETCH(bool, splitArea);
+    QFETCH(QString, sourceName);
+    QFETCH(int, width);
+    if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty() ||
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(sourceName);
+    QImage image(160, 90, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#336699")));
+    for (int x = 0; x < image.width(); ++x) {
+        image.setPixelColor(x, x % image.height(),
+                            QColor(QStringLiteral("#f0c040")));
+    }
+    QVERIFY(image.save(sourcePath));
+
+    TryxRuntimeMediaPreparationProfileV1 profile;
+    profile.target = splitArea ? QStringLiteral("SplitArea")
+                               : QStringLiteral("FullFrame");
+    if (splitArea) {
+        profile.transform.mode = QStringLiteral("Crop");
+        profile.transform.zoomPermille = 1500;
+    }
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer,
+                           &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer,
+                         &PrinterMediaPreparer::failed);
+    const QString operationId =
+        QStringLiteral("10211021-1021-4021-8021-102110211021");
+    preparer.prepareWithPreparationProfile(
+        operationId, QStringLiteral("pase-endpoint"), sourcePath,
+        QString(), 12, profile, productId);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    QCOMPARE(preparedSpy.count(), 1);
+    const QList<QVariant> prepared = preparedSpy.first();
+    const QString outputPath = prepared.at(3).toString();
+    const QString remoteName = prepared.at(4).toString();
+    const QString expectedSha256 = prepared.at(5).toString();
+    const QString thumbnailPath = prepared.at(6).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(thumbnailPath);
+    });
+    QVERIFY(remoteName.endsWith(
+        QStringLiteral(".png.h264_%1x1080").arg(width)));
+    QVERIFY(!QFileInfo::exists(outputPath + QStringLiteral(".raw.h264")));
+    QVERIFY(!thumbnailPath.isEmpty());
+    const QImage thumbnail(thumbnailPath);
+    QVERIFY(!thumbnail.isNull());
+    QCOMPARE(thumbnail.width(), 384);
+
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    output.close();
+    QCOMPARE(blob.left(70),
+             officialStillMediaHeader(static_cast<quint32>(width)));
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata,
+             turrisMediaMetadata(2, 1, static_cast<quint32>(width), 1080));
+    QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
+            h264.startsWith(QByteArray::fromHex("000001")));
+    QCOMPARE(
+        expectedSha256,
+        QString::fromLatin1(
+            QCryptographicHash::hash(blob, QCryptographicHash::Sha256)
+                .toHex()));
+
+    const QString rawPath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("pase-still.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")),
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-count_frames"),
+         QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,level,width,height,has_b_frames,color_range,color_space,nb_read_frames"),
+         QStringLiteral("-of"),
+         QStringLiteral("default=noprint_wrappers=1"), rawPath});
+    QVERIFY(probe.waitForFinished(10000));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("level=41"),
+             QStringLiteral("width=%1").arg(width),
+             QStringLiteral("height=1080"),
+             QStringLiteral("has_b_frames=0"),
+             QStringLiteral("color_range=pc"),
+             QStringLiteral("color_space=bt709"),
+             QStringLiteral("nb_read_frames=1")}) {
+        QVERIFY2(properties.contains(expected),
+                 qPrintable(expected + QLatin1Char(' ') +
+                            properties.join(QLatin1Char(','))));
+    }
 }
 
 void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate_data() {
@@ -12585,7 +12865,7 @@ runtimePreparationProfileAdaptorPreservesSplitTarget() {
     QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
                 .conversionProfile.startsWith(
                     QStringLiteral(
-                        "pase-h264-v3-image-60s-split-area-1120x1080-")));
+                        "pase-mxhd-v1-image-split-area-1120x1080-")));
 }
 
 void PrinterProtocolTests::

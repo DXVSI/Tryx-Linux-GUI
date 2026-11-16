@@ -45,16 +45,38 @@ struct FrameCountProbeResult {
     bool valid = false;
 };
 
+// The official converter writes the same container ("u32 length +
+// MediaHeaderPb + raw H.264") for every product; only the declared size
+// differs. The overloads without a size use the Turris 1280x720 target.
 WriteResult writeBlob(
     const QString &rawPath, const QString &outputPath,
     quint32 kind, quint64 frameCount,
     const std::function<bool()> &isCancelled);
+WriteResult writeBlob(
+    const QString &rawPath, const QString &outputPath,
+    quint32 kind, quint64 frameCount,
+    quint32 width, quint32 height,
+    const std::function<bool()> &isCancelled);
 
 FrameCountProbeResult parseFrameCountProbe(
     const QByteArray &output, quint32 kind);
+FrameCountProbeResult parseFrameCountProbe(
+    const QByteArray &output, quint32 kind,
+    quint32 width, quint32 height);
 
 bool validateBlob(QFile *file, qint64 declaredSize,
                   const QString &remoteFileName,
                   QString *errorMessage);
+bool validateBlob(QFile *file, qint64 declaredSize,
+                  const QString &remoteFileName,
+                  quint32 width, quint32 height,
+                  QString *errorMessage);
+
+// Size of the "u32 length + MediaHeaderPb" prefix when the bytes start with
+// a well-formed media header of any size, followed by an Annex-B start
+// code; 0 for headerless raw H.264 or anything else. Used to hand only the
+// raw stream to tools outside the device path.
+qint64 mediaHeaderPrefixSize(const QByteArray &leadingBytes);
+inline constexpr qint64 kMaximumMediaHeaderPrefixBytes = 4 + 4096 + 5;
 
 }  // namespace tryx::turris_media

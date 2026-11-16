@@ -6875,6 +6875,42 @@
         <translation>Не удалось сформировать медиафайл Turris</translation>
     </message>
     <message>
+        <source>ffprobe is required to prepare still images</source>
+        <translation>Для подготовки изображений требуется ffprobe</translation>
+    </message>
+    <message>
+        <source>Still image preparation timed out</source>
+        <translation>Истекло время подготовки изображения</translation>
+    </message>
+    <message>
+        <source>Checking the still image frame...</source>
+        <translation>Проверка кадра изображения...</translation>
+    </message>
+    <message>
+        <source>Still image frame check timed out</source>
+        <translation>Истекло время проверки кадра изображения</translation>
+    </message>
+    <message>
+        <source>The prepared still image is not exactly one frame</source>
+        <translation>Подготовленное изображение состоит не ровно из одного кадра</translation>
+    </message>
+    <message>
+        <source>The prepared still image is not exactly one frame: %1</source>
+        <translation>Подготовленное изображение состоит не ровно из одного кадра: %1</translation>
+    </message>
+    <message>
+        <source>Adding the media header...</source>
+        <translation>Добавление заголовка медиафайла...</translation>
+    </message>
+    <message>
+        <source>Could not add the media header</source>
+        <translation>Не удалось добавить заголовок медиафайла</translation>
+    </message>
+    <message>
+        <source>The prepared still image failed its media header check: %1</source>
+        <translation>Подготовленное изображение не прошло проверку заголовка медиафайла: %1</translation>
+    </message>
+    <message>
         <location filename="../src/printermediapreparer.cpp" line="1004"/>
         <location filename="../src/printermediapreparer.cpp" line="1025"/>
         <source>Retry-cache artifact validation was cancelled</source>

@@ -33,6 +33,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QSettings>
+#include <QScopeGuard>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -604,6 +605,7 @@ private slots:
     void previewControllerRendersImmutableExactFrame();
     void publicPreviewRejectsRawDeviceH264();
     void exportHelperIsAtomicAndDoesNotClobber();
+    void exportHelperWritesStillWithoutMediaHeader();
     void supportBundleReportUsesHostAllowlist();
     void supportBundleWriterCreatesPrivateFileWithoutClobbering();
     void supportBundleWriterRejectsBeforePublishGuardFails();
@@ -2720,6 +2722,83 @@ void QuickClientTests::
     QCOMPARE(exported.readAll(), payload);
     exported.close();
     QVERIFY(QFile::remove(sourcePath));
+}
+
+void QuickClientTests::exportHelperWritesStillWithoutMediaHeader() {
+    const QString outbox =
+        tryxRuntimeDeviceMediaOutboxPath();
+    QVERIFY(!outbox.isEmpty());
+    QVERIFY(QDir().mkpath(outbox));
+    QVERIFY(QFile::setPermissions(
+        outbox,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner |
+            QFileDevice::ExeOwner));
+
+    // A PASE still pulled from the device: the official media header for
+    // 2240x1080, then the raw H.264 stream.
+    const QByteArray header = QByteArray::fromHex(
+        "4200000008c490e1ea04122c54727978206d65646961206865616465722076"
+        "312c206670733d33302c2073697a653d32323430783130383018022001281e"
+        "30c01138b8084001");
+    const QByteArray rawH264 = QByteArray::fromHex(
+        "000000016764001facd9405005bb0110000003001000000303c0f1831960"
+        "0000000168ebe3cb22c0"
+        "00000001658884000affff");
+    const QByteArray deviceCopy = header + rawH264;
+    const QString sourcePath =
+        QDir(outbox).filePath(
+            QUuid::createUuid().toString(
+                QUuid::WithoutBraces) +
+            QStringLiteral(".h264"));
+    QFile source(sourcePath);
+    QVERIFY(source.open(
+        QIODevice::WriteOnly | QIODevice::NewOnly));
+    QCOMPARE(source.write(deviceCopy),
+             static_cast<qint64>(deviceCopy.size()));
+    source.close();
+    QVERIFY(QFile::setPermissions(
+        sourcePath,
+        QFileDevice::ReadOwner |
+            QFileDevice::WriteOwner));
+    const auto removeSource = qScopeGuard([&sourcePath]() {
+        QFile::remove(sourcePath);
+    });
+
+    QTemporaryDir destinationDirectory;
+    QVERIFY(destinationDirectory.isValid());
+    const QString destinationPath =
+        QDir(destinationDirectory.path()).filePath(
+            QStringLiteral("still.h264"));
+    const QString deviceCopySha =
+        QString::fromLatin1(
+            QCryptographicHash::hash(
+                deviceCopy, QCryptographicHash::Sha256)
+                .toHex());
+    QStringList arguments{
+        sourcePath,
+        destinationPath,
+        QString::number(deviceCopy.size()),
+        deviceCopySha,
+        QStringLiteral("0"),
+    };
+    QCOMPARE(
+        DeviceMediaWorkflowController::runExportHelper(
+            arguments),
+        0);
+    QFile exported(destinationPath);
+    QVERIFY(exported.open(QIODevice::ReadOnly));
+    QCOMPARE(exported.readAll(), rawH264);
+    exported.close();
+
+    // The whole device copy is still verified against its hash.
+    QVERIFY(QFile::remove(destinationPath));
+    arguments[3] = QString(64, QLatin1Char('0'));
+    QCOMPARE(
+        DeviceMediaWorkflowController::runExportHelper(
+            arguments),
+        5);
+    QVERIFY(!QFileInfo::exists(destinationPath));
 }
 
 void QuickClientTests::supportBundleReportUsesHostAllowlist() {

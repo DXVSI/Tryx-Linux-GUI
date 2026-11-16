@@ -68,6 +68,12 @@ bool printerConversionProfileMatchesConversion(
     const QString &conversionProfile,
     const PrinterProductProfile &profile,
     const QString &conversion);
+// Whether prepared media of this kind carries the official media header
+// ("u32 length + MediaHeaderPb + raw H.264"): every Turris upload, and PASE
+// stills; PASE video and GIF stay raw H.264.
+bool printerMediaUsesMediaHeader(quint16 productId, bool stillImage);
+// Any PASE-family generation: raw "pase-h264-" and header "pase-mxhd-".
+bool isPasePrinterConversionProfile(const QString &conversionProfile);
 // Whether durable retry state for this product must carry the source origin
 // identity (content hash, size, and conversion profile) before dispatch.
 bool printerMediaOriginRequired(const PrinterProductProfile &profile);

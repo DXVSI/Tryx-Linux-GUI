@@ -546,7 +546,8 @@ Manual user upload remains available. Thumbnails are generated from the user-sel
 
 Writable user media already stored on a PASE device has an action menu in the
 Media Library. `Export copy…` saves the exact prepared device stream as
-`.h264`; it cannot reconstruct the original MP4, GIF, image, audio, or file
+`.h264`, without the official media header that a picture carries on the
+device; it cannot reconstruct the original MP4, GIF, image, audio, or file
 name. `Edit` downloads the same private copy into the background runtime,
 opens it in the Fit, Fill, Crop and Stretch editor, and offers two explicit
 results:
@@ -801,8 +802,14 @@ longer accepts data, and the runtime reports that the keepalive stopped after
 only switching the power supply off does. On the same setup, one still image
 and a Loop of two videos each ran for more than 10 hours.
 
-Until TRYX fixes the firmware, put only videos in a Loop or Shuffle playlist,
-or show a single image. Details are in issue #37.
+Earlier versions uploaded a picture to the Panorama family as a raw
+minute-long clip. This version uploads it the way the official application
+does: one frame with the official media header. This is meant to fix the
+Loop and Shuffle stall, but it is not yet confirmed on hardware. Pictures
+uploaded by an earlier version stay on the device in the old format; delete
+and upload them again before you use Loop or Shuffle. Until the fix is
+confirmed, a playlist of videos or a single image is the safe choice. Details
+are in issue #37.
 
 ### The display session never starts after the first media upload
 
