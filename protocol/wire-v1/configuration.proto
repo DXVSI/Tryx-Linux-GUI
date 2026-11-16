@@ -33,10 +33,15 @@ message WorkConfiguration {
     MEDIA_KALEIDOSCOPE = 2;
   }
 
+  // LOOP_ALL and LOOP_RANDOM cycle through the user media. KANALI 2.6.0 adds
+  // the preset counterparts; it never writes them, but a device configured
+  // by other software may report them. The host only reads them.
   enum LoopMode {
     LOOP_SINGLE = 0;
     LOOP_ALL = 1;
     LOOP_RANDOM = 2;
+    LOOP_PRESET_ALL = 3;
+    LOOP_PRESET_RANDOM = 4;
   }
 
   enum KaleidoscopeSource {

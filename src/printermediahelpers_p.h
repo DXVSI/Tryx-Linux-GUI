@@ -14,9 +14,16 @@ QString unsupportedCapabilityError(const PrinterProductProfile &productProfile,
                                    const QString &capability);
 QString normalizedMediaName(const panorama::wire::v1::MediaEntry &media);
 QString normalizedMediaReference(const std::string &value);
+// A full-screen preset loop (LOOP_PRESET_ALL, LOOP_PRESET_RANDOM) decodes as
+// the nearest user-media mode, "Loop" or "Shuffle"; presetPlayback tells the
+// caller that the device actually cycles through its presets.
 bool decodePaseActiveLayout(const panorama::wire::v1::WorkConfiguration &work,
                             QString *screenMode, QString *playMode, QStringList *media,
-                            QString *errorMessage);
+                            QString *errorMessage, bool *presetPlayback = nullptr);
+// Rewrites a preset loop mode to the user-media mode it is shown as, so a
+// read-modify-write never sends a preset loop mode back. Returns true when
+// the work configuration changed.
+bool replacePresetLoopMode(panorama::wire::v1::WorkConfiguration *work);
 bool isSafeDeviceMediaName(const QString &fileName);
 bool isSafeUploadFileName(const QString &fileName);
 bool isSafeUploadFileNameForProfile(const QString &fileName,

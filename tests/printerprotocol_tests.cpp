@@ -2321,6 +2321,11 @@ private slots:
     void paseDisplayMutationMatrix_data();
     void paseDisplayMutationMatrix();
     void readPaseDisplayStateDecodesDualConfiguration();
+    void readPaseDisplayStateReadsPresetLoopModes_data();
+    void readPaseDisplayStateReadsPresetLoopModes();
+    void paseDisplayApplyReplacesPresetLoopMode_data();
+    void paseDisplayApplyReplacesPresetLoopMode();
+    void paseMediaApplyRejectsPresetLoopReadback();
     void standalonePaseMetricsConfigurationIsAcknowledged();
     void displayKeepalivePreservesPaseOverlayValues();
     void paseMetricBatchMatchesHeaderlessWireFrame();
@@ -15609,6 +15614,298 @@ void PrinterProtocolTests::readPaseDisplayStateDecodesDualConfiguration() {
     QCOMPARE(result.state.media,
              QStringList({QStringLiteral("left.h264"),
                           QStringLiteral("right.h264")}));
+}
+
+static void addPresetLoopModeRows() {
+    QTest::addColumn<int>("deviceLoopMode");
+    QTest::addColumn<QString>("playMode");
+    QTest::addColumn<int>("writtenLoopMode");
+    QTest::newRow("preset-all")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_PRESET_ALL)
+        << QStringLiteral("Loop")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QTest::newRow("preset-random")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_PRESET_RANDOM)
+        << QStringLiteral("Shuffle")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_RANDOM);
+}
+
+void PrinterProtocolTests::readPaseDisplayStateReadsPresetLoopModes_data() {
+    addPresetLoopModeRows();
+}
+
+// KANALI 2.6.0 loop modes 3 and 4 used to fail the whole active-layout
+// decode with "unknown playback mode".
+void PrinterProtocolTests::readPaseDisplayStateReadsPresetLoopModes() {
+    QFETCH(int, deviceLoopMode);
+    QFETCH(QString, playMode);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop read did not request user config");
+            return;
+        }
+        auto response = baseResponse(request);
+        auto *userConfig = response.mutable_user_configuration();
+        userConfig->mutable_display_config()->set_backlight_enable(true);
+        userConfig->mutable_display_config()->set_backlight_brightness(40);
+        auto *work = userConfig->mutable_work_config();
+        work->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        work->set_loop_mode(
+            static_cast<panorama::wire::v1::WorkConfiguration::LoopMode>(
+                deviceLoopMode));
+        work->set_single_mode_media_file("default_1_2240x1080.mp4.h264");
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    const PrinterProtocol::PaseDisplayStateResult result =
+        protocol.readPaseDisplayState(
+            devicePath, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(result.presetPlayback);
+    QCOMPARE(result.state.screenMode, QStringLiteral("Full Screen"));
+    QCOMPARE(result.state.playMode, playMode);
+    QCOMPARE(result.state.media,
+             QStringList{QStringLiteral("default_1_2240x1080.mp4.h264")});
+    QCOMPARE(result.state.brightness, 40);
+}
+
+void PrinterProtocolTests::paseDisplayApplyReplacesPresetLoopMode_data() {
+    addPresetLoopModeRows();
+}
+
+// A display-only Apply is a read-modify-write of the device configuration.
+// The preset loop mode the device reported must not be echoed back: the host
+// writes the user-media mode the display state shows.
+void PrinterProtocolTests::paseDisplayApplyReplacesPresetLoopMode() {
+    QFETCH(int, deviceLoopMode);
+    QFETCH(QString, playMode);
+    QFETCH(int, writtenLoopMode);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::Request capturedUserConfig;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request getRequest;
+        if (!readRequest(sockets[1], &getRequest, &peerError) ||
+            getRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop apply did not read user config");
+            return;
+        }
+        auto getResponse = baseResponse(getRequest);
+        auto *userConfig = getResponse.mutable_user_configuration();
+        userConfig->mutable_display_config()->set_backlight_enable(true);
+        userConfig->mutable_display_config()->set_backlight_brightness(21);
+        auto *work = userConfig->mutable_work_config();
+        work->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        work->set_loop_mode(
+            static_cast<panorama::wire::v1::WorkConfiguration::LoopMode>(
+                deviceLoopMode));
+        work->set_single_mode_media_file("keep-media.h264");
+        if (!writeResponse(sockets[1], getResponse, &peerError)) {
+            return;
+        }
+
+        if (!readRequest(sockets[1], &capturedUserConfig, &peerError) ||
+            capturedUserConfig.body_case() !=
+                panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral(
+                "preset loop apply did not send user config");
+            return;
+        }
+        auto userResponse = baseResponse(capturedUserConfig);
+        userResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], userResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request runRequest;
+        if (!readRequest(sockets[1], &runRequest, &peerError) ||
+            runRequest.body_case() !=
+                panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral(
+                "preset loop apply did not activate run config");
+            return;
+        }
+        auto runResponse = baseResponse(runRequest);
+        runResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], runResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request readbackRequest;
+        if (!readRequest(sockets[1], &readbackRequest, &peerError) ||
+            readbackRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop apply did not verify user config");
+            return;
+        }
+        auto readbackResponse = baseResponse(readbackRequest);
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
+        writeResponse(sockets[1], readbackResponse, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop-apply");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.display.brightnessPresent = true;
+    config.display.brightness = 68;
+    QString error;
+    PrinterProtocol::PaseDisplayState appliedState;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &error, PrinterProtocol::OperationContext{},
+        nullptr, &appliedState);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(capturedUserConfig.body_case(),
+             panorama::wire::v1::Request::kUserConfiguration);
+    const auto &written = capturedUserConfig.user_configuration();
+    QCOMPARE(static_cast<int>(written.work_config().loop_mode()), writtenLoopMode);
+    QCOMPARE(written.work_config().media_mode(),
+             panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+    QCOMPARE(QString::fromStdString(written.work_config().single_mode_media_file()),
+             QStringLiteral("keep-media.h264"));
+    QCOMPARE(written.display_config().backlight_brightness(), 68U);
+    QVERIFY2(applied, qPrintable(error));
+    QCOMPARE(appliedState.playMode, playMode);
+    QCOMPARE(appliedState.brightness, 68);
+}
+
+// The host writes LOOP_ALL for "Loop". A device that still reports a preset
+// loop afterwards decodes to the same "Loop" text, so the readback check has
+// to look at the preset flag to notice it.
+void PrinterProtocolTests::paseMediaApplyRejectsPresetLoopReadback() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::Request capturedUserConfig;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request getRequest;
+        if (!readRequest(sockets[1], &getRequest, &peerError) ||
+            getRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not read user config");
+            return;
+        }
+        auto getResponse = baseResponse(getRequest);
+        auto *initial = getResponse.mutable_user_configuration();
+        initial->mutable_display_config()->set_backlight_brightness(50);
+        auto *initialWork = initial->mutable_work_config();
+        initialWork->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        initialWork->set_loop_mode(
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+        initialWork->set_single_mode_media_file("old.h264");
+        if (!writeResponse(sockets[1], getResponse, &peerError)) {
+            return;
+        }
+
+        if (!readRequest(sockets[1], &capturedUserConfig, &peerError) ||
+            capturedUserConfig.body_case() !=
+                panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not write user config");
+            return;
+        }
+        auto userResponse = baseResponse(capturedUserConfig);
+        userResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], userResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request runRequest;
+        if (!readRequest(sockets[1], &runRequest, &peerError) ||
+            runRequest.body_case() !=
+                panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not write run config");
+            return;
+        }
+        auto runResponse = baseResponse(runRequest);
+        runResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], runResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request readbackRequest;
+        if (!readRequest(sockets[1], &readbackRequest, &peerError) ||
+            readbackRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not request readback");
+            return;
+        }
+        auto readbackResponse = baseResponse(readbackRequest);
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
+        readbackResponse.mutable_user_configuration()
+            ->mutable_work_config()
+            ->set_loop_mode(
+                panorama::wire::v1::WorkConfiguration::LOOP_PRESET_ALL);
+        writeResponse(sockets[1], readbackResponse, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop-readback");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.media = {QStringLiteral("new.h264")};
+    config.screenMode = QStringLiteral("Full Screen");
+    config.playMode = QStringLiteral("Loop");
+    config.mediaPresent = true;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &error, PrinterProtocol::OperationContext{},
+        &mutation);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(capturedUserConfig.user_configuration().work_config().loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QVERIFY(!applied);
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::VerificationFailed);
+    QVERIFY2(error.contains(QStringLiteral("play mode"), Qt::CaseInsensitive),
+             qPrintable(error));
 }
 
 void PrinterProtocolTests::standalonePaseMetricsConfigurationIsAcknowledged() {
