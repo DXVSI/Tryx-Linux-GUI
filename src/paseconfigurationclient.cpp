@@ -823,7 +823,8 @@ bool paseAreaHasContent(const PrinterProtocol::PaseOverlayAreaConfig &area) {
 
 // Screen geometry and label sizes of the vendor overlay layout per product
 // family. The PASE values reproduce the previously hard-coded 2240x1080 layout
-// byte for byte; the Turris values follow the official app's 1280x720 layout.
+// byte for byte; the Turris values follow the official app's 1280x720 layout
+// and the HOLO values its holo640 layout, which places rows like PASE.
 struct OverlayLayoutGeometry {
     int screenWidth;
     int screenHeight;
@@ -845,6 +846,8 @@ OverlayLayoutGeometry overlayLayoutGeometry(PrinterOverlayLayoutKind kind) {
     switch (kind) {
     case PrinterOverlayLayoutKind::TurrisSingleArea1280:
         return {1280, 720, 30, 0, 120, 15, 25, 120, 60, 25, 0, true};
+    case PrinterOverlayLayoutKind::HoloSingleArea640:
+        return {640, 480, 30, 0, 80, 12, 20, 80, 30, 16, 10, false};
     case PrinterOverlayLayoutKind::PaseDualArea2240:
         break;
     }
@@ -1402,7 +1405,8 @@ PaseConfigurationClient::readPaseDisplayState(const QString &devicePath,
         result.state.mirrorMode = display.mirror();
         result.state.waterfallMode = false;
     } else {
-        result.state.mirrorMode = display.media_rotation() == 180U;
+        result.state.mirrorMode =
+            productProfile_.mirrorSupported && display.media_rotation() == 180U;
         result.state.waterfallMode =
             productProfile_.waterfallSupported && display.ui_rotation() == 90U;
     }
@@ -1491,6 +1495,15 @@ bool PaseConfigurationClient::applyPaseConfiguration(const QString &devicePath,
         if (errorMessage) {
             *errorMessage = unsupportedCapabilityError(
                 productProfile_, QStringLiteral("waterfall orientation"));
+        }
+        markRejected();
+        return false;
+    }
+    if (config.display.orientationPresent && config.display.mirrorMode &&
+        !productProfile_.mirrorSupported) {
+        if (errorMessage) {
+            *errorMessage = unsupportedCapabilityError(
+                productProfile_, QStringLiteral("mirror orientation"));
         }
         markRejected();
         return false;

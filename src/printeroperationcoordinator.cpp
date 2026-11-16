@@ -4846,6 +4846,16 @@ QString PrinterOperationCoordinator::queueUploadOperation(
                 "Waterfall orientation is not supported for USB product %1")
                 .arg(printerProductIdString(productProfile->productId)));
     }
+    if (applyAfterUpload &&
+        normalizedApplyRequest.display.orientationPresent &&
+        normalizedApplyRequest.display.mirrorMode &&
+        !productProfile->mirrorSupported) {
+        return reject(
+            QStringLiteral("UnsupportedConfiguration"),
+            tryx::DeviceManagerMessages::tr(
+                "Mirror orientation is not supported for USB product %1")
+                .arg(printerProductIdString(productProfile->productId)));
+    }
     // The source origin identity is hashed before conversion whenever the
     // durable retry record requires it (Turris keeps it for manifest
     // compatibility even though its catalog is available), or when an
@@ -5441,7 +5451,7 @@ QString PrinterOperationCoordinator::queueApplyOperation(
         normalizedRequest.display.waterfallMode = true;
     }
     const QString presetMedia =
-        printerPresetMediaFile(normalizedRequest.presetId);
+        printerPresetMediaFile(normalizedRequest.presetId, context.productId);
     if (!savedLayoutApply && normalizedRequest.media.isEmpty() &&
         !presetMedia.isEmpty()) {
         normalizedRequest.media = {presetMedia};
@@ -5546,6 +5556,15 @@ QString PrinterOperationCoordinator::queueApplyOperation(
                 QStringLiteral("UnsupportedConfiguration"),
                 tryx::DeviceManagerMessages::tr(
                     "Waterfall orientation is not supported for USB product %1")
+                    .arg(printerProductIdString(context.productId)));
+        }
+        if (applyProfile && !applyProfile->mirrorSupported &&
+            normalizedRequest.display.orientationPresent &&
+            normalizedRequest.display.mirrorMode) {
+            return reject(
+                QStringLiteral("UnsupportedConfiguration"),
+                tryx::DeviceManagerMessages::tr(
+                    "Mirror orientation is not supported for USB product %1")
                     .arg(printerProductIdString(context.productId)));
         }
     }

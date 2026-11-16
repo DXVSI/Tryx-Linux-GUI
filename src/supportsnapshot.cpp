@@ -267,7 +267,7 @@ QString modelForProductId(const QString &productId) {
         return QStringLiteral("PANORAMA WB");
     }
     if (code == QStringLiteral("1051")) {
-        return QStringLiteral("HOLO");
+        return QStringLiteral("HOLO 360");
     }
     if (code == QStringLiteral("2011")) {
         return QStringLiteral("TURRIS 620");

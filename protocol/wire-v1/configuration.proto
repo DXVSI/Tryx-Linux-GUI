@@ -74,12 +74,46 @@ message FilterConfiguration {
   Mode filter_mode = 8;
 }
 
+message RgbColor {
+  uint32 r = 1;
+  uint32 g = 2;
+  uint32 b = 3;
+}
+
+// Decoration light of the HOLO (KANALI 2.6.0 LightConfigPb). The host never
+// changes it; a read-modify-write of UserConfiguration carries it back as
+// the device reported it.
+message LightConfiguration {
+  enum Effect {
+    LIGHT_EFFECT_BATTERY_FLOW = 0;
+    LIGHT_EFFECT_FLOW = 1;
+    LIGHT_EFFECT_NEON = 2;
+    LIGHT_EFFECT_SOLID = 3;
+    LIGHT_EFFECT_BREATH = 4;
+    LIGHT_EFFECT_INDICATOR = 5;
+    LIGHT_EFFECT_OFF = 6;
+  }
+
+  enum ControlMode {
+    LIGHT_CONTROL_I2C = 0;
+    LIGHT_CONTROL_ARGB_SYNC = 1;
+  }
+
+  bool enable = 1;
+  uint32 brightness = 2;
+  Effect effect = 3;
+  RgbColor color = 4;
+  uint32 speed = 5;
+  ControlMode control_mode = 10;
+}
+
 message UserConfiguration {
   PowerOnConfiguration poweron_config = 1;
   StandbyConfiguration standby_config = 2;
   WorkConfiguration work_config = 3;
   FilterConfiguration filter_config = 4;
   DisplayConfiguration display_config = 5;
+  LightConfiguration light_config = 6;
 }
 
 message MediaCatalog {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QList>
 #include <QString>
 #include <QtGlobal>
 #include <optional>
@@ -9,7 +10,12 @@
 // in bootstrap, keepalive and media container expectations.
 enum class PrinterProtocolFamily { Pase, Turris };
 
-// How prepared media is wrapped before FileTransmit.
+// How media is prepared and wrapped before FileTransmit.
+//   RawH264: video and GIF as raw H.264 with this application's own encoder
+//   settings; stills in the official media header (PASE family).
+//   MxhdH264: every kind with the official converter's settings, wrapped in
+//   the official media header ("u32 length + MediaHeaderPb + raw H.264"),
+//   and named like the official application names uploads (Turris, HOLO).
 enum class PrinterMediaContainer { RawH264, MxhdH264 };
 
 // Ping (10) policy for an idle session.
@@ -20,10 +26,21 @@ enum class PrinterMediaContainer { RawH264, MxhdH264 };
 enum class PrinterSessionKeepalive { Ping, Negotiated, None };
 
 // Geometry table used to build RunConfig label groups.
-enum class PrinterOverlayLayoutKind { PaseDualArea2240, TurrisSingleArea1280 };
+enum class PrinterOverlayLayoutKind {
+    PaseDualArea2240,
+    TurrisSingleArea1280,
+    HoloSingleArea640,
+};
 
 // How mirror/waterfall orientation is written into DisplayConfiguration.
 enum class PrinterDisplayOrientationModel { RotationFields, MirrorFlag };
+
+// A preset that the device ships, addressed by the preset id of the
+// screen-config API.
+struct PrinterPresetMedia {
+    QString presetId;
+    QString mediaFile;
+};
 
 struct PrinterProductProfile {
     quint16 productId = 0;
@@ -51,16 +68,26 @@ struct PrinterProductProfile {
     // Written into UserConfiguration when the device reports no such section.
     QString defaultPowerOnMedia;
     QString defaultStandbyMedia;
+    // Conversion identity of MxhdH264 media: "<prefix>-<kind>-<W>x<H>-...-
+    // <generation>". Unused by RawH264 products, whose identities are the
+    // PASE "pase-h264-*" and "pase-mxhd-v1-image-*" generations.
+    QString mediaIdentityPrefix;
+    QString mediaIdentityGeneration;
+    // Device presets the screen-config preset id can select.
+    QList<PrinterPresetMedia> presets;
     bool mediaUploadSupported = false;
     bool mediaCatalogSupported = false;
     bool mediaPullSupported = false;
     bool displayConfigurationSupported = false;
     bool splitAreaMediaSupported = false;
     bool waterfallSupported = false;
+    bool mirrorSupported = false;
     bool overlayMetricsSupported = false;
     bool overlayLeaseSupported = false;
     bool firmwareFlashSupported = false;
 };
 
 std::optional<PrinterProductProfile> printerProductProfileForId(quint16 productId);
+// Every profile printerProductProfileForId() returns, in product id order.
+QList<PrinterProductProfile> printerProductProfiles();
 QString printerProductIdString(quint16 productId);
