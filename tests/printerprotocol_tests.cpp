@@ -2262,6 +2262,8 @@ private slots:
     void mediaTransformValidationAndFilters();
     void mediaTransformChangesConversionProfile();
     void productProfilesExposeExactCapabilities();
+    void kanaliMappedProductIdsReusePanoramaProfiles_data();
+    void kanaliMappedProductIdsReusePanoramaProfiles();
     void turrisMediaAnalysisUses1280Profile();
     void turrisMediaFormatFrameCountParserIsStrict();
     void turrisMediaFormatWriterIsAtomicAndRewinds();
@@ -11080,6 +11082,93 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
         QStringLiteral("scale=2240:1080")));
 }
 
+void PrinterProtocolTests::kanaliMappedProductIdsReusePanoramaProfiles_data() {
+    QTest::addColumn<int>("productId");
+    QTest::addColumn<int>("baseProductId");
+    QTest::addColumn<QString>("model");
+
+    // KANALI 2.6.0 main bundle device table, by USB PID.
+    QTest::newRow("1061-pase") << 0x1061 << 0x1021 << QStringLiteral("PANORAMA SE");
+    QTest::newRow("1071-pase-v2") << 0x1071 << 0x1021 << QStringLiteral("PANORAMA SE V2");
+    QTest::newRow("10a1-pawb") << 0x10a1 << 0x1031 << QStringLiteral("PANORAMA WB");
+    QTest::newRow("10b1-pano") << 0x10b1 << 0x1011 << QStringLiteral("PANORAMA");
+}
+
+void PrinterProtocolTests::kanaliMappedProductIdsReusePanoramaProfiles() {
+    QFETCH(int, productId);
+    QFETCH(int, baseProductId);
+    QFETCH(QString, model);
+
+    const auto profile = printerProductProfileForId(static_cast<quint16>(productId));
+    const auto base = printerProductProfileForId(static_cast<quint16>(baseProductId));
+    QVERIFY(profile.has_value());
+    QVERIFY(base.has_value());
+    QCOMPARE(profile->productId, static_cast<quint16>(productId));
+    // Unverified firmware packages: no validation and no flashing.
+    QVERIFY(!profile->firmwareFlashSupported);
+    QCOMPARE(profile->mediaWidth, base->mediaWidth);
+    QCOMPARE(profile->mediaHeight, base->mediaHeight);
+    QCOMPARE(profile->family, base->family);
+    QCOMPARE(profile->mediaContainer, base->mediaContainer);
+    QCOMPARE(profile->keepalive, base->keepalive);
+    QCOMPARE(profile->overlayLayout, base->overlayLayout);
+    QCOMPARE(profile->orientationModel, base->orientationModel);
+    QCOMPARE(profile->fileTransferTrackId, base->fileTransferTrackId);
+    QCOMPARE(profile->readbackConfirmedWriteAckWindowMs,
+             base->readbackConfirmedWriteAckWindowMs);
+    QCOMPARE(profile->keepBulkInPending, base->keepBulkInPending);
+    QCOMPARE(profile->defaultPowerOnMedia, base->defaultPowerOnMedia);
+    QCOMPARE(profile->defaultStandbyMedia, base->defaultStandbyMedia);
+    QCOMPARE(profile->mediaUploadSupported, base->mediaUploadSupported);
+    QCOMPARE(profile->mediaCatalogSupported, base->mediaCatalogSupported);
+    QCOMPARE(profile->mediaPullSupported, base->mediaPullSupported);
+    QCOMPARE(profile->displayConfigurationSupported,
+             base->displayConfigurationSupported);
+    QCOMPARE(profile->splitAreaMediaSupported, base->splitAreaMediaSupported);
+    QCOMPARE(profile->waterfallSupported, base->waterfallSupported);
+    QCOMPARE(profile->overlayMetricsSupported, base->overlayMetricsSupported);
+    QCOMPARE(profile->overlayLeaseSupported, base->overlayLeaseSupported);
+
+    const QString product = printerProductIdString(static_cast<quint16>(productId));
+    QVERIFY(tryxSavedLayoutProductIdIsSupported(product));
+    QVERIFY(tryxDisplaySnapshotProductIdIsSupported(product));
+
+    tryx::SupportSnapshotSourceV1 source;
+    source.generatedAtUtcMs =
+        QDateTime::fromString(QStringLiteral("2026-11-17T12:00:00.000Z"),
+                              Qt::ISODateWithMs)
+            .toMSecsSinceEpoch();
+    source.runtimeVersion = QStringLiteral("2.5.4");
+    source.runtimeApiVersion = 8;
+    source.connection.revision = 1;
+    source.connection.connected = true;
+    source.connection.printerClassConnected = true;
+    source.connection.productId = product;
+    const QString json = tryx::buildSupportSnapshotV1(source);
+    QString validationError;
+    QVERIFY2(tryx::supportSnapshotV1IsValid(json, &validationError),
+             qPrintable(validationError));
+    const QJsonObject device = QJsonDocument::fromJson(json.toUtf8())
+                                   .object()
+                                   .value(QStringLiteral("device"))
+                                   .toObject();
+    QCOMPARE(device.value(QStringLiteral("product_id")).toString(), product);
+    QCOMPARE(device.value(QStringLiteral("model")).toString(), model);
+
+    QTemporaryDir fixture;
+    QVERIFY(fixture.isValid());
+    const QString sysRoot = QDir(fixture.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(fixture.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"),
+                            product.mid(5).toLatin1()));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot, QStringLiteral("1-1"),
+                                  QStringLiteral("lp0")));
+    const auto snapshot = PrinterProtocol::discover(sysRoot, devRoot);
+    QVERIFY(snapshot.state == PrinterProtocol::DiscoveryState::Ready);
+    QCOMPARE(snapshot.devices.size(), 1);
+    QCOMPARE(snapshot.devices.first().productId, static_cast<quint16>(productId));
+}
+
 void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     const auto pase = printerProductProfileForId(0x1021);
     const auto pano = printerProductProfileForId(0x1011);
@@ -11090,7 +11179,8 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QVERIFY(panoWb.has_value());
     QVERIFY(turris.has_value());
     QVERIFY(!printerProductProfileForId(0x9999).has_value());
-    QVERIFY(!printerProductProfileForId(0x10a1).has_value());
+    QVERIFY(!printerProductProfileForId(0x1041).has_value());
+    QVERIFY(!printerProductProfileForId(0x10c1).has_value());
 
     for (const auto &profile : {pase, pano, panoWb}) {
         QCOMPARE(profile->mediaWidth, 2240);

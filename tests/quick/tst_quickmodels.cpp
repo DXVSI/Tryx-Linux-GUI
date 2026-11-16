@@ -1267,7 +1267,22 @@ void QuickClientTests::runtimeDeviceSummaryFollowsLiveSnapshot() {
     runtime.applyConnectionSnapshot(snapshot);
     QCOMPARE(runtime.deviceModel(), QStringLiteral("PANORAMA WB"));
 
-    snapshot.revision = 8;
+    // Product ids KANALI 2.6.0 maps to the same Panorama models.
+    const QList<QPair<QString, QString>> mappedModels{
+        {QStringLiteral("391a:1061"), QStringLiteral("PANORAMA SE")},
+        {QStringLiteral("391a:1071"), QStringLiteral("PANORAMA SE V2")},
+        {QStringLiteral("391a:10a1"), QStringLiteral("PANORAMA WB")},
+        {QStringLiteral("391a:10b1"), QStringLiteral("PANORAMA")},
+    };
+    quint64 mappedRevision = 100;
+    for (const auto &[productId, model] : mappedModels) {
+        snapshot.revision = mappedRevision++;
+        snapshot.productId = productId;
+        runtime.applyConnectionSnapshot(snapshot);
+        QCOMPARE(runtime.deviceModel(), model);
+    }
+
+    snapshot.revision = mappedRevision;
     snapshot.connected = false;
     snapshot.productId.clear();
     snapshot.firmware.clear();

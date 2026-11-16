@@ -75,6 +75,10 @@ bool supportsDeviceSpecifications(const QString &productId) {
     return code == QStringLiteral("1011") ||
            code == QStringLiteral("1021") ||
            code == QStringLiteral("1031") ||
+           code == QStringLiteral("1061") ||
+           code == QStringLiteral("1071") ||
+           code == QStringLiteral("10a1") ||
+           code == QStringLiteral("10b1") ||
            code == QStringLiteral("2011");
 }
 
@@ -144,14 +148,20 @@ bool deviceMediaMetadataMatchesArtifact(
 QString modelForProductId(const QString &productId) {
     const QString code = normalizedProductCode(productId);
     if (code == QStringLiteral("1021") ||
+        code == QStringLiteral("1061") ||
         code == QStringLiteral("cm01") ||
         code == QStringLiteral("cm01_se")) {
         return QStringLiteral("PANORAMA SE");
     }
-    if (code == QStringLiteral("1011")) {
+    if (code == QStringLiteral("1071")) {
+        return QStringLiteral("PANORAMA SE V2");
+    }
+    if (code == QStringLiteral("1011") ||
+        code == QStringLiteral("10b1")) {
         return QStringLiteral("PANORAMA");
     }
-    if (code == QStringLiteral("1031")) {
+    if (code == QStringLiteral("1031") ||
+        code == QStringLiteral("10a1")) {
         return QStringLiteral("PANORAMA WB");
     }
     if (code == QStringLiteral("2011")) {

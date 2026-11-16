@@ -10,4 +10,12 @@ ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}==
 
 ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="1031", OWNER="root", GROUP="lp", MODE="0660", TAG+="uaccess"
 
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="1061", OWNER="root", GROUP="lp", MODE="0660", TAG+="uaccess"
+
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="1071", OWNER="root", GROUP="lp", MODE="0660", TAG+="uaccess"
+
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="10a1", OWNER="root", GROUP="lp", MODE="0660", TAG+="uaccess"
+
+ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="10b1", OWNER="root", GROUP="lp", MODE="0660", TAG+="uaccess"
+
 ACTION!="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="391a", ATTR{idProduct}=="2011", OWNER="root", GROUP="lp", MODE="0660", TAG+="uaccess"

@@ -2527,7 +2527,9 @@ void PrinterClassSession::publishPendingPrinterDeviceSpecifications(
         !printerDevicePath_.isEmpty() &&
         !printerDeviceSerial_.isEmpty() &&
         (printerProductId_ == 0x1011 || printerProductId_ == 0x1021 ||
-         printerProductId_ == 0x1031 || printerProductId_ == 0x2011);
+         printerProductId_ == 0x1031 || printerProductId_ == 0x1061 ||
+         printerProductId_ == 0x1071 || printerProductId_ == 0x10a1 ||
+         printerProductId_ == 0x10b1 || printerProductId_ == 0x2011);
     const PrinterProtocol::DeviceSpecifications specifications =
         pendingPrinterDeviceSpecifications_;
     pendingPrinterDeviceSpecifications_ = {};

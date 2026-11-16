@@ -223,6 +223,10 @@ QString normalizedProductCode(QString productId) {
     if (productId == QStringLiteral("1021") ||
         productId == QStringLiteral("1011") ||
         productId == QStringLiteral("1031") ||
+        productId == QStringLiteral("1061") ||
+        productId == QStringLiteral("1071") ||
+        productId == QStringLiteral("10a1") ||
+        productId == QStringLiteral("10b1") ||
         productId == QStringLiteral("2011")) {
         return productId;
     }
@@ -246,13 +250,19 @@ QString canonicalProductId(const QString &productId) {
 QString modelForProductId(const QString &productId) {
     const QString code = normalizedProductCode(productId);
     if (code == QStringLiteral("1021") ||
+        code == QStringLiteral("1061") ||
         code == QStringLiteral("cm01_se")) {
         return QStringLiteral("PANORAMA SE");
     }
-    if (code == QStringLiteral("1011")) {
+    if (code == QStringLiteral("1071")) {
+        return QStringLiteral("PANORAMA SE V2");
+    }
+    if (code == QStringLiteral("1011") ||
+        code == QStringLiteral("10b1")) {
         return QStringLiteral("PANORAMA");
     }
-    if (code == QStringLiteral("1031")) {
+    if (code == QStringLiteral("1031") ||
+        code == QStringLiteral("10a1")) {
         return QStringLiteral("PANORAMA WB");
     }
     if (code == QStringLiteral("2011")) {
