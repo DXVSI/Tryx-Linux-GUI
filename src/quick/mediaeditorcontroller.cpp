@@ -234,9 +234,10 @@ bool MediaEditorController::splitTargetAvailable() const {
                tryxDeviceMediaSplitAreaV1Token());
 }
 
+// A split area is the left or right half of the connected screen.
 int MediaEditorController::targetWidth() const {
     return preparationTarget_ == QStringLiteral("SplitArea")
-        ? kTryxMediaSplitTargetWidth
+        ? runtime_->mediaTargetWidth() / 2
         : runtime_->mediaTargetWidth();
 }
 

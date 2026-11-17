@@ -2334,6 +2334,7 @@ private slots:
     void holoMediaPreparationBuildsOfficialMxhd_data();
     void holoMediaPreparationBuildsOfficialMxhd();
     void paseMediaHeaderMatchesOfficialConverter();
+    void splitAreaMediaHeaderMatchesOfficialConverter();
     void paseImagePreparationBuildsOfficialStill_data();
     void paseImagePreparationBuildsOfficialStill();
     void mediaHeaderPrefixRecognisesDeviceStills();
@@ -12388,6 +12389,98 @@ void PrinterProtocolTests::paseMediaHeaderMatchesOfficialConverter() {
                      QStringLiteral("odd.mxhd")),
                  turris::kImageKind, 1, 2239, 1080, {})
                  .error.isEmpty());
+}
+
+void PrinterProtocolTests::splitAreaMediaHeaderMatchesOfficialConverter() {
+    namespace turris = tryx::turris_media;
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray rawH264;
+    QVERIFY(splitTurrisMediaBlob(
+        turrisMediaBlob(turris::kVideoKind, 2), nullptr, &rawH264));
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("area.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, rawH264));
+
+    // Headers KANALI 2.6.0's MediaX.dll (MX_ConvertToH264Raw, run under Wine
+    // on 2026-11-17) wrote at the frame rate the official application passes:
+    // 30 fps for every kind made for one 1:1 split area, 60 fps for
+    // full-screen video and GIF, 30 fps for every still.
+    struct OfficialHeader {
+        const char *name;
+        quint32 kind;
+        quint64 frames;
+        quint32 width;
+        quint32 height;
+        bool splitArea;
+        QByteArray header;
+    };
+    const QList<OfficialHeader> headers{
+        {"area.mp4", turris::kVideoKind, 89, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018042001281e30d0"
+             "0538d0054059")},
+        {"area.gif", turris::kGifKind, 60, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018032001281e30d0"
+             "0538d005403c")},
+        {"area.png", turris::kImageKind, 1, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018022001281e30d0"
+             "0538d0054001")},
+        {"full.mp4", turris::kVideoKind, 178, 1440, 720, false,
+         QByteArray::fromHex(
+             "4200000008c490e1ea04122b54727978206d65646961206865616465722076"
+             "312c206670733d36302c2073697a653d313434307837323018042001283c30"
+             "a00b38d00540b201")},
+        {"full.png", turris::kImageKind, 1, 1440, 720, false,
+         QByteArray::fromHex(
+             "4100000008c490e1ea04122b54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d313434307837323018022001281e30"
+             "a00b38d0054001")},
+    };
+    for (const OfficialHeader &official : headers) {
+        const QString name =
+            QString::fromLatin1(official.name) +
+            QStringLiteral(".h264_%1x%2").arg(official.width).arg(official.height);
+        QCOMPARE(turris::framesPerSecondForKind(official.kind, official.splitArea),
+                 official.splitArea || official.kind == turris::kImageKind ? 30U
+                                                                           : 60U);
+        const QString outputPath =
+            QDir(temporaryDirectory.path()).filePath(name);
+        const turris::WriteResult written = turris::writeBlob(
+            rawPath, outputPath, official.kind, official.frames,
+            official.width, official.height, official.splitArea, {});
+        QVERIFY2(written.error.isEmpty(), qPrintable(written.error));
+        QFile output(outputPath);
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        const QByteArray blob = output.readAll();
+        QCOMPARE(blob.left(official.header.size()), official.header);
+        QCOMPARE(blob.mid(official.header.size()), rawH264);
+
+        QString error;
+        QVERIFY2(turris::validateBlob(&output, blob.size(), name,
+                                      official.width, official.height,
+                                      official.splitArea, &error),
+                 qPrintable(error));
+        // A 30 fps split-area video or GIF is not full-screen media, and the
+        // other way round; a still is the same in both.
+        QCOMPARE(turris::validateBlob(&output, blob.size(), name,
+                                      official.width, official.height,
+                                      !official.splitArea, &error),
+                 official.kind == turris::kImageKind);
+        if (!official.splitArea) {
+            QVERIFY2(turris::validateBlob(&output, blob.size(), name,
+                                          official.width, official.height,
+                                          &error),
+                     qPrintable(error));
+        }
+        output.close();
+    }
 }
 
 void PrinterProtocolTests::paseImagePreparationBuildsOfficialStill_data() {

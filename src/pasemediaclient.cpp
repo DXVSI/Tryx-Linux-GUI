@@ -3,6 +3,7 @@
 #include "printermediahelpers_p.h"
 #include "printeroperation_p.h"
 #include "printerprotocolconstants_p.h"
+#include "printermediaidentity.h"
 #include "turrismediaformat.h"
 
 #include <QCryptographicHash>
@@ -845,15 +846,24 @@ bool PaseMediaClient::uploadMedia(const QString &devicePath, const QString &loca
     options.fixedTrackId = productProfile_.fileTransferTrackId;
     options.logTransferStages = productProfile_.family == PrinterProtocolFamily::Turris;
     if (productProfile_.mediaContainer == PrinterMediaContainer::MxhdH264) {
-        const quint32 width = static_cast<quint32>(productProfile_.mediaWidth);
-        const quint32 height = static_cast<quint32>(productProfile_.mediaHeight);
+        // The name, already checked against the profile, tells a full-screen
+        // upload from one made for a split area.
+        QSize mediaSize = tryx::printer_media_identity::printerMediaSizeForName(
+            remoteFileName, productProfile_);
+        if (!mediaSize.isValid()) {
+            mediaSize = QSize(productProfile_.mediaWidth, productProfile_.mediaHeight);
+        }
+        const quint32 width = static_cast<quint32>(mediaSize.width());
+        const quint32 height = static_cast<quint32>(mediaSize.height());
+        const bool splitArea = mediaSize.width() != productProfile_.mediaWidth;
         const bool turris = productProfile_.family == PrinterProtocolFamily::Turris;
         options.validateSource = [&remoteFileName, errorMessage, mutationDetails,
-                                  width, height, turris](
+                                  width, height, splitArea, turris](
                                      QFile &file, qint64 declaredSize,
                                      const std::function<bool()> &sourceIsUnchanged) {
             if (!tryx::turris_media::validateBlob(&file, declaredSize, remoteFileName,
-                                                  width, height, errorMessage)) {
+                                                  width, height, splitArea,
+                                                  errorMessage)) {
                 if (mutationDetails) {
                     mutationDetails->outcome = MutationOutcome::Rejected;
                 }
