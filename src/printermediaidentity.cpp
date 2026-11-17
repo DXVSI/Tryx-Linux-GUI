@@ -18,11 +18,11 @@ namespace tryx::printer_media_identity {
 
 namespace {
 
-// Media with the official media header for every kind (Turris, HOLO) is
-// encoded like the official converter: a still as one frame at 30 fps with
-// CRF 18; GIF at 60 fps with CRF 18, the animation tune and no scene cuts;
-// video at 60 fps with the converter's source-derived bitrate, one-second GOP
-// and no B-frames.
+// Media with the official media header for every kind (Turris, HOLO, STAGE)
+// is encoded like the official converter: a still as one frame at 30 fps
+// with CRF 18; GIF at 60 fps with CRF 18, the animation tune and no scene
+// cuts; video at 60 fps with the converter's source-derived bitrate,
+// one-second GOP and no B-frames.
 QString officialConversionProfileBase(const PrinterProductProfile &profile,
                                       const QString &typeName) {
     const QString size = QStringLiteral("%1x%2")

@@ -15,7 +15,8 @@ enum class PrinterProtocolFamily { Pase, Turris };
 //   settings; stills in the official media header (PASE family).
 //   MxhdH264: every kind with the official converter's settings, wrapped in
 //   the official media header ("u32 length + MediaHeaderPb + raw H.264"),
-//   and named like the official application names uploads (Turris, HOLO).
+//   and named like the official application names uploads (Turris, HOLO,
+//   STAGE).
 enum class PrinterMediaContainer { RawH264, MxhdH264 };
 
 // Ping (10) policy for an idle session.
@@ -30,6 +31,7 @@ enum class PrinterOverlayLayoutKind {
     PaseDualArea2240,
     TurrisSingleArea1280,
     HoloSingleArea640,
+    StageDualArea1440,
 };
 
 // How mirror/waterfall orientation is written into DisplayConfiguration.

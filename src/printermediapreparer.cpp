@@ -104,7 +104,8 @@ SourceVideoInfo probeSourceVideo(const QString &ffprobe, const QString &path) {
 }
 
 // Which words describe media prepared with the official media header:
-// every Turris kind, a PASE-family still, or a HOLO video, GIF or still.
+// every Turris kind, a PASE-family still, or a HOLO or STAGE video, GIF or
+// still.
 enum class OfficialMediaWording { Turris, Still, Media };
 
 OfficialMediaWording officialMediaWording(quint16 productId, quint32 kind) {
@@ -512,7 +513,7 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     const bool stillImage = type == panorama::MediaType::Image;
     // Media with the official header is encoded with the official
     // converter's settings: every kind for products with the MxhdH264
-    // container (Turris, HOLO) and PASE-family stills.
+    // container (Turris, HOLO, STAGE) and PASE-family stills.
     const bool mediaHeader =
         printerMediaUsesMediaHeader(productId, stillImage);
     if (mediaHeader &&

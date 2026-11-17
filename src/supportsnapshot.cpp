@@ -223,6 +223,7 @@ QString normalizedProductCode(QString productId) {
     if (productId == QStringLiteral("1021") ||
         productId == QStringLiteral("1011") ||
         productId == QStringLiteral("1031") ||
+        productId == QStringLiteral("1041") ||
         productId == QStringLiteral("1051") ||
         productId == QStringLiteral("1061") ||
         productId == QStringLiteral("1071") ||
@@ -265,6 +266,9 @@ QString modelForProductId(const QString &productId) {
     if (code == QStringLiteral("1031") ||
         code == QStringLiteral("10a1")) {
         return QStringLiteral("PANORAMA WB");
+    }
+    if (code == QStringLiteral("1041")) {
+        return QStringLiteral("STAGE ARGB 360");
     }
     if (code == QStringLiteral("1051")) {
         return QStringLiteral("HOLO 360");
