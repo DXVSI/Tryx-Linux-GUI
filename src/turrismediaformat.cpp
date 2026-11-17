@@ -65,9 +65,9 @@ void appendProtoStringField(QByteArray *output, quint32 fieldNumber,
 }
 
 QByteArray mediaMetadata(quint32 kind, quint64 frameCount, quint32 width,
-                         quint32 height) {
+                         quint32 height, bool splitArea) {
     const quint32 framesPerSecond =
-        tryx::turris_media::framesPerSecondForKind(kind);
+        tryx::turris_media::framesPerSecondForKind(kind, splitArea);
     QByteArray metadata;
     appendProtoVarintField(&metadata, 1U, kMediaMagic);
     appendProtoStringField(&metadata, 2U,
@@ -257,7 +257,11 @@ bool isStillImageKind(quint32 kind) {
 }
 
 quint32 framesPerSecondForKind(quint32 kind) {
-    return isStillImageKind(kind) ? 30U : 60U;
+    return framesPerSecondForKind(kind, false);
+}
+
+quint32 framesPerSecondForKind(quint32 kind, bool splitArea) {
+    return isStillImageKind(kind) || splitArea ? 30U : 60U;
 }
 
 int videoBitrateKbps(qint64 sourceKbps, double sourceFps, int sourceWidth,
@@ -303,6 +307,14 @@ WriteResult writeBlob(
     const QString &rawPath, const QString &outputPath, quint32 kind,
     quint64 frameCount, quint32 width, quint32 height,
     const std::function<bool()> &isCancelled) {
+    return writeBlob(rawPath, outputPath, kind, frameCount, width, height,
+                     false, isCancelled);
+}
+
+WriteResult writeBlob(
+    const QString &rawPath, const QString &outputPath, quint32 kind,
+    quint64 frameCount, quint32 width, quint32 height, bool splitArea,
+    const std::function<bool()> &isCancelled) {
     WriteResult result;
     if (isCancelled && isCancelled()) {
         result.cancelled = true;
@@ -317,7 +329,7 @@ WriteResult writeBlob(
     }
 
     const QByteArray metadata =
-        mediaMetadata(kind, frameCount, width, height);
+        mediaMetadata(kind, frameCount, width, height, splitArea);
     if (metadata.isEmpty() ||
         metadata.size() > static_cast<qsizetype>(0xffffffffU)) {
         result.error = QObject::tr("Media header metadata is invalid");
@@ -497,6 +509,14 @@ bool validateBlob(QFile *file, qint64 declaredSize,
                   const QString &remoteFileName,
                   quint32 width, quint32 height,
                   QString *errorMessage) {
+    return validateBlob(file, declaredSize, remoteFileName, width, height,
+                        false, errorMessage);
+}
+
+bool validateBlob(QFile *file, qint64 declaredSize,
+                  const QString &remoteFileName,
+                  quint32 width, quint32 height, bool splitArea,
+                  QString *errorMessage) {
     const auto reject = [errorMessage](const QString &reason) {
         if (errorMessage) {
             *errorMessage = QObject::tr(
@@ -559,7 +579,7 @@ bool validateBlob(QFile *file, qint64 declaredSize,
     }
 
     const quint32 expectedFramesPerSecond =
-        framesPerSecondForKind(static_cast<quint32>(expectedKind));
+        framesPerSecondForKind(static_cast<quint32>(expectedKind), splitArea);
     if (metadata.magic != kMediaMagic ||
         metadata.description !=
             mediaDescription(expectedFramesPerSecond, width, height) ||

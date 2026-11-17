@@ -31,6 +31,9 @@ bool isStillImageKind(quint32 kind);
 // Frame rate the official application encodes and declares per media kind:
 // stills at 30 fps, video and animated GIF at 60 fps.
 quint32 framesPerSecondForKind(quint32 kind);
+// The same for media made for one area of a split screen: the official
+// application encodes split-area (1:1) video and GIF at 30 fps as well.
+quint32 framesPerSecondForKind(quint32 kind, bool splitArea);
 
 // Target H.264 bitrate in kbit/s, reproducing the official converter: the
 // source bitrate scaled by the frame-rate ratio (clamped to 0.75..2.0) and
@@ -53,7 +56,8 @@ struct FrameCountProbeResult {
 
 // The official converter writes the same container ("u32 length +
 // MediaHeaderPb + raw H.264") for every product; only the declared size
-// differs. The overloads without a size use the Turris 1280x720 target.
+// differs. The overloads without a size use the Turris 1280x720 target, and
+// those without splitArea declare the full-screen frame rate of the kind.
 WriteResult writeBlob(
     const QString &rawPath, const QString &outputPath,
     quint32 kind, quint64 frameCount,
@@ -62,6 +66,11 @@ WriteResult writeBlob(
     const QString &rawPath, const QString &outputPath,
     quint32 kind, quint64 frameCount,
     quint32 width, quint32 height,
+    const std::function<bool()> &isCancelled);
+WriteResult writeBlob(
+    const QString &rawPath, const QString &outputPath,
+    quint32 kind, quint64 frameCount,
+    quint32 width, quint32 height, bool splitArea,
     const std::function<bool()> &isCancelled);
 
 FrameCountProbeResult parseFrameCountProbe(
@@ -76,6 +85,10 @@ bool validateBlob(QFile *file, qint64 declaredSize,
 bool validateBlob(QFile *file, qint64 declaredSize,
                   const QString &remoteFileName,
                   quint32 width, quint32 height,
+                  QString *errorMessage);
+bool validateBlob(QFile *file, qint64 declaredSize,
+                  const QString &remoteFileName,
+                  quint32 width, quint32 height, bool splitArea,
                   QString *errorMessage);
 
 // A well-formed media header at the start of a file, followed by an

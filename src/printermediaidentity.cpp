@@ -18,11 +18,11 @@ namespace tryx::printer_media_identity {
 
 namespace {
 
-// Media with the official media header for every kind (Turris, HOLO) is
-// encoded like the official converter: a still as one frame at 30 fps with
-// CRF 18; GIF at 60 fps with CRF 18, the animation tune and no scene cuts;
-// video at 60 fps with the converter's source-derived bitrate, one-second GOP
-// and no B-frames.
+// Media with the official media header for every kind (Turris, HOLO, STAGE)
+// is encoded like the official converter: a still as one frame at 30 fps
+// with CRF 18; GIF at 60 fps with CRF 18, the animation tune and no scene
+// cuts; video at 60 fps with the converter's source-derived bitrate,
+// one-second GOP and no B-frames.
 QString officialConversionProfileBase(const PrinterProductProfile &profile,
                                       const QString &typeName) {
     const QString size = QStringLiteral("%1x%2")
@@ -42,6 +42,33 @@ QString officialConversionProfileBase(const PrinterProductProfile &profile,
     }
     return QStringLiteral(
                "%1-%2-%3-yuv420p-60fps-libx264-main41-fast-abr-%4")
+        .arg(profile.mediaIdentityPrefix, typeName, size,
+             profile.mediaIdentityGeneration);
+}
+
+// The same converter settings for media made for one area of a split
+// screen: half the screen width and, as the official application converts
+// split-area (1:1) material, 30 fps for every kind. A split-area profile
+// always carries the transform fingerprint.
+QString officialSplitConversionProfileBase(
+    const PrinterProductProfile &profile, const QString &typeName) {
+    const QString size = QStringLiteral("%1x%2")
+                             .arg(profile.mediaWidth / 2)
+                             .arg(profile.mediaHeight);
+    if (typeName == QStringLiteral("image")) {
+        return QStringLiteral(
+                   "%1-image-split-area-%2-yuv420p-30fps-libx264-main41-fast-crf18-%3")
+            .arg(profile.mediaIdentityPrefix, size,
+                 profile.mediaIdentityGeneration);
+    }
+    if (typeName == QStringLiteral("gif")) {
+        return QStringLiteral(
+                   "%1-gif-split-area-%2-yuv420p-30fps-libx264-main41-fast-crf18-animation-%3")
+            .arg(profile.mediaIdentityPrefix, size,
+                 profile.mediaIdentityGeneration);
+    }
+    return QStringLiteral(
+               "%1-%2-split-area-%3-yuv420p-30fps-libx264-main41-fast-abr-%4")
         .arg(profile.mediaIdentityPrefix, typeName, size,
              profile.mediaIdentityGeneration);
 }
@@ -103,12 +130,31 @@ bool paseProfileIsFullFrame(const QString &profile) {
            !profile.contains(QStringLiteral("-split-area-"));
 }
 
+// A split area is the left or right half of the screen.
 bool splitPreparationSupported(
     const PrinterProductProfile &profile) {
     return profile.mediaUploadSupported &&
            profile.splitAreaMediaSupported &&
-           profile.mediaWidth == 2240 &&
-           profile.mediaHeight == 1080;
+           profile.mediaWidth > 0 && profile.mediaWidth % 4 == 0 &&
+           profile.mediaHeight > 0;
+}
+
+// An official-identity conversion profile made for one split area.
+bool officialProfileIsSplitArea(const QString &conversionProfile) {
+    for (const PrinterProductProfile &profile :
+         officialMediaIdentityProfiles()) {
+        if (conversionProfile.startsWith(
+                profile.mediaIdentityPrefix + QLatin1Char('-'))) {
+            return conversionProfile.contains(
+                QStringLiteral("-split-area-"));
+        }
+    }
+    return false;
+}
+
+bool conversionProfileIsSplitArea(const QString &conversionProfile) {
+    return paseProfileIsSplitArea(conversionProfile) ||
+           officialProfileIsSplitArea(conversionProfile);
 }
 
 bool profileMatchesBaseOrTransform(const QString &profile,
@@ -204,7 +250,10 @@ QString printerConversionProfile(
         return {};
     }
     if (profile.target == QStringLiteral("SplitArea")) {
-        return paseSplitConversionProfileBase(typeName) +
+        return (usesOfficialMediaIdentity(*productProfile)
+                    ? officialSplitConversionProfileBase(*productProfile,
+                                                         typeName)
+                    : paseSplitConversionProfileBase(typeName)) +
                QStringLiteral("-transform-") + transformFingerprint;
     }
     if (usesOfficialMediaIdentity(*productProfile)) {
@@ -362,6 +411,12 @@ bool isSafePrinterUploadMediaName(const QString &fileName) {
              QStringLiteral(".mp4.h264_640x480"),
              QStringLiteral(".png.h264_640x480"),
              QStringLiteral(".gif.h264_640x480"),
+             QStringLiteral(".mp4.h264_1440x720"),
+             QStringLiteral(".png.h264_1440x720"),
+             QStringLiteral(".gif.h264_1440x720"),
+             QStringLiteral(".mp4.h264_720x720"),
+             QStringLiteral(".png.h264_720x720"),
+             QStringLiteral(".gif.h264_720x720"),
          }) {
         if (lowerName.endsWith(suffix)) {
             return true;
@@ -382,6 +437,17 @@ bool isCanonicalPrinterConversionProfile(
             if (profileMatchesBaseOrTransform(
                     conversionProfile,
                     officialConversionProfileBase(profile, typeName))) {
+                return true;
+            }
+            if (!splitPreparationSupported(profile)) {
+                continue;
+            }
+            const QString splitTransformPrefix =
+                officialSplitConversionProfileBase(profile, typeName) +
+                QStringLiteral("-transform-");
+            if (conversionProfile.startsWith(splitTransformPrefix) &&
+                printer_media_file_integrity::isSha256Hex(
+                    conversionProfile.mid(splitTransformPrefix.size()))) {
                 return true;
             }
         }
@@ -480,7 +546,10 @@ bool printerConversionProfileMatchesMediaName(
         if (conversionProfile.startsWith(
                 profile.mediaIdentityPrefix + QLatin1Char('-'))) {
             expectedGeometry = QStringLiteral("%1x%2")
-                                   .arg(profile.mediaWidth)
+                                   .arg(officialProfileIsSplitArea(
+                                            conversionProfile)
+                                            ? profile.mediaWidth / 2
+                                            : profile.mediaWidth)
                                    .arg(profile.mediaHeight);
             break;
         }
@@ -527,6 +596,12 @@ QString printerMediaConversionIdentity(
     }
     if (!splitPreparationSupported(profile)) {
         return {};
+    }
+    if (usesOfficialMediaIdentity(profile)) {
+        return QStringLiteral("%1-%2x%3-30fps")
+            .arg(profile.mediaIdentityPrefix)
+            .arg(profile.mediaWidth / 2)
+            .arg(profile.mediaHeight);
     }
     return QStringLiteral("h264-yuv420p-%1x%2-30fps")
         .arg(profile.mediaWidth / 2)
@@ -648,9 +723,9 @@ bool printerConversionProfileMatchesConversion(
         return false;
     }
     if (size.width() == profile.mediaWidth) {
-        return !paseProfileIsSplitArea(conversionProfile);
+        return !conversionProfileIsSplitArea(conversionProfile);
     }
-    return paseProfileIsSplitArea(conversionProfile);
+    return conversionProfileIsSplitArea(conversionProfile);
 }
 
 bool printerMediaUsesMediaHeader(quint16 productId, bool stillImage) {

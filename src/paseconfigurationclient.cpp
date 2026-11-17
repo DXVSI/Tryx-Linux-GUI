@@ -823,8 +823,9 @@ bool paseAreaHasContent(const PrinterProtocol::PaseOverlayAreaConfig &area) {
 
 // Screen geometry and label sizes of the vendor overlay layout per product
 // family. The PASE values reproduce the previously hard-coded 2240x1080 layout
-// byte for byte; the Turris values follow the official app's 1280x720 layout
-// and the HOLO values its holo640 layout, which places rows like PASE.
+// byte for byte; the Turris values follow the official app's 1280x720 layout,
+// the HOLO values its holo640 layout and the STAGE values its stage1440
+// layout, both of which place rows like PASE.
 struct OverlayLayoutGeometry {
     int screenWidth;
     int screenHeight;
@@ -848,6 +849,8 @@ OverlayLayoutGeometry overlayLayoutGeometry(PrinterOverlayLayoutKind kind) {
         return {1280, 720, 30, 0, 120, 15, 25, 120, 60, 25, 0, true};
     case PrinterOverlayLayoutKind::HoloSingleArea640:
         return {640, 480, 30, 0, 80, 12, 20, 80, 30, 16, 10, false};
+    case PrinterOverlayLayoutKind::StageDualArea1440:
+        return {1440, 720, 30, 0, 120, 15, 25, 120, 60, 20, 10, false};
     case PrinterOverlayLayoutKind::PaseDualArea2240:
         break;
     }

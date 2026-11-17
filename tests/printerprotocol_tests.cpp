@@ -1959,10 +1959,13 @@ void appendTurrisBytesField(QByteArray *output, quint32 field,
 QByteArray turrisMediaMetadata(quint32 mediaKind,
                                quint64 frameCount,
                                quint32 width = 1280,
-                               quint32 height = 720) {
-    // Stills (JPEG 1, PNG 2) are declared at 30 fps, video and GIF at 60.
-    const quint32 framesPerSecond =
-        mediaKind == 1 || mediaKind == 2 ? 30 : 60;
+                               quint32 height = 720,
+                               quint32 declaredFramesPerSecond = 0) {
+    // Stills (JPEG 1, PNG 2) are declared at 30 fps, video and GIF at 60;
+    // split-area media passes its 30 fps explicitly.
+    const quint32 framesPerSecond = declaredFramesPerSecond != 0
+        ? declaredFramesPerSecond
+        : mediaKind == 1 || mediaKind == 2 ? 30 : 60;
     QByteArray metadata;
     appendTurrisVarintField(&metadata, 1, 0x4D584844U);
     appendTurrisBytesField(
@@ -2318,6 +2321,8 @@ private slots:
     void productProfilesExposeExactCapabilities();
     void holoProfileMapsOfficialCapabilities();
     void holoConversionIdentitiesReachEveryConsumer();
+    void stageProfileMapsOfficialCapabilities();
+    void stageConversionIdentitiesReachEveryConsumer();
     void kanaliMappedProductIdsReusePanoramaProfiles_data();
     void kanaliMappedProductIdsReusePanoramaProfiles();
     void turrisMediaAnalysisUses1280Profile();
@@ -2333,7 +2338,10 @@ private slots:
     void turrisImagePreparationBuildsMxhdBlob();
     void holoMediaPreparationBuildsOfficialMxhd_data();
     void holoMediaPreparationBuildsOfficialMxhd();
+    void stageMediaPreparationBuildsOfficialMxhd_data();
+    void stageMediaPreparationBuildsOfficialMxhd();
     void paseMediaHeaderMatchesOfficialConverter();
+    void splitAreaMediaHeaderMatchesOfficialConverter();
     void paseImagePreparationBuildsOfficialStill_data();
     void paseImagePreparationBuildsOfficialStill();
     void mediaHeaderPrefixRecognisesDeviceStills();
@@ -2361,6 +2369,9 @@ private slots:
     void paseRunConfigUsesWireLayout();
     void holoRunConfigFollowsOfficialLayout_data();
     void holoRunConfigFollowsOfficialLayout();
+    void stageRunConfigFollowsOfficialLayout_data();
+    void stageRunConfigFollowsOfficialLayout();
+    void stageSplitApplyWritesDualMedia();
     void metricsCatalogTokensAndPaseGroupIdsRemainFrozen_data();
     void metricsCatalogTokensAndPaseGroupIdsRemainFrozen();
     void paseFormatterRejectsInvalidOrFourthMetricBeforeTransport_data();
@@ -2805,6 +2816,7 @@ private slots:
     void uploadIsResponseDriven();
     void turrisUploadUses1280Profile();
     void turrisUploadRejectsMalformedMxhdBeforeUsb();
+    void stageUploadChecksTheAreaHeaderBeforeUsb();
     void uploadDataUsesDedicatedWriteDeadline();
     void uploadWaitsForDelayedBoundaryAckWithIdleKeepalive();
     void uploadEndTimeoutIsFinalizationUnknown();
@@ -11293,7 +11305,6 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QVERIFY(panoWb.has_value());
     QVERIFY(turris.has_value());
     QVERIFY(!printerProductProfileForId(0x9999).has_value());
-    QVERIFY(!printerProductProfileForId(0x1041).has_value());
     QVERIFY(!printerProductProfileForId(0x10c1).has_value());
 
     for (const auto &profile : {pase, pano, panoWb}) {
@@ -11465,8 +11476,8 @@ void PrinterProtocolTests::holoProfileMapsOfficialCapabilities() {
     for (const PrinterProductProfile &profile : printerProductProfiles()) {
         listed.append(profile.productId);
     }
-    QCOMPARE(listed, (QList<quint16>{0x1011, 0x1021, 0x1031, 0x1051, 0x1061,
-                                     0x1071, 0x10a1, 0x10b1, 0x2011}));
+    QCOMPARE(listed, (QList<quint16>{0x1011, 0x1021, 0x1031, 0x1041, 0x1051,
+                                     0x1061, 0x1071, 0x10a1, 0x10b1, 0x2011}));
 
     QVERIFY(tryxSavedLayoutProductIdIsSupported(QStringLiteral("391a:1051")));
     QVERIFY(tryxDisplaySnapshotProductIdIsSupported(QStringLiteral("391a:1051")));
@@ -11612,6 +11623,260 @@ void PrinterProtocolTests::holoConversionIdentitiesReachEveryConsumer() {
                                         origin.sourceContentSha256,
                                         videoProfile, {origin.remote}),
              remoteName);
+}
+
+void PrinterProtocolTests::stageProfileMapsOfficialCapabilities() {
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    QCOMPARE(stage->productId, quint16{0x1041});
+    QCOMPARE(stage->mediaWidth, 1440);
+    QCOMPARE(stage->mediaHeight, 720);
+    QCOMPARE(stage->family, PrinterProtocolFamily::Pase);
+    QCOMPARE(stage->mediaContainer, PrinterMediaContainer::MxhdH264);
+    QCOMPARE(stage->keepalive, PrinterSessionKeepalive::Ping);
+    QCOMPARE(stage->overlayLayout,
+             PrinterOverlayLayoutKind::StageDualArea1440);
+    QCOMPARE(stage->orientationModel,
+             PrinterDisplayOrientationModel::RotationFields);
+    QCOMPARE(stage->fileTransferTrackId, quint64{0});
+    QCOMPARE(stage->readbackConfirmedWriteAckWindowMs, 0);
+    QVERIFY(stage->keepBulkInPending);
+    QCOMPARE(stage->defaultPowerOnMedia,
+             QStringLiteral("default_poweron_1440x720.mp4.h264"));
+    QCOMPARE(stage->defaultStandbyMedia,
+             QStringLiteral("default_standby_1440x720.mp4.h264"));
+    QCOMPARE(stage->mediaIdentityPrefix, QStringLiteral("stage-mxhd-v1"));
+    QCOMPARE(stage->mediaIdentityGeneration, QStringLiteral("kanali"));
+    QVERIFY(stage->mediaUploadSupported);
+    QVERIFY(stage->mediaCatalogSupported);
+    QVERIFY(stage->displayConfigurationSupported);
+    QVERIFY(stage->splitAreaMediaSupported);
+    QVERIFY(stage->overlayMetricsSupported);
+    QVERIFY(!stage->mediaPullSupported);
+    QVERIFY(!stage->waterfallSupported);
+    QVERIFY(!stage->mirrorSupported);
+    QVERIFY(!stage->overlayLeaseSupported);
+    QVERIFY(!stage->firmwareFlashSupported);
+
+    // The presets KANALI 2.6.0 lists as shipped with the device, in its order.
+    const QList<std::pair<QString, QString>> presets{
+        {QStringLiteral("Pre-set 1: Festival"),
+         QStringLiteral("festival.mp4.h264_1440x720")},
+        {QStringLiteral("Pre-set 2: Erebos"),
+         QStringLiteral("erebos.mp4.h264_1440x720")},
+        {QStringLiteral("Pre-set 3: Cosmos"),
+         QStringLiteral("cosmos.mp4.h264_1440x720")},
+        {QStringLiteral("Pre-set 4: Graffiti"),
+         QStringLiteral("graffiti.mp4.h264_1440x720")},
+    };
+    QCOMPARE(stage->presets.size(), presets.size());
+    for (int index = 0; index < presets.size(); ++index) {
+        QCOMPARE(stage->presets.at(index).presetId, presets.at(index).first);
+        QCOMPARE(stage->presets.at(index).mediaFile, presets.at(index).second);
+    }
+    using tryx::pase_overlay_config::printerPresetMediaFile;
+    QCOMPARE(printerPresetMediaFile(QStringLiteral("Pre-set 3: Cosmos"), 0x1041),
+             QStringLiteral("cosmos.mp4.h264_1440x720"));
+    QVERIFY(printerPresetMediaFile(
+                QStringLiteral("Pre-set 1: Cooling delivery"), 0x1041)
+                .isEmpty());
+    QVERIFY(printerPresetMediaFile(QStringLiteral("Pre-set 1: Festival"), 0x1021)
+                .isEmpty());
+
+    QVERIFY(tryxSavedLayoutProductIdIsSupported(QStringLiteral("391a:1041")));
+    QVERIFY(tryxDisplaySnapshotProductIdIsSupported(QStringLiteral("391a:1041")));
+
+    // Both areas take overlays; the STAGE has no waterfall orientation.
+    using tryx::pase_overlay_config::paseOverlayIsSupportedByProduct;
+    PrinterProtocol::PaseOverlayConfig dualOverlay;
+    dualOverlay.dualMode = true;
+    dualOverlay.left.metrics = {QStringLiteral("CPU Usage")};
+    dualOverlay.right.metrics = {QStringLiteral("GPU Usage")};
+    QString overlayError;
+    QVERIFY2(paseOverlayIsSupportedByProduct(dualOverlay, 0x1041, &overlayError),
+             qPrintable(overlayError));
+    dualOverlay.waterfallMode = true;
+    QVERIFY(!paseOverlayIsSupportedByProduct(dualOverlay, 0x1041, &overlayError));
+
+    // Unsupported STAGE requests are rejected before any USB traffic.
+    PrinterProtocol stageProtocol(*stage, 100);
+    const PrinterProtocol::MediaPullResult pull = stageProtocol.pullUserMedia(
+        QStringLiteral("unused"), QStringLiteral("stage.mp4.h264_1440x720"), 4096,
+        PrinterProtocol::MediaPullChunkSink{}, PrinterProtocol::MediaPullProgress{},
+        PrinterProtocol::OperationContext{});
+    QVERIFY(!pull.success);
+    QVERIFY(pull.error.contains(QStringLiteral("391a:1041")));
+
+    const auto rejected = [&stageProtocol](const PrinterProtocol::PaseApplyConfig &config) {
+        PrinterProtocol::MutationDetails mutation;
+        QString error;
+        const bool applied = stageProtocol.applyPaseConfiguration(
+            QStringLiteral("unused"), config, &error, {}, &mutation);
+        return !applied &&
+               mutation.outcome == PrinterProtocol::MutationOutcome::Rejected &&
+               error.contains(QStringLiteral("391a:1041"));
+    };
+    PrinterProtocol::PaseApplyConfig waterfallConfig;
+    waterfallConfig.display.orientationPresent = true;
+    waterfallConfig.display.waterfallMode = true;
+    QVERIFY(rejected(waterfallConfig));
+    PrinterProtocol::PaseApplyConfig mirrorConfig;
+    mirrorConfig.display.orientationPresent = true;
+    mirrorConfig.display.mirrorMode = true;
+    QVERIFY(rejected(mirrorConfig));
+}
+
+void PrinterProtocolTests::stageConversionIdentitiesReachEveryConsumer() {
+    namespace identity = tryx::printer_media_identity;
+    const auto stage = printerProductProfileForId(0x1041);
+    const auto holo = printerProductProfileForId(0x1051);
+    const auto pase = printerProductProfileForId(0x1021);
+    QVERIFY(stage.has_value());
+    QVERIFY(holo.has_value());
+    QVERIFY(pase.has_value());
+
+    TryxRuntimeMediaPreparationProfileV1 full;
+    full.transform = tryxLegacyFitMediaTransform();
+    TryxRuntimeMediaPreparationProfileV1 split = full;
+    split.target = QStringLiteral("SplitArea");
+    const QString fingerprint = tryxMediaTransformFingerprint(full.transform);
+    QVERIFY(!fingerprint.isEmpty());
+    const QString transform = QStringLiteral("-transform-") + fingerprint;
+
+    struct KindCase {
+        QString extension;
+        QString fullProfile;
+        QString splitProfile;
+    };
+    const QList<KindCase> kinds{
+        {QStringLiteral("png"),
+         QStringLiteral(
+             "stage-mxhd-v1-image-1440x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali"),
+         QStringLiteral(
+             "stage-mxhd-v1-image-split-area-720x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali") +
+             transform},
+        {QStringLiteral("gif"),
+         QStringLiteral(
+             "stage-mxhd-v1-gif-1440x720-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali"),
+         QStringLiteral(
+             "stage-mxhd-v1-gif-split-area-720x720-yuv420p-30fps-libx264-main41-fast-crf18-animation-kanali") +
+             transform},
+        {QStringLiteral("mp4"),
+         QStringLiteral(
+             "stage-mxhd-v1-video-1440x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"),
+         QStringLiteral(
+             "stage-mxhd-v1-video-split-area-720x720-yuv420p-30fps-libx264-main41-fast-abr-kanali") +
+             transform},
+    };
+
+    const QString fullConversion =
+        identity::printerMediaConversionIdentity(*stage);
+    const QString splitConversion =
+        identity::printerMediaConversionIdentity(*stage, split);
+    QCOMPARE(fullConversion, QStringLiteral("stage-mxhd-v1-1440x720-30fps"));
+    QCOMPARE(splitConversion, QStringLiteral("stage-mxhd-v1-720x720-30fps"));
+    QCOMPARE(identity::printerMediaSizeForConversionIdentity(fullConversion, *stage),
+             QSize(1440, 720));
+    QCOMPARE(identity::printerMediaSizeForConversionIdentity(splitConversion, *stage),
+             QSize(720, 720));
+    QVERIFY(!identity::printerMediaConversionIdentityMatchesProduct(
+        splitConversion, *holo));
+    // The PASE family keeps its own split identity.
+    QCOMPARE(identity::printerMediaConversionIdentity(*pase, split),
+             QStringLiteral("h264-yuv420p-1120x1080-30fps"));
+    QVERIFY(identity::printerMediaUsesMediaHeader(0x1041, false));
+    QVERIFY(identity::printerMediaUsesMediaHeader(0x1041, true));
+
+    const QRegularExpression officialName(QStringLiteral(
+        "^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.mp4\\.h264_%1$"));
+    const QString fullName = identity::h264PrinterName(
+        identity::generatedPrinterMediaName(QStringLiteral("mp4"), 0x1041),
+        0x1041, full);
+    const QString splitName = identity::h264PrinterName(
+        identity::generatedPrinterMediaName(QStringLiteral("mp4"), 0x1041),
+        0x1041, split);
+    QVERIFY2(QRegularExpression(officialName.pattern().arg(QStringLiteral("1440x720")))
+                 .match(fullName)
+                 .hasMatch(),
+             qPrintable(fullName));
+    QVERIFY2(QRegularExpression(officialName.pattern().arg(QStringLiteral("720x720")))
+                 .match(splitName)
+                 .hasMatch(),
+             qPrintable(splitName));
+    QCOMPARE(identity::printerMediaSizeForName(fullName, *stage), QSize(1440, 720));
+    QCOMPARE(identity::printerMediaSizeForName(splitName, *stage), QSize(720, 720));
+    QVERIFY(identity::printerMediaNameMatchesProfile(splitName, *stage));
+    QVERIFY(!identity::printerMediaNameMatchesProfile(splitName, *pase));
+    QVERIFY(!identity::printerMediaNameMatchesProfile(
+        QStringLiteral("area.mp4.h264_1120x1080"), *stage));
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    for (const KindCase &kind : kinds) {
+        const QString sourcePath = QDir(temporaryDirectory.path())
+                                       .filePath(QStringLiteral("stage.") +
+                                                 kind.extension);
+        QCOMPARE(identity::printerConversionProfile(sourcePath, full, 0x1041),
+                 kind.fullProfile);
+        QCOMPARE(identity::printerConversionProfile(sourcePath, split, 0x1041),
+                 kind.splitProfile);
+        // A split area always carries the transform.
+        QVERIFY(!identity::isCanonicalPrinterConversionProfile(
+            kind.splitProfile.left(kind.splitProfile.size() - transform.size())));
+        const QString fullFile = QStringLiteral("2026-11-17_12-00-00-000.") +
+                                 kind.extension + QStringLiteral(".h264_1440x720");
+        const QString splitFile = QStringLiteral("2026-11-17_12-00-00-000.") +
+                                  kind.extension + QStringLiteral(".h264_720x720");
+        for (const QString &profile : {kind.fullProfile, kind.splitProfile}) {
+            const bool splitProfile = profile == kind.splitProfile;
+            QVERIFY2(identity::isCanonicalPrinterConversionProfile(profile),
+                     qPrintable(profile));
+            QVERIFY(identity::printerConversionProfileMatchesProduct(profile, *stage));
+            QVERIFY(!identity::printerConversionProfileMatchesProduct(profile, *holo));
+            QVERIFY(!identity::printerConversionProfileMatchesProduct(profile, *pase));
+            QCOMPARE(identity::printerConversionProfileMatchesMediaName(profile, fullFile),
+                     !splitProfile);
+            QCOMPARE(identity::printerConversionProfileMatchesMediaName(profile, splitFile),
+                     splitProfile);
+            // Retry-cache origins are checked with this pairing.
+            QCOMPARE(identity::printerConversionProfileMatchesConversion(
+                         profile, *stage, fullConversion),
+                     !splitProfile);
+            QCOMPARE(identity::printerConversionProfileMatchesConversion(
+                         profile, *stage, splitConversion),
+                     splitProfile);
+        }
+    }
+
+    // The media catalog keeps the origin of a split-area upload, so the same
+    // source is not uploaded twice for the same area.
+    tryx::MediaCatalogStore catalog(
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("media-catalog")));
+    QVERIFY(catalog.load().writesEnabled);
+    tryx::MediaCatalogStore::OriginInput origin;
+    origin.deviceIdentity = QStringLiteral("STAGE-ORIGIN");
+    origin.remote.name = splitName;
+    origin.remote.size = 4096;
+    origin.remote.source = 1;
+    origin.remote.readOnly = false;
+    origin.sourceContentSha256 = QString(64, QLatin1Char('a'));
+    origin.sourceSize = 4096;
+    origin.conversionProfile = kinds.constLast().splitProfile;
+    origin.preparedSha256 = QString(64, QLatin1Char('c'));
+    origin.operationId = QStringLiteral("10411041-1041-4041-8041-104110411041");
+    origin.confirmedUtc = QDateTime::fromString(
+        QStringLiteral("2026-11-17T12:00:00.000Z"), Qt::ISODateWithMs);
+    const auto persisted = catalog.persistOrigin(origin);
+    QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
+    QCOMPARE(catalog.findReusableOrigin(origin.deviceIdentity,
+                                        origin.sourceContentSha256,
+                                        origin.conversionProfile, {origin.remote}),
+             splitName);
+    QVERIFY(catalog.findReusableOrigin(origin.deviceIdentity,
+                                       origin.sourceContentSha256,
+                                       kinds.constLast().fullProfile,
+                                       {origin.remote})
+                .isEmpty());
 }
 
 void PrinterProtocolTests::turrisMediaAnalysisUses1280Profile() {
@@ -12316,6 +12581,200 @@ void PrinterProtocolTests::holoMediaPreparationBuildsOfficialMxhd() {
     }
 }
 
+void PrinterProtocolTests::stageMediaPreparationBuildsOfficialMxhd_data() {
+    QTest::addColumn<QString>("extension");
+    QTest::addColumn<bool>("splitArea");
+    QTest::addColumn<quint32>("mediaKind");
+    QTest::addColumn<quint64>("frameCount");
+    QTest::addColumn<quint32>("framesPerSecond");
+    QTest::addColumn<QString>("conversionProfile");
+
+    // KANALI's converter: full-screen stills at 30 fps as one frame, GIF and
+    // video at 60 fps; everything for one 720x720 area at 30 fps. Each
+    // source lasts one second.
+    const QString transform =
+        QStringLiteral("-transform-") +
+        tryxMediaTransformFingerprint(tryxLegacyFitMediaTransform());
+    QTest::newRow("image")
+        << QStringLiteral("png") << false << quint32{2} << quint64{1}
+        << quint32{30}
+        << QStringLiteral(
+               "stage-mxhd-v1-image-1440x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
+    QTest::newRow("gif")
+        << QStringLiteral("gif") << false << quint32{3} << quint64{60}
+        << quint32{60}
+        << QStringLiteral(
+               "stage-mxhd-v1-gif-1440x720-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali");
+    QTest::newRow("video")
+        << QStringLiteral("mp4") << false << quint32{4} << quint64{60}
+        << quint32{60}
+        << QStringLiteral(
+               "stage-mxhd-v1-video-1440x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+    QTest::newRow("split-image")
+        << QStringLiteral("png") << true << quint32{2} << quint64{1}
+        << quint32{30}
+        << QStringLiteral(
+               "stage-mxhd-v1-image-split-area-720x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali") +
+               transform;
+    QTest::newRow("split-gif")
+        << QStringLiteral("gif") << true << quint32{3} << quint64{30}
+        << quint32{30}
+        << QStringLiteral(
+               "stage-mxhd-v1-gif-split-area-720x720-yuv420p-30fps-libx264-main41-fast-crf18-animation-kanali") +
+               transform;
+    QTest::newRow("split-video")
+        << QStringLiteral("mp4") << true << quint32{4} << quint64{30}
+        << quint32{30}
+        << QStringLiteral(
+               "stage-mxhd-v1-video-split-area-720x720-yuv420p-30fps-libx264-main41-fast-abr-kanali") +
+               transform;
+}
+
+void PrinterProtocolTests::stageMediaPreparationBuildsOfficialMxhd() {
+    QFETCH(QString, extension);
+    QFETCH(bool, splitArea);
+    QFETCH(quint32, mediaKind);
+    QFETCH(quint64, frameCount);
+    QFETCH(quint32, framesPerSecond);
+    QFETCH(QString, conversionProfile);
+
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffprobe =
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffmpeg.isEmpty() || ffprobe.isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("stage-source.") + extension);
+    if (extension == QStringLiteral("png")) {
+        QImage image(32, 16, QImage::Format_RGB32);
+        image.fill(QColor(QStringLiteral("#336699")));
+        QVERIFY(image.save(sourcePath));
+    } else {
+        QStringList arguments{
+            QStringLiteral("-v"), QStringLiteral("error"),
+            QStringLiteral("-f"), QStringLiteral("lavfi"),
+            QStringLiteral("-i"),
+            QStringLiteral("color=c=#315d84:s=64x32:r=10:d=1"),
+            QStringLiteral("-an")};
+        if (extension == QStringLiteral("mp4")) {
+            arguments << QStringLiteral("-c:v") << QStringLiteral("libx264")
+                      << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p");
+        }
+        arguments << QStringLiteral("-y") << sourcePath;
+        QProcess generator;
+        generator.setProcessChannelMode(QProcess::MergedChannels);
+        generator.start(ffmpeg, arguments);
+        const bool finished = generator.waitForFinished(60000);
+        const QByteArray output = generator.readAll();
+        QVERIFY2(finished, qPrintable(QString::fromLocal8Bit(output)));
+        QVERIFY2(generator.exitStatus() == QProcess::NormalExit &&
+                     generator.exitCode() == 0,
+                 qPrintable(QString::fromLocal8Bit(output)));
+    }
+    TryxRuntimeMediaPreparationProfileV1 profile;
+    profile.target = splitArea ? QStringLiteral("SplitArea")
+                               : QStringLiteral("FullFrame");
+    profile.transform = tryxLegacyFitMediaTransform();
+    QCOMPARE(tryx::printer_media_identity::printerConversionProfile(
+                 sourcePath, profile, 0x1041),
+             conversionProfile);
+    const quint32 width = splitArea ? 720U : 1440U;
+    const quint32 height = 720U;
+
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    const QString operationId =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    preparer.prepareWithPreparationProfile(
+        operationId, QStringLiteral("stage-endpoint"), sourcePath, QString(),
+        41, profile, 0x1041);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 120000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    QCOMPARE(preparedSpy.count(), 1);
+    const QList<QVariant> prepared = preparedSpy.first();
+    const QString outputPath = prepared.at(3).toString();
+    const QString remoteName = prepared.at(4).toString();
+    const QString expectedSha256 = prepared.at(5).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(prepared.at(6).toString());
+    });
+    // The official name layout: a millisecond timestamp, no random suffix.
+    QVERIFY2(QRegularExpression(
+                 QStringLiteral("^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.") +
+                 extension +
+                 QStringLiteral("\\.h264_%1x%2$").arg(width).arg(height))
+                 .match(remoteName)
+                 .hasMatch(),
+             qPrintable(remoteName));
+
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    QCOMPARE(QString::fromLatin1(
+                 QCryptographicHash::hash(blob, QCryptographicHash::Sha256).toHex()),
+             expectedSha256);
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata, turrisMediaMetadata(mediaKind, frameCount, width,
+                                           height, framesPerSecond));
+    QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
+            h264.startsWith(QByteArray::fromHex("000001")));
+    QString containerError;
+    QVERIFY2(tryx::turris_media::validateBlob(
+                 &output, blob.size(), remoteName, width, height, splitArea,
+                 &containerError),
+             qPrintable(containerError));
+    // Only a still declares the same rate in both areas.
+    QCOMPARE(tryx::turris_media::validateBlob(
+                 &output, blob.size(), remoteName, width, height, !splitArea,
+                 &containerError),
+             mediaKind == tryx::turris_media::kImageKind);
+    output.close();
+
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("stage.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        ffprobe,
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-count_frames"), QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,level,width,height,has_b_frames,"
+                        "color_range,nb_read_frames"),
+         QStringLiteral("-of"), QStringLiteral("default=noprint_wrappers=1"),
+         rawPath});
+    QVERIFY(probe.waitForFinished(30000));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("level=41"),
+             QStringLiteral("width=%1").arg(width),
+             QStringLiteral("height=%1").arg(height),
+             QStringLiteral("has_b_frames=0"),
+             QStringLiteral("color_range=pc"),
+             QStringLiteral("nb_read_frames=%1").arg(frameCount)}) {
+        QVERIFY2(properties.contains(expected),
+                 qPrintable(expected + QStringLiteral(" in ") +
+                            properties.join(QLatin1Char(' '))));
+    }
+}
+
 void PrinterProtocolTests::paseMediaHeaderMatchesOfficialConverter() {
     namespace turris = tryx::turris_media;
 
@@ -12388,6 +12847,98 @@ void PrinterProtocolTests::paseMediaHeaderMatchesOfficialConverter() {
                      QStringLiteral("odd.mxhd")),
                  turris::kImageKind, 1, 2239, 1080, {})
                  .error.isEmpty());
+}
+
+void PrinterProtocolTests::splitAreaMediaHeaderMatchesOfficialConverter() {
+    namespace turris = tryx::turris_media;
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray rawH264;
+    QVERIFY(splitTurrisMediaBlob(
+        turrisMediaBlob(turris::kVideoKind, 2), nullptr, &rawH264));
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("area.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, rawH264));
+
+    // Headers KANALI 2.6.0's MediaX.dll (MX_ConvertToH264Raw, run under Wine
+    // on 2026-11-17) wrote at the frame rate the official application passes:
+    // 30 fps for every kind made for one 1:1 split area, 60 fps for
+    // full-screen video and GIF, 30 fps for every still.
+    struct OfficialHeader {
+        const char *name;
+        quint32 kind;
+        quint64 frames;
+        quint32 width;
+        quint32 height;
+        bool splitArea;
+        QByteArray header;
+    };
+    const QList<OfficialHeader> headers{
+        {"area.mp4", turris::kVideoKind, 89, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018042001281e30d0"
+             "0538d0054059")},
+        {"area.gif", turris::kGifKind, 60, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018032001281e30d0"
+             "0538d005403c")},
+        {"area.png", turris::kImageKind, 1, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018022001281e30d0"
+             "0538d0054001")},
+        {"full.mp4", turris::kVideoKind, 178, 1440, 720, false,
+         QByteArray::fromHex(
+             "4200000008c490e1ea04122b54727978206d65646961206865616465722076"
+             "312c206670733d36302c2073697a653d313434307837323018042001283c30"
+             "a00b38d00540b201")},
+        {"full.png", turris::kImageKind, 1, 1440, 720, false,
+         QByteArray::fromHex(
+             "4100000008c490e1ea04122b54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d313434307837323018022001281e30"
+             "a00b38d0054001")},
+    };
+    for (const OfficialHeader &official : headers) {
+        const QString name =
+            QString::fromLatin1(official.name) +
+            QStringLiteral(".h264_%1x%2").arg(official.width).arg(official.height);
+        QCOMPARE(turris::framesPerSecondForKind(official.kind, official.splitArea),
+                 official.splitArea || official.kind == turris::kImageKind ? 30U
+                                                                           : 60U);
+        const QString outputPath =
+            QDir(temporaryDirectory.path()).filePath(name);
+        const turris::WriteResult written = turris::writeBlob(
+            rawPath, outputPath, official.kind, official.frames,
+            official.width, official.height, official.splitArea, {});
+        QVERIFY2(written.error.isEmpty(), qPrintable(written.error));
+        QFile output(outputPath);
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        const QByteArray blob = output.readAll();
+        QCOMPARE(blob.left(official.header.size()), official.header);
+        QCOMPARE(blob.mid(official.header.size()), rawH264);
+
+        QString error;
+        QVERIFY2(turris::validateBlob(&output, blob.size(), name,
+                                      official.width, official.height,
+                                      official.splitArea, &error),
+                 qPrintable(error));
+        // A 30 fps split-area video or GIF is not full-screen media, and the
+        // other way round; a still is the same in both.
+        QCOMPARE(turris::validateBlob(&output, blob.size(), name,
+                                      official.width, official.height,
+                                      !official.splitArea, &error),
+                 official.kind == turris::kImageKind);
+        if (!official.splitArea) {
+            QVERIFY2(turris::validateBlob(&output, blob.size(), name,
+                                          official.width, official.height,
+                                          &error),
+                     qPrintable(error));
+        }
+        output.close();
+    }
 }
 
 void PrinterProtocolTests::paseImagePreparationBuildsOfficialStill_data() {
@@ -14558,6 +15109,209 @@ void PrinterProtocolTests::holoRunConfigFollowsOfficialLayout() {
     QCOMPARE(badge.labels_size(), 1);
     QCOMPARE(badge.labels(0).label_id(), 301U);
     QCOMPARE(badge.labels(0).text_size(), 16U);
+}
+
+void PrinterProtocolTests::stageRunConfigFollowsOfficialLayout_data() {
+    QTest::addColumn<bool>("dualMode");
+    QTest::addColumn<QStringList>("leftMetrics");
+    QTest::addColumn<QStringList>("rightMetrics");
+    // Each group as group id, x, y, width; metric groups before the badge
+    // group of their area.
+    QTest::addColumn<QList<quint32>>("groups");
+
+    // KANALI stage1440: 1440x720 with a left and a right area, PASE row
+    // spacing, value text 120, badges 60 px from the top.
+    QTest::newRow("full-one")
+        << false << QStringList{QStringLiteral("CPU Temperature")}
+        << QStringList{}
+        << QList<quint32>{100U, 30U, 300U, 1380U,
+                          300U, 40U, 60U, 1380U};
+    QTest::newRow("full-three")
+        << false
+        << QStringList{QStringLiteral("CPU Temperature"),
+                       QStringLiteral("CPU Usage"),
+                       QStringLiteral("GPU Temperature")}
+        << QStringList{}
+        << QList<quint32>{100U, 30U, 120U, 1380U,
+                          102U, 30U, 310U, 1380U,
+                          104U, 30U, 500U, 1380U,
+                          300U, 40U, 60U, 1380U};
+    QTest::newRow("split")
+        << true
+        << QStringList{QStringLiteral("CPU Temperature"),
+                       QStringLiteral("GPU Temperature")}
+        << QStringList{QStringLiteral("GPU Usage")}
+        << QList<quint32>{100U, 30U, 180U, 660U,
+                          104U, 30U, 430U, 660U,
+                          300U, 40U, 60U, 660U,
+                          206U, 750U, 300U, 660U,
+                          400U, 760U, 60U, 660U};
+}
+
+void PrinterProtocolTests::stageRunConfigFollowsOfficialLayout() {
+    QFETCH(bool, dualMode);
+    QFETCH(QStringList, leftMetrics);
+    QFETCH(QStringList, rightMetrics);
+    QFETCH(QList<quint32>, groups);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    PrinterProtocol protocol(*stage, 500);
+    const QString endpoint = QStringLiteral("/dev/usb/lp-stage-layout");
+    protocol.adoptFileDescriptorForTesting(sockets[0], endpoint);
+    panorama::wire::v1::Request captured;
+    QString peerError;
+    std::thread peer([&]() {
+        if (!readRequest(sockets[1], &captured, &peerError)) {
+            return;
+        }
+        auto response = baseResponse(captured);
+        response.mutable_acknowledgement();
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.dualMode = dualMode;
+    overlay.left.metrics = leftMetrics;
+    overlay.left.badges = {QStringLiteral("CPU Badge")};
+    overlay.left.alignment = QStringLiteral("Center");
+    overlay.left.textColor = 0x00FF00U;
+    if (dualMode) {
+        overlay.right.metrics = rightMetrics;
+        overlay.right.badges = {QStringLiteral("GPU Badge")};
+        overlay.right.alignment = QStringLiteral("Center");
+        overlay.right.textColor = 0x00FF00U;
+    }
+    QString error;
+    const bool sent = protocol.sendPaseRunConfigForTesting(
+        endpoint, overlay, &error, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(sent, qPrintable(error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(captured.body_case(),
+             panorama::wire::v1::Request::kOverlayLayout);
+    const auto &layout = captured.overlay_layout();
+    QCOMPARE(layout.label_groups_size(), groups.size() / 4);
+    for (int index = 0; index < layout.label_groups_size(); ++index) {
+        const auto &group = layout.label_groups(index);
+        QCOMPARE(group.group_id(), groups.at(index * 4));
+        QCOMPARE(group.group_x(), groups.at(index * 4 + 1));
+        QCOMPARE(group.group_y(), groups.at(index * 4 + 2));
+        QCOMPARE(group.group_width(), groups.at(index * 4 + 3));
+        QCOMPARE(group.text_align(),
+                 panorama::wire::v1::OverlayGroup::ALIGN_CENTER);
+        if (group.group_id() == 300U || group.group_id() == 400U) {
+            QCOMPARE(group.line_gap(), 1);
+            QCOMPARE(group.labels_size(), 1);
+            QCOMPARE(group.labels(0).label_id(),
+                     group.group_id() == 300U ? 301U : 402U);
+            QCOMPARE(group.labels(0).text_size(), 20U);
+            continue;
+        }
+        QCOMPARE(group.group_height(), 120U);
+        QCOMPARE(group.labels_size(), 3);
+        QCOMPARE(group.labels(0).text_size(), 15U);
+        QCOMPARE(group.labels(1).text_size(), 120U);
+        QCOMPARE(group.labels(2).text_size(), 25U);
+        QCOMPARE(group.labels(1).text_color(), 0x00FF00U);
+    }
+}
+
+// Split screen writes the two 720x720 media of the areas as KANALI does:
+// dual media mode, a single loop, no mirror or rotation.
+void PrinterProtocolTests::stageSplitApplyWritesDualMedia() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::UserConfiguration device;
+    device.mutable_poweron_config()->set_media_file(
+        "default_poweron_1440x720.mp4.h264");
+    device.mutable_standby_config()->set_media_file(
+        "default_standby_1440x720.mp4.h264");
+    auto *work = device.mutable_work_config();
+    work->set_media_mode(panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+    work->set_loop_mode(panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    work->set_single_mode_media_file("festival.mp4.h264_1440x720");
+    auto *display = device.mutable_display_config();
+    display->set_backlight_enable(true);
+    display->set_backlight_brightness(80);
+
+    // Serves 104 with the current configuration, stores the 200 and
+    // acknowledges everything else, for one read-modify-write cycle.
+    QList<panorama::wire::v1::UserConfiguration> written;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::UserConfiguration current = device;
+        bool readBack = false;
+        while (!readBack) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError)) {
+                return;
+            }
+            auto response = baseResponse(request);
+            if (request.body_case() ==
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+                *response.mutable_user_configuration() = current;
+                readBack = !written.isEmpty();
+            } else {
+                if (request.body_case() ==
+                    panorama::wire::v1::Request::kUserConfiguration) {
+                    current = request.user_configuration();
+                    written.append(current);
+                }
+                response.mutable_acknowledgement();
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+        }
+    });
+
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    PrinterProtocol protocol(*stage, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-split");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.mediaPresent = true;
+    config.screenMode = QStringLiteral("Screen Splitting");
+    config.playMode = QStringLiteral("Single");
+    config.media = {QStringLiteral("2026-11-17_12-00-00-000.mp4.h264_720x720"),
+                    QStringLiteral("2026-11-17_12-00-01-000.png.h264_720x720")};
+    config.display.orientationPresent = true;
+    QString applyError;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &applyError, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(applied, qPrintable(applyError));
+    QCOMPARE(written.size(), 1);
+    const auto &userConfig = written.constFirst();
+    QCOMPARE(userConfig.work_config().media_mode(),
+             panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
+    QCOMPARE(userConfig.work_config().loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    QCOMPARE(QString::fromStdString(
+                 userConfig.work_config().dual_mode_left_media_file()),
+             config.media.at(0));
+    QCOMPARE(QString::fromStdString(
+                 userConfig.work_config().dual_mode_right_media_file()),
+             config.media.at(1));
+    QVERIFY(!userConfig.display_config().mirror());
+    QCOMPARE(userConfig.display_config().ui_rotation(), 0U);
+    QCOMPARE(userConfig.display_config().media_rotation(), 0U);
+    QCOMPARE(QString::fromStdString(userConfig.poweron_config().media_file()),
+             QStringLiteral("default_poweron_1440x720.mp4.h264"));
 }
 
 void PrinterProtocolTests::paseRunConfigUsesWireLayout() {
@@ -48060,6 +48814,141 @@ void PrinterProtocolTests::
     QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
              qPrintable(peerError));
     ::close(sockets[1]);
+}
+
+// The header check before the upload takes the area from the remote name: a
+// 720x720 name needs the 30 fps split-area header, a 1440x720 name the
+// full-screen one.
+void PrinterProtocolTests::stageUploadChecksTheAreaHeaderBeforeUsb() {
+    const auto profile = printerProductProfileForId(0x1041);
+    QVERIFY(profile.has_value());
+    const QByteArray rawH264 = QByteArray::fromHex(
+        "000000016764001facd9405005bb0110000003001000000303c0f1831960"
+        "0000000168ebe3cb22c0"
+        "00000001658884000affff");
+    const QByteArray splitVideo = wrapTurrisMediaBlob(
+        turrisMediaMetadata(4, 30, 720, 720, 30), rawH264);
+    const QByteArray fullVideo = wrapTurrisMediaBlob(
+        turrisMediaMetadata(4, 60, 1440, 720, 60), rawH264);
+    const QByteArray splitVideoAt60 = wrapTurrisMediaBlob(
+        turrisMediaMetadata(4, 60, 720, 720, 60), rawH264);
+
+    struct RejectedCase {
+        QByteArray contents;
+        QString remoteName;
+    };
+    for (const RejectedCase &testCase : {
+             RejectedCase{splitVideo, QStringLiteral("area.mp4.h264_1440x720")},
+             RejectedCase{fullVideo, QStringLiteral("area.mp4.h264_720x720")},
+             RejectedCase{splitVideoAt60, QStringLiteral("area.mp4.h264_720x720")},
+         }) {
+        QTemporaryFile media;
+        QVERIFY(media.open());
+        QCOMPARE(media.write(testCase.contents),
+                 static_cast<qint64>(testCase.contents.size()));
+        media.flush();
+        int sockets[2] = {-1, -1};
+        QString socketError;
+        QVERIFY2(createSocketPair(sockets, &socketError),
+                 qPrintable(socketError));
+        PrinterProtocol protocol(*profile, 100);
+        protocol.adoptFileDescriptorForTesting(
+            sockets[0], QStringLiteral("stage-endpoint"));
+        QString uploadedName;
+        QString error;
+        PrinterProtocol::MutationDetails mutation;
+        QVERIFY(!protocol.uploadMedia(
+            QStringLiteral("stage-endpoint"), media.fileName(),
+            testCase.remoteName, &uploadedName, &error, {}, {}, &mutation));
+        QCOMPARE(mutation.outcome,
+                 PrinterProtocol::MutationOutcome::Rejected);
+        QVERIFY2(error.contains(QStringLiteral("container"),
+                                Qt::CaseInsensitive),
+                 qPrintable(error));
+        QString peerError;
+        QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+                 qPrintable(peerError));
+        ::close(sockets[1]);
+    }
+
+    QTemporaryFile media;
+    QVERIFY(media.open());
+    QCOMPARE(media.write(splitVideo),
+             static_cast<qint64>(splitVideo.size()));
+    media.flush();
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+    const QString remoteName = QStringLiteral("area.mp4.h264_720x720");
+    QString peerError;
+    std::thread peer([&]() {
+        const QList<panorama::wire::v1::Request::BodyCase> expected = {
+            panorama::wire::v1::Request::kTransferBegin,
+            panorama::wire::v1::Request::kTransferChunk,
+            panorama::wire::v1::Request::kTransferEnd};
+        for (int index = 0; index < expected.size(); ++index) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError) ||
+                request.body_case() != expected.at(index)) {
+                if (peerError.isEmpty()) {
+                    peerError = QStringLiteral(
+                        "unexpected STAGE upload request %1").arg(index);
+                }
+                return;
+            }
+            auto response = baseResponse(request);
+            if (index == 0) {
+                if (QString::fromStdString(
+                        request.transfer_begin().file_name()) != remoteName ||
+                    request.transfer_begin().file_size() !=
+                        static_cast<quint32>(splitVideo.size())) {
+                    peerError = QStringLiteral(
+                        "invalid STAGE upload begin fields");
+                    return;
+                }
+                response.mutable_transfer_begin_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            } else if (index == 1) {
+                const std::string &chunk =
+                    request.transfer_chunk().file_data();
+                if (QByteArray(chunk.data(),
+                               static_cast<qsizetype>(chunk.size())) !=
+                    splitVideo) {
+                    peerError = QStringLiteral(
+                        "invalid STAGE upload chunk");
+                    return;
+                }
+                response.mutable_transfer_chunk_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            } else {
+                response.mutable_transfer_end_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+        }
+    });
+
+    PrinterProtocol protocol(*profile, 500);
+    protocol.setFileTransmitResponseTimeoutForTesting(3000);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("stage-endpoint"));
+    QString uploadedName;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool uploaded = protocol.uploadMedia(
+        QStringLiteral("stage-endpoint"), media.fileName(), remoteName,
+        &uploadedName, &error, {}, {}, &mutation);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(uploaded, qPrintable(error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(uploadedName, remoteName);
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::Succeeded);
 }
 
 void PrinterProtocolTests::uploadDataUsesDedicatedWriteDeadline() {

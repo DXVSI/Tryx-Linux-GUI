@@ -104,7 +104,8 @@ SourceVideoInfo probeSourceVideo(const QString &ffprobe, const QString &path) {
 }
 
 // Which words describe media prepared with the official media header:
-// every Turris kind, a PASE-family still, or a HOLO video, GIF or still.
+// every Turris kind, a PASE-family still, or a HOLO or STAGE video, GIF or
+// still.
 enum class OfficialMediaWording { Turris, Still, Media };
 
 OfficialMediaWording officialMediaWording(quint16 productId, quint32 kind) {
@@ -512,7 +513,7 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
     const bool stillImage = type == panorama::MediaType::Image;
     // Media with the official header is encoded with the official
     // converter's settings: every kind for products with the MxhdH264
-    // container (Turris, HOLO) and PASE-family stills.
+    // container (Turris, HOLO, STAGE) and PASE-family stills.
     const bool mediaHeader =
         printerMediaUsesMediaHeader(productId, stillImage);
     if (mediaHeader &&
@@ -571,20 +572,26 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
         // Mirrors the official converter, which uses the same settings for
         // every product: libx264 "fast", main 4.1, one-second GOP without
         // B-frames, full-range BT.709, the same x264 parameter set, 60 fps
-        // for video and GIF and 30 fps for a single-frame still. Video uses
-        // the converter's source-derived bitrate; a still uses CRF 18; GIF
+        // for video and GIF and 30 fps for a single-frame still; media for
+        // one split area is 30 fps for every kind. Video uses the
+        // converter's source-derived bitrate; a still uses CRF 18; GIF
         // uses CRF 18 with the animation tune and without scene cuts. The
         // sample aspect ratio is left unset, so the SPS carries no
-        // aspect-ratio VUI, like the official output. Turris and HOLO take
-        // every kind through here, the PASE family only stills.
+        // aspect-ratio VUI, like the official output. Products with the
+        // MxhdH264 container take every kind through here, the PASE family
+        // only stills.
         const bool officialImage = stillImage;
         const bool officialGif = type == panorama::MediaType::Gif;
         const quint32 officialKind = officialImage
             ? turris_media::kImageKind
             : type == panorama::MediaType::Gif ? turris_media::kGifKind
                                                : turris_media::kVideoKind;
+        const quint32 officialFramesPerSecond =
+            turris_media::framesPerSecondForKind(
+                officialKind,
+                profile.target == QStringLiteral("SplitArea"));
         const QString framesPerSecond =
-            QString::number(turris_media::framesPerSecondForKind(officialKind));
+            QString::number(officialFramesPerSecond);
         const QString defaultRate = QStringLiteral("fps=30");
         if (!filter.endsWith(defaultRate)) {
             emit failed(operationId, tr("Media transform filter is invalid"),
@@ -609,8 +616,7 @@ void PrinterMediaPreparer::startPreparation(const QString &operationId,
             const int kbps = turris_media::videoBitrateKbps(
                 source.kbps, source.framesPerSecond, source.width,
                 source.height, targetSize.width(), targetSize.height(),
-                static_cast<int>(
-                    turris_media::framesPerSecondForKind(officialKind)));
+                static_cast<int>(officialFramesPerSecond));
             arguments << QStringLiteral("-b:v")
                       << QStringLiteral("%1k").arg(kbps);
         }
@@ -1028,10 +1034,12 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
                   turris ? tr("Finalizing Turris media blob...")
                          : tr("Adding the media header..."),
                   generation_);
+    const bool splitArea =
+        preparationProfile_.target == QStringLiteral("SplitArea");
     const turris_media::WriteResult blob = turris_media::writeBlob(
         rawMediaPath_, uploadPath_, turrisMediaKind_, frameCount,
         static_cast<quint32>(mediaSize.width()),
-        static_cast<quint32>(mediaSize.height()), isCancelled);
+        static_cast<quint32>(mediaSize.height()), splitArea, isCancelled);
     if (blob.sha256.isEmpty()) {
         if (mediaPreparationDeadline_.hasExpired()) {
             failPreparation(preparationTimedOutMessage(wording), false);
@@ -1060,7 +1068,7 @@ void PrinterMediaPreparer::finishTurrisFrameCountPreparation(
             !turris_media::validateBlob(
                 &written, written.size(), remoteName_,
                 static_cast<quint32>(mediaSize.width()),
-                static_cast<quint32>(mediaSize.height()),
+                static_cast<quint32>(mediaSize.height()), splitArea,
                 &containerError)) {
             failPreparation(
                 tr("The prepared still image failed its media header check: %1")

@@ -86,6 +86,7 @@ bool supportsDeviceSpecifications(const QString &productId) {
     return code == QStringLiteral("1011") ||
            code == QStringLiteral("1021") ||
            code == QStringLiteral("1031") ||
+           code == QStringLiteral("1041") ||
            code == QStringLiteral("1051") ||
            code == QStringLiteral("1061") ||
            code == QStringLiteral("1071") ||
@@ -175,6 +176,9 @@ QString modelForProductId(const QString &productId) {
     if (code == QStringLiteral("1031") ||
         code == QStringLiteral("10a1")) {
         return QStringLiteral("PANORAMA WB");
+    }
+    if (code == QStringLiteral("1041")) {
+        return QStringLiteral("STAGE ARGB 360");
     }
     if (code == QStringLiteral("1051")) {
         return QStringLiteral("HOLO 360");
