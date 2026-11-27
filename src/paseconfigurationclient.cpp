@@ -1938,18 +1938,18 @@ bool PaseConfigurationClient::sendUserConfigWithOutcome(
     panorama::wire::v1::Response response;
     PrinterTransactionChannel::TransactionOutcome outcome =
         PrinterTransactionChannel::TransactionOutcome::NotSent;
-    // Turris stores the configuration without acknowledging it within the
-    // transaction window; keep the transport on a clean timeout and let the
-    // readback confirm the write.
-    const bool tolerateSilence = negotiatesCapabilities();
+    // Turris and the STAGE store the configuration without acknowledging it
+    // within the transaction window; keep the transport on a clean timeout
+    // and let the readback confirm the write. An acknowledgement that comes
+    // later carries this request's track id and is skipped by the readback.
+    const int ackWindowMs = productProfile_.userConfigurationAckWindowMs;
+    const bool tolerateSilence = ackWindowMs > 0;
     if (channel_.execute(&request, panorama::wire::v1::Response::kAcknowledgement,
                          &response, devicePath, context, errorMessage, &outcome,
                          TransactionProfile::Default,
                          /*preserveConnectionOnCleanTimeout=*/tolerateSilence,
                          /*acceptHeaderOnlySuccess=*/false, /*fixedTrackId=*/0,
-                         tolerateSilence
-                             ? productProfile_.readbackConfirmedWriteAckWindowMs
-                             : 0)) {
+                         ackWindowMs)) {
         if (mutationDetails) {
             mutationDetails->outcome = MutationOutcome::PartialOrUnknown;
         }
@@ -1958,7 +1958,12 @@ bool PaseConfigurationClient::sendUserConfigWithOutcome(
     if (tolerateSilence &&
         outcome == PrinterTransactionChannel::TransactionOutcome::AcknowledgementTimeout) {
         qInfo().noquote()
-            << QStringLiteral("tryx_turris_negotiation command=user_config outcome=unconfirmed")
+            << (negotiatesCapabilities()
+                    ? QStringLiteral(
+                          "tryx_turris_negotiation command=user_config outcome=unconfirmed")
+                    : QStringLiteral(
+                          "TRYX user configuration was not acknowledged within %1 ms; the readback confirms it")
+                          .arg(ackWindowMs))
             << (errorMessage && !errorMessage->isEmpty()
                     ? QStringLiteral("error=\"%1\"").arg(*errorMessage)
                     : QString());
