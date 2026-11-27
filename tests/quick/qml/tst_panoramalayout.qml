@@ -111,6 +111,8 @@ TestCase {
         property int brightness: 75
         property bool mirrorMode: false
         property bool waterfallMode: false
+        property bool mirrorOrientationSupported: true
+        property bool waterfallOrientationSupported: true
         property bool displayStateValid: true
         property bool legacyDisplayLayoutConfirmed: true
         property bool legacyDisplayBrightnessConfirmed: true
@@ -451,6 +453,8 @@ TestCase {
         runtimeMock.brightness = 75
         runtimeMock.mirrorMode = false
         runtimeMock.waterfallMode = false
+        runtimeMock.mirrorOrientationSupported = true
+        runtimeMock.waterfallOrientationSupported = true
         runtimeMock.displaySessionActive = true
         runtimeMock.displayStateValid = true
         runtimeMock.legacyDisplayLayoutConfirmed = true
@@ -530,6 +534,52 @@ TestCase {
         runtimeMock.lastSplitDraftSubmit = []
         runtimeMock.nextDisplaySubmissionId =
             "display-submission-1"
+    }
+
+    function test_orientationControlsFollowDisplayModel() {
+        // The TestCase item stays hidden; the window's root item is shown,
+        // so the controls report their own visibility there.
+        verify(testCase.parent.visible)
+        const page = createTemporaryObject(
+            panoramaComponent, testCase.parent,
+            {"width": 1000, "height": 700})
+        verify(page !== null)
+        wait(0)
+        const row = findChild(page, "orientationRow")
+        const mirror = findChild(page, "mirrorDraftCheckBox")
+        const waterfall = findChild(page, "waterfallDraftCheckBox")
+        const waterfallHint = findChild(page, "waterfallUnavailableHint")
+        const orientationHint =
+            findChild(page, "orientationUnavailableHint")
+        verify(row !== null)
+        verify(mirror !== null)
+        verify(waterfall !== null)
+        verify(waterfallHint !== null)
+        verify(orientationHint !== null)
+        verify(row.visible)
+        verify(mirror.visible)
+        verify(waterfall.visible)
+        verify(!waterfallHint.visible)
+        verify(!orientationHint.visible)
+
+        // TURRIS 620: mirror only.
+        runtimeMock.waterfallOrientationSupported = false
+        wait(0)
+        verify(row.visible)
+        verify(mirror.visible)
+        verify(!waterfall.visible)
+        verify(waterfallHint.visible)
+        verify(!orientationHint.visible)
+
+        // HOLO 360: no orientation choice at all.
+        runtimeMock.mirrorOrientationSupported = false
+        wait(0)
+        verify(!row.visible)
+        verify(!mirror.visible)
+        verify(!waterfallHint.visible)
+        verify(orientationHint.visible)
+        compare(page.currentOrientationSnapshot(),
+                {"mirror": false, "waterfall": false})
     }
 
     function test_draftEditorsWaitForFirstConfirmedState() {

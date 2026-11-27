@@ -13,6 +13,7 @@ MOC_DIR = $$PWD/../../build/runtimeclient-handshake-tests/moc
 HEADERS += \
     ../../src/applicationpaths.h \
     ../../src/mediatransform.h \
+    ../../src/printerproductprofile.h \
     ../../src/runtimecontract.h \
     ../../src/supportsnapshot.h \
     ../../src/quick/supportbundle.h \
@@ -25,6 +26,7 @@ HEADERS += \
 SOURCES += \
     ../../src/mediatransform.cpp \
     ../../src/runtimebadgetext.cpp \
+    ../../src/printerproductprofile.cpp \
     ../../src/runtimecontract.cpp \
     ../../src/supportsnapshot.cpp \
     ../../src/quick/supportbundle.cpp \

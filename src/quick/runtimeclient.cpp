@@ -1,6 +1,7 @@
 #include "runtimeclient.h"
 
 #include "mediatransform.h"
+#include "printerproductprofile.h"
 #include "supportsnapshot.h"
 
 #include <QColor>
@@ -33,8 +34,6 @@ constexpr int kRuntimeCallTimeoutMs = 5000;
 constexpr int kMaximumConnectionRevisionRefreshes = 3;
 constexpr int kLegacyUploadTimeoutMs = 15 * 60 * 1000;
 constexpr int kDisplayApplyTimeoutMs = 2 * 60 * 1000;
-constexpr int kTurrisMediaTargetWidth = 1280;
-constexpr int kTurrisMediaTargetHeight = 720;
 constexpr qsizetype kMaximumMetricTokenLength = 64;
 
 bool metricsCatalogReplyIsValid(const QStringList &catalog) {
@@ -70,11 +69,24 @@ bool isTurrisProductId(const QString &productId) {
     return normalizedProductCode(productId) == QStringLiteral("2011");
 }
 
+// The runtime's product profile for the connected USB product, empty for a
+// product it does not map.
+std::optional<PrinterProductProfile> productProfileFor(
+    const QString &productId) {
+    bool ok = false;
+    const uint code = normalizedProductCode(productId).toUInt(&ok, 16);
+    if (!ok || code > 0xffffU) {
+        return std::nullopt;
+    }
+    return printerProductProfileForId(static_cast<quint16>(code));
+}
+
 bool supportsDeviceSpecifications(const QString &productId) {
     const QString code = normalizedProductCode(productId);
     return code == QStringLiteral("1011") ||
            code == QStringLiteral("1021") ||
            code == QStringLiteral("1031") ||
+           code == QStringLiteral("1051") ||
            code == QStringLiteral("1061") ||
            code == QStringLiteral("1071") ||
            code == QStringLiteral("10a1") ||
@@ -163,6 +175,9 @@ QString modelForProductId(const QString &productId) {
     if (code == QStringLiteral("1031") ||
         code == QStringLiteral("10a1")) {
         return QStringLiteral("PANORAMA WB");
+    }
+    if (code == QStringLiteral("1051")) {
+        return QStringLiteral("HOLO 360");
     }
     if (code == QStringLiteral("2011")) {
         return QStringLiteral("TURRIS 620");
@@ -759,16 +774,16 @@ QString RuntimeClient::deviceAppVersion() const {
     return normalizedDeviceVersion(connection_.appVersion);
 }
 
+// The connected product's screen size; the Panorama size while no product
+// or an unmapped one is connected.
 int RuntimeClient::mediaTargetWidth() const {
-    return isTurrisProductId(connection_.productId)
-        ? kTurrisMediaTargetWidth
-        : kTryxMediaTargetWidth;
+    const auto profile = productProfileFor(connection_.productId);
+    return profile ? profile->mediaWidth : kTryxMediaTargetWidth;
 }
 
 int RuntimeClient::mediaTargetHeight() const {
-    return isTurrisProductId(connection_.productId)
-        ? kTurrisMediaTargetHeight
-        : kTryxMediaTargetHeight;
+    const auto profile = productProfileFor(connection_.productId);
+    return profile ? profile->mediaHeight : kTryxMediaTargetHeight;
 }
 
 QString RuntimeClient::connectionStatus() const {
@@ -1773,8 +1788,16 @@ bool RuntimeClient::overlayMetricsSupported() const {
     return !isTurrisProductId(connection_.productId);
 }
 
+// No device capability token carries the orientation choices; they follow
+// the runtime's product profile, which rejects the others on Apply.
 bool RuntimeClient::waterfallOrientationSupported() const {
-    return !isTurrisProductId(connection_.productId);
+    const auto profile = productProfileFor(connection_.productId);
+    return !profile || profile->waterfallSupported;
+}
+
+bool RuntimeClient::mirrorOrientationSupported() const {
+    const auto profile = productProfileFor(connection_.productId);
+    return !profile || profile->mirrorSupported;
 }
 
 bool RuntimeClient::customBadgeTextSupported() const {

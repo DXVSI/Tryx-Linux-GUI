@@ -21,6 +21,7 @@
     <modalias>usb:v391Ap1011d*</modalias>
     <modalias>usb:v391Ap1021d*</modalias>
     <modalias>usb:v391Ap1031d*</modalias>
+    <modalias>usb:v391Ap1051d*</modalias>
     <modalias>usb:v391Ap1061d*</modalias>
     <modalias>usb:v391Ap1071d*</modalias>
     <modalias>usb:v391Ap10A1d*</modalias>

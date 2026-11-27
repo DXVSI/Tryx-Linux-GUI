@@ -18,23 +18,48 @@ namespace tryx::printer_media_identity {
 
 namespace {
 
-QString turrisConversionProfileBase(const QString &typeName) {
+// Media with the official media header for every kind (Turris, HOLO) is
+// encoded like the official converter: a still as one frame at 30 fps with
+// CRF 18; GIF at 60 fps with CRF 18, the animation tune and no scene cuts;
+// video at 60 fps with the converter's source-derived bitrate, one-second GOP
+// and no B-frames.
+QString officialConversionProfileBase(const PrinterProductProfile &profile,
+                                      const QString &typeName) {
+    const QString size = QStringLiteral("%1x%2")
+                             .arg(profile.mediaWidth)
+                             .arg(profile.mediaHeight);
     if (typeName == QStringLiteral("image")) {
-        // One frame at 30 fps with CRF 18, as the official converter.
         return QStringLiteral(
-            "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali2");
+                   "%1-image-%2-yuv420p-30fps-libx264-main41-fast-crf18-%3")
+            .arg(profile.mediaIdentityPrefix, size,
+                 profile.mediaIdentityGeneration);
     }
     if (typeName == QStringLiteral("gif")) {
-        // 60 fps, CRF 18 with the animation tune and no scene cuts, as the
-        // official converter encodes GIF.
         return QStringLiteral(
-            "turris-mxhd-v1-gif-1280x720-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali2");
+                   "%1-gif-%2-yuv420p-60fps-libx264-main41-fast-crf18-animation-%3")
+            .arg(profile.mediaIdentityPrefix, size,
+                 profile.mediaIdentityGeneration);
     }
-    // Video at 60 fps with the official converter's source-derived bitrate,
-    // one-second GOP and no B-frames.
     return QStringLiteral(
-        "turris-mxhd-v1-%1-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2")
-        .arg(typeName);
+               "%1-%2-%3-yuv420p-60fps-libx264-main41-fast-abr-%4")
+        .arg(profile.mediaIdentityPrefix, typeName, size,
+             profile.mediaIdentityGeneration);
+}
+
+bool usesOfficialMediaIdentity(const PrinterProductProfile &profile) {
+    return profile.mediaContainer == PrinterMediaContainer::MxhdH264 &&
+           !profile.mediaIdentityPrefix.isEmpty() &&
+           !profile.mediaIdentityGeneration.isEmpty();
+}
+
+QList<PrinterProductProfile> officialMediaIdentityProfiles() {
+    QList<PrinterProductProfile> profiles;
+    for (const PrinterProductProfile &profile : printerProductProfiles()) {
+        if (usesOfficialMediaIdentity(profile)) {
+            profiles.append(profile);
+        }
+    }
+    return profiles;
 }
 
 QString paseConversionProfileBase(const QString &version,
@@ -112,7 +137,12 @@ QString generatedPrinterMediaName(const QString &extension) {
 }
 
 QString generatedPrinterMediaName(const QString &extension, quint16 productId) {
-    if (productId != turris_media::kProductId) {
+    // Media in the official format carries the official application's name
+    // layout, a millisecond timestamp without a random suffix.
+    const std::optional<PrinterProductProfile> profile =
+        printerProductProfileForId(productId);
+    if (!profile ||
+        profile->mediaContainer != PrinterMediaContainer::MxhdH264) {
         return generatedPrinterMediaName(extension);
     }
     const QString cleanExtension = extension.startsWith(QLatin1Char('.'))
@@ -159,7 +189,7 @@ QString printerConversionProfile(
     QString typeName;
     switch (panorama::Media::detect_type(path.toStdString())) {
     case panorama::MediaType::Image:
-        if (productId != turris_media::kProductId) {
+        if (!usesOfficialMediaIdentity(*productProfile)) {
             return paseImageConversionProfile(profile);
         }
         typeName = QStringLiteral("image");
@@ -177,8 +207,9 @@ QString printerConversionProfile(
         return paseSplitConversionProfileBase(typeName) +
                QStringLiteral("-transform-") + transformFingerprint;
     }
-    if (productId == turris_media::kProductId) {
-        const QString base = turrisConversionProfileBase(typeName);
+    if (usesOfficialMediaIdentity(*productProfile)) {
+        const QString base =
+            officialConversionProfileBase(*productProfile, typeName);
         if (tryxMediaTransformIsLegacyFit(profile.transform)) {
             return base;
         }
@@ -328,6 +359,9 @@ bool isSafePrinterUploadMediaName(const QString &fileName) {
              QStringLiteral(".mp4.h264_1280x720"),
              QStringLiteral(".png.h264_1280x720"),
              QStringLiteral(".gif.h264_1280x720"),
+             QStringLiteral(".mp4.h264_640x480"),
+             QStringLiteral(".png.h264_640x480"),
+             QStringLiteral(".gif.h264_640x480"),
          }) {
         if (lowerName.endsWith(suffix)) {
             return true;
@@ -338,15 +372,18 @@ bool isSafePrinterUploadMediaName(const QString &fileName) {
 
 bool isCanonicalPrinterConversionProfile(
     const QString &conversionProfile) {
-    for (const QString &typeName : {
-             QStringLiteral("image"),
-             QStringLiteral("video"),
-             QStringLiteral("gif"),
-         }) {
-        if (profileMatchesBaseOrTransform(
-                conversionProfile,
-                turrisConversionProfileBase(typeName))) {
-            return true;
+    for (const PrinterProductProfile &profile :
+         officialMediaIdentityProfiles()) {
+        for (const QString &typeName : {
+                 QStringLiteral("image"),
+                 QStringLiteral("video"),
+                 QStringLiteral("gif"),
+             }) {
+            if (profileMatchesBaseOrTransform(
+                    conversionProfile,
+                    officialConversionProfileBase(profile, typeName))) {
+                return true;
+            }
         }
     }
     // Earlier Turris encoder generations stay canonical so that durable
@@ -438,17 +475,26 @@ bool printerConversionProfileMatchesMediaName(
     }
 
     QString expectedGeometry;
-    if (conversionProfile.startsWith(
-            QStringLiteral("turris-mxhd-v1-"))) {
-        expectedGeometry = QStringLiteral("1280x720");
-    } else if (paseProfileIsFullFrame(conversionProfile)) {
-        expectedGeometry = QStringLiteral("2240x1080");
-    } else if (paseProfileIsSplitArea(conversionProfile) &&
-               conversionProfile.contains(
-                   QStringLiteral("-split-area-1120x1080-"))) {
-        expectedGeometry = QStringLiteral("1120x1080");
-    } else {
-        return false;
+    for (const PrinterProductProfile &profile :
+         officialMediaIdentityProfiles()) {
+        if (conversionProfile.startsWith(
+                profile.mediaIdentityPrefix + QLatin1Char('-'))) {
+            expectedGeometry = QStringLiteral("%1x%2")
+                                   .arg(profile.mediaWidth)
+                                   .arg(profile.mediaHeight);
+            break;
+        }
+    }
+    if (expectedGeometry.isEmpty()) {
+        if (paseProfileIsFullFrame(conversionProfile)) {
+            expectedGeometry = QStringLiteral("2240x1080");
+        } else if (paseProfileIsSplitArea(conversionProfile) &&
+                   conversionProfile.contains(
+                       QStringLiteral("-split-area-1120x1080-"))) {
+            expectedGeometry = QStringLiteral("1120x1080");
+        } else {
+            return false;
+        }
     }
     return fileName.endsWith(
         QStringLiteral(".h264_%1").arg(expectedGeometry),
@@ -457,8 +503,13 @@ bool printerConversionProfileMatchesMediaName(
 
 QString printerMediaConversionIdentity(
     const PrinterProductProfile &profile) {
-    if (profile.productId == turris_media::kProductId) {
-        return QStringLiteral("turris-mxhd-v1-1280x720-30fps");
+    if (usesOfficialMediaIdentity(profile)) {
+        // The pattern of the first Turris identity, which predates the
+        // per-kind frame rates and stays as stored.
+        return QStringLiteral("%1-%2x%3-30fps")
+            .arg(profile.mediaIdentityPrefix)
+            .arg(profile.mediaWidth)
+            .arg(profile.mediaHeight);
     }
     return QStringLiteral("h264-yuv420p-%1x%2-30fps")
         .arg(profile.mediaWidth)
@@ -565,9 +616,9 @@ bool printerConversionProfileMatchesProduct(
     if (!isCanonicalPrinterConversionProfile(conversionProfile)) {
         return false;
     }
-    if (profile.productId == turris_media::kProductId) {
+    if (usesOfficialMediaIdentity(profile)) {
         return conversionProfile.startsWith(
-            QStringLiteral("turris-mxhd-v1-"));
+            profile.mediaIdentityPrefix + QLatin1Char('-'));
     }
     if (paseProfileIsFullFrame(conversionProfile)) {
         return conversionProfile.contains(

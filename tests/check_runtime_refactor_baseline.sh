@@ -966,6 +966,13 @@ require_qml_tests \
 test_supportBundleStatesRemainAccessible
 EOF
 
+require_qml_tests \
+    holo-display-orientation \
+    "$project_root/tests/quick/qml/tst_panoramalayout.qml" \
+    PanoramaLayout <<'EOF'
+test_orientationControlsFollowDisplayModel
+EOF
+
 require_qml_tests c16-badge-editor \
     "$project_root/tests/quick/qml/tst_panoramalayout.qml" PanoramaLayout <<'EOF'
 test_customBadgeEditsOneImmutableDraft
@@ -1360,6 +1367,11 @@ runtimeDowngradeBlocksBadgeFormats
 runtimeDowngradeV10PreparationIsAtomicAndFailClosed
 productProfilesExposeExactCapabilities
 kanaliMappedProductIdsReusePanoramaProfiles
+holoProfileMapsOfficialCapabilities
+holoConversionIdentitiesReachEveryConsumer
+holoMediaPreparationBuildsOfficialMxhd
+holoRunConfigFollowsOfficialLayout
+holoApplyPreservesLightConfiguration
 mediaTransformChangesConversionProfile
 mediaTransformProfilePreventsOriginReuse
 runtimePreparationProfileAdaptorPreservesSplitTarget
@@ -1577,6 +1589,7 @@ mediaPreparationTargetIsCapabilityBoundAndResetsTransform
 recoveredTargetPreselectionRequiresExactActiveLayout
 mediaPreparationProfileDispatchIsCapabilityBound
 pendingCapabilityLossResetsTargetAfterSubmissionFailure
+runtimeHoloProfileSetsTargetAndHidesOrientation
 catalogExposesOriginMetadataRoles
 operationsRejectStaleEvents
 capabilityLifecycleSignalsInvalidatePresentationGates

@@ -2890,6 +2890,10 @@
         <source>Waterfall orientation is not supported for USB product %1</source>
         <translation>Ориентация «Водопад» не поддерживается для USB-продукта %1</translation>
     </message>
+    <message>
+        <source>Mirror orientation is not supported for USB product %1</source>
+        <translation>Зеркальное отображение не поддерживается для USB-продукта %1</translation>
+    </message>
 </context>
 <context>
     <name>DeviceMediaWorkflowController</name>
@@ -6724,6 +6728,10 @@
         <source>Waterfall orientation is not available for this display model.</source>
         <translation>Ориентация «Водопад» недоступна для этой модели дисплея.</translation>
     </message>
+    <message>
+        <source>Orientation settings are not available for this display model.</source>
+        <translation>Настройки ориентации недоступны для этой модели дисплея.</translation>
+    </message>
 </context>
 <context>
     <name>PrinterDeviceMonitor</name>
@@ -6925,6 +6933,30 @@
     <message>
         <source>The prepared still image failed its media header check: %1</source>
         <translation>Подготовленное изображение не прошло проверку заголовка медиафайла: %1</translation>
+    </message>
+    <message>
+        <source>ffprobe is required to prepare this media</source>
+        <translation>Для подготовки этого медиафайла требуется ffprobe</translation>
+    </message>
+    <message>
+        <source>Media preparation timed out</source>
+        <translation>Истекло время подготовки медиафайла</translation>
+    </message>
+    <message>
+        <source>Counting exact media frames...</source>
+        <translation>Подсчёт точного числа кадров медиафайла...</translation>
+    </message>
+    <message>
+        <source>Media frame counting timed out</source>
+        <translation>Истекло время подсчёта кадров медиафайла</translation>
+    </message>
+    <message>
+        <source>Could not determine the exact media frame count</source>
+        <translation>Не удалось определить точное число кадров медиафайла</translation>
+    </message>
+    <message>
+        <source>Could not determine the exact media frame count: %1</source>
+        <translation>Не удалось определить точное число кадров медиафайла: %1</translation>
     </message>
     <message>
         <location filename="../src/printermediapreparer.cpp" line="1004"/>
@@ -8457,6 +8489,10 @@
         <location filename="../src/printerprotocol.cpp" line="6205"/>
         <source>Prepared Turris media changed during validation</source>
         <translation>Подготовленный медиафайл Turris изменился во время проверки</translation>
+    </message>
+    <message>
+        <source>Prepared media changed during validation</source>
+        <translation>Подготовленный медиафайл изменился во время проверки</translation>
     </message>
     <message>
         <location filename="../src/printerprotocol.cpp" line="4954"/>

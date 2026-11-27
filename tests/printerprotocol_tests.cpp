@@ -2316,6 +2316,8 @@ private slots:
     void mediaTransformValidationAndFilters();
     void mediaTransformChangesConversionProfile();
     void productProfilesExposeExactCapabilities();
+    void holoProfileMapsOfficialCapabilities();
+    void holoConversionIdentitiesReachEveryConsumer();
     void kanaliMappedProductIdsReusePanoramaProfiles_data();
     void kanaliMappedProductIdsReusePanoramaProfiles();
     void turrisMediaAnalysisUses1280Profile();
@@ -2329,6 +2331,8 @@ private slots:
     void turrisMediaFormatValidatorRejectsMalformedMetadata();
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
+    void holoMediaPreparationBuildsOfficialMxhd_data();
+    void holoMediaPreparationBuildsOfficialMxhd();
     void paseMediaHeaderMatchesOfficialConverter();
     void paseImagePreparationBuildsOfficialStill_data();
     void paseImagePreparationBuildsOfficialStill();
@@ -2355,6 +2359,8 @@ private slots:
     void mediaRuntimeStartupCleanupIsBounded();
     void runtimeDisplayConfigDbusRoundTrip();
     void paseRunConfigUsesWireLayout();
+    void holoRunConfigFollowsOfficialLayout_data();
+    void holoRunConfigFollowsOfficialLayout();
     void metricsCatalogTokensAndPaseGroupIdsRemainFrozen_data();
     void metricsCatalogTokensAndPaseGroupIdsRemainFrozen();
     void paseFormatterRejectsInvalidOrFourthMetricBeforeTransport_data();
@@ -2388,6 +2394,7 @@ private slots:
     void readPaseDisplayStateReadsPresetLoopModes();
     void paseDisplayApplyReplacesPresetLoopMode_data();
     void paseDisplayApplyReplacesPresetLoopMode();
+    void holoApplyPreservesLightConfiguration();
     void paseMediaApplyRejectsPresetLoopReadback();
     void standalonePaseMetricsConfigurationIsAcknowledged();
     void displayKeepalivePreservesPaseOverlayValues();
@@ -11310,6 +11317,7 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
         QVERIFY(profile->displayConfigurationSupported);
         QVERIFY(profile->splitAreaMediaSupported);
         QVERIFY(profile->waterfallSupported);
+        QVERIFY(profile->mirrorSupported);
         QVERIFY(profile->overlayMetricsSupported);
         QVERIFY(profile->overlayLeaseSupported);
     }
@@ -11388,6 +11396,223 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
         QStringLiteral("unused"), dualOverlay, &error, {}, &mutation));
     QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
     QVERIFY2(error.contains(QStringLiteral("391a:2011")), qPrintable(error));
+}
+
+void PrinterProtocolTests::holoProfileMapsOfficialCapabilities() {
+    const auto holo = printerProductProfileForId(0x1051);
+    QVERIFY(holo.has_value());
+    QCOMPARE(holo->productId, quint16{0x1051});
+    QCOMPARE(holo->mediaWidth, 640);
+    QCOMPARE(holo->mediaHeight, 480);
+    QCOMPARE(holo->family, PrinterProtocolFamily::Pase);
+    QCOMPARE(holo->mediaContainer, PrinterMediaContainer::MxhdH264);
+    QCOMPARE(holo->keepalive, PrinterSessionKeepalive::Ping);
+    QCOMPARE(holo->overlayLayout,
+             PrinterOverlayLayoutKind::HoloSingleArea640);
+    QCOMPARE(holo->orientationModel,
+             PrinterDisplayOrientationModel::RotationFields);
+    QCOMPARE(holo->fileTransferTrackId, quint64{0});
+    QCOMPARE(holo->readbackConfirmedWriteAckWindowMs, 0);
+    QVERIFY(holo->keepBulkInPending);
+    QCOMPARE(holo->defaultPowerOnMedia,
+             QStringLiteral("default_poweron.mp4.h264_640x480"));
+    QCOMPARE(holo->defaultStandbyMedia,
+             QStringLiteral("default_standby.mp4.h264_640x480"));
+    QCOMPARE(holo->mediaIdentityPrefix, QStringLiteral("holo-mxhd-v1"));
+    QCOMPARE(holo->mediaIdentityGeneration, QStringLiteral("kanali"));
+    QVERIFY(holo->mediaUploadSupported);
+    QVERIFY(holo->mediaCatalogSupported);
+    QVERIFY(holo->displayConfigurationSupported);
+    QVERIFY(holo->overlayMetricsSupported);
+    QVERIFY(!holo->mediaPullSupported);
+    QVERIFY(!holo->splitAreaMediaSupported);
+    QVERIFY(!holo->waterfallSupported);
+    QVERIFY(!holo->mirrorSupported);
+    QVERIFY(!holo->overlayLeaseSupported);
+    QVERIFY(!holo->firmwareFlashSupported);
+
+    // KANALI 2.6.0 preset picker order; group 2 ends with default_16.
+    QCOMPARE(holo->presets.size(), 21);
+    QCOMPARE(holo->presets.constFirst().presetId,
+             QStringLiteral("Pre-set 1: Sally"));
+    QCOMPARE(holo->presets.constFirst().mediaFile,
+             QStringLiteral("default_01.mp4.h264_640x480"));
+    QCOMPARE(holo->presets.at(10).presetId,
+             QStringLiteral("Pre-set 11: Dancing King Boochi"));
+    QCOMPARE(holo->presets.at(10).mediaFile,
+             QStringLiteral("default_16.mp4.h264_640x480"));
+    QCOMPARE(holo->presets.at(11).mediaFile,
+             QStringLiteral("default_11.mp4.h264_640x480"));
+    QCOMPARE(holo->presets.constLast().presetId,
+             QStringLiteral("Pre-set 21: Eyes 5"));
+    QCOMPARE(holo->presets.constLast().mediaFile,
+             QStringLiteral("default_21.mp4.h264_640x480"));
+    using tryx::pase_overlay_config::printerPresetMediaFile;
+    QCOMPARE(printerPresetMediaFile(QStringLiteral("Pre-set 6: B00/CHI"), 0x1051),
+             QStringLiteral("default_06.mp4.h264_640x480"));
+    QVERIFY(printerPresetMediaFile(
+                QStringLiteral("Pre-set 1: Cooling delivery"), 0x1051)
+                .isEmpty());
+    QCOMPARE(printerPresetMediaFile(
+                 QStringLiteral("Pre-set 3: Quantum time capsule"), 0x1021),
+             QStringLiteral("default_04.mp4.h264_2240x1080"));
+    QVERIFY(printerPresetMediaFile(QStringLiteral("Pre-set 1: Sally"), 0x1021)
+                .isEmpty());
+    QVERIFY(printerPresetMediaFile(
+                QStringLiteral("Pre-set 1: Cooling delivery"), 0x2011)
+                .isEmpty());
+
+    QList<quint16> listed;
+    for (const PrinterProductProfile &profile : printerProductProfiles()) {
+        listed.append(profile.productId);
+    }
+    QCOMPARE(listed, (QList<quint16>{0x1011, 0x1021, 0x1031, 0x1051, 0x1061,
+                                     0x1071, 0x10a1, 0x10b1, 0x2011}));
+
+    QVERIFY(tryxSavedLayoutProductIdIsSupported(QStringLiteral("391a:1051")));
+    QVERIFY(tryxDisplaySnapshotProductIdIsSupported(QStringLiteral("391a:1051")));
+
+    // Unsupported HOLO requests are rejected before any USB traffic.
+    PrinterProtocol holoProtocol(*holo, 100);
+    const PrinterProtocol::MediaPullResult pull = holoProtocol.pullUserMedia(
+        QStringLiteral("unused"), QStringLiteral("holo.mp4.h264_640x480"), 4096,
+        PrinterProtocol::MediaPullChunkSink{}, PrinterProtocol::MediaPullProgress{},
+        PrinterProtocol::OperationContext{});
+    QVERIFY(!pull.success);
+    QVERIFY(pull.error.contains(QStringLiteral("391a:1051")));
+
+    const auto rejected = [&holoProtocol](const PrinterProtocol::PaseApplyConfig &config) {
+        PrinterProtocol::MutationDetails mutation;
+        QString error;
+        const bool applied = holoProtocol.applyPaseConfiguration(
+            QStringLiteral("unused"), config, &error, {}, &mutation);
+        return !applied &&
+               mutation.outcome == PrinterProtocol::MutationOutcome::Rejected &&
+               error.contains(QStringLiteral("391a:1051"));
+    };
+    PrinterProtocol::PaseApplyConfig splitConfig;
+    splitConfig.mediaPresent = true;
+    splitConfig.screenMode = QStringLiteral("Screen Splitting");
+    splitConfig.media = {QStringLiteral("left.mp4.h264_640x480"),
+                         QStringLiteral("right.mp4.h264_640x480")};
+    QVERIFY(rejected(splitConfig));
+    PrinterProtocol::PaseApplyConfig waterfallConfig;
+    waterfallConfig.display.orientationPresent = true;
+    waterfallConfig.display.waterfallMode = true;
+    QVERIFY(rejected(waterfallConfig));
+    PrinterProtocol::PaseApplyConfig mirrorConfig;
+    mirrorConfig.display.orientationPresent = true;
+    mirrorConfig.display.mirrorMode = true;
+    QVERIFY(rejected(mirrorConfig));
+
+    PrinterProtocol::PaseOverlayConfig dualOverlay;
+    dualOverlay.dualMode = true;
+    dualOverlay.left.metrics = {QStringLiteral("CPU Usage")};
+    dualOverlay.right.metrics = {QStringLiteral("GPU Usage")};
+    PrinterProtocol::MutationDetails mutation;
+    QString error;
+    QVERIFY(!holoProtocol.configurePaseOverlay(
+        QStringLiteral("unused"), dualOverlay, &error, {}, &mutation));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY2(error.contains(QStringLiteral("391a:1051")), qPrintable(error));
+}
+
+void PrinterProtocolTests::holoConversionIdentitiesReachEveryConsumer() {
+    namespace identity = tryx::printer_media_identity;
+    const auto holo = printerProductProfileForId(0x1051);
+    const auto turris = printerProductProfileForId(0x2011);
+    QVERIFY(holo.has_value());
+    QVERIFY(turris.has_value());
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString imagePath =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("holo.png"));
+    QImage image(8, 6, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#203040")));
+    QVERIFY(image.save(imagePath));
+
+    const QString imageProfile = QStringLiteral(
+        "holo-mxhd-v1-image-640x480-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
+    const QString gifProfile = QStringLiteral(
+        "holo-mxhd-v1-gif-640x480-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali");
+    const QString videoProfile = QStringLiteral(
+        "holo-mxhd-v1-video-640x480-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+    QCOMPARE(identity::printerConversionProfile(
+                 imagePath, tryxLegacyFitMediaTransform(), 0x1051),
+             imageProfile);
+    // Turris keeps its stored identities.
+    QCOMPARE(identity::printerConversionProfile(
+                 imagePath, tryxLegacyFitMediaTransform(), 0x2011),
+             QStringLiteral(
+                 "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali2"));
+
+    const QString conversion = identity::printerMediaConversionIdentity(*holo);
+    QCOMPARE(conversion, QStringLiteral("holo-mxhd-v1-640x480-30fps"));
+    QCOMPARE(identity::printerMediaConversionIdentity(*turris),
+             QStringLiteral("turris-mxhd-v1-1280x720-30fps"));
+    QCOMPARE(identity::printerMediaSizeForConversionIdentity(conversion, *holo),
+             QSize(640, 480));
+    QVERIFY(!identity::printerMediaConversionIdentityMatchesProduct(
+        conversion, *turris));
+    QVERIFY(identity::printerMediaUsesMediaHeader(0x1051, false));
+    QVERIFY(identity::printerMediaUsesMediaHeader(0x1051, true));
+
+    const QString remoteName = identity::h264PrinterName(
+        identity::generatedPrinterMediaName(QStringLiteral("mp4"), 0x1051),
+        0x1051);
+    QVERIFY2(QRegularExpression(QStringLiteral(
+                 "^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.mp4\\.h264_640x480$"))
+                 .match(remoteName)
+                 .hasMatch(),
+             qPrintable(remoteName));
+
+    const QString transformed = imageProfile + QStringLiteral("-transform-") +
+                                QString(64, QLatin1Char('b'));
+    for (const QString &profile : {imageProfile, gifProfile, videoProfile, transformed}) {
+        QVERIFY2(identity::isCanonicalPrinterConversionProfile(profile),
+                 qPrintable(profile));
+        QVERIFY(identity::printerConversionProfileMatchesMediaName(
+            profile, remoteName));
+        QVERIFY(!identity::printerConversionProfileMatchesMediaName(
+            profile, QStringLiteral("other.mp4.h264_1280x720")));
+        QVERIFY(identity::printerConversionProfileMatchesProduct(profile, *holo));
+        QVERIFY(!identity::printerConversionProfileMatchesProduct(profile, *turris));
+        // Retry-cache origins are checked with this pairing.
+        QVERIFY(identity::printerConversionProfileMatchesConversion(
+            profile, *holo, conversion));
+    }
+    QVERIFY(!identity::printerConversionProfileMatchesProduct(
+        QStringLiteral(
+            "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2"),
+        *holo));
+    QVERIFY(!identity::isCanonicalPrinterConversionProfile(QStringLiteral(
+        "holo-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali")));
+
+    // The media catalog keeps the origin of HOLO uploads, so the same source
+    // is not uploaded twice.
+    tryx::MediaCatalogStore catalog(
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("media-catalog")));
+    QVERIFY(catalog.load().writesEnabled);
+    tryx::MediaCatalogStore::OriginInput origin;
+    origin.deviceIdentity = QStringLiteral("HOLO-ORIGIN");
+    origin.remote.name = remoteName;
+    origin.remote.size = 4096;
+    origin.remote.source = 1;
+    origin.remote.readOnly = false;
+    origin.sourceContentSha256 = QString(64, QLatin1Char('a'));
+    origin.sourceSize = 4096;
+    origin.conversionProfile = videoProfile;
+    origin.preparedSha256 = QString(64, QLatin1Char('c'));
+    origin.operationId = QStringLiteral("10511051-1051-4051-8051-105110511051");
+    origin.confirmedUtc = QDateTime::fromString(
+        QStringLiteral("2026-11-17T12:00:00.000Z"), Qt::ISODateWithMs);
+    const auto persisted = catalog.persistOrigin(origin);
+    QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
+    QCOMPARE(catalog.findReusableOrigin(origin.deviceIdentity,
+                                        origin.sourceContentSha256,
+                                        videoProfile, {origin.remote}),
+             remoteName);
 }
 
 void PrinterProtocolTests::turrisMediaAnalysisUses1280Profile() {
@@ -11652,6 +11877,11 @@ void PrinterProtocolTests::turrisMediaNamesFollowOfficialLayout() {
     QCOMPARE(uploadName.size(), 41);
     QVERIFY(uploadName.endsWith(QStringLiteral(".png.h264_1280x720")));
     QVERIFY(identity::isSafePrinterUploadMediaName(uploadName));
+    // HOLO presets in the device catalog use the 640x480 suffix.
+    QVERIFY(identity::isSafePrinterUploadMediaName(
+        QStringLiteral("default_01.mp4.h264_640x480")));
+    QVERIFY(!identity::isSafePrinterUploadMediaName(
+        QStringLiteral("default_01.mp4.h264_640x481")));
 
     // Other products keep the random suffix.
     const QRegularExpression suffixedLayout(QStringLiteral(
@@ -11930,6 +12160,161 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
         QString::fromLatin1(
             QCryptographicHash::hash(blob, QCryptographicHash::Sha256)
                 .toHex()));
+}
+
+void PrinterProtocolTests::holoMediaPreparationBuildsOfficialMxhd_data() {
+    QTest::addColumn<QString>("extension");
+    QTest::addColumn<quint32>("mediaKind");
+    QTest::addColumn<quint64>("frameCount");
+    QTest::addColumn<QString>("conversionProfile");
+
+    // KANALI's converter: stills at 30 fps as one frame, GIF and video at
+    // 60 fps. Each source lasts one second.
+    QTest::newRow("image")
+        << QStringLiteral("png") << quint32{2} << quint64{1}
+        << QStringLiteral(
+               "holo-mxhd-v1-image-640x480-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
+    QTest::newRow("gif")
+        << QStringLiteral("gif") << quint32{3} << quint64{60}
+        << QStringLiteral(
+               "holo-mxhd-v1-gif-640x480-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali");
+    QTest::newRow("video")
+        << QStringLiteral("mp4") << quint32{4} << quint64{60}
+        << QStringLiteral(
+               "holo-mxhd-v1-video-640x480-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+}
+
+void PrinterProtocolTests::holoMediaPreparationBuildsOfficialMxhd() {
+    QFETCH(QString, extension);
+    QFETCH(quint32, mediaKind);
+    QFETCH(quint64, frameCount);
+    QFETCH(QString, conversionProfile);
+
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffprobe =
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffmpeg.isEmpty() || ffprobe.isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("holo-source.") + extension);
+    if (extension == QStringLiteral("png")) {
+        QImage image(32, 24, QImage::Format_RGB32);
+        image.fill(QColor(QStringLiteral("#336699")));
+        QVERIFY(image.save(sourcePath));
+    } else {
+        QStringList arguments{
+            QStringLiteral("-v"), QStringLiteral("error"),
+            QStringLiteral("-f"), QStringLiteral("lavfi"),
+            QStringLiteral("-i"),
+            QStringLiteral("color=c=#315d84:s=64x48:r=10:d=1"),
+            QStringLiteral("-an")};
+        if (extension == QStringLiteral("mp4")) {
+            arguments << QStringLiteral("-c:v") << QStringLiteral("libx264")
+                      << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p");
+        }
+        arguments << QStringLiteral("-y") << sourcePath;
+        QProcess generator;
+        generator.setProcessChannelMode(QProcess::MergedChannels);
+        generator.start(ffmpeg, arguments);
+        const bool finished = generator.waitForFinished(60000);
+        const QByteArray output = generator.readAll();
+        QVERIFY2(finished, qPrintable(QString::fromLocal8Bit(output)));
+        QVERIFY2(generator.exitStatus() == QProcess::NormalExit &&
+                     generator.exitCode() == 0,
+                 qPrintable(QString::fromLocal8Bit(output)));
+    }
+    QCOMPARE(tryx::printer_media_identity::printerConversionProfile(
+                 sourcePath, tryxLegacyFitMediaTransform(), 0x1051),
+             conversionProfile);
+
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    const QString operationId =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    preparer.prepare(operationId, QStringLiteral("holo-endpoint"), sourcePath,
+                     QString(), 51, tryxLegacyFitMediaTransform(), 0x1051);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 120000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    QCOMPARE(preparedSpy.count(), 1);
+    const QList<QVariant> prepared = preparedSpy.first();
+    const QString outputPath = prepared.at(3).toString();
+    const QString remoteName = prepared.at(4).toString();
+    const QString expectedSha256 = prepared.at(5).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(prepared.at(6).toString());
+    });
+    // The official name layout: a millisecond timestamp, no random suffix.
+    QVERIFY2(QRegularExpression(
+                 QStringLiteral("^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.") +
+                 extension + QStringLiteral("\\.h264_640x480$"))
+                 .match(remoteName)
+                 .hasMatch(),
+             qPrintable(remoteName));
+
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    QCOMPARE(QString::fromLatin1(
+                 QCryptographicHash::hash(blob, QCryptographicHash::Sha256).toHex()),
+             expectedSha256);
+    QVERIFY(blob.size() > 4);
+    // u32 little-endian header length; 64 bytes at 640x480.
+    QCOMPARE(blob.left(4), QByteArray::fromHex("40000000"));
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata, turrisMediaMetadata(mediaKind, frameCount, 640, 480));
+    QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
+            h264.startsWith(QByteArray::fromHex("000001")));
+    QString containerError;
+    QVERIFY2(tryx::turris_media::validateBlob(
+                 &output, blob.size(), remoteName, 640, 480, &containerError),
+             qPrintable(containerError));
+    QVERIFY(!tryx::turris_media::validateBlob(
+        &output, blob.size(), remoteName, &containerError));
+    output.close();
+
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("holo.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        ffprobe,
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-count_frames"), QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,level,width,height,has_b_frames,"
+                        "color_range,nb_read_frames"),
+         QStringLiteral("-of"), QStringLiteral("default=noprint_wrappers=1"),
+         rawPath});
+    QVERIFY(probe.waitForFinished(30000));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("level=41"),
+             QStringLiteral("width=640"),
+             QStringLiteral("height=480"),
+             QStringLiteral("has_b_frames=0"),
+             QStringLiteral("color_range=pc"),
+             QStringLiteral("nb_read_frames=%1").arg(frameCount)}) {
+        QVERIFY2(properties.contains(expected),
+                 qPrintable(expected + QStringLiteral(" in ") +
+                            properties.join(QLatin1Char(' '))));
+    }
 }
 
 void PrinterProtocolTests::paseMediaHeaderMatchesOfficialConverter() {
@@ -14088,6 +14473,92 @@ void PrinterProtocolTests::runtimeDisplayConfigDbusRoundTrip() {
     QCOMPARE(actualState.settingsAlign2,
              expectedState.settingsAlign2);
     QCOMPARE(actualState.diagnostic, expectedState.diagnostic);
+}
+
+void PrinterProtocolTests::holoRunConfigFollowsOfficialLayout_data() {
+    QTest::addColumn<QStringList>("metrics");
+    QTest::addColumn<QList<quint32>>("groupYs");
+
+    // KANALI holo640: one 640x480 area, PASE row spacing, value text 80.
+    QTest::newRow("one")
+        << QStringList{QStringLiteral("CPU Temperature")}
+        << QList<quint32>{200U};
+    QTest::newRow("two")
+        << QStringList{QStringLiteral("CPU Temperature"),
+                       QStringLiteral("GPU Temperature")}
+        << QList<quint32>{120U, 290U};
+    QTest::newRow("three")
+        << QStringList{QStringLiteral("CPU Temperature"),
+                       QStringLiteral("CPU Usage"),
+                       QStringLiteral("GPU Temperature")}
+        << QList<quint32>{80U, 210U, 340U};
+}
+
+void PrinterProtocolTests::holoRunConfigFollowsOfficialLayout() {
+    QFETCH(QStringList, metrics);
+    QFETCH(QList<quint32>, groupYs);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    const auto holo = printerProductProfileForId(0x1051);
+    QVERIFY(holo.has_value());
+    PrinterProtocol protocol(*holo, 500);
+    const QString endpoint = QStringLiteral("/dev/usb/lp-holo-layout");
+    protocol.adoptFileDescriptorForTesting(sockets[0], endpoint);
+    panorama::wire::v1::Request captured;
+    QString peerError;
+    std::thread peer([&]() {
+        if (!readRequest(sockets[1], &captured, &peerError)) {
+            return;
+        }
+        auto response = baseResponse(captured);
+        response.mutable_acknowledgement();
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.left.metrics = metrics;
+    overlay.left.badges = {QStringLiteral("CPU Badge")};
+    overlay.left.alignment = QStringLiteral("Center");
+    overlay.left.textColor = 0x00FF00U;
+    overlay.cpuBadgeText = QStringLiteral("CPU");
+    QString error;
+    const bool sent = protocol.sendPaseRunConfigForTesting(
+        endpoint, overlay, &error, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(sent, qPrintable(error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(captured.body_case(),
+             panorama::wire::v1::Request::kOverlayLayout);
+    const auto &layout = captured.overlay_layout();
+    QCOMPARE(layout.label_groups_size(), groupYs.size() + 1);
+    for (int index = 0; index < groupYs.size(); ++index) {
+        const auto &group = layout.label_groups(index);
+        QCOMPARE(group.group_x(), 30U);
+        QCOMPARE(group.group_y(), groupYs.at(index));
+        QCOMPARE(group.group_width(), 580U);
+        QCOMPARE(group.group_height(), 80U);
+        QCOMPARE(group.text_align(),
+                 panorama::wire::v1::OverlayGroup::ALIGN_CENTER);
+        QCOMPARE(group.labels_size(), 3);
+        QCOMPARE(group.labels(0).text_size(), 12U);
+        QCOMPARE(group.labels(1).text_size(), 80U);
+        QCOMPARE(group.labels(2).text_size(), 20U);
+        QCOMPARE(group.labels(1).text_color(), 0x00FF00U);
+    }
+    const auto &badge = layout.label_groups(groupYs.size());
+    QCOMPARE(badge.group_id(), 300U);
+    QCOMPARE(badge.group_x(), 40U);
+    QCOMPARE(badge.group_y(), 30U);
+    QCOMPARE(badge.group_width(), 580U);
+    QCOMPARE(badge.line_gap(), 1);
+    QCOMPARE(badge.labels_size(), 1);
+    QCOMPARE(badge.labels(0).label_id(), 301U);
+    QCOMPARE(badge.labels(0).text_size(), 16U);
 }
 
 void PrinterProtocolTests::paseRunConfigUsesWireLayout() {
@@ -16616,6 +17087,119 @@ void PrinterProtocolTests::paseDisplayApplyReplacesPresetLoopMode() {
     QVERIFY2(applied, qPrintable(error));
     QCOMPARE(appliedState.playMode, playMode);
     QCOMPARE(appliedState.brightness, 68);
+}
+
+// The HOLO reports a decoration light (UserConfigPb field 6) that this
+// application has no controls for. Apply and brightness writes are a
+// read-modify-write of the device configuration and must carry it back as
+// the device reported it.
+void PrinterProtocolTests::holoApplyPreservesLightConfiguration() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::UserConfiguration device;
+    device.mutable_poweron_config()->set_media_file(
+        "default_poweron.mp4.h264_640x480");
+    device.mutable_standby_config()->set_media_file(
+        "default_standby.mp4.h264_640x480");
+    auto *work = device.mutable_work_config();
+    work->set_media_mode(panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+    work->set_loop_mode(panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    work->set_single_mode_media_file("default_01.mp4.h264_640x480");
+    auto *display = device.mutable_display_config();
+    display->set_backlight_enable(true);
+    display->set_backlight_brightness(80);
+    auto *light = device.mutable_light_config();
+    light->set_enable(true);
+    light->set_brightness(55);
+    light->set_effect(panorama::wire::v1::LightConfiguration::LIGHT_EFFECT_BREATH);
+    light->mutable_color()->set_r(12);
+    light->mutable_color()->set_g(200);
+    light->mutable_color()->set_b(77);
+    light->set_speed(3);
+    light->set_control_mode(
+        panorama::wire::v1::LightConfiguration::LIGHT_CONTROL_ARGB_SYNC);
+    const panorama::wire::v1::LightConfiguration reportedLight = *light;
+
+    // Serves 104 with the current configuration, stores each 200 and
+    // acknowledges everything else, for two read-modify-write cycles.
+    QList<panorama::wire::v1::UserConfiguration> written;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::UserConfiguration current = device;
+        int readbacks = 0;
+        while (readbacks < 2) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError)) {
+                return;
+            }
+            auto response = baseResponse(request);
+            if (request.body_case() ==
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+                *response.mutable_user_configuration() = current;
+            } else {
+                if (request.body_case() ==
+                    panorama::wire::v1::Request::kUserConfiguration) {
+                    current = request.user_configuration();
+                    written.append(current);
+                }
+                response.mutable_acknowledgement();
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+            if (request.body_case() ==
+                    panorama::wire::v1::Request::kUserConfigurationQuery &&
+                written.size() > readbacks) {
+                ++readbacks;
+            }
+        }
+    });
+
+    const auto holo = printerProductProfileForId(0x1051);
+    QVERIFY(holo.has_value());
+    PrinterProtocol protocol(*holo, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-holo-light");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.mediaPresent = true;
+    config.screenMode = QStringLiteral("Full Screen");
+    config.playMode = QStringLiteral("Loop");
+    config.media = {QStringLiteral("2026-11-17_12-00-00-000.mp4.h264_640x480")};
+    config.display.orientationPresent = true;
+    QString applyError;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &applyError, PrinterProtocol::OperationContext{});
+    QString brightnessError;
+    const bool brightnessSet = protocol.setBrightness(
+        devicePath, 35, &brightnessError, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(applied, qPrintable(applyError));
+    QVERIFY2(brightnessSet, qPrintable(brightnessError));
+    QCOMPARE(written.size(), 2);
+    for (const auto &userConfig : written) {
+        QVERIFY(userConfig.has_light_config());
+        QCOMPARE(userConfig.light_config().SerializeAsString(),
+                 reportedLight.SerializeAsString());
+        QVERIFY(!userConfig.display_config().mirror());
+        QCOMPARE(userConfig.display_config().ui_rotation(), 0U);
+        QCOMPARE(userConfig.display_config().media_rotation(), 0U);
+        QCOMPARE(QString::fromStdString(userConfig.poweron_config().media_file()),
+                 QStringLiteral("default_poweron.mp4.h264_640x480"));
+    }
+    QCOMPARE(written.at(0).work_config().loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QCOMPARE(QString::fromStdString(written.at(0).work_config().single_mode_media_file()),
+             config.media.constFirst());
+    QCOMPARE(written.at(0).display_config().backlight_brightness(), 80U);
+    QCOMPARE(written.at(1).display_config().backlight_brightness(), 35U);
+    QCOMPARE(written.at(1).work_config().single_mode_media_file(),
+             written.at(0).work_config().single_mode_media_file());
 }
 
 // The host writes LOOP_ALL for "Loop". A device that still reports a preset
