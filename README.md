@@ -756,7 +756,7 @@ still rejected.
 
 **Runtime:**
 - `ffmpeg` with the `libx264` encoder - media conversion
-- `adb` (android-tools) - legacy OTA file transfer and optional Rockchip reboot-to-loader
+- `adb` (android-tools) - media list and upload on legacy serial/ADB displays, legacy OTA file transfer and optional Rockchip reboot-to-loader
 - `unzip` - firmware package validation and extraction
 - `debugfs` (e2fsprogs) - Rockchip rootfs inspection
 - `upgrade_tool` - optional external Rockchip flashing backend for new KANALI firmware bundles

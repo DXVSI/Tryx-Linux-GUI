@@ -19,7 +19,7 @@ depends=(
   'systemd'
 )
 optdepends=(
-  'android-tools: legacy OTA support and rebooting a device to loader mode'
+  'android-tools: media on legacy serial/ADB displays, legacy OTA and rebooting to loader mode'
   'e2fsprogs: inspect Rockchip rootfs images with debugfs'
   'mesa-utils: detect GPU names with glxinfo'
   'pciutils: fallback GPU detection with lspci'

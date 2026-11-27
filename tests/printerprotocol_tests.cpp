@@ -2691,6 +2691,7 @@ private slots:
     void firmwareWorkerQuiesceClosesTransport();
     void legacyWorkerSerialLifecycleAndQuiesce();
     void legacyHelpersPassArgumentsWithoutShellParsing();
+    void legacyAdbStatusNamesTheMissingPart();
     void legacyHandshakeRetriesAndDropsLateReplies();
     void workerSessionsShareIoContextAndTeardown();
     void workerGateInterruptsBlockedForegroundResponse_data();
@@ -39820,6 +39821,45 @@ void PrinterProtocolTests::legacyHelpersPassArgumentsWithoutShellParsing() {
     QVERIFY(!panorama::Adb::is_plain_media_name(".."));
     QVERIFY(!panorama::Adb::is_plain_media_name("../clip.mp4"));
     QVERIFY(!panorama::Adb::is_plain_media_name("clip\n.mp4"));
+}
+
+void PrinterProtocolTests::legacyAdbStatusNamesTheMissingPart() {
+    using Status = panorama::Adb::Status;
+    const auto parse = [](const std::string &output) {
+        return panorama::Adb::parse_device_list(output);
+    };
+
+    QCOMPARE(parse("List of devices attached\n\n").status, Status::NoDevice);
+    QCOMPARE(parse("* daemon not running; starting now at tcp:5037\n"
+                   "* daemon started successfully\n"
+                   "List of devices attached\n\n").status,
+             Status::NoDevice);
+    QCOMPARE(parse("List of devices attached\nTRYX0001\tdevice\n").status,
+             Status::Ready);
+    QCOMPARE(parse("List of devices attached\nother\toffline\nTRYX0001\tdevice\r\n")
+                 .status,
+             Status::Ready);
+
+    const auto unauthorized = parse("List of devices attached\nTRYX0001\tunauthorized\n");
+    QCOMPARE(unauthorized.status, Status::NotReady);
+    QCOMPARE(QString::fromStdString(unauthorized.state), QStringLiteral("unauthorized"));
+
+    const std::string noPermissions =
+        "no permissions (missing udev rules? user is in the plugdev group); "
+        "see [http://developer.android.com/tools/device.html]";
+    const auto denied = parse("List of devices attached\n????????????\t" +
+                              noPermissions + "\nother\toffline\n");
+    QCOMPARE(denied.status, Status::NoPermissions);
+    QCOMPARE(denied.state, noPermissions);
+
+    // Without adb on PATH the status says so instead of "no device".
+    QTemporaryDir emptyPath;
+    QVERIFY(emptyPath.isValid());
+    const QByteArray savedPath = qgetenv("PATH");
+    const auto restorePath = qScopeGuard([&savedPath]() { qputenv("PATH", savedPath); });
+    qputenv("PATH", emptyPath.path().toLocal8Bit());
+    QCOMPARE(panorama::Adb::device_status().status, Status::NotInstalled);
+    QVERIFY(!panorama::Adb::is_device_connected());
 }
 
 void PrinterProtocolTests::legacyHandshakeRetriesAndDropsLateReplies() {

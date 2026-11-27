@@ -266,6 +266,34 @@ void LegacyDeviceSession::setRotation(int degrees) {
     device_->set_rotation(degrees);
 }
 
+namespace {
+
+// Legacy displays list and receive media over ADB. Name the cause when that
+// path cannot be used.
+QString adbProblemText() {
+    const auto device = panorama::Adb::device_status();
+    switch (device.status) {
+    case panorama::Adb::Status::Ready:
+        return {};
+    case panorama::Adb::Status::NotInstalled:
+        return DeviceWorker::tr(
+            "adb not found. This display lists and receives media over ADB: "
+            "install android-tools (the adb package on Debian and Ubuntu)");
+    case panorama::Adb::Status::NoDevice:
+        return DeviceWorker::tr("ADB device not found");
+    case panorama::Adb::Status::NoPermissions:
+        return DeviceWorker::tr(
+            "adb cannot open the USB device of the display: %1")
+            .arg(QString::fromStdString(device.state));
+    case panorama::Adb::Status::NotReady:
+        return DeviceWorker::tr("adb lists the display in the %1 state, not ready")
+            .arg(QString::fromStdString(device.state));
+    }
+    return DeviceWorker::tr("ADB device not found");
+}
+
+}  // namespace
+
 void LegacyDeviceSession::rebootDevice() {
     // ADB reboot works, POST reboot doesn't
     panorama::Adb::reboot();
@@ -296,8 +324,8 @@ void LegacyDeviceSession::deleteMedia(const QStringList &files) {
 }
 
 void LegacyDeviceSession::uploadMedia(const QString &localPath) {
-    if (!panorama::Adb::is_device_connected()) {
-        emit events_.error(DeviceWorker::tr("ADB device not found"));
+    if (const QString problem = adbProblemText(); !problem.isEmpty()) {
+        emit events_.error(problem);
         return;
     }
 
@@ -347,8 +375,8 @@ void LegacyDeviceSession::uploadMedia(const QString &localPath) {
 }
 
 void LegacyDeviceSession::refreshMediaList() {
-    if (!panorama::Adb::is_device_connected()) {
-        emit events_.error(DeviceWorker::tr("ADB device not found"));
+    if (const QString problem = adbProblemText(); !problem.isEmpty()) {
+        emit events_.error(problem);
         return;
     }
 

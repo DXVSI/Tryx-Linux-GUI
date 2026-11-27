@@ -243,7 +243,7 @@ jobs:
             dist/*.tar.xz
           if-no-files-found: error
           overwrite: true
-          retention-days: 7
+          retention-days: 30
 
   deb:
     name: DEB / Ubuntu 24.04
@@ -406,7 +406,7 @@ jobs:
           path: dist/*.deb
           if-no-files-found: error
           overwrite: true
-          retention-days: 7
+          retention-days: 30
 
   arch:
     name: Arch package
@@ -540,7 +540,7 @@ jobs:
           path: dist/*.pkg.tar.zst
           if-no-files-found: error
           overwrite: true
-          retention-days: 7
+          retention-days: 30
 
   rpm-runtime-smoke:
     name: Clean RPM runtime / Fedora ${{ needs.fedora-release.outputs.version }}
