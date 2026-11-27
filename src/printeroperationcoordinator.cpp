@@ -424,6 +424,14 @@ void PrinterOperationCoordinator::updateMediaCatalog(
     snapshot.deviceIdentity = context.deviceIdentity;
     QList<tryx::MediaCatalogStore::RemoteEntry> freshEntries;
     freshEntries.reserve(mediaFiles.size());
+    // FileRemove names a file, not a folder: a name the catalog lists more
+    // than once (a STAGE keeps its shipped presets read-only in fixed/ and
+    // writable copies of the same names in preset/) is refused by the
+    // device client as ambiguous, so it is not offered for deletion either.
+    QHash<QString, int> nameCounts;
+    for (const PrinterProtocol::MediaFile &media : mediaFiles) {
+        ++nameCounts[media.name];
+    }
     for (const PrinterProtocol::MediaFile &media : mediaFiles) {
         TryxRuntimeMediaEntry entry;
         entry.name = media.name;
@@ -446,6 +454,8 @@ void PrinterOperationCoordinator::updateMediaCatalog(
                        QStringLiteral("default_"),
                        Qt::CaseInsensitive)) {
             entry.deleteBlockReason = QStringLiteral("ProtectedName");
+        } else if (nameCounts.value(entry.name) > 1) {
+            entry.deleteBlockReason = QStringLiteral("DuplicateName");
         } else {
             entry.deleteAllowed = true;
         }

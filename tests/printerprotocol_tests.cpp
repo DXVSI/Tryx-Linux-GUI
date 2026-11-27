@@ -2372,6 +2372,13 @@ private slots:
     void stageRunConfigFollowsOfficialLayout_data();
     void stageRunConfigFollowsOfficialLayout();
     void stageSplitApplyWritesDualMedia();
+    void stageHardwareCatalogListsEveryEntry_data();
+    void stageHardwareCatalogListsEveryEntry();
+    void stageHardwareCatalogReachesTheCoordinator_data();
+    void stageHardwareCatalogReachesTheCoordinator();
+    void stageHardwareCatalogNeverRemovesFixedMedia_data();
+    void stageHardwareCatalogNeverRemovesFixedMedia();
+    void stageHardwareConfigurationAppliesPresetUploadAndAreas();
     void metricsCatalogTokensAndPaseGroupIdsRemainFrozen_data();
     void metricsCatalogTokensAndPaseGroupIdsRemainFrozen();
     void paseFormatterRejectsInvalidOrFourthMetricBeforeTransport_data();
@@ -15312,6 +15319,577 @@ void PrinterProtocolTests::stageSplitApplyWritesDualMedia() {
     QCOMPARE(userConfig.display_config().media_rotation(), 0U);
     QCOMPARE(QString::fromStdString(userConfig.poweron_config().media_file()),
              QStringLiteral("default_poweron_1440x720.mp4.h264"));
+}
+
+namespace {
+
+// The media catalog and user configuration of a real STAGE ARGB 360 as issue
+// #57 reports them. Folders, names, extensions and read-only flags come from
+// the report. It names only the active upload and gives upload sizes only as
+// 2.7 to 4.8 MB, so the other four uploads follow the active one's pattern
+// and every size is made up. The cosmos, erebos and festival copies in
+// preset/ and fixed/ have the same size, so whenever they share a list they
+// also share a media identity.
+constexpr char kStageActiveUpload[] =
+    "2026-10-20_21-14-02-997.mp4.h264_1440x720";
+
+enum class StageFolder { Media, Preset, Fixed };
+
+// The report does not say which protobuf list carries preset/ and fixed/.
+enum class StageCatalogLists {
+    // media/ as user media, preset/ and fixed/ as presets, as on PASE.
+    PresetAndFixedInPresetList,
+    // Every folder as user media; only the read-only flag marks fixed/.
+    EverythingInMediaList,
+    // media/ and preset/ as user media, fixed/ as presets.
+    FixedInPresetList,
+};
+
+struct StageCatalogFile {
+    StageFolder folder;
+    QString name;
+    QString extension;
+    quint32 size;
+    bool readOnly;
+};
+
+QList<StageCatalogFile> stageHardwareCatalogFiles() {
+    const QString full = QStringLiteral(".h264_1440x720");
+    const QString plain = QStringLiteral(".h264");
+    return {
+        {StageFolder::Media, QString::fromLatin1(kStageActiveUpload), full,
+         4'812'301, false},
+        {StageFolder::Media,
+         QStringLiteral("2026-10-20_21-09-47-412.mp4.h264_1440x720"), full,
+         2'734'118, false},
+        {StageFolder::Media,
+         QStringLiteral("2026-10-20_21-10-58-030.mp4.h264_1440x720"), full,
+         3'106'552, false},
+        {StageFolder::Media,
+         QStringLiteral("2026-10-20_21-12-05-671.mp4.h264_1440x720"), full,
+         3'950'007, false},
+        {StageFolder::Media,
+         QStringLiteral("2026-10-20_21-13-20-145.mp4.h264_1440x720"), full,
+         4'207'736, false},
+        {StageFolder::Preset, QStringLiteral("cosmos.mp4.h264_1440x720"), full,
+         5'210'440, false},
+        {StageFolder::Preset, QStringLiteral("erebos.mp4.h264_1440x720"), full,
+         6'018'712, false},
+        {StageFolder::Preset, QStringLiteral("festival.mp4.h264_1440x720"),
+         full, 5'734'096, false},
+        // The first and the last of the reported downloads.
+        {StageFolder::Preset, QStringLiteral("download_58.mp4.h264_1440x720"),
+         full, 4'402'210, false},
+        {StageFolder::Preset, QStringLiteral("download_108.mp4.h264_1440x720"),
+         full, 3'871'504, false},
+        {StageFolder::Preset,
+         QStringLiteral("default_poweron_1440x720.mp4.h264"), plain,
+         1'204'388, false},
+        {StageFolder::Preset,
+         QStringLiteral("default_standby_1440x720.mp4.h264"), plain, 986'112,
+         false},
+        {StageFolder::Fixed, QStringLiteral("cosmos.mp4.h264_1440x720"), full,
+         5'210'440, true},
+        {StageFolder::Fixed, QStringLiteral("erebos.mp4.h264_1440x720"), full,
+         6'018'712, true},
+        {StageFolder::Fixed, QStringLiteral("festival.mp4.h264_1440x720"), full,
+         5'734'096, true},
+        {StageFolder::Fixed, QStringLiteral("graffiti.mp4.h264_1440x720"), full,
+         4'990'256, true},
+    };
+}
+
+bool stageFolderInPresetList(StageFolder folder, StageCatalogLists lists) {
+    switch (lists) {
+    case StageCatalogLists::PresetAndFixedInPresetList:
+        return folder != StageFolder::Media;
+    case StageCatalogLists::EverythingInMediaList:
+        return false;
+    case StageCatalogLists::FixedInPresetList:
+        return folder == StageFolder::Fixed;
+    }
+    return false;
+}
+
+QString stageFolderPath(StageFolder folder) {
+    switch (folder) {
+    case StageFolder::Media:
+        return QStringLiteral("/mnt/data/app/media/");
+    case StageFolder::Preset:
+        return QStringLiteral("/mnt/data/app/preset/");
+    case StageFolder::Fixed:
+        return QStringLiteral("/mnt/data/app/fixed/");
+    }
+    return {};
+}
+
+panorama::wire::v1::MediaCatalog stageHardwareCatalog(
+    StageCatalogLists lists) {
+    panorama::wire::v1::MediaCatalog catalog;
+    for (const StageCatalogFile &file : stageHardwareCatalogFiles()) {
+        auto *entry = stageFolderInPresetList(file.folder, lists)
+            ? catalog.add_preset_file_list()
+            : catalog.add_media_file_list();
+        entry->set_file_path(
+            (stageFolderPath(file.folder) + file.name).toStdString());
+        entry->set_file_ext(file.extension.toStdString());
+        entry->set_file_size(file.size);
+        entry->set_read_only(file.readOnly);
+    }
+    return catalog;
+}
+
+// What the runtime lists from that catalog: the user media list, then the
+// preset list, every file under its bare name with its own size and flag.
+QList<PrinterProtocol::MediaFile> expectedStageMediaFiles(
+    StageCatalogLists lists) {
+    QList<PrinterProtocol::MediaFile> files;
+    for (const bool presetList : {false, true}) {
+        for (const StageCatalogFile &file : stageHardwareCatalogFiles()) {
+            if (stageFolderInPresetList(file.folder, lists) != presetList) {
+                continue;
+            }
+            files.append({file.name, file.size, file.readOnly,
+                          presetList ? PrinterProtocol::MediaSource::Preset
+                                     : PrinterProtocol::MediaSource::User});
+        }
+    }
+    return files;
+}
+
+panorama::wire::v1::UserConfiguration stageHardwareUserConfiguration() {
+    panorama::wire::v1::UserConfiguration config;
+    config.mutable_poweron_config()->set_media_file(
+        "default_poweron_1440x720.mp4.h264");
+    auto *standby = config.mutable_standby_config();
+    standby->set_enable(true);
+    standby->set_media_file("default_standby_1440x720.mp4.h264");
+    // media_mode and loop_mode are omitted: MEDIA_SINGLE, LOOP_SINGLE.
+    config.mutable_work_config()->set_single_mode_media_file(
+        kStageActiveUpload);
+    auto *display = config.mutable_display_config();
+    display->set_backlight_enable(true);
+    display->set_backlight_brightness(80);
+    return config;
+}
+
+// Reads the catalog through a STAGE PrinterProtocol, as the runtime's media
+// list refresh does.
+PrinterProtocol::MediaListResult readStageHardwareCatalog(
+    StageCatalogLists lists, QString *peerError) {
+    const PrinterProductProfile stage =
+        printerProductProfileForId(0x1041).value();
+    int sockets[2] = {-1, -1};
+    if (!createSocketPair(sockets, peerError)) {
+        return {};
+    }
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, peerError)) {
+            return;
+        }
+        if (request.body_case() !=
+            panorama::wire::v1::Request::kMediaCatalogQuery) {
+            *peerError = QStringLiteral("expected a FileList query");
+            return;
+        }
+        auto response = baseResponse(request);
+        *response.mutable_media_catalog() = stageHardwareCatalog(lists);
+        writeResponse(sockets[1], response, peerError);
+    });
+    PrinterProtocol protocol(stage, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-catalog");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    const PrinterProtocol::MediaListResult result =
+        protocol.readMediaList(devicePath, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+    return result;
+}
+
+void addStageCatalogListRows() {
+    QTest::addColumn<int>("lists");
+    QTest::newRow("preset-and-fixed-in-preset-list")
+        << static_cast<int>(StageCatalogLists::PresetAndFixedInPresetList);
+    QTest::newRow("everything-in-media-list")
+        << static_cast<int>(StageCatalogLists::EverythingInMediaList);
+    QTest::newRow("fixed-in-preset-list")
+        << static_cast<int>(StageCatalogLists::FixedInPresetList);
+}
+
+}  // namespace
+
+void PrinterProtocolTests::stageHardwareCatalogListsEveryEntry_data() {
+    addStageCatalogListRows();
+}
+
+// Issue #57: the catalog of a real STAGE is listed whole under every
+// plausible split of its folders over the two lists. A preset name in both
+// preset/ and the read-only fixed/ stays two entries, and the ".h264"
+// power-on and standby defaults keep the names the user configuration uses.
+void PrinterProtocolTests::stageHardwareCatalogListsEveryEntry() {
+    QFETCH(int, lists);
+    const auto catalogLists = static_cast<StageCatalogLists>(lists);
+
+    QString peerError;
+    const PrinterProtocol::MediaListResult result =
+        readStageHardwareCatalog(catalogLists, &peerError);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(result.success, qPrintable(result.error));
+
+    const QList<PrinterProtocol::MediaFile> expected =
+        expectedStageMediaFiles(catalogLists);
+    QCOMPARE(result.files.size(), expected.size());
+    for (qsizetype index = 0; index < expected.size(); ++index) {
+        const PrinterProtocol::MediaFile &actual = result.files.at(index);
+        const PrinterProtocol::MediaFile &wanted = expected.at(index);
+        QCOMPARE(actual.name, wanted.name);
+        QCOMPARE(actual.size, wanted.size);
+        QCOMPARE(actual.readOnly, wanted.readOnly);
+        QCOMPARE(static_cast<int>(actual.source),
+                 static_cast<int>(wanted.source));
+    }
+
+    int festivalCopies = 0;
+    int readOnlyFestivalCopies = 0;
+    for (const PrinterProtocol::MediaFile &file : result.files) {
+        if (file.name == QStringLiteral("festival.mp4.h264_1440x720")) {
+            ++festivalCopies;
+            readOnlyFestivalCopies += file.readOnly ? 1 : 0;
+        }
+    }
+    QCOMPARE(festivalCopies, 2);
+    QCOMPARE(readOnlyFestivalCopies, 1);
+}
+
+void PrinterProtocolTests::stageHardwareCatalogReachesTheCoordinator_data() {
+    addStageCatalogListRows();
+}
+
+// The coordinator keeps the whole STAGE catalog. It offers to delete the
+// upload, but not the read-only fixed/ presets, the ".h264" defaults or the
+// writable preset/ copy that shares its name with a fixed/ preset: FileRemove
+// names a file, not a folder, so the device client refuses that name as
+// ambiguous. A preset Apply still goes out by name.
+void PrinterProtocolTests::stageHardwareCatalogReachesTheCoordinator() {
+    QFETCH(int, lists);
+
+    QString peerError;
+    const PrinterProtocol::MediaListResult listed =
+        readStageHardwareCatalog(static_cast<StageCatalogLists>(lists),
+                                 &peerError);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(listed.success, qPrintable(listed.error));
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1041"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot, QStringLiteral("1-1"),
+                                  QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPrinterDeleteMedia,
+        manager->worker_, &DeviceWorker::deletePrinterMedia);
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPrinterApplyMedia,
+        manager->worker_, &DeviceWorker::applyPrinterMedia);
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
+    QCOMPARE(manager->sessionController_.state_.printerProductId,
+             quint16{0x1041});
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+
+    manager->updateMediaCatalog(listed.files);
+    const TryxRuntimeMediaCatalogSnapshot catalog =
+        manager->mediaCatalogSnapshot();
+    QCOMPARE(catalog.entries.size(), listed.files.size());
+    const QString festival = QStringLiteral("festival.mp4.h264_1440x720");
+    const QString graffiti = QStringLiteral("graffiti.mp4.h264_1440x720");
+    const QSet<QString> undeletable{
+        QStringLiteral("cosmos.mp4.h264_1440x720"),
+        QStringLiteral("erebos.mp4.h264_1440x720"),
+        festival,
+        graffiti,
+        QStringLiteral("default_poweron_1440x720.mp4.h264"),
+        QStringLiteral("default_standby_1440x720.mp4.h264"),
+    };
+    bool uploadListed = false;
+    for (const TryxRuntimeMediaEntry &entry : catalog.entries) {
+        if (entry.name == QString::fromLatin1(kStageActiveUpload)) {
+            uploadListed = true;
+            QVERIFY(entry.deleteAllowed);
+        } else if (undeletable.contains(entry.name)) {
+            QVERIFY2(!entry.deleteAllowed,
+                     qPrintable(QStringLiteral("%1 (source %2%3)")
+                                    .arg(entry.name)
+                                    .arg(entry.source)
+                                    .arg(entry.readOnly
+                                             ? QStringLiteral(", read-only")
+                                             : QString())));
+            QVERIFY(!entry.deleteBlockReason.isEmpty());
+        }
+    }
+    QVERIFY(uploadListed);
+
+    QSignalSpy deleteSpy(
+        manager.get(), &DeviceManager::requestPrinterDeleteMedia);
+    const QList<std::pair<QString, QString>> refusedDeletes{
+        {QStringLiteral("41414141-4141-4141-8141-414141414141"), festival},
+        {QStringLiteral("41414141-4141-4141-8141-414141414142"), graffiti},
+    };
+    for (const auto &[operationId, name] : refusedDeletes) {
+        QCOMPARE(manager->queueDeleteMediaOperation(operationId,
+                                                    QStringList{name}),
+                 operationId);
+        QCOMPARE(manager->operationInfo(operationId).errorCategory,
+                 QStringLiteral("DeleteNotAllowed"));
+    }
+    QCOMPARE(deleteSpy.count(), 0);
+
+    QSignalSpy applySpy(
+        manager.get(), &DeviceManager::requestPrinterApplyMedia);
+    TryxRuntimeApplyRequest preset;
+    preset.presetId = QStringLiteral("Pre-set 1: Festival");
+    const QString applyId =
+        QStringLiteral("41414141-4141-4141-8141-414141414143");
+    QCOMPARE(manager->queueApplyOperation(applyId, preset), applyId);
+    QCOMPARE(manager->operationInfo(applyId).state,
+             QStringLiteral("Preflight"));
+    QCOMPARE(applySpy.count(), 1);
+    QCOMPARE(applySpy.constFirst().at(1).toString(), festival);
+    const TryxRuntimeApplyRequest dispatched =
+        qvariant_cast<TryxRuntimeApplyRequest>(applySpy.constFirst().at(2));
+    QCOMPARE(dispatched.screenMode, QStringLiteral("Full Screen"));
+    QCOMPARE(dispatched.playMode, QStringLiteral("Single"));
+    QCOMPARE(dispatched.media, QStringList{festival});
+}
+
+void PrinterProtocolTests::stageHardwareCatalogNeverRemovesFixedMedia_data() {
+    QTest::addColumn<int>("lists");
+    QTest::addColumn<QString>("target");
+    const QList<std::pair<const char *, StageCatalogLists>> layouts{
+        {"preset-and-fixed-in-preset-list",
+         StageCatalogLists::PresetAndFixedInPresetList},
+        {"everything-in-media-list", StageCatalogLists::EverythingInMediaList},
+        {"fixed-in-preset-list", StageCatalogLists::FixedInPresetList},
+    };
+    for (const auto &[layout, lists] : layouts) {
+        // graffiti exists only in fixed/; festival also in preset/.
+        for (const char *name : {"graffiti", "festival"}) {
+            QTest::addRow("%s/%s", layout, name)
+                << static_cast<int>(lists)
+                << QStringLiteral("%1.mp4.h264_1440x720")
+                       .arg(QString::fromLatin1(name));
+        }
+    }
+}
+
+// Even if a delete of a fixed/ preset name reaches the device client, the
+// fresh STAGE catalog stops it before the user configuration check and
+// before FileRemove.
+void PrinterProtocolTests::stageHardwareCatalogNeverRemovesFixedMedia() {
+    QFETCH(int, lists);
+    QFETCH(QString, target);
+
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("missing delete preflight FileList");
+            }
+            return;
+        }
+        auto response = baseResponse(request);
+        *response.mutable_media_catalog() =
+            stageHardwareCatalog(static_cast<StageCatalogLists>(lists));
+        if (!writeResponse(sockets[1], response, &peerError)) {
+            return;
+        }
+        QString quietError;
+        if (!verifyNoPeerPayload(sockets[1], 150, &quietError)) {
+            peerError = QStringLiteral(
+                "a request followed the refused delete preflight");
+        }
+    });
+
+    PrinterProtocol protocol(*stage, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-delete");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    int dispatchCount = 0;
+    const PrinterProtocol::DeleteResult result = protocol.removeUserMedia(
+        devicePath, QStringList{target},
+        [&dispatchCount](int, const PrinterProtocol::MediaFile &, QString *) {
+            ++dispatchCount;
+            return true;
+        },
+        {}, PrinterProtocol::OperationContext{}, false);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(!result.success);
+    QCOMPARE(result.outcome, PrinterProtocol::MutationOutcome::NotStarted);
+    QVERIFY2(result.error.contains(target), qPrintable(result.error));
+    QVERIFY(result.deletedNames.isEmpty());
+    QCOMPARE(dispatchCount, 0);
+}
+
+// Issue #57: the user configuration of a real STAGE (media and loop mode
+// omitted, no filter configuration) reads as the upload in full screen.
+// A preset Apply as the coordinator maps "Pre-set 1: Festival", a full-screen
+// Apply of the upload and a split Apply of two 720x720 area files then each
+// change only the work configuration and keep the ".h264" power-on and
+// standby media, standby, backlight and brightness as the device had them.
+void PrinterProtocolTests::
+    stageHardwareConfigurationAppliesPresetUploadAndAreas() {
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    using tryx::pase_overlay_config::printerPresetMediaFile;
+    const QString festival =
+        printerPresetMediaFile(QStringLiteral("Pre-set 1: Festival"), 0x1041);
+    QCOMPARE(festival, QStringLiteral("festival.mp4.h264_1440x720"));
+    const QString upload = QString::fromLatin1(kStageActiveUpload);
+    const QStringList areas{
+        QStringLiteral("2026-11-27_10-00-00-000.mp4.h264_720x720"),
+        QStringLiteral("2026-11-27_10-00-01-000.png.h264_720x720")};
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    // Serves 104 with the current configuration, stores every 200 and
+    // acknowledges everything else, until the readback of the third write.
+    constexpr qsizetype kApplies = 3;
+    QList<panorama::wire::v1::UserConfiguration> written;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::UserConfiguration current =
+            stageHardwareUserConfiguration();
+        bool lastReadBack = false;
+        while (!lastReadBack) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError)) {
+                return;
+            }
+            auto response = baseResponse(request);
+            if (request.body_case() ==
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+                *response.mutable_user_configuration() = current;
+                lastReadBack = written.size() == kApplies;
+            } else {
+                if (request.body_case() ==
+                    panorama::wire::v1::Request::kUserConfiguration) {
+                    current = request.user_configuration();
+                    written.append(current);
+                }
+                response.mutable_acknowledgement();
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+        }
+    });
+
+    PrinterProtocol protocol(*stage, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-hardware");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    const PrinterProtocol::OperationContext context;
+    const PrinterProtocol::PaseDisplayStateResult active =
+        protocol.readPaseDisplayState(devicePath, context);
+
+    PrinterProtocol::PaseApplyConfig presetApply;
+    presetApply.mediaPresent = true;
+    presetApply.screenMode = QStringLiteral("Full Screen");
+    presetApply.playMode = QStringLiteral("Single");
+    presetApply.media = {festival};
+    QString presetError;
+    const bool presetApplied = protocol.applyPaseConfiguration(
+        devicePath, presetApply, &presetError, context);
+
+    PrinterProtocol::PaseApplyConfig uploadApply = presetApply;
+    uploadApply.media = {upload};
+    QString uploadError;
+    const bool uploadApplied = protocol.applyPaseConfiguration(
+        devicePath, uploadApply, &uploadError, context);
+
+    PrinterProtocol::PaseApplyConfig splitApply;
+    splitApply.mediaPresent = true;
+    splitApply.screenMode = QStringLiteral("Screen Splitting");
+    splitApply.playMode = QStringLiteral("Single");
+    splitApply.media = areas;
+    QString splitError;
+    const bool splitApplied = protocol.applyPaseConfiguration(
+        devicePath, splitApply, &splitError, context);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(active.success, qPrintable(active.error));
+    QCOMPARE(active.state.screenMode, QStringLiteral("Full Screen"));
+    QCOMPARE(active.state.playMode, QStringLiteral("Single"));
+    QCOMPARE(active.state.media, QStringList{upload});
+    QVERIFY(!active.presetPlayback);
+    QVERIFY(active.state.backlightEnabled);
+    QCOMPARE(active.state.brightness, 80);
+    QVERIFY(active.state.standbyEnabled);
+    QCOMPARE(active.state.standbyMedia,
+             QStringLiteral("default_standby_1440x720.mp4.h264"));
+    QVERIFY(!active.state.mirrorMode);
+    QVERIFY(!active.state.waterfallMode);
+
+    QVERIFY2(presetApplied, qPrintable(presetError));
+    QVERIFY2(uploadApplied, qPrintable(uploadError));
+    QVERIFY2(splitApplied, qPrintable(splitError));
+    QCOMPARE(written.size(), kApplies);
+    for (qsizetype index = 0; index < 2; ++index) {
+        const auto &work = written.at(index).work_config();
+        QCOMPARE(work.media_mode(),
+                 panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        QCOMPARE(work.loop_mode(),
+                 panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+        QCOMPARE(QString::fromStdString(work.single_mode_media_file()),
+                 index == 0 ? festival : upload);
+    }
+    const auto &split = written.at(2).work_config();
+    QCOMPARE(split.media_mode(),
+             panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
+    QCOMPARE(split.loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    QCOMPARE(QString::fromStdString(split.dual_mode_left_media_file()),
+             areas.at(0));
+    QCOMPARE(QString::fromStdString(split.dual_mode_right_media_file()),
+             areas.at(1));
+    for (const panorama::wire::v1::UserConfiguration &config : written) {
+        QCOMPARE(QString::fromStdString(config.poweron_config().media_file()),
+                 QStringLiteral("default_poweron_1440x720.mp4.h264"));
+        QVERIFY(config.standby_config().enable());
+        QCOMPARE(QString::fromStdString(config.standby_config().media_file()),
+                 QStringLiteral("default_standby_1440x720.mp4.h264"));
+        QVERIFY(config.display_config().backlight_enable());
+        QCOMPARE(config.display_config().backlight_brightness(), 80U);
+        QVERIFY(!config.has_filter_config());
+    }
 }
 
 void PrinterProtocolTests::paseRunConfigUsesWireLayout() {
