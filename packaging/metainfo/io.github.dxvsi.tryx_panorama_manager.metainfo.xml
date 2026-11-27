@@ -33,6 +33,14 @@
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.6.1" type="stable" date="2026-11-27">
+      <description>
+        <ul>
+          <li>Keep the session when a STAGE ARGB 360 does not acknowledge a new configuration: Apply waits one second, then confirms the write by reading the configuration back, as it already does for the Turris 620, instead of closing the session and asking for a reconnect.</li>
+          <li>Publish a second DEB built on Ubuntu 26.04, because the Ubuntu 24.04 package depends on Qt library package names that Ubuntu 26.04 no longer has.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.6.0" type="stable" date="2026-11-27">
       <description>
         <ul>

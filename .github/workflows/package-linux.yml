@@ -246,11 +246,27 @@ jobs:
           retention-days: 30
 
   deb:
-    name: DEB / Ubuntu 24.04
+    name: DEB / Ubuntu ${{ matrix.ubuntu }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # dpkg-shlibdeps writes the build release's library package names
+        # (for example the 24.04 t64 names) into Depends, so each Ubuntu
+        # release gets its own DEB. The 24.04 file keeps its original name.
+        include:
+          - ubuntu: "24.04"
+            image: ubuntu@sha256:52df9b1ee71626e0088f7d400d5c6b5f7bb916f8f0c82b474289a4ece6cf3faf
+            asset-suffix: ""
+          - ubuntu: "26.04"
+            image: ubuntu@sha256:0d5255be560e2d2ddcfbfda88549e9e815ef29e7cd7fc62183d5709e6e2963c6
+            asset-suffix: _ubuntu26.04
+    env:
+      UBUNTU_VERSION: ${{ matrix.ubuntu }}
+      DEB_ASSET_SUFFIX: ${{ matrix.asset-suffix }}
     container:
-      image: ubuntu@sha256:52df9b1ee71626e0088f7d400d5c6b5f7bb916f8f0c82b474289a4ece6cf3faf
+      image: ${{ matrix.image }}
       env:
         DEBIAN_FRONTEND: noninteractive
     defaults:
@@ -260,6 +276,11 @@ jobs:
       - name: Install Ubuntu packaging tools
         run: |
           set -euo pipefail
+          . /etc/os-release
+          if [[ "$ID" != ubuntu || "$VERSION_ID" != "$UBUNTU_VERSION" ]]; then
+            echo "container is $ID $VERSION_ID, expected Ubuntu $UBUNTU_VERSION" >&2
+            exit 1
+          fi
           apt-get update
           apt-get install -y --no-install-recommends \
             appstream \
@@ -361,9 +382,12 @@ jobs:
           dpkg-deb --extract "$deb_file" "$package_root"
           packaging/scripts/verify-package-contents.sh "$package_root"
 
+          # The package Version stays $version-1; only the release asset name
+          # tells the Ubuntu releases apart.
+          asset_name="tryx-panorama-manager_${version}-1${DEB_ASSET_SUFFIX}_amd64.deb"
           mkdir -p dist
-          install -m 0644 "$deb_file" "dist/$(basename "$deb_file")"
-          echo "file=dist/$(basename "$deb_file")" >> "$GITHUB_OUTPUT"
+          install -m 0644 "$deb_file" "dist/$asset_name"
+          echo "file=dist/$asset_name" >> "$GITHUB_OUTPUT"
 
       - name: Install and smoke-test DEB
         run: |
@@ -402,7 +426,7 @@ jobs:
       - name: Upload Ubuntu package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tryx-deb-ubuntu24.04-${{ github.run_id }}
+          name: tryx-deb-ubuntu${{ matrix.ubuntu }}-${{ github.run_id }}
           path: dist/*.deb
           if-no-files-found: error
           overwrite: true
@@ -592,12 +616,22 @@ jobs:
           grep -qw libx264 "$RUNNER_TEMP/ffmpeg-encoders.txt"
 
   deb-runtime-smoke:
-    name: Clean DEB runtime / Ubuntu 24.04
+    name: Clean DEB runtime / Ubuntu ${{ matrix.ubuntu }}
     needs: deb
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ubuntu: "24.04"
+            image: ubuntu@sha256:52df9b1ee71626e0088f7d400d5c6b5f7bb916f8f0c82b474289a4ece6cf3faf
+          - ubuntu: "26.04"
+            image: ubuntu@sha256:0d5255be560e2d2ddcfbfda88549e9e815ef29e7cd7fc62183d5709e6e2963c6
+    env:
+      UBUNTU_VERSION: ${{ matrix.ubuntu }}
     container:
-      image: ubuntu@sha256:52df9b1ee71626e0088f7d400d5c6b5f7bb916f8f0c82b474289a4ece6cf3faf
+      image: ${{ matrix.image }}
       env:
         DEBIAN_FRONTEND: noninteractive
     defaults:
@@ -607,12 +641,17 @@ jobs:
       - name: Download DEB built in this workflow
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: tryx-deb-ubuntu24.04-${{ github.run_id }}
+          name: tryx-deb-ubuntu${{ matrix.ubuntu }}-${{ github.run_id }}
           path: dist
 
       - name: Install only declared runtime dependencies and smoke-test
         run: |
           set -euo pipefail
+          . /etc/os-release
+          if [[ "$ID" != ubuntu || "$VERSION_ID" != "$UBUNTU_VERSION" ]]; then
+            echo "container is $ID $VERSION_ID, expected Ubuntu $UBUNTU_VERSION" >&2
+            exit 1
+          fi
           deb_file=$(find dist -maxdepth 1 -type f -name '*.deb' -print -quit)
           test -n "$deb_file"
           apt-get update

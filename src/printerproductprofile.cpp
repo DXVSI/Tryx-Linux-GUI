@@ -122,6 +122,7 @@ PrinterProductProfile turrisProfile() {
     // Fixed track id observed on the Turris FileTransmit sequence.
     profile.fileTransferTrackId = 981521;
     profile.readbackConfirmedWriteAckWindowMs = 300;
+    profile.userConfigurationAckWindowMs = 300;
     profile.defaultPowerOnMedia =
         QStringLiteral("default_poweron_1280x720.mp4.h264");
     profile.defaultStandbyMedia =
@@ -189,8 +190,8 @@ PrinterProductProfile holoProfile() {
 // and the stage1440 screen profile: a 1440x720 screen with a left and a
 // right area of 720x720. Its converter writes every kind in the official
 // media header, full-screen media like HOLO and media for one area at
-// 30 fps. Mapped from the official application only; not tested on
-// hardware.
+// 30 fps. Mapped from the official application; issue #57 confirms the
+// catalog and upload on hardware.
 PrinterProductProfile stageProfile() {
     PrinterProductProfile profile;
     profile.productId = 0x1041;
@@ -204,6 +205,9 @@ PrinterProductProfile stageProfile() {
     // STAGE page offers neither mirror nor waterfall.
     profile.orientationModel = PrinterDisplayOrientationModel::RotationFields;
     profile.fileTransferTrackId = 0;
+    // The STAGE shows and stores a UserConfiguration (200) but sends no
+    // acknowledgement within 3 s (issue #57).
+    profile.userConfigurationAckWindowMs = 1000;
     profile.keepBulkInPending = true;
     profile.defaultPowerOnMedia =
         QStringLiteral("default_poweron_1440x720.mp4.h264");

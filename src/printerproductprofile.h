@@ -57,11 +57,17 @@ struct PrinterProductProfile {
         PrinterDisplayOrientationModel::RotationFields;
     // 0 selects a freshly allocated track id per FileTransmit sequence.
     quint64 fileTransferTrackId = 0;
-    // How long to wait for the acknowledgement of a write whose result is
-    // confirmed by a readback anyway (user configuration, file removal).
-    // 0 keeps the full transaction timeout. Turris firmware never
-    // acknowledges these writes and the official app does not wait for them.
+    // How long to wait for the acknowledgement of a file removal, whose
+    // result the FileList readback confirms anyway. 0 keeps the full
+    // transaction timeout. Turris firmware never acknowledges it and the
+    // official app does not wait for it.
     int readbackConfirmedWriteAckWindowMs = 0;
+    // How long to wait for the acknowledgement of UserConfiguration (200).
+    // When none arrives in this window the connection stays open and the
+    // readback after activation confirms the write. 0: the device must
+    // acknowledge within the full transaction timeout. Turris and STAGE
+    // firmware store the configuration without acknowledging it.
+    int userConfigurationAckWindowMs = 0;
     // Keep one bulk IN transfer pending between requests, as the official
     // bridge does. With the IN armed only around each request, the idle link
     // between exchanges makes Panorama-family firmware drop off the bus until
