@@ -353,8 +353,8 @@ bool paseBadgeUploadContinuationIsValid(const TryxRuntimeApplyWithBadgesV1 &enve
     TryxRuntimeOverlayBadgesV1 normalized;
     auto request = envelope.request;
     return (productId == 0x1021 || productId == 0x1011 || productId == 0x1031
-            || productId == 0x1051 || productId == 0x1061 || productId == 0x1071
-            || productId == 0x10a1 || productId == 0x10b1)
+            || productId == 0x1041 || productId == 0x1051 || productId == 0x1061
+            || productId == 0x1071 || productId == 0x10a1 || productId == 0x10b1)
         && (productId == 0x1021 || !tryxOverlayBadgesHaveCustomText(envelope.badges))
         && runtimeApplyWithBadgesV1FromJson(runtimeApplyWithBadgesV1ToJson(envelope), &decoded)
         && decoded == envelope

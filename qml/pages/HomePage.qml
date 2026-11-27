@@ -22,9 +22,9 @@ ScrollView {
         case "TURRIS 620":
             return {file: "turris-620.png", crop: Qt.rect(114, 106, 452, 468)}
         // "PANORAMA WB" has no illustration yet; the AIO artwork would be
-        // misleading for a water block. "PANORAMA SE V2" (391a:1071) and
-        // "HOLO 360" (391a:1051) have none either: their look is not known,
-        // so they show the neutral fallback.
+        // misleading for a water block. "PANORAMA SE V2" (391a:1071),
+        // "HOLO 360" (391a:1051) and "STAGE ARGB 360" (391a:1041) have none
+        // either: their look is not known, so they show the neutral fallback.
         default:
             return null
         }

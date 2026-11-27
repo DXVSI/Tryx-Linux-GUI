@@ -579,6 +579,7 @@ private slots:
     void mediaPreparationProfileDispatchIsCapabilityBound();
     void runtimeMediaTargetFollowsProductId();
     void runtimeHoloProfileSetsTargetAndHidesOrientation();
+    void runtimeStageProfileSetsSplitTargetAndHidesOrientation();
     void runtimeDeviceSummaryFollowsLiveSnapshot();
     void offlinePrinterLifecycleEventsDoNotReadOwnerlessSnapshots();
     void capabilityLifecycleSignalsInvalidatePresentationGates();
@@ -1239,6 +1240,43 @@ void QuickClientTests::runtimeHoloProfileSetsTargetAndHidesOrientation() {
     QVERIFY(runtime.mirrorOrientationSupported());
 }
 
+void QuickClientTests::
+    runtimeStageProfileSetsSplitTargetAndHidesOrientation() {
+    RuntimeClient runtime(true);
+    MediaEditorController editor(&runtime);
+
+    TryxRuntimeSnapshot snapshot;
+    snapshot.revision = 1;
+    snapshot.connected = true;
+    snapshot.productId = QStringLiteral("391a:1041");
+    runtime.applyConnectionSnapshot(snapshot);
+    QCOMPARE(runtime.deviceModel(), QStringLiteral("STAGE ARGB 360"));
+    QCOMPARE(runtime.mediaTargetWidth(), 1440);
+    QCOMPARE(runtime.mediaTargetHeight(), 720);
+    QCOMPARE(editor.targetWidth(), 1440);
+    QCOMPARE(editor.targetHeight(), 720);
+    QVERIFY(!runtime.waterfallOrientationSupported());
+    QVERIFY(!runtime.mirrorOrientationSupported());
+
+    // One area of the split screen is the square left or right half.
+    runtime.capabilitiesReady_ = true;
+    runtime.runtimeCapabilities_ = {
+        tryxRuntimeMediaPreparationProfileV1Token(),
+    };
+    runtime.deviceCapabilitiesReady_ = true;
+    runtime.deviceCapabilities_ = {
+        tryxDeviceDisplayConfigurationV1Token(),
+        tryxDeviceMediaSplitAreaV1Token(),
+    };
+    emit runtime.capabilitiesChanged();
+    QVERIFY(editor.splitTargetAvailable());
+    editor.setPreparationTarget(QStringLiteral("SplitArea"));
+    QCOMPARE(editor.preparationTarget(), QStringLiteral("SplitArea"));
+    QCOMPARE(editor.targetWidth(), 720);
+    QCOMPARE(editor.targetHeight(), 720);
+    QCOMPARE(editor.preparationProfile().target, QStringLiteral("SplitArea"));
+}
+
 void QuickClientTests::runtimeDeviceSummaryFollowsLiveSnapshot() {
     RuntimeClient runtime(true);
 
@@ -1325,6 +1363,11 @@ void QuickClientTests::runtimeDeviceSummaryFollowsLiveSnapshot() {
     snapshot.productId = QStringLiteral("391a:1051");
     runtime.applyConnectionSnapshot(snapshot);
     QCOMPARE(runtime.deviceModel(), QStringLiteral("HOLO 360"));
+
+    snapshot.revision = mappedRevision++;
+    snapshot.productId = QStringLiteral("391a:1041");
+    runtime.applyConnectionSnapshot(snapshot);
+    QCOMPARE(runtime.deviceModel(), QStringLiteral("STAGE ARGB 360"));
 
     snapshot.revision = mappedRevision;
     snapshot.connected = false;
