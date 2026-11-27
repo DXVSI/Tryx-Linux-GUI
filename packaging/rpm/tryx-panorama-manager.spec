@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.6.0
+Version:        2.6.1
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -121,6 +121,10 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
+* Fri Nov 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.6.1-1
+- Keep the session when a STAGE ARGB 360 does not acknowledge a new configuration: Apply waits one second, then confirms the write by reading the configuration back, as it already does for the Turris 620, instead of closing the session and asking for a reconnect.
+- Publish a second DEB built on Ubuntu 26.04, because the Ubuntu 24.04 package depends on Qt library package names that Ubuntu 26.04 no longer has.
+
 * Fri Nov 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.6.0-1
 - Add test support for the STAGE ARGB 360 (391a:1041) and HOLO 360 (391a:1051): media in the official media header, Apply, brightness, backlight and overlay metrics, mapped from the official application and not tested on hardware
 - Recognize 391a:1061, 391a:1071 (Panorama SE V2), 391a:10a1 and 391a:10b1 with the matching Panorama-family profiles; not tested on hardware

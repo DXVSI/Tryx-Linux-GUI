@@ -67,7 +67,7 @@ that every TRYX display has the same geometry or capabilities:
 | `391a:1021` | Panorama SE / PASE | 2240 × 1080 | Current PASE printer-class features |
 | `391a:1011` | Panorama | 2240 × 1080 | PASE media, display, and overlay features; firmware flashing disabled; community-tested |
 | `391a:1031` | Panorama WB | 2240 × 1080 | Same feature set as Panorama `391a:1011`, following the official application's shared Panorama layout; firmware flashing disabled; community-tested |
-| `391a:1041` | STAGE ARGB 360 | 1440 × 720 | Mapped from the official application 2.6.0 (Panorama SE commands, a left and a right 720 × 720 area), not tested on hardware: media upload in the official media header (full screen with 60 fps video and GIF and 30 fps stills, one 720 × 720 area at 30 fps), FileList catalog with read-only device presets, full-screen Apply with Single/Loop/Shuffle, split-screen Apply with one medium per area, brightness and backlight, overlay metrics with hardware badges in one or both areas, saved layouts. No mirror, waterfall, custom badge text, media pull (Save as new/Replace), or firmware |
+| `391a:1041` | STAGE ARGB 360 | 1440 × 720 | Mapped from the official application 2.6.0 (Panorama SE commands, a left and a right 720 × 720 area); the catalog and picture upload are confirmed on hardware (#57), the rest is not tested yet: media upload in the official media header (full screen with 60 fps video and GIF and 30 fps stills, one 720 × 720 area at 30 fps), FileList catalog with read-only device presets, full-screen Apply with Single/Loop/Shuffle, split-screen Apply with one medium per area, brightness and backlight, overlay metrics with hardware badges in one or both areas, saved layouts. No mirror, waterfall, custom badge text, media pull (Save as new/Replace), or firmware |
 | `391a:1051` | HOLO 360 | 640 × 480 | Mapped from the official application 2.6.0 (Panorama SE commands, one 4:3 area), not tested on hardware: media upload in the official media header with its 60 fps video and GIF and 30 fps stills, FileList catalog with read-only device presets, full-screen single-media Apply with Single/Loop/Shuffle, brightness and backlight, overlay metrics with hardware badges, saved layouts; the decoration light is kept as the device reports it. No split screen, mirror, waterfall, custom badge text, light controls, media pull (Save as new/Replace), or firmware |
 | `391a:1061` | Panorama SE / PASE | 2240 × 1080 | Same feature set as Panorama `391a:1011` (custom badge text stays `391a:1021` only); mapped to PASE like the official application 2.6.0; firmware flashing disabled; not tested on hardware |
 | `391a:1071` | Panorama SE V2 | 2240 × 1080 | Same feature set as Panorama `391a:1011`; the official application 2.6.0 drives it with the PASE screen profile; firmware flashing disabled, its firmware package differs; not tested on hardware |
@@ -253,6 +253,14 @@ to the user service. A separate Settings switch can create an owner-managed
 XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
+
+## What's new in 2.6.1
+
+- On the STAGE ARGB 360, Apply no longer drops the session. The STAGE stores a
+  new configuration without answering, so the app now checks it by reading the
+  configuration back instead of asking for a reconnect (#57).
+- A second DEB is built on Ubuntu 26.04, where the Ubuntu 24.04 package does not
+  install (#57).
 
 ## What's new in 2.6.0
 
@@ -620,7 +628,7 @@ runtime remote, and a working USB portal backend are required. Stop any other
 TRYX runtime before starting this build.
 
 ```fish
-flatpak install --user ./tryx-panorama-manager-2.6.0-experimental-x86_64.flatpak
+flatpak install --user ./tryx-panorama-manager-2.6.1-experimental-x86_64.flatpak
 flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ```
 
@@ -654,16 +662,16 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.6.0-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.6.1-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.6.0-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.6.1-1_amd64.deb
 
 # Ubuntu 26.04
-sudo apt install ./tryx-panorama-manager_2.6.0-1_ubuntu26.04_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.6.1-1_ubuntu26.04_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.6.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.6.1-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
