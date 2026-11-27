@@ -627,8 +627,9 @@ flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ## Native Linux packages
 
 TRYX Panorama Manager supports Linux only. Native packaging targets the latest
-stable Fedora release, Ubuntu 24.04, Linux Mint 22, and current Arch Linux. A
-binary package built for one distribution is not reused on another distribution.
+stable Fedora release, Ubuntu 24.04, Ubuntu 26.04, Linux Mint 22, and current
+Arch Linux. A binary package built for one distribution is not reused on another
+distribution.
 
 Each CI run selects the latest stable Fedora release from the
 [official release metadata](https://fedoraproject.org/releases.json) and pins one
@@ -639,6 +640,7 @@ Release assets use these formats:
 
 - RPM `x86_64` for the latest stable Fedora release at build time
 - DEB `amd64` for Ubuntu 24.04 and Linux Mint 22
+- DEB `amd64` for Ubuntu 26.04, with `_ubuntu26.04` in the file name
 - `.pkg.tar.zst` `x86_64` for current Arch Linux
 - `SHA256SUMS` for artifact verification
 
@@ -656,6 +658,9 @@ sudo dnf install --allowerasing ./tryx-panorama-manager-2.6.0-1.fc$tryx_fedora_r
 
 # Ubuntu 24.04 or Linux Mint 22
 sudo apt install ./tryx-panorama-manager_2.6.0-1_amd64.deb
+
+# Ubuntu 26.04
+sudo apt install ./tryx-panorama-manager_2.6.0-1_ubuntu26.04_amd64.deb
 
 # Arch Linux
 sudo pacman -U ./tryx-panorama-manager-2.6.0-1-x86_64.pkg.tar.zst
@@ -760,7 +765,7 @@ tests exercise the same `libx264` encoder required at runtime:
 sudo dnf install -y --allowerasing gcc-c++ git make dbus-daemon ffmpeg pkgconf-pkg-config qt6-qtbase-devel qt6-qtdeclarative-devel qt6-linguist protobuf-compiler protobuf-devel systemd-devel libusb1-devel
 ```
 
-Ubuntu 24.04 and Linux Mint 22 build dependencies:
+Ubuntu 24.04, Ubuntu 26.04 and Linux Mint 22 build dependencies:
 
 ```fish
 sudo apt install build-essential dbus-user-session ffmpeg git libprotobuf-dev libsystemd-dev libudev-dev libusb-1.0-0-dev pkg-config protobuf-compiler qmake6 qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-l10n-tools qt6-tools-dev-tools qml6-module-qt-labs-folderlistmodel qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-dialogs qml6-module-qtquick-layouts qml6-module-qtquick-shapes qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qttest systemd-dev
@@ -1048,7 +1053,7 @@ translations/        # Qt Linguist translation sources
 include/panorama/    # Protocol headers
 protocol/wire-v1/    # Minimal project-owned protobuf wire schema
 tests/               # Offline runtime, protocol, transport, and Quick tests
-debian/              # Ubuntu 24.04 and Linux Mint 22 package metadata
+debian/              # Ubuntu 24.04, Ubuntu 26.04 and Linux Mint 22 package metadata
 packaging/
   arch/              # Arch Linux PKGBUILD
   rpm/               # Fedora RPM spec
