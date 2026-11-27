@@ -254,6 +254,28 @@ XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
 
+## What's new in 2.6.0
+
+- The STAGE ARGB 360 (`391a:1041`) and HOLO 360 (`391a:1051`) get media
+  upload, Apply, brightness and the metrics overlay, set up the way the
+  official application drives them. Nobody has run them on hardware yet, so
+  this is test support; reports are welcome in #57 and #42.
+- More product IDs from the official application are recognized: Panorama SE
+  V2 `391a:1071`, and `391a:1061`, `391a:10a1` and `391a:10b1` as Panorama SE,
+  Panorama WB and Panorama. They are not tested on hardware either.
+- Pictures for the Panorama, Panorama SE and Panorama WB are uploaded as one
+  frame in the TRYX media header, the format the official application uses,
+  instead of a raw minute-long clip. This targets the Loop and Shuffle stall
+  (#37) and is not yet confirmed on hardware. Delete pictures uploaded with
+  older versions and upload them again.
+- With newer firmware, the preset Loop and Shuffle modes set by the official
+  application read correctly, and messages the display sends on its own no
+  longer break a command.
+- On legacy `cm01` displays, the app says when `adb` is missing or cannot open
+  the display, instead of "ADB device not found" (#59).
+- The support report folder picker enables Save only after the selected folder
+  has been listed.
+
 ## What's new in 2.5.4
 
 - Users outside the `lp` group no longer stay on "Waiting for Device" after
@@ -598,7 +620,7 @@ runtime remote, and a working USB portal backend are required. Stop any other
 TRYX runtime before starting this build.
 
 ```fish
-flatpak install --user ./tryx-panorama-manager-2.5.4-experimental-x86_64.flatpak
+flatpak install --user ./tryx-panorama-manager-2.6.0-experimental-x86_64.flatpak
 flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ```
 
@@ -630,13 +652,13 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.4-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.6.0-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.5.4-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.6.0-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.5.4-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.6.0-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
