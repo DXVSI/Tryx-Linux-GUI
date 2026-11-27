@@ -2,6 +2,7 @@
 #include "packagingcontext.h"
 
 #include "mediatransform.h"
+#include "turrismediaformat.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -638,6 +639,7 @@ void MediaPreviewController::loadRecoveredVideo(
             }
             stagedPath_ = result.sourcePath;
             sourceKind_ = SourceKind::RecoveredVideo;
+            recoveredMediaHeaderBytes_ = result.mediaHeaderBytes;
             sourceProtected_ = false;
             ++requestedRenderGeneration_;
             schedulePreview();
@@ -705,6 +707,7 @@ void MediaPreviewController::cancel() {
     removeOwnedStagedSource();
     stagedPath_.clear();
     sourceKind_ = SourceKind::None;
+    recoveredMediaHeaderBytes_ = 0;
     resetVisibleState();
     emit stateChanged();
 }
@@ -749,6 +752,7 @@ void MediaPreviewController::releaseStagedSource() {
     sourceProtected_ = false;
     stagedPath_.clear();
     sourceKind_ = SourceKind::None;
+    recoveredMediaHeaderBytes_ = 0;
     removePreviewArtifact(currentOutputPath_);
     currentOutputPath_.clear();
     resetVisibleState();
@@ -1156,6 +1160,9 @@ MediaPreviewController::validateRecoveredArtifact(
     }
     QCryptographicHash hash(QCryptographicHash::Sha256);
     QByteArray buffer(kCopyBufferBytes, Qt::Uninitialized);
+    // The first bytes are kept from the verified read, so the header
+    // length belongs to the same content as the hash.
+    QByteArray leadingBytes;
     quint64 readBytes = 0;
     while (readBytes < artifact.size) {
         const qint64 count = source.read(
@@ -1170,6 +1177,15 @@ MediaPreviewController::validateRecoveredArtifact(
         }
         hash.addData(
             QByteArrayView(buffer.constData(), count));
+        if (leadingBytes.size() <
+            tryx::turris_media::kMaximumMediaHeaderPrefixBytes) {
+            leadingBytes.append(
+                buffer.constData(),
+                qMin<qint64>(
+                    count,
+                    tryx::turris_media::kMaximumMediaHeaderPrefixBytes -
+                        leadingBytes.size()));
+        }
         readBytes += static_cast<quint64>(count);
     }
     if (!source.atEnd()) {
@@ -1201,6 +1217,8 @@ MediaPreviewController::validateRecoveredArtifact(
         return result;
     }
     result.sourcePath = artifact.localPath;
+    result.mediaHeaderBytes =
+        tryx::turris_media::mediaHeaderPrefixSize(leadingBytes);
     return result;
 }
 
@@ -1500,15 +1518,25 @@ void MediaPreviewController::startPreview() {
                 .arg(activeRenderGeneration_));
     diagnostic_.clear();
     error_.clear();
+    QStringList input;
+    if (sourceKind_ == SourceKind::RecoveredVideo) {
+        // A device copy is raw H.264; a still in the official format
+        // carries the media header first, which the decoder never sees.
+        if (recoveredMediaHeaderBytes_ > 0) {
+            input << QStringLiteral("-skip_initial_bytes")
+                  << QString::number(recoveredMediaHeaderBytes_);
+        }
+        input << QStringLiteral("-f") << QStringLiteral("h264");
+    }
+    input << QStringLiteral("-i") << stagedPath_;
     process_.setProgram(ffmpeg);
-    process_.setArguments({
+    process_.setArguments(QStringList{
         QStringLiteral("-nostdin"),
         QStringLiteral("-hide_banner"),
         QStringLiteral("-loglevel"),
         QStringLiteral("error"),
         QStringLiteral("-y"),
-        QStringLiteral("-i"),
-        stagedPath_,
+    } + input + QStringList{
         QStringLiteral("-map"),
         QStringLiteral("0:v:0"),
         QStringLiteral("-frames:v"),

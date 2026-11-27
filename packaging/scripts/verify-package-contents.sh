@@ -81,7 +81,7 @@ do
     fi
 done
 
-expected_usb_product_ids=$(printf '%s\n' 1011 1021 1031 2011)
+expected_usb_product_ids=$(printf '%s\n' 1011 1021 1031 1041 1051 1061 1071 10a1 10b1 2011)
 
 udev_product_ids() {
     sed -n \
@@ -124,6 +124,21 @@ packaged_usb_product_ids=$(appstream_product_ids "$metainfo_path")
 if [ "$packaged_usb_product_ids" != "$expected_usb_product_ids" ]; then
     echo "unexpected supported USB product IDs in ${metainfo_path#"$staged_root"}:" >&2
     printf '%s\n' "$packaged_usb_product_ids" >&2
+    exit 1
+fi
+
+# The Flatpak build enumerates only the devices its --usb filters name.
+flatpak_manifest=$project_root/packaging/flatpak/io.github.dxvsi.tryx_panorama_manager.yml
+flatpak_usb_product_ids=$(
+    sed -n \
+        's/^[[:space:]]*- --usb=vnd:391a+dev:\([[:xdigit:]]\{4\}\)[[:space:]]*$/\1/p' \
+        "$flatpak_manifest" |
+        tr '[:upper:]' '[:lower:]' |
+        LC_ALL=C sort
+)
+if [ "$flatpak_usb_product_ids" != "$expected_usb_product_ids" ]; then
+    echo "unexpected supported USB product IDs in the Flatpak manifest:" >&2
+    printf '%s\n' "$flatpak_usb_product_ids" >&2
     exit 1
 fi
 

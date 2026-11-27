@@ -3,6 +3,7 @@
 #include "mediaeditorcontroller.h"
 #include "operationlistmodel.h"
 #include "runtimeclient.h"
+#include "turrismediaformat.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -414,6 +415,18 @@ int DeviceMediaWorkflowController::runExportHelper(
         return 4;
     }
 
+    // A still uploaded in the official format starts with the media header
+    // ("u32 length + MediaHeaderPb"). The device copy is verified whole, but
+    // only the raw H.264 after the header is written, so the export stays a
+    // plain Annex-B stream that players open.
+    const qint64 headerBytes =
+        tryx::turris_media::mediaHeaderPrefixSize(source.peek(
+            tryx::turris_media::kMaximumMediaHeaderPrefixBytes));
+    if (headerBytes < 0 ||
+        static_cast<quint64>(headerBytes) >= expectedSize) {
+        destination.cancelWriting();
+        return 5;
+    }
     QCryptographicHash hash(QCryptographicHash::Sha256);
     QByteArray buffer(kCopyBufferBytes, Qt::Uninitialized);
     quint64 copied = 0;
@@ -423,8 +436,18 @@ int DeviceMediaWorkflowController::runExportHelper(
             static_cast<qint64>(qMin<quint64>(
                 static_cast<quint64>(buffer.size()),
                 expectedSize - copied)));
-        if (count <= 0 ||
-            !writeAll(&destination, buffer.constData(), count)) {
+        if (count <= 0) {
+            destination.cancelWriting();
+            return 4;
+        }
+        const quint64 skip =
+            copied >= static_cast<quint64>(headerBytes)
+                ? 0
+                : qMin<quint64>(static_cast<quint64>(headerBytes) - copied,
+                                static_cast<quint64>(count));
+        if (static_cast<quint64>(count) > skip &&
+            !writeAll(&destination, buffer.constData() + skip,
+                      count - static_cast<qint64>(skip))) {
             destination.cancelWriting();
             return 4;
         }
@@ -464,7 +487,7 @@ int DeviceMediaWorkflowController::runExportHelper(
     return completed.exists() && completed.isFile() &&
                    !completed.isSymLink() &&
                    static_cast<quint64>(completed.size()) ==
-                       expectedSize
+                       expectedSize - static_cast<quint64>(headerBytes)
         ? 0
         : 5;
 }

@@ -10,8 +10,19 @@ maintainer-tested. SteamOS has not been tested on a physical device.
 - Flatpak 1.15.11 or newer, a working USB portal and compatible desktop backend.
 - Media conversion uses KDE Platform's `org.freedesktop.Platform.codecs-extra`
   extension. Keep the runtime's related extensions enabled when installing.
-- Printer-class product profiles `391a:1011`, `391a:1021`, `391a:1031`, `391a:2011` only.
+- Printer-class product profiles `391a:1011`, `391a:1021`, `391a:1031`, `391a:2011` and,
+  mapped like the official application but not tested on hardware, `391a:1041`,
+  `391a:1051`, `391a:1061`, `391a:1071`, `391a:10a1`, `391a:10b1` only.
   Legacy serial/ADB identities, including `18d1:2d04`, are not exposed in this build.
+- HOLO 360 (`391a:1051`) follows the official application 2.6.0 and is not tested
+  on hardware. Media upload, the device catalog, full-screen Apply, brightness,
+  backlight, overlay metrics and saved layouts are on; split screen, mirror,
+  waterfall, light controls, media pull (Save as new/Replace) and firmware are off.
+- STAGE ARGB 360 (`391a:1041`) follows the official application 2.6.0 and is not
+  tested on hardware. Media upload for the full screen and for each 720 × 720
+  area, the device catalog, full-screen and split-screen Apply, brightness,
+  backlight, overlay metrics and saved layouts are on; mirror, waterfall, media
+  pull (Save as new/Replace) and firmware are off.
 - USB enumeration is narrowly scoped. The portal asks for device access once per
   device identity; denial does not trigger a loop of permission prompts.
   Portal permission does not bypass the host's existing USB access controls.

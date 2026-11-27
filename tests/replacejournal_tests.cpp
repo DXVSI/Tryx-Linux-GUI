@@ -147,6 +147,14 @@ void ReplaceJournalTests::version2BindsSupportedProduct_data() {
         << quint16{0x1011} << QStringLiteral("1011");
     QTest::newRow("pase-1021")
         << quint16{0x1021} << QStringLiteral("1021");
+    QTest::newRow("pase-1061")
+        << quint16{0x1061} << QStringLiteral("1061");
+    QTest::newRow("pase-v2-1071")
+        << quint16{0x1071} << QStringLiteral("1071");
+    QTest::newRow("panorama-wb-10a1")
+        << quint16{0x10a1} << QStringLiteral("10a1");
+    QTest::newRow("panorama-10b1")
+        << quint16{0x10b1} << QStringLiteral("10b1");
 }
 
 void ReplaceJournalTests::version2BindsSupportedProduct() {

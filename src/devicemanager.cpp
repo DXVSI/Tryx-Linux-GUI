@@ -301,7 +301,10 @@ TryxRuntimeSavedLayoutsSnapshotV2 DeviceManager::savedLayoutsSnapshotV2() const 
     }
     if (!profile ||
         (profile->productId != 0x1011 && profile->productId != 0x1021 &&
-         profile->productId != 0x1031) ||
+         profile->productId != 0x1031 && profile->productId != 0x1041 &&
+         profile->productId != 0x1051 && profile->productId != 0x1061 &&
+         profile->productId != 0x1071 && profile->productId != 0x10a1 &&
+         profile->productId != 0x10b1) ||
         !profile->mediaCatalogSupported ||
         !profile->displayConfigurationSupported ||
         !profile->overlayMetricsSupported) {
@@ -2136,7 +2139,13 @@ bool DeviceManager::currentSavedLayoutsContext(
         tryxSavedLayoutProductIdIsSupported(product) && profile &&
         (profile->productId == 0x1011 ||
          profile->productId == 0x1021 ||
-         profile->productId == 0x1031) &&
+         profile->productId == 0x1031 ||
+         profile->productId == 0x1041 ||
+         profile->productId == 0x1051 ||
+         profile->productId == 0x1061 ||
+         profile->productId == 0x1071 ||
+         profile->productId == 0x10a1 ||
+         profile->productId == 0x10b1) &&
         profile->mediaCatalogSupported &&
         profile->displayConfigurationSupported &&
         profile->overlayMetricsSupported;

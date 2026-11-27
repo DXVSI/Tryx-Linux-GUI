@@ -7,6 +7,7 @@
 #include <QMutex>
 #include <QObject>
 #include <QSet>
+#include <QSize>
 #include <QString>
 #include <QTimer>
 
@@ -139,6 +140,10 @@ private:
     void finishTurrisFrameCountPreparation(int exitCode, bool normalExit);
     void completePreparation(QString thumbnailSha256);
     void failPreparation(const QString &message, bool cancelled);
+    // The active preparation writes the official media header: every
+    // Turris kind and PASE stills. The raw stream goes to rawMediaPath_.
+    bool preparesMediaHeader() const;
+    QSize preparedMediaSize() const;
     bool startProcessIfCurrent();
     void resetPreparationState();
     void startPendingIfAvailable();
@@ -161,7 +166,6 @@ private:
     TryxRuntimeMediaPreparationProfileV1 preparationProfile_;
     quint16 productId_ = 0x1021;
     quint32 turrisMediaKind_ = 0;
-    bool recoveredVideo_ = false;
     quint64 generation_ = 0;
     QByteArray processOutput_;
     PreparationPhase phase_ = PreparationPhase::Idle;

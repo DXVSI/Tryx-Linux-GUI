@@ -21,12 +21,30 @@
     <modalias>usb:v391Ap1011d*</modalias>
     <modalias>usb:v391Ap1021d*</modalias>
     <modalias>usb:v391Ap1031d*</modalias>
+    <modalias>usb:v391Ap1041d*</modalias>
+    <modalias>usb:v391Ap1051d*</modalias>
+    <modalias>usb:v391Ap1061d*</modalias>
+    <modalias>usb:v391Ap1071d*</modalias>
+    <modalias>usb:v391Ap10A1d*</modalias>
+    <modalias>usb:v391Ap10B1d*</modalias>
     <modalias>usb:v391Ap2011d*</modalias>
   </provides>
   <url type="homepage">https://github.com/DXVSI/Tryx-Linux-GUI</url>
   <url type="bugtracker">https://github.com/DXVSI/Tryx-Linux-GUI/issues</url>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.6.0" type="stable" date="2026-11-27">
+      <description>
+        <ul>
+          <li>Add test support for the STAGE ARGB 360 (391a:1041) and HOLO 360 (391a:1051): media in the official media header, Apply, brightness, backlight and overlay metrics, mapped from the official application and not tested on hardware.</li>
+          <li>Recognize 391a:1061, 391a:1071 (Panorama SE V2), 391a:10a1 and 391a:10b1 with the matching Panorama-family profiles; not tested on hardware.</li>
+          <li>Upload Panorama-family still images as one frame in the TRYX media header, as the official application does, instead of a raw 60-second clip.</li>
+          <li>Read the preset Loop and Shuffle modes of newer firmware, and skip responses the display sends on its own instead of failing the transaction.</li>
+          <li>On legacy cm01 displays, say when adb is missing, cannot open the display or lists it as not ready, instead of reporting that no ADB device was found.</li>
+          <li>Enable Save in the support report folder picker only after the current folder has been listed.</li>
+        </ul>
+      </description>
+    </release>
     <release version="2.5.4" type="stable" date="2026-11-13">
       <description>
         <ul>

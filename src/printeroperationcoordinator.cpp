@@ -8,6 +8,7 @@
 #include "privatedirectorypath.h"
 #include "privateruntimepaths.h"
 #include "runtimeapplyrequestcodec.h"
+#include "turrismediaformat.h"
 
 #include <QDebug>
 #include <QDateTime>
@@ -423,6 +424,14 @@ void PrinterOperationCoordinator::updateMediaCatalog(
     snapshot.deviceIdentity = context.deviceIdentity;
     QList<tryx::MediaCatalogStore::RemoteEntry> freshEntries;
     freshEntries.reserve(mediaFiles.size());
+    // FileRemove names a file, not a folder: a name the catalog lists more
+    // than once (a STAGE keeps its shipped presets read-only in fixed/ and
+    // writable copies of the same names in preset/) is refused by the
+    // device client as ambiguous, so it is not offered for deletion either.
+    QHash<QString, int> nameCounts;
+    for (const PrinterProtocol::MediaFile &media : mediaFiles) {
+        ++nameCounts[media.name];
+    }
     for (const PrinterProtocol::MediaFile &media : mediaFiles) {
         TryxRuntimeMediaEntry entry;
         entry.name = media.name;
@@ -445,6 +454,8 @@ void PrinterOperationCoordinator::updateMediaCatalog(
                        QStringLiteral("default_"),
                        Qt::CaseInsensitive)) {
             entry.deleteBlockReason = QStringLiteral("ProtectedName");
+        } else if (nameCounts.value(entry.name) > 1) {
+            entry.deleteBlockReason = QStringLiteral("DuplicateName");
         } else {
             entry.deleteAllowed = true;
         }
@@ -4604,9 +4615,17 @@ QString PrinterOperationCoordinator::queueRecoveredOperation(
     record.sourcePath = artifact.canonicalPath;
     record.sourceContentSha256 = artifact.metadata.decodedSha256;
     record.sourceSize = static_cast<qint64>(artifact.metadata.size);
+    // A still pulled from the device (media header with a JPEG or PNG
+    // original) is prepared again as a still; the preparer reads the same
+    // hash-pinned copy and makes the same choice.
     record.conversionProfile =
-        tryx::printer_media_identity::paseRecoveredConversionProfile(
-            profile);
+        tryx::turris_media::isStillImageMediaHeader(
+            tryx::turris_media::readMediaHeaderPrefix(
+                artifact.canonicalPath))
+            ? tryx::printer_media_identity::paseImageConversionProfile(
+                  profile)
+            : tryx::printer_media_identity::paseRecoveredConversionProfile(
+                  profile);
     record.mediaConversion =
         tryx::printer_media_identity::printerMediaConversionIdentity(
             *productProfile, profile);
@@ -4835,6 +4854,16 @@ QString PrinterOperationCoordinator::queueUploadOperation(
             QStringLiteral("UnsupportedConfiguration"),
             tryx::DeviceManagerMessages::tr(
                 "Waterfall orientation is not supported for USB product %1")
+                .arg(printerProductIdString(productProfile->productId)));
+    }
+    if (applyAfterUpload &&
+        normalizedApplyRequest.display.orientationPresent &&
+        normalizedApplyRequest.display.mirrorMode &&
+        !productProfile->mirrorSupported) {
+        return reject(
+            QStringLiteral("UnsupportedConfiguration"),
+            tryx::DeviceManagerMessages::tr(
+                "Mirror orientation is not supported for USB product %1")
                 .arg(printerProductIdString(productProfile->productId)));
     }
     // The source origin identity is hashed before conversion whenever the
@@ -5432,7 +5461,7 @@ QString PrinterOperationCoordinator::queueApplyOperation(
         normalizedRequest.display.waterfallMode = true;
     }
     const QString presetMedia =
-        printerPresetMediaFile(normalizedRequest.presetId);
+        printerPresetMediaFile(normalizedRequest.presetId, context.productId);
     if (!savedLayoutApply && normalizedRequest.media.isEmpty() &&
         !presetMedia.isEmpty()) {
         normalizedRequest.media = {presetMedia};
@@ -5537,6 +5566,15 @@ QString PrinterOperationCoordinator::queueApplyOperation(
                 QStringLiteral("UnsupportedConfiguration"),
                 tryx::DeviceManagerMessages::tr(
                     "Waterfall orientation is not supported for USB product %1")
+                    .arg(printerProductIdString(context.productId)));
+        }
+        if (applyProfile && !applyProfile->mirrorSupported &&
+            normalizedRequest.display.orientationPresent &&
+            normalizedRequest.display.mirrorMode) {
+            return reject(
+                QStringLiteral("UnsupportedConfiguration"),
+                tryx::DeviceManagerMessages::tr(
+                    "Mirror orientation is not supported for USB product %1")
                     .arg(printerProductIdString(context.productId)));
         }
     }
@@ -6407,6 +6445,20 @@ void PrinterOperationCoordinator::handlePrepared(
             QStringLiteral("SourceChanged"), QString(),
             tryx::DeviceManagerMessages::tr(
                 "Source media changed while it was being converted"));
+        return;
+    }
+    if (record.recoveredSource &&
+        tryx::printer_media_identity::isPaseImageConversionProfile(
+            record.conversionProfile) !=
+            remoteName.contains(QStringLiteral(".png.h264_"),
+                                Qt::CaseInsensitive)) {
+        releasePrinterPreparationPath(uploadPath);
+        releasePrinterPreparationPath(stagedThumbnailPath);
+        finishOperation(
+            operationId, QStringLiteral("Failed"),
+            QStringLiteral("PreparedMediaKindMismatch"), QString(),
+            tryx::DeviceManagerMessages::tr(
+                "The prepared device copy is not the expected kind of media"));
         return;
     }
     record.sourcePath = sourcePath;

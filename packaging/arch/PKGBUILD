@@ -2,7 +2,7 @@
 # PKGBUILD metadata and directory variables are consumed or provided by makepkg.
 # shellcheck disable=SC2034,SC2154
 pkgname=tryx-panorama-manager
-pkgver=2.5.4
+pkgver=2.6.0
 pkgrel=1
 pkgdesc='Control compatible TRYX cooler displays on Linux'
 arch=('x86_64')
@@ -19,7 +19,7 @@ depends=(
   'systemd'
 )
 optdepends=(
-  'android-tools: legacy OTA support and rebooting a device to loader mode'
+  'android-tools: media on legacy serial/ADB displays, legacy OTA and rebooting to loader mode'
   'e2fsprogs: inspect Rockchip rootfs images with debugfs'
   'mesa-utils: detect GPU names with glxinfo'
   'pciutils: fallback GPU detection with lspci'

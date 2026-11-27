@@ -1957,23 +1957,80 @@ void appendTurrisBytesField(QByteArray *output, quint32 field,
 }
 
 QByteArray turrisMediaMetadata(quint32 mediaKind,
-                               quint64 frameCount) {
-    // Stills are declared at 30 fps, video and GIF at 60 fps.
-    const quint32 framesPerSecond = mediaKind == 2 ? 30 : 60;
+                               quint64 frameCount,
+                               quint32 width = 1280,
+                               quint32 height = 720,
+                               quint32 declaredFramesPerSecond = 0) {
+    // Stills (JPEG 1, PNG 2) are declared at 30 fps, video and GIF at 60;
+    // split-area media passes its 30 fps explicitly.
+    const quint32 framesPerSecond = declaredFramesPerSecond != 0
+        ? declaredFramesPerSecond
+        : mediaKind == 1 || mediaKind == 2 ? 30 : 60;
     QByteArray metadata;
     appendTurrisVarintField(&metadata, 1, 0x4D584844U);
     appendTurrisBytesField(
         &metadata, 2,
-        QStringLiteral("Tryx media header v1, fps=%1, size=1280x720")
+        QStringLiteral("Tryx media header v1, fps=%1, size=%2x%3")
             .arg(framesPerSecond)
+            .arg(width)
+            .arg(height)
             .toLatin1());
     appendTurrisVarintField(&metadata, 3, mediaKind);
     appendTurrisVarintField(&metadata, 4, 1);
     appendTurrisVarintField(&metadata, 5, framesPerSecond);
-    appendTurrisVarintField(&metadata, 6, 1280);
-    appendTurrisVarintField(&metadata, 7, 720);
+    appendTurrisVarintField(&metadata, 6, width);
+    appendTurrisVarintField(&metadata, 7, height);
     appendTurrisVarintField(&metadata, 8, frameCount);
     return metadata;
+}
+
+// Container header ("u32 length + MediaHeaderPb") that KANALI 2.6.0's
+// MediaX.dll (MX_ConvertToH264Raw, run under Wine on 2026-11-17) wrote for
+// a PNG converted at 30 fps. The official converter writes it for every
+// product; only the size differs.
+QByteArray officialStillMediaHeader(quint32 width) {
+    return width == 1120
+        ? QByteArray::fromHex(
+              "4200000008c490e1ea04122c54727978206d65646961206865616465722076"
+              "312c206670733d33302c2073697a653d31313230783130383018022001281e"
+              "30e00838b8084001")
+        : QByteArray::fromHex(
+              "4200000008c490e1ea04122c54727978206d65646961206865616465722076"
+              "312c206670733d33302c2073697a653d32323430783130383018022001281e"
+              "30c01138b8084001");
+}
+
+// A full-screen PASE still as the device stores it: prepared from a PNG
+// through the upload path. Callers check QTest::currentTestFailed().
+void preparePaseStillBlob(const QString &directory, const QColor &color,
+                          QByteArray *blob) {
+    const QString sourcePath =
+        QDir(directory).filePath(QStringLiteral("device-still.png"));
+    QImage image(160, 90, QImage::Format_RGB32);
+    image.fill(color);
+    QVERIFY(image.save(sourcePath));
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    preparer.prepareWithPreparationProfile(
+        QStringLiteral("37373737-3737-4737-8737-373737373737"),
+        QStringLiteral("pase-endpoint"), sourcePath, QString(), 37,
+        tryxFullFrameMediaPreparationProfile(), 0x1021);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    QVERIFY2(failedSpy.isEmpty(),
+             qPrintable(failedSpy.isEmpty()
+                            ? QString()
+                            : failedSpy.first().at(1).toString()));
+    const QString outputPath = preparedSpy.first().at(3).toString();
+    const QString thumbnailPath = preparedSpy.first().at(6).toString();
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    *blob = output.readAll();
+    output.close();
+    preparer.releasePreparedFile(outputPath);
+    preparer.releasePreparedFile(thumbnailPath);
+    QCOMPARE(blob->left(70), officialStillMediaHeader(2240));
 }
 
 QByteArray wrapTurrisMediaBlob(const QByteArray &metadata,
@@ -2262,6 +2319,12 @@ private slots:
     void mediaTransformValidationAndFilters();
     void mediaTransformChangesConversionProfile();
     void productProfilesExposeExactCapabilities();
+    void holoProfileMapsOfficialCapabilities();
+    void holoConversionIdentitiesReachEveryConsumer();
+    void stageProfileMapsOfficialCapabilities();
+    void stageConversionIdentitiesReachEveryConsumer();
+    void kanaliMappedProductIdsReusePanoramaProfiles_data();
+    void kanaliMappedProductIdsReusePanoramaProfiles();
     void turrisMediaAnalysisUses1280Profile();
     void turrisMediaFormatFrameCountParserIsStrict();
     void turrisMediaFormatWriterIsAtomicAndRewinds();
@@ -2273,6 +2336,18 @@ private slots:
     void turrisMediaFormatValidatorRejectsMalformedMetadata();
     void recoveredMediaProbeParserIsExact();
     void turrisImagePreparationBuildsMxhdBlob();
+    void holoMediaPreparationBuildsOfficialMxhd_data();
+    void holoMediaPreparationBuildsOfficialMxhd();
+    void stageMediaPreparationBuildsOfficialMxhd_data();
+    void stageMediaPreparationBuildsOfficialMxhd();
+    void paseMediaHeaderMatchesOfficialConverter();
+    void splitAreaMediaHeaderMatchesOfficialConverter();
+    void paseImagePreparationBuildsOfficialStill_data();
+    void paseImagePreparationBuildsOfficialStill();
+    void mediaHeaderPrefixRecognisesDeviceStills();
+    void recoveredDeviceStillStaysStill_data();
+    void recoveredDeviceStillStaysStill();
+    void recoveredStillSaveAsNewUsesImageIdentity();
     void pasePreparationProfilesProduceExactGeometry();
     void mediaPreparationKeepsRetryArtifactsPrivate_data();
     void mediaPreparationKeepsRetryArtifactsPrivate();
@@ -2292,6 +2367,18 @@ private slots:
     void mediaRuntimeStartupCleanupIsBounded();
     void runtimeDisplayConfigDbusRoundTrip();
     void paseRunConfigUsesWireLayout();
+    void holoRunConfigFollowsOfficialLayout_data();
+    void holoRunConfigFollowsOfficialLayout();
+    void stageRunConfigFollowsOfficialLayout_data();
+    void stageRunConfigFollowsOfficialLayout();
+    void stageSplitApplyWritesDualMedia();
+    void stageHardwareCatalogListsEveryEntry_data();
+    void stageHardwareCatalogListsEveryEntry();
+    void stageHardwareCatalogReachesTheCoordinator_data();
+    void stageHardwareCatalogReachesTheCoordinator();
+    void stageHardwareCatalogNeverRemovesFixedMedia_data();
+    void stageHardwareCatalogNeverRemovesFixedMedia();
+    void stageHardwareConfigurationAppliesPresetUploadAndAreas();
     void metricsCatalogTokensAndPaseGroupIdsRemainFrozen_data();
     void metricsCatalogTokensAndPaseGroupIdsRemainFrozen();
     void paseFormatterRejectsInvalidOrFourthMetricBeforeTransport_data();
@@ -2321,6 +2408,12 @@ private slots:
     void paseDisplayMutationMatrix_data();
     void paseDisplayMutationMatrix();
     void readPaseDisplayStateDecodesDualConfiguration();
+    void readPaseDisplayStateReadsPresetLoopModes_data();
+    void readPaseDisplayStateReadsPresetLoopModes();
+    void paseDisplayApplyReplacesPresetLoopMode_data();
+    void paseDisplayApplyReplacesPresetLoopMode();
+    void holoApplyPreservesLightConfiguration();
+    void paseMediaApplyRejectsPresetLoopReadback();
     void standalonePaseMetricsConfigurationIsAcknowledged();
     void displayKeepalivePreservesPaseOverlayValues();
     void paseMetricBatchMatchesHeaderlessWireFrame();
@@ -2616,6 +2709,7 @@ private slots:
     void firmwareWorkerQuiesceClosesTransport();
     void legacyWorkerSerialLifecycleAndQuiesce();
     void legacyHelpersPassArgumentsWithoutShellParsing();
+    void legacyAdbStatusNamesTheMissingPart();
     void legacyHandshakeRetriesAndDropsLateReplies();
     void workerSessionsShareIoContextAndTeardown();
     void workerGateInterruptsBlockedForegroundResponse_data();
@@ -2662,6 +2756,7 @@ private slots:
     void udbSessionBootstrapWaitsForLateDeviceInfo();
     void udbSessionBootstrapResynchronizesAfterStaleTail();
     void udbSessionBootstrapSkipsStaleTrackedResponse();
+    void udbSessionBootstrapSkipsUnsolicitedNotifications();
     void udbSessionBootstrapRejectsUnboundedStaleResponses();
     void udbSessionDeviceInfoReadinessTimeoutSendsOnce();
     void udbSessionBootstrapPartialResponseIsTerminal();
@@ -2676,6 +2771,8 @@ private slots:
     void displayKeepaliveMalformedResponseIsDiscarded();
     void displayKeepaliveIncompleteResponseIsDiscarded();
     void notificationBeforeExpectedResponse();
+    void unsolicitedNotificationsBeforeTrackedResponseAreSkipped();
+    void optionalSetterRejectionSurvivesUnsolicitedNotification();
     void headerlessPongBeforeTrackedResponseIsSkipped();
     void boundedResponseBurstBeforeFileListIsSkipped();
     void slowTrackedResponseGetsInFlightKeepalive();
@@ -2727,6 +2824,7 @@ private slots:
     void uploadIsResponseDriven();
     void turrisUploadUses1280Profile();
     void turrisUploadRejectsMalformedMxhdBeforeUsb();
+    void stageUploadChecksTheAreaHeaderBeforeUsb();
     void uploadDataUsesDedicatedWriteDeadline();
     void uploadWaitsForDelayedBoundaryAckWithIdleKeepalive();
     void uploadEndTimeoutIsFinalizationUnknown();
@@ -10999,7 +11097,7 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
     QCOMPARE(
         legacyProfile,
         QStringLiteral(
-            "pase-h264-v1-image-60s-2240x1080-yuv420p-30fps-libx264-veryfast-crf23"));
+            "pase-mxhd-v1-image-2240x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali"));
 
     TryxRuntimeMediaTransform crop = legacy;
     crop.mode = QStringLiteral("Crop");
@@ -11014,7 +11112,7 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
         analyzedSpy.at(1).at(4).toString();
     QVERIFY(cropProfile.startsWith(
         QStringLiteral(
-            "pase-h264-v2-image-60s-2240x1080-yuv420p-30fps-libx264-veryfast-crf23-transform-")));
+            "pase-mxhd-v1-image-2240x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali-transform-")));
     QVERIFY(cropProfile.endsWith(
         tryxMediaTransformFingerprint(crop)));
     QVERIFY(cropProfile != legacyProfile);
@@ -11031,10 +11129,56 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
         analyzedSpy.at(2).at(4).toString();
     QVERIFY(splitConversionProfile.startsWith(
         QStringLiteral(
-            "pase-h264-v3-image-60s-split-area-1120x1080-yuv420p-30fps-libx264-veryfast-crf23-transform-")));
+            "pase-mxhd-v1-image-split-area-1120x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali-transform-")));
     QVERIFY(splitConversionProfile.endsWith(
         tryxMediaTransformFingerprint(crop)));
     QVERIFY(splitConversionProfile != cropProfile);
+
+    // Minute-long raw stills from earlier versions stay canonical, so their
+    // stored records load, but no longer match a new upload.
+    using tryx::printer_media_identity::isCanonicalPrinterConversionProfile;
+    using tryx::printer_media_identity::
+        printerConversionProfileMatchesMediaName;
+    const QString cropFingerprint = tryxMediaTransformFingerprint(crop);
+    const QString legacyFullStill = QStringLiteral(
+        "pase-h264-v1-image-60s-2240x1080-yuv420p-30fps-libx264-veryfast-crf23");
+    const QString legacyTransformedStill =
+        QStringLiteral(
+            "pase-h264-v2-image-60s-2240x1080-yuv420p-30fps-libx264-veryfast-crf23-transform-") +
+        cropFingerprint;
+    const QString legacySplitStill =
+        QStringLiteral(
+            "pase-h264-v3-image-60s-split-area-1120x1080-yuv420p-30fps-libx264-veryfast-crf23-transform-") +
+        cropFingerprint;
+    for (const QString &profile : {legacyFullStill, legacyTransformedStill,
+                                   legacySplitStill, legacyProfile,
+                                   cropProfile, splitConversionProfile}) {
+        QVERIFY2(isCanonicalPrinterConversionProfile(profile),
+                 qPrintable(profile));
+    }
+    QVERIFY(legacyProfile != legacyFullStill);
+    QVERIFY(cropProfile != legacyTransformedStill);
+    QVERIFY(splitConversionProfile != legacySplitStill);
+    QVERIFY(!isCanonicalPrinterConversionProfile(
+        QStringLiteral(
+            "pase-mxhd-v1-image-split-area-1120x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali")));
+    QVERIFY(printerConversionProfileMatchesMediaName(
+        legacyProfile, QStringLiteral("a.png.h264_2240x1080")));
+    QVERIFY(!printerConversionProfileMatchesMediaName(
+        legacyProfile, QStringLiteral("a.png.h264_1120x1080")));
+    QVERIFY(printerConversionProfileMatchesMediaName(
+        splitConversionProfile, QStringLiteral("a.png.h264_1120x1080")));
+    QVERIFY(!printerConversionProfileMatchesMediaName(
+        splitConversionProfile, QStringLiteral("a.png.h264_2240x1080")));
+    QVERIFY(printerConversionProfileMatchesMediaName(
+        legacySplitStill, QStringLiteral("a.png.h264_1120x1080")));
+    QVERIFY(tryx::printer_media_identity::isPasePrinterConversionProfile(
+        legacyProfile));
+    QVERIFY(tryx::printer_media_identity::isPasePrinterConversionProfile(
+        legacyFullStill));
+    QVERIFY(!tryx::printer_media_identity::isPasePrinterConversionProfile(
+        QStringLiteral(
+            "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali2")));
 
     const auto pase = printerProductProfileForId(0x1021);
     QVERIFY(pase.has_value());
@@ -11072,6 +11216,93 @@ void PrinterProtocolTests::mediaTransformChangesConversionProfile() {
         QStringLiteral("scale=2240:1080")));
 }
 
+void PrinterProtocolTests::kanaliMappedProductIdsReusePanoramaProfiles_data() {
+    QTest::addColumn<int>("productId");
+    QTest::addColumn<int>("baseProductId");
+    QTest::addColumn<QString>("model");
+
+    // KANALI 2.6.0 main bundle device table, by USB PID.
+    QTest::newRow("1061-pase") << 0x1061 << 0x1021 << QStringLiteral("PANORAMA SE");
+    QTest::newRow("1071-pase-v2") << 0x1071 << 0x1021 << QStringLiteral("PANORAMA SE V2");
+    QTest::newRow("10a1-pawb") << 0x10a1 << 0x1031 << QStringLiteral("PANORAMA WB");
+    QTest::newRow("10b1-pano") << 0x10b1 << 0x1011 << QStringLiteral("PANORAMA");
+}
+
+void PrinterProtocolTests::kanaliMappedProductIdsReusePanoramaProfiles() {
+    QFETCH(int, productId);
+    QFETCH(int, baseProductId);
+    QFETCH(QString, model);
+
+    const auto profile = printerProductProfileForId(static_cast<quint16>(productId));
+    const auto base = printerProductProfileForId(static_cast<quint16>(baseProductId));
+    QVERIFY(profile.has_value());
+    QVERIFY(base.has_value());
+    QCOMPARE(profile->productId, static_cast<quint16>(productId));
+    // Unverified firmware packages: no validation and no flashing.
+    QVERIFY(!profile->firmwareFlashSupported);
+    QCOMPARE(profile->mediaWidth, base->mediaWidth);
+    QCOMPARE(profile->mediaHeight, base->mediaHeight);
+    QCOMPARE(profile->family, base->family);
+    QCOMPARE(profile->mediaContainer, base->mediaContainer);
+    QCOMPARE(profile->keepalive, base->keepalive);
+    QCOMPARE(profile->overlayLayout, base->overlayLayout);
+    QCOMPARE(profile->orientationModel, base->orientationModel);
+    QCOMPARE(profile->fileTransferTrackId, base->fileTransferTrackId);
+    QCOMPARE(profile->readbackConfirmedWriteAckWindowMs,
+             base->readbackConfirmedWriteAckWindowMs);
+    QCOMPARE(profile->keepBulkInPending, base->keepBulkInPending);
+    QCOMPARE(profile->defaultPowerOnMedia, base->defaultPowerOnMedia);
+    QCOMPARE(profile->defaultStandbyMedia, base->defaultStandbyMedia);
+    QCOMPARE(profile->mediaUploadSupported, base->mediaUploadSupported);
+    QCOMPARE(profile->mediaCatalogSupported, base->mediaCatalogSupported);
+    QCOMPARE(profile->mediaPullSupported, base->mediaPullSupported);
+    QCOMPARE(profile->displayConfigurationSupported,
+             base->displayConfigurationSupported);
+    QCOMPARE(profile->splitAreaMediaSupported, base->splitAreaMediaSupported);
+    QCOMPARE(profile->waterfallSupported, base->waterfallSupported);
+    QCOMPARE(profile->overlayMetricsSupported, base->overlayMetricsSupported);
+    QCOMPARE(profile->overlayLeaseSupported, base->overlayLeaseSupported);
+
+    const QString product = printerProductIdString(static_cast<quint16>(productId));
+    QVERIFY(tryxSavedLayoutProductIdIsSupported(product));
+    QVERIFY(tryxDisplaySnapshotProductIdIsSupported(product));
+
+    tryx::SupportSnapshotSourceV1 source;
+    source.generatedAtUtcMs =
+        QDateTime::fromString(QStringLiteral("2026-11-17T12:00:00.000Z"),
+                              Qt::ISODateWithMs)
+            .toMSecsSinceEpoch();
+    source.runtimeVersion = QStringLiteral("2.5.4");
+    source.runtimeApiVersion = 8;
+    source.connection.revision = 1;
+    source.connection.connected = true;
+    source.connection.printerClassConnected = true;
+    source.connection.productId = product;
+    const QString json = tryx::buildSupportSnapshotV1(source);
+    QString validationError;
+    QVERIFY2(tryx::supportSnapshotV1IsValid(json, &validationError),
+             qPrintable(validationError));
+    const QJsonObject device = QJsonDocument::fromJson(json.toUtf8())
+                                   .object()
+                                   .value(QStringLiteral("device"))
+                                   .toObject();
+    QCOMPARE(device.value(QStringLiteral("product_id")).toString(), product);
+    QCOMPARE(device.value(QStringLiteral("model")).toString(), model);
+
+    QTemporaryDir fixture;
+    QVERIFY(fixture.isValid());
+    const QString sysRoot = QDir(fixture.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot = QDir(fixture.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"),
+                            product.mid(5).toLatin1()));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot, QStringLiteral("1-1"),
+                                  QStringLiteral("lp0")));
+    const auto snapshot = PrinterProtocol::discover(sysRoot, devRoot);
+    QVERIFY(snapshot.state == PrinterProtocol::DiscoveryState::Ready);
+    QCOMPARE(snapshot.devices.size(), 1);
+    QCOMPARE(snapshot.devices.first().productId, static_cast<quint16>(productId));
+}
+
 void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     const auto pase = printerProductProfileForId(0x1021);
     const auto pano = printerProductProfileForId(0x1011);
@@ -11082,7 +11313,7 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QVERIFY(panoWb.has_value());
     QVERIFY(turris.has_value());
     QVERIFY(!printerProductProfileForId(0x9999).has_value());
-    QVERIFY(!printerProductProfileForId(0x10a1).has_value());
+    QVERIFY(!printerProductProfileForId(0x10c1).has_value());
 
     for (const auto &profile : {pase, pano, panoWb}) {
         QCOMPARE(profile->mediaWidth, 2240);
@@ -11104,6 +11335,7 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
         QVERIFY(profile->displayConfigurationSupported);
         QVERIFY(profile->splitAreaMediaSupported);
         QVERIFY(profile->waterfallSupported);
+        QVERIFY(profile->mirrorSupported);
         QVERIFY(profile->overlayMetricsSupported);
         QVERIFY(profile->overlayLeaseSupported);
     }
@@ -11182,6 +11414,477 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
         QStringLiteral("unused"), dualOverlay, &error, {}, &mutation));
     QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
     QVERIFY2(error.contains(QStringLiteral("391a:2011")), qPrintable(error));
+}
+
+void PrinterProtocolTests::holoProfileMapsOfficialCapabilities() {
+    const auto holo = printerProductProfileForId(0x1051);
+    QVERIFY(holo.has_value());
+    QCOMPARE(holo->productId, quint16{0x1051});
+    QCOMPARE(holo->mediaWidth, 640);
+    QCOMPARE(holo->mediaHeight, 480);
+    QCOMPARE(holo->family, PrinterProtocolFamily::Pase);
+    QCOMPARE(holo->mediaContainer, PrinterMediaContainer::MxhdH264);
+    QCOMPARE(holo->keepalive, PrinterSessionKeepalive::Ping);
+    QCOMPARE(holo->overlayLayout,
+             PrinterOverlayLayoutKind::HoloSingleArea640);
+    QCOMPARE(holo->orientationModel,
+             PrinterDisplayOrientationModel::RotationFields);
+    QCOMPARE(holo->fileTransferTrackId, quint64{0});
+    QCOMPARE(holo->readbackConfirmedWriteAckWindowMs, 0);
+    QVERIFY(holo->keepBulkInPending);
+    QCOMPARE(holo->defaultPowerOnMedia,
+             QStringLiteral("default_poweron.mp4.h264_640x480"));
+    QCOMPARE(holo->defaultStandbyMedia,
+             QStringLiteral("default_standby.mp4.h264_640x480"));
+    QCOMPARE(holo->mediaIdentityPrefix, QStringLiteral("holo-mxhd-v1"));
+    QCOMPARE(holo->mediaIdentityGeneration, QStringLiteral("kanali"));
+    QVERIFY(holo->mediaUploadSupported);
+    QVERIFY(holo->mediaCatalogSupported);
+    QVERIFY(holo->displayConfigurationSupported);
+    QVERIFY(holo->overlayMetricsSupported);
+    QVERIFY(!holo->mediaPullSupported);
+    QVERIFY(!holo->splitAreaMediaSupported);
+    QVERIFY(!holo->waterfallSupported);
+    QVERIFY(!holo->mirrorSupported);
+    QVERIFY(!holo->overlayLeaseSupported);
+    QVERIFY(!holo->firmwareFlashSupported);
+
+    // KANALI 2.6.0 preset picker order; group 2 ends with default_16.
+    QCOMPARE(holo->presets.size(), 21);
+    QCOMPARE(holo->presets.constFirst().presetId,
+             QStringLiteral("Pre-set 1: Sally"));
+    QCOMPARE(holo->presets.constFirst().mediaFile,
+             QStringLiteral("default_01.mp4.h264_640x480"));
+    QCOMPARE(holo->presets.at(10).presetId,
+             QStringLiteral("Pre-set 11: Dancing King Boochi"));
+    QCOMPARE(holo->presets.at(10).mediaFile,
+             QStringLiteral("default_16.mp4.h264_640x480"));
+    QCOMPARE(holo->presets.at(11).mediaFile,
+             QStringLiteral("default_11.mp4.h264_640x480"));
+    QCOMPARE(holo->presets.constLast().presetId,
+             QStringLiteral("Pre-set 21: Eyes 5"));
+    QCOMPARE(holo->presets.constLast().mediaFile,
+             QStringLiteral("default_21.mp4.h264_640x480"));
+    using tryx::pase_overlay_config::printerPresetMediaFile;
+    QCOMPARE(printerPresetMediaFile(QStringLiteral("Pre-set 6: B00/CHI"), 0x1051),
+             QStringLiteral("default_06.mp4.h264_640x480"));
+    QVERIFY(printerPresetMediaFile(
+                QStringLiteral("Pre-set 1: Cooling delivery"), 0x1051)
+                .isEmpty());
+    QCOMPARE(printerPresetMediaFile(
+                 QStringLiteral("Pre-set 3: Quantum time capsule"), 0x1021),
+             QStringLiteral("default_04.mp4.h264_2240x1080"));
+    QVERIFY(printerPresetMediaFile(QStringLiteral("Pre-set 1: Sally"), 0x1021)
+                .isEmpty());
+    QVERIFY(printerPresetMediaFile(
+                QStringLiteral("Pre-set 1: Cooling delivery"), 0x2011)
+                .isEmpty());
+
+    QList<quint16> listed;
+    for (const PrinterProductProfile &profile : printerProductProfiles()) {
+        listed.append(profile.productId);
+    }
+    QCOMPARE(listed, (QList<quint16>{0x1011, 0x1021, 0x1031, 0x1041, 0x1051,
+                                     0x1061, 0x1071, 0x10a1, 0x10b1, 0x2011}));
+
+    QVERIFY(tryxSavedLayoutProductIdIsSupported(QStringLiteral("391a:1051")));
+    QVERIFY(tryxDisplaySnapshotProductIdIsSupported(QStringLiteral("391a:1051")));
+
+    // Unsupported HOLO requests are rejected before any USB traffic.
+    PrinterProtocol holoProtocol(*holo, 100);
+    const PrinterProtocol::MediaPullResult pull = holoProtocol.pullUserMedia(
+        QStringLiteral("unused"), QStringLiteral("holo.mp4.h264_640x480"), 4096,
+        PrinterProtocol::MediaPullChunkSink{}, PrinterProtocol::MediaPullProgress{},
+        PrinterProtocol::OperationContext{});
+    QVERIFY(!pull.success);
+    QVERIFY(pull.error.contains(QStringLiteral("391a:1051")));
+
+    const auto rejected = [&holoProtocol](const PrinterProtocol::PaseApplyConfig &config) {
+        PrinterProtocol::MutationDetails mutation;
+        QString error;
+        const bool applied = holoProtocol.applyPaseConfiguration(
+            QStringLiteral("unused"), config, &error, {}, &mutation);
+        return !applied &&
+               mutation.outcome == PrinterProtocol::MutationOutcome::Rejected &&
+               error.contains(QStringLiteral("391a:1051"));
+    };
+    PrinterProtocol::PaseApplyConfig splitConfig;
+    splitConfig.mediaPresent = true;
+    splitConfig.screenMode = QStringLiteral("Screen Splitting");
+    splitConfig.media = {QStringLiteral("left.mp4.h264_640x480"),
+                         QStringLiteral("right.mp4.h264_640x480")};
+    QVERIFY(rejected(splitConfig));
+    PrinterProtocol::PaseApplyConfig waterfallConfig;
+    waterfallConfig.display.orientationPresent = true;
+    waterfallConfig.display.waterfallMode = true;
+    QVERIFY(rejected(waterfallConfig));
+    PrinterProtocol::PaseApplyConfig mirrorConfig;
+    mirrorConfig.display.orientationPresent = true;
+    mirrorConfig.display.mirrorMode = true;
+    QVERIFY(rejected(mirrorConfig));
+
+    PrinterProtocol::PaseOverlayConfig dualOverlay;
+    dualOverlay.dualMode = true;
+    dualOverlay.left.metrics = {QStringLiteral("CPU Usage")};
+    dualOverlay.right.metrics = {QStringLiteral("GPU Usage")};
+    PrinterProtocol::MutationDetails mutation;
+    QString error;
+    QVERIFY(!holoProtocol.configurePaseOverlay(
+        QStringLiteral("unused"), dualOverlay, &error, {}, &mutation));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QVERIFY2(error.contains(QStringLiteral("391a:1051")), qPrintable(error));
+}
+
+void PrinterProtocolTests::holoConversionIdentitiesReachEveryConsumer() {
+    namespace identity = tryx::printer_media_identity;
+    const auto holo = printerProductProfileForId(0x1051);
+    const auto turris = printerProductProfileForId(0x2011);
+    QVERIFY(holo.has_value());
+    QVERIFY(turris.has_value());
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString imagePath =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("holo.png"));
+    QImage image(8, 6, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#203040")));
+    QVERIFY(image.save(imagePath));
+
+    const QString imageProfile = QStringLiteral(
+        "holo-mxhd-v1-image-640x480-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
+    const QString gifProfile = QStringLiteral(
+        "holo-mxhd-v1-gif-640x480-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali");
+    const QString videoProfile = QStringLiteral(
+        "holo-mxhd-v1-video-640x480-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+    QCOMPARE(identity::printerConversionProfile(
+                 imagePath, tryxLegacyFitMediaTransform(), 0x1051),
+             imageProfile);
+    // Turris keeps its stored identities.
+    QCOMPARE(identity::printerConversionProfile(
+                 imagePath, tryxLegacyFitMediaTransform(), 0x2011),
+             QStringLiteral(
+                 "turris-mxhd-v1-image-1280x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali2"));
+
+    const QString conversion = identity::printerMediaConversionIdentity(*holo);
+    QCOMPARE(conversion, QStringLiteral("holo-mxhd-v1-640x480-30fps"));
+    QCOMPARE(identity::printerMediaConversionIdentity(*turris),
+             QStringLiteral("turris-mxhd-v1-1280x720-30fps"));
+    QCOMPARE(identity::printerMediaSizeForConversionIdentity(conversion, *holo),
+             QSize(640, 480));
+    QVERIFY(!identity::printerMediaConversionIdentityMatchesProduct(
+        conversion, *turris));
+    QVERIFY(identity::printerMediaUsesMediaHeader(0x1051, false));
+    QVERIFY(identity::printerMediaUsesMediaHeader(0x1051, true));
+
+    const QString remoteName = identity::h264PrinterName(
+        identity::generatedPrinterMediaName(QStringLiteral("mp4"), 0x1051),
+        0x1051);
+    QVERIFY2(QRegularExpression(QStringLiteral(
+                 "^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.mp4\\.h264_640x480$"))
+                 .match(remoteName)
+                 .hasMatch(),
+             qPrintable(remoteName));
+
+    const QString transformed = imageProfile + QStringLiteral("-transform-") +
+                                QString(64, QLatin1Char('b'));
+    for (const QString &profile : {imageProfile, gifProfile, videoProfile, transformed}) {
+        QVERIFY2(identity::isCanonicalPrinterConversionProfile(profile),
+                 qPrintable(profile));
+        QVERIFY(identity::printerConversionProfileMatchesMediaName(
+            profile, remoteName));
+        QVERIFY(!identity::printerConversionProfileMatchesMediaName(
+            profile, QStringLiteral("other.mp4.h264_1280x720")));
+        QVERIFY(identity::printerConversionProfileMatchesProduct(profile, *holo));
+        QVERIFY(!identity::printerConversionProfileMatchesProduct(profile, *turris));
+        // Retry-cache origins are checked with this pairing.
+        QVERIFY(identity::printerConversionProfileMatchesConversion(
+            profile, *holo, conversion));
+    }
+    QVERIFY(!identity::printerConversionProfileMatchesProduct(
+        QStringLiteral(
+            "turris-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali2"),
+        *holo));
+    QVERIFY(!identity::isCanonicalPrinterConversionProfile(QStringLiteral(
+        "holo-mxhd-v1-video-1280x720-yuv420p-60fps-libx264-main41-fast-abr-kanali")));
+
+    // The media catalog keeps the origin of HOLO uploads, so the same source
+    // is not uploaded twice.
+    tryx::MediaCatalogStore catalog(
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("media-catalog")));
+    QVERIFY(catalog.load().writesEnabled);
+    tryx::MediaCatalogStore::OriginInput origin;
+    origin.deviceIdentity = QStringLiteral("HOLO-ORIGIN");
+    origin.remote.name = remoteName;
+    origin.remote.size = 4096;
+    origin.remote.source = 1;
+    origin.remote.readOnly = false;
+    origin.sourceContentSha256 = QString(64, QLatin1Char('a'));
+    origin.sourceSize = 4096;
+    origin.conversionProfile = videoProfile;
+    origin.preparedSha256 = QString(64, QLatin1Char('c'));
+    origin.operationId = QStringLiteral("10511051-1051-4051-8051-105110511051");
+    origin.confirmedUtc = QDateTime::fromString(
+        QStringLiteral("2026-11-17T12:00:00.000Z"), Qt::ISODateWithMs);
+    const auto persisted = catalog.persistOrigin(origin);
+    QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
+    QCOMPARE(catalog.findReusableOrigin(origin.deviceIdentity,
+                                        origin.sourceContentSha256,
+                                        videoProfile, {origin.remote}),
+             remoteName);
+}
+
+void PrinterProtocolTests::stageProfileMapsOfficialCapabilities() {
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    QCOMPARE(stage->productId, quint16{0x1041});
+    QCOMPARE(stage->mediaWidth, 1440);
+    QCOMPARE(stage->mediaHeight, 720);
+    QCOMPARE(stage->family, PrinterProtocolFamily::Pase);
+    QCOMPARE(stage->mediaContainer, PrinterMediaContainer::MxhdH264);
+    QCOMPARE(stage->keepalive, PrinterSessionKeepalive::Ping);
+    QCOMPARE(stage->overlayLayout,
+             PrinterOverlayLayoutKind::StageDualArea1440);
+    QCOMPARE(stage->orientationModel,
+             PrinterDisplayOrientationModel::RotationFields);
+    QCOMPARE(stage->fileTransferTrackId, quint64{0});
+    QCOMPARE(stage->readbackConfirmedWriteAckWindowMs, 0);
+    QVERIFY(stage->keepBulkInPending);
+    QCOMPARE(stage->defaultPowerOnMedia,
+             QStringLiteral("default_poweron_1440x720.mp4.h264"));
+    QCOMPARE(stage->defaultStandbyMedia,
+             QStringLiteral("default_standby_1440x720.mp4.h264"));
+    QCOMPARE(stage->mediaIdentityPrefix, QStringLiteral("stage-mxhd-v1"));
+    QCOMPARE(stage->mediaIdentityGeneration, QStringLiteral("kanali"));
+    QVERIFY(stage->mediaUploadSupported);
+    QVERIFY(stage->mediaCatalogSupported);
+    QVERIFY(stage->displayConfigurationSupported);
+    QVERIFY(stage->splitAreaMediaSupported);
+    QVERIFY(stage->overlayMetricsSupported);
+    QVERIFY(!stage->mediaPullSupported);
+    QVERIFY(!stage->waterfallSupported);
+    QVERIFY(!stage->mirrorSupported);
+    QVERIFY(!stage->overlayLeaseSupported);
+    QVERIFY(!stage->firmwareFlashSupported);
+
+    // The presets KANALI 2.6.0 lists as shipped with the device, in its order.
+    const QList<std::pair<QString, QString>> presets{
+        {QStringLiteral("Pre-set 1: Festival"),
+         QStringLiteral("festival.mp4.h264_1440x720")},
+        {QStringLiteral("Pre-set 2: Erebos"),
+         QStringLiteral("erebos.mp4.h264_1440x720")},
+        {QStringLiteral("Pre-set 3: Cosmos"),
+         QStringLiteral("cosmos.mp4.h264_1440x720")},
+        {QStringLiteral("Pre-set 4: Graffiti"),
+         QStringLiteral("graffiti.mp4.h264_1440x720")},
+    };
+    QCOMPARE(stage->presets.size(), presets.size());
+    for (int index = 0; index < presets.size(); ++index) {
+        QCOMPARE(stage->presets.at(index).presetId, presets.at(index).first);
+        QCOMPARE(stage->presets.at(index).mediaFile, presets.at(index).second);
+    }
+    using tryx::pase_overlay_config::printerPresetMediaFile;
+    QCOMPARE(printerPresetMediaFile(QStringLiteral("Pre-set 3: Cosmos"), 0x1041),
+             QStringLiteral("cosmos.mp4.h264_1440x720"));
+    QVERIFY(printerPresetMediaFile(
+                QStringLiteral("Pre-set 1: Cooling delivery"), 0x1041)
+                .isEmpty());
+    QVERIFY(printerPresetMediaFile(QStringLiteral("Pre-set 1: Festival"), 0x1021)
+                .isEmpty());
+
+    QVERIFY(tryxSavedLayoutProductIdIsSupported(QStringLiteral("391a:1041")));
+    QVERIFY(tryxDisplaySnapshotProductIdIsSupported(QStringLiteral("391a:1041")));
+
+    // Both areas take overlays; the STAGE has no waterfall orientation.
+    using tryx::pase_overlay_config::paseOverlayIsSupportedByProduct;
+    PrinterProtocol::PaseOverlayConfig dualOverlay;
+    dualOverlay.dualMode = true;
+    dualOverlay.left.metrics = {QStringLiteral("CPU Usage")};
+    dualOverlay.right.metrics = {QStringLiteral("GPU Usage")};
+    QString overlayError;
+    QVERIFY2(paseOverlayIsSupportedByProduct(dualOverlay, 0x1041, &overlayError),
+             qPrintable(overlayError));
+    dualOverlay.waterfallMode = true;
+    QVERIFY(!paseOverlayIsSupportedByProduct(dualOverlay, 0x1041, &overlayError));
+
+    // Unsupported STAGE requests are rejected before any USB traffic.
+    PrinterProtocol stageProtocol(*stage, 100);
+    const PrinterProtocol::MediaPullResult pull = stageProtocol.pullUserMedia(
+        QStringLiteral("unused"), QStringLiteral("stage.mp4.h264_1440x720"), 4096,
+        PrinterProtocol::MediaPullChunkSink{}, PrinterProtocol::MediaPullProgress{},
+        PrinterProtocol::OperationContext{});
+    QVERIFY(!pull.success);
+    QVERIFY(pull.error.contains(QStringLiteral("391a:1041")));
+
+    const auto rejected = [&stageProtocol](const PrinterProtocol::PaseApplyConfig &config) {
+        PrinterProtocol::MutationDetails mutation;
+        QString error;
+        const bool applied = stageProtocol.applyPaseConfiguration(
+            QStringLiteral("unused"), config, &error, {}, &mutation);
+        return !applied &&
+               mutation.outcome == PrinterProtocol::MutationOutcome::Rejected &&
+               error.contains(QStringLiteral("391a:1041"));
+    };
+    PrinterProtocol::PaseApplyConfig waterfallConfig;
+    waterfallConfig.display.orientationPresent = true;
+    waterfallConfig.display.waterfallMode = true;
+    QVERIFY(rejected(waterfallConfig));
+    PrinterProtocol::PaseApplyConfig mirrorConfig;
+    mirrorConfig.display.orientationPresent = true;
+    mirrorConfig.display.mirrorMode = true;
+    QVERIFY(rejected(mirrorConfig));
+}
+
+void PrinterProtocolTests::stageConversionIdentitiesReachEveryConsumer() {
+    namespace identity = tryx::printer_media_identity;
+    const auto stage = printerProductProfileForId(0x1041);
+    const auto holo = printerProductProfileForId(0x1051);
+    const auto pase = printerProductProfileForId(0x1021);
+    QVERIFY(stage.has_value());
+    QVERIFY(holo.has_value());
+    QVERIFY(pase.has_value());
+
+    TryxRuntimeMediaPreparationProfileV1 full;
+    full.transform = tryxLegacyFitMediaTransform();
+    TryxRuntimeMediaPreparationProfileV1 split = full;
+    split.target = QStringLiteral("SplitArea");
+    const QString fingerprint = tryxMediaTransformFingerprint(full.transform);
+    QVERIFY(!fingerprint.isEmpty());
+    const QString transform = QStringLiteral("-transform-") + fingerprint;
+
+    struct KindCase {
+        QString extension;
+        QString fullProfile;
+        QString splitProfile;
+    };
+    const QList<KindCase> kinds{
+        {QStringLiteral("png"),
+         QStringLiteral(
+             "stage-mxhd-v1-image-1440x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali"),
+         QStringLiteral(
+             "stage-mxhd-v1-image-split-area-720x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali") +
+             transform},
+        {QStringLiteral("gif"),
+         QStringLiteral(
+             "stage-mxhd-v1-gif-1440x720-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali"),
+         QStringLiteral(
+             "stage-mxhd-v1-gif-split-area-720x720-yuv420p-30fps-libx264-main41-fast-crf18-animation-kanali") +
+             transform},
+        {QStringLiteral("mp4"),
+         QStringLiteral(
+             "stage-mxhd-v1-video-1440x720-yuv420p-60fps-libx264-main41-fast-abr-kanali"),
+         QStringLiteral(
+             "stage-mxhd-v1-video-split-area-720x720-yuv420p-30fps-libx264-main41-fast-abr-kanali") +
+             transform},
+    };
+
+    const QString fullConversion =
+        identity::printerMediaConversionIdentity(*stage);
+    const QString splitConversion =
+        identity::printerMediaConversionIdentity(*stage, split);
+    QCOMPARE(fullConversion, QStringLiteral("stage-mxhd-v1-1440x720-30fps"));
+    QCOMPARE(splitConversion, QStringLiteral("stage-mxhd-v1-720x720-30fps"));
+    QCOMPARE(identity::printerMediaSizeForConversionIdentity(fullConversion, *stage),
+             QSize(1440, 720));
+    QCOMPARE(identity::printerMediaSizeForConversionIdentity(splitConversion, *stage),
+             QSize(720, 720));
+    QVERIFY(!identity::printerMediaConversionIdentityMatchesProduct(
+        splitConversion, *holo));
+    // The PASE family keeps its own split identity.
+    QCOMPARE(identity::printerMediaConversionIdentity(*pase, split),
+             QStringLiteral("h264-yuv420p-1120x1080-30fps"));
+    QVERIFY(identity::printerMediaUsesMediaHeader(0x1041, false));
+    QVERIFY(identity::printerMediaUsesMediaHeader(0x1041, true));
+
+    const QRegularExpression officialName(QStringLiteral(
+        "^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.mp4\\.h264_%1$"));
+    const QString fullName = identity::h264PrinterName(
+        identity::generatedPrinterMediaName(QStringLiteral("mp4"), 0x1041),
+        0x1041, full);
+    const QString splitName = identity::h264PrinterName(
+        identity::generatedPrinterMediaName(QStringLiteral("mp4"), 0x1041),
+        0x1041, split);
+    QVERIFY2(QRegularExpression(officialName.pattern().arg(QStringLiteral("1440x720")))
+                 .match(fullName)
+                 .hasMatch(),
+             qPrintable(fullName));
+    QVERIFY2(QRegularExpression(officialName.pattern().arg(QStringLiteral("720x720")))
+                 .match(splitName)
+                 .hasMatch(),
+             qPrintable(splitName));
+    QCOMPARE(identity::printerMediaSizeForName(fullName, *stage), QSize(1440, 720));
+    QCOMPARE(identity::printerMediaSizeForName(splitName, *stage), QSize(720, 720));
+    QVERIFY(identity::printerMediaNameMatchesProfile(splitName, *stage));
+    QVERIFY(!identity::printerMediaNameMatchesProfile(splitName, *pase));
+    QVERIFY(!identity::printerMediaNameMatchesProfile(
+        QStringLiteral("area.mp4.h264_1120x1080"), *stage));
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    for (const KindCase &kind : kinds) {
+        const QString sourcePath = QDir(temporaryDirectory.path())
+                                       .filePath(QStringLiteral("stage.") +
+                                                 kind.extension);
+        QCOMPARE(identity::printerConversionProfile(sourcePath, full, 0x1041),
+                 kind.fullProfile);
+        QCOMPARE(identity::printerConversionProfile(sourcePath, split, 0x1041),
+                 kind.splitProfile);
+        // A split area always carries the transform.
+        QVERIFY(!identity::isCanonicalPrinterConversionProfile(
+            kind.splitProfile.left(kind.splitProfile.size() - transform.size())));
+        const QString fullFile = QStringLiteral("2026-11-17_12-00-00-000.") +
+                                 kind.extension + QStringLiteral(".h264_1440x720");
+        const QString splitFile = QStringLiteral("2026-11-17_12-00-00-000.") +
+                                  kind.extension + QStringLiteral(".h264_720x720");
+        for (const QString &profile : {kind.fullProfile, kind.splitProfile}) {
+            const bool splitProfile = profile == kind.splitProfile;
+            QVERIFY2(identity::isCanonicalPrinterConversionProfile(profile),
+                     qPrintable(profile));
+            QVERIFY(identity::printerConversionProfileMatchesProduct(profile, *stage));
+            QVERIFY(!identity::printerConversionProfileMatchesProduct(profile, *holo));
+            QVERIFY(!identity::printerConversionProfileMatchesProduct(profile, *pase));
+            QCOMPARE(identity::printerConversionProfileMatchesMediaName(profile, fullFile),
+                     !splitProfile);
+            QCOMPARE(identity::printerConversionProfileMatchesMediaName(profile, splitFile),
+                     splitProfile);
+            // Retry-cache origins are checked with this pairing.
+            QCOMPARE(identity::printerConversionProfileMatchesConversion(
+                         profile, *stage, fullConversion),
+                     !splitProfile);
+            QCOMPARE(identity::printerConversionProfileMatchesConversion(
+                         profile, *stage, splitConversion),
+                     splitProfile);
+        }
+    }
+
+    // The media catalog keeps the origin of a split-area upload, so the same
+    // source is not uploaded twice for the same area.
+    tryx::MediaCatalogStore catalog(
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("media-catalog")));
+    QVERIFY(catalog.load().writesEnabled);
+    tryx::MediaCatalogStore::OriginInput origin;
+    origin.deviceIdentity = QStringLiteral("STAGE-ORIGIN");
+    origin.remote.name = splitName;
+    origin.remote.size = 4096;
+    origin.remote.source = 1;
+    origin.remote.readOnly = false;
+    origin.sourceContentSha256 = QString(64, QLatin1Char('a'));
+    origin.sourceSize = 4096;
+    origin.conversionProfile = kinds.constLast().splitProfile;
+    origin.preparedSha256 = QString(64, QLatin1Char('c'));
+    origin.operationId = QStringLiteral("10411041-1041-4041-8041-104110411041");
+    origin.confirmedUtc = QDateTime::fromString(
+        QStringLiteral("2026-11-17T12:00:00.000Z"), Qt::ISODateWithMs);
+    const auto persisted = catalog.persistOrigin(origin);
+    QVERIFY2(persisted.ok(), qPrintable(persisted.detail));
+    QCOMPARE(catalog.findReusableOrigin(origin.deviceIdentity,
+                                        origin.sourceContentSha256,
+                                        origin.conversionProfile, {origin.remote}),
+             splitName);
+    QVERIFY(catalog.findReusableOrigin(origin.deviceIdentity,
+                                       origin.sourceContentSha256,
+                                       kinds.constLast().fullProfile,
+                                       {origin.remote})
+                .isEmpty());
 }
 
 void PrinterProtocolTests::turrisMediaAnalysisUses1280Profile() {
@@ -11446,6 +12149,11 @@ void PrinterProtocolTests::turrisMediaNamesFollowOfficialLayout() {
     QCOMPARE(uploadName.size(), 41);
     QVERIFY(uploadName.endsWith(QStringLiteral(".png.h264_1280x720")));
     QVERIFY(identity::isSafePrinterUploadMediaName(uploadName));
+    // HOLO presets in the device catalog use the 640x480 suffix.
+    QVERIFY(identity::isSafePrinterUploadMediaName(
+        QStringLiteral("default_01.mp4.h264_640x480")));
+    QVERIFY(!identity::isSafePrinterUploadMediaName(
+        QStringLiteral("default_01.mp4.h264_640x481")));
 
     // Other products keep the random suffix.
     const QRegularExpression suffixedLayout(QStringLiteral(
@@ -11724,6 +12432,1061 @@ void PrinterProtocolTests::turrisImagePreparationBuildsMxhdBlob() {
         QString::fromLatin1(
             QCryptographicHash::hash(blob, QCryptographicHash::Sha256)
                 .toHex()));
+}
+
+void PrinterProtocolTests::holoMediaPreparationBuildsOfficialMxhd_data() {
+    QTest::addColumn<QString>("extension");
+    QTest::addColumn<quint32>("mediaKind");
+    QTest::addColumn<quint64>("frameCount");
+    QTest::addColumn<QString>("conversionProfile");
+
+    // KANALI's converter: stills at 30 fps as one frame, GIF and video at
+    // 60 fps. Each source lasts one second.
+    QTest::newRow("image")
+        << QStringLiteral("png") << quint32{2} << quint64{1}
+        << QStringLiteral(
+               "holo-mxhd-v1-image-640x480-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
+    QTest::newRow("gif")
+        << QStringLiteral("gif") << quint32{3} << quint64{60}
+        << QStringLiteral(
+               "holo-mxhd-v1-gif-640x480-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali");
+    QTest::newRow("video")
+        << QStringLiteral("mp4") << quint32{4} << quint64{60}
+        << QStringLiteral(
+               "holo-mxhd-v1-video-640x480-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+}
+
+void PrinterProtocolTests::holoMediaPreparationBuildsOfficialMxhd() {
+    QFETCH(QString, extension);
+    QFETCH(quint32, mediaKind);
+    QFETCH(quint64, frameCount);
+    QFETCH(QString, conversionProfile);
+
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffprobe =
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffmpeg.isEmpty() || ffprobe.isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("holo-source.") + extension);
+    if (extension == QStringLiteral("png")) {
+        QImage image(32, 24, QImage::Format_RGB32);
+        image.fill(QColor(QStringLiteral("#336699")));
+        QVERIFY(image.save(sourcePath));
+    } else {
+        QStringList arguments{
+            QStringLiteral("-v"), QStringLiteral("error"),
+            QStringLiteral("-f"), QStringLiteral("lavfi"),
+            QStringLiteral("-i"),
+            QStringLiteral("color=c=#315d84:s=64x48:r=10:d=1"),
+            QStringLiteral("-an")};
+        if (extension == QStringLiteral("mp4")) {
+            arguments << QStringLiteral("-c:v") << QStringLiteral("libx264")
+                      << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p");
+        }
+        arguments << QStringLiteral("-y") << sourcePath;
+        QProcess generator;
+        generator.setProcessChannelMode(QProcess::MergedChannels);
+        generator.start(ffmpeg, arguments);
+        const bool finished = generator.waitForFinished(60000);
+        const QByteArray output = generator.readAll();
+        QVERIFY2(finished, qPrintable(QString::fromLocal8Bit(output)));
+        QVERIFY2(generator.exitStatus() == QProcess::NormalExit &&
+                     generator.exitCode() == 0,
+                 qPrintable(QString::fromLocal8Bit(output)));
+    }
+    QCOMPARE(tryx::printer_media_identity::printerConversionProfile(
+                 sourcePath, tryxLegacyFitMediaTransform(), 0x1051),
+             conversionProfile);
+
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    const QString operationId =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    preparer.prepare(operationId, QStringLiteral("holo-endpoint"), sourcePath,
+                     QString(), 51, tryxLegacyFitMediaTransform(), 0x1051);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 120000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    QCOMPARE(preparedSpy.count(), 1);
+    const QList<QVariant> prepared = preparedSpy.first();
+    const QString outputPath = prepared.at(3).toString();
+    const QString remoteName = prepared.at(4).toString();
+    const QString expectedSha256 = prepared.at(5).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(prepared.at(6).toString());
+    });
+    // The official name layout: a millisecond timestamp, no random suffix.
+    QVERIFY2(QRegularExpression(
+                 QStringLiteral("^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.") +
+                 extension + QStringLiteral("\\.h264_640x480$"))
+                 .match(remoteName)
+                 .hasMatch(),
+             qPrintable(remoteName));
+
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    QCOMPARE(QString::fromLatin1(
+                 QCryptographicHash::hash(blob, QCryptographicHash::Sha256).toHex()),
+             expectedSha256);
+    QVERIFY(blob.size() > 4);
+    // u32 little-endian header length; 64 bytes at 640x480.
+    QCOMPARE(blob.left(4), QByteArray::fromHex("40000000"));
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata, turrisMediaMetadata(mediaKind, frameCount, 640, 480));
+    QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
+            h264.startsWith(QByteArray::fromHex("000001")));
+    QString containerError;
+    QVERIFY2(tryx::turris_media::validateBlob(
+                 &output, blob.size(), remoteName, 640, 480, &containerError),
+             qPrintable(containerError));
+    QVERIFY(!tryx::turris_media::validateBlob(
+        &output, blob.size(), remoteName, &containerError));
+    output.close();
+
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("holo.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        ffprobe,
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-count_frames"), QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,level,width,height,has_b_frames,"
+                        "color_range,nb_read_frames"),
+         QStringLiteral("-of"), QStringLiteral("default=noprint_wrappers=1"),
+         rawPath});
+    QVERIFY(probe.waitForFinished(30000));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("level=41"),
+             QStringLiteral("width=640"),
+             QStringLiteral("height=480"),
+             QStringLiteral("has_b_frames=0"),
+             QStringLiteral("color_range=pc"),
+             QStringLiteral("nb_read_frames=%1").arg(frameCount)}) {
+        QVERIFY2(properties.contains(expected),
+                 qPrintable(expected + QStringLiteral(" in ") +
+                            properties.join(QLatin1Char(' '))));
+    }
+}
+
+void PrinterProtocolTests::stageMediaPreparationBuildsOfficialMxhd_data() {
+    QTest::addColumn<QString>("extension");
+    QTest::addColumn<bool>("splitArea");
+    QTest::addColumn<quint32>("mediaKind");
+    QTest::addColumn<quint64>("frameCount");
+    QTest::addColumn<quint32>("framesPerSecond");
+    QTest::addColumn<QString>("conversionProfile");
+
+    // KANALI's converter: full-screen stills at 30 fps as one frame, GIF and
+    // video at 60 fps; everything for one 720x720 area at 30 fps. Each
+    // source lasts one second.
+    const QString transform =
+        QStringLiteral("-transform-") +
+        tryxMediaTransformFingerprint(tryxLegacyFitMediaTransform());
+    QTest::newRow("image")
+        << QStringLiteral("png") << false << quint32{2} << quint64{1}
+        << quint32{30}
+        << QStringLiteral(
+               "stage-mxhd-v1-image-1440x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali");
+    QTest::newRow("gif")
+        << QStringLiteral("gif") << false << quint32{3} << quint64{60}
+        << quint32{60}
+        << QStringLiteral(
+               "stage-mxhd-v1-gif-1440x720-yuv420p-60fps-libx264-main41-fast-crf18-animation-kanali");
+    QTest::newRow("video")
+        << QStringLiteral("mp4") << false << quint32{4} << quint64{60}
+        << quint32{60}
+        << QStringLiteral(
+               "stage-mxhd-v1-video-1440x720-yuv420p-60fps-libx264-main41-fast-abr-kanali");
+    QTest::newRow("split-image")
+        << QStringLiteral("png") << true << quint32{2} << quint64{1}
+        << quint32{30}
+        << QStringLiteral(
+               "stage-mxhd-v1-image-split-area-720x720-yuv420p-30fps-libx264-main41-fast-crf18-kanali") +
+               transform;
+    QTest::newRow("split-gif")
+        << QStringLiteral("gif") << true << quint32{3} << quint64{30}
+        << quint32{30}
+        << QStringLiteral(
+               "stage-mxhd-v1-gif-split-area-720x720-yuv420p-30fps-libx264-main41-fast-crf18-animation-kanali") +
+               transform;
+    QTest::newRow("split-video")
+        << QStringLiteral("mp4") << true << quint32{4} << quint64{30}
+        << quint32{30}
+        << QStringLiteral(
+               "stage-mxhd-v1-video-split-area-720x720-yuv420p-30fps-libx264-main41-fast-abr-kanali") +
+               transform;
+}
+
+void PrinterProtocolTests::stageMediaPreparationBuildsOfficialMxhd() {
+    QFETCH(QString, extension);
+    QFETCH(bool, splitArea);
+    QFETCH(quint32, mediaKind);
+    QFETCH(quint64, frameCount);
+    QFETCH(quint32, framesPerSecond);
+    QFETCH(QString, conversionProfile);
+
+    const QString ffmpeg =
+        QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffprobe =
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffmpeg.isEmpty() || ffprobe.isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("stage-source.") + extension);
+    if (extension == QStringLiteral("png")) {
+        QImage image(32, 16, QImage::Format_RGB32);
+        image.fill(QColor(QStringLiteral("#336699")));
+        QVERIFY(image.save(sourcePath));
+    } else {
+        QStringList arguments{
+            QStringLiteral("-v"), QStringLiteral("error"),
+            QStringLiteral("-f"), QStringLiteral("lavfi"),
+            QStringLiteral("-i"),
+            QStringLiteral("color=c=#315d84:s=64x32:r=10:d=1"),
+            QStringLiteral("-an")};
+        if (extension == QStringLiteral("mp4")) {
+            arguments << QStringLiteral("-c:v") << QStringLiteral("libx264")
+                      << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p");
+        }
+        arguments << QStringLiteral("-y") << sourcePath;
+        QProcess generator;
+        generator.setProcessChannelMode(QProcess::MergedChannels);
+        generator.start(ffmpeg, arguments);
+        const bool finished = generator.waitForFinished(60000);
+        const QByteArray output = generator.readAll();
+        QVERIFY2(finished, qPrintable(QString::fromLocal8Bit(output)));
+        QVERIFY2(generator.exitStatus() == QProcess::NormalExit &&
+                     generator.exitCode() == 0,
+                 qPrintable(QString::fromLocal8Bit(output)));
+    }
+    TryxRuntimeMediaPreparationProfileV1 profile;
+    profile.target = splitArea ? QStringLiteral("SplitArea")
+                               : QStringLiteral("FullFrame");
+    profile.transform = tryxLegacyFitMediaTransform();
+    QCOMPARE(tryx::printer_media_identity::printerConversionProfile(
+                 sourcePath, profile, 0x1041),
+             conversionProfile);
+    const quint32 width = splitArea ? 720U : 1440U;
+    const quint32 height = 720U;
+
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    const QString operationId =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    preparer.prepareWithPreparationProfile(
+        operationId, QStringLiteral("stage-endpoint"), sourcePath, QString(),
+        41, profile, 0x1041);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 120000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    QCOMPARE(preparedSpy.count(), 1);
+    const QList<QVariant> prepared = preparedSpy.first();
+    const QString outputPath = prepared.at(3).toString();
+    const QString remoteName = prepared.at(4).toString();
+    const QString expectedSha256 = prepared.at(5).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(prepared.at(6).toString());
+    });
+    // The official name layout: a millisecond timestamp, no random suffix.
+    QVERIFY2(QRegularExpression(
+                 QStringLiteral("^\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3}\\.") +
+                 extension +
+                 QStringLiteral("\\.h264_%1x%2$").arg(width).arg(height))
+                 .match(remoteName)
+                 .hasMatch(),
+             qPrintable(remoteName));
+
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    QCOMPARE(QString::fromLatin1(
+                 QCryptographicHash::hash(blob, QCryptographicHash::Sha256).toHex()),
+             expectedSha256);
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata, turrisMediaMetadata(mediaKind, frameCount, width,
+                                           height, framesPerSecond));
+    QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
+            h264.startsWith(QByteArray::fromHex("000001")));
+    QString containerError;
+    QVERIFY2(tryx::turris_media::validateBlob(
+                 &output, blob.size(), remoteName, width, height, splitArea,
+                 &containerError),
+             qPrintable(containerError));
+    // Only a still declares the same rate in both areas.
+    QCOMPARE(tryx::turris_media::validateBlob(
+                 &output, blob.size(), remoteName, width, height, !splitArea,
+                 &containerError),
+             mediaKind == tryx::turris_media::kImageKind);
+    output.close();
+
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("stage.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        ffprobe,
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-count_frames"), QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,level,width,height,has_b_frames,"
+                        "color_range,nb_read_frames"),
+         QStringLiteral("-of"), QStringLiteral("default=noprint_wrappers=1"),
+         rawPath});
+    QVERIFY(probe.waitForFinished(30000));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("level=41"),
+             QStringLiteral("width=%1").arg(width),
+             QStringLiteral("height=%1").arg(height),
+             QStringLiteral("has_b_frames=0"),
+             QStringLiteral("color_range=pc"),
+             QStringLiteral("nb_read_frames=%1").arg(frameCount)}) {
+        QVERIFY2(properties.contains(expected),
+                 qPrintable(expected + QStringLiteral(" in ") +
+                            properties.join(QLatin1Char(' '))));
+    }
+}
+
+void PrinterProtocolTests::paseMediaHeaderMatchesOfficialConverter() {
+    namespace turris = tryx::turris_media;
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray rawH264;
+    QVERIFY(splitTurrisMediaBlob(
+        turrisMediaBlob(turris::kImageKind, 1), nullptr, &rawH264));
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("still.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, rawH264));
+    QCOMPARE(turris::mediaHeaderPrefixSize(rawH264), qint64{0});
+    QCOMPARE(turris::mediaHeaderPrefixSize(
+                 QByteArrayLiteral("validated recovered H264 test bytes")),
+             qint64{0});
+    QCOMPARE(turris::mediaHeaderPrefixSize(
+                 turrisMediaBlob(turris::kVideoKind, 2)),
+             qint64{4} + turrisMediaMetadata(turris::kVideoKind, 2).size());
+
+    for (const quint32 width : {2240U, 1120U}) {
+        const QString suffix =
+            QStringLiteral(".h264_%1x1080").arg(width);
+        const QByteArray officialHeader =
+            officialStillMediaHeader(width);
+        QCOMPARE(officialHeader.size(), 70);
+        QCOMPARE(officialHeader.mid(4),
+                 turrisMediaMetadata(turris::kImageKind, 1, width, 1080));
+
+        const QString outputPath =
+            QDir(temporaryDirectory.path()).filePath(
+                QStringLiteral("still-%1.mxhd").arg(width));
+        const turris::WriteResult written = turris::writeBlob(
+            rawPath, outputPath, turris::kImageKind, 1, width, 1080, {});
+        QVERIFY2(written.error.isEmpty(), qPrintable(written.error));
+        QFile output(outputPath);
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        const QByteArray blob = output.readAll();
+        QCOMPARE(blob.left(officialHeader.size()), officialHeader);
+        QCOMPARE(blob.mid(officialHeader.size()), rawH264);
+        QCOMPARE(turris::mediaHeaderPrefixSize(blob),
+                 qint64{officialHeader.size()});
+
+        QString error;
+        QVERIFY2(turris::validateBlob(
+                     &output, blob.size(),
+                     QStringLiteral("still.png") + suffix, width, 1080,
+                     &error),
+                 qPrintable(error));
+        QVERIFY(!turris::validateBlob(
+            &output, blob.size(), QStringLiteral("still.png") + suffix,
+            &error));
+        QVERIFY(!turris::validateBlob(
+            &output, blob.size(),
+            QStringLiteral("still.png.h264_%1x1080")
+                .arg(width == 2240 ? 1120 : 2240),
+            width, 1080, &error));
+        QVERIFY(!turris::validateBlob(
+            &output, blob.size(), QStringLiteral("still.mp4") + suffix,
+            width, 1080, &error));
+        output.close();
+
+        QVERIFY(!turris::writeBlob(
+                     rawPath, outputPath, turris::kImageKind, 2, width,
+                     1080, {})
+                     .error.isEmpty());
+    }
+    QVERIFY(!turris::writeBlob(
+                 rawPath,
+                 QDir(temporaryDirectory.path()).filePath(
+                     QStringLiteral("odd.mxhd")),
+                 turris::kImageKind, 1, 2239, 1080, {})
+                 .error.isEmpty());
+}
+
+void PrinterProtocolTests::splitAreaMediaHeaderMatchesOfficialConverter() {
+    namespace turris = tryx::turris_media;
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray rawH264;
+    QVERIFY(splitTurrisMediaBlob(
+        turrisMediaBlob(turris::kVideoKind, 2), nullptr, &rawH264));
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("area.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, rawH264));
+
+    // Headers KANALI 2.6.0's MediaX.dll (MX_ConvertToH264Raw, run under Wine
+    // on 2026-11-17) wrote at the frame rate the official application passes:
+    // 30 fps for every kind made for one 1:1 split area, 60 fps for
+    // full-screen video and GIF, 30 fps for every still.
+    struct OfficialHeader {
+        const char *name;
+        quint32 kind;
+        quint64 frames;
+        quint32 width;
+        quint32 height;
+        bool splitArea;
+        QByteArray header;
+    };
+    const QList<OfficialHeader> headers{
+        {"area.mp4", turris::kVideoKind, 89, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018042001281e30d0"
+             "0538d0054059")},
+        {"area.gif", turris::kGifKind, 60, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018032001281e30d0"
+             "0538d005403c")},
+        {"area.png", turris::kImageKind, 1, 720, 720, true,
+         QByteArray::fromHex(
+             "4000000008c490e1ea04122a54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d3732307837323018022001281e30d0"
+             "0538d0054001")},
+        {"full.mp4", turris::kVideoKind, 178, 1440, 720, false,
+         QByteArray::fromHex(
+             "4200000008c490e1ea04122b54727978206d65646961206865616465722076"
+             "312c206670733d36302c2073697a653d313434307837323018042001283c30"
+             "a00b38d00540b201")},
+        {"full.png", turris::kImageKind, 1, 1440, 720, false,
+         QByteArray::fromHex(
+             "4100000008c490e1ea04122b54727978206d65646961206865616465722076"
+             "312c206670733d33302c2073697a653d313434307837323018022001281e30"
+             "a00b38d0054001")},
+    };
+    for (const OfficialHeader &official : headers) {
+        const QString name =
+            QString::fromLatin1(official.name) +
+            QStringLiteral(".h264_%1x%2").arg(official.width).arg(official.height);
+        QCOMPARE(turris::framesPerSecondForKind(official.kind, official.splitArea),
+                 official.splitArea || official.kind == turris::kImageKind ? 30U
+                                                                           : 60U);
+        const QString outputPath =
+            QDir(temporaryDirectory.path()).filePath(name);
+        const turris::WriteResult written = turris::writeBlob(
+            rawPath, outputPath, official.kind, official.frames,
+            official.width, official.height, official.splitArea, {});
+        QVERIFY2(written.error.isEmpty(), qPrintable(written.error));
+        QFile output(outputPath);
+        QVERIFY(output.open(QIODevice::ReadOnly));
+        const QByteArray blob = output.readAll();
+        QCOMPARE(blob.left(official.header.size()), official.header);
+        QCOMPARE(blob.mid(official.header.size()), rawH264);
+
+        QString error;
+        QVERIFY2(turris::validateBlob(&output, blob.size(), name,
+                                      official.width, official.height,
+                                      official.splitArea, &error),
+                 qPrintable(error));
+        // A 30 fps split-area video or GIF is not full-screen media, and the
+        // other way round; a still is the same in both.
+        QCOMPARE(turris::validateBlob(&output, blob.size(), name,
+                                      official.width, official.height,
+                                      !official.splitArea, &error),
+                 official.kind == turris::kImageKind);
+        if (!official.splitArea) {
+            QVERIFY2(turris::validateBlob(&output, blob.size(), name,
+                                          official.width, official.height,
+                                          &error),
+                     qPrintable(error));
+        }
+        output.close();
+    }
+}
+
+void PrinterProtocolTests::paseImagePreparationBuildsOfficialStill_data() {
+    QTest::addColumn<quint16>("productId");
+    QTest::addColumn<bool>("splitArea");
+    QTest::addColumn<QString>("sourceName");
+    QTest::addColumn<int>("width");
+    QTest::newRow("pase-full-png")
+        << quint16{0x1021} << false << QStringLiteral("still.png") << 2240;
+    QTest::newRow("pase-split-png")
+        << quint16{0x1021} << true << QStringLiteral("still.png") << 1120;
+    QTest::newRow("pase-full-jpg")
+        << quint16{0x1021} << false << QStringLiteral("photo.jpg") << 2240;
+    QTest::newRow("panorama-full-png")
+        << quint16{0x1011} << false << QStringLiteral("still.png") << 2240;
+    QTest::newRow("panorama-wb-split-png")
+        << quint16{0x1031} << true << QStringLiteral("still.png") << 1120;
+}
+
+// A PASE-family still is what the official converter makes: one frame at
+// 30 fps, main 4.1 without B-frames, wrapped in the media header. Earlier
+// versions uploaded a raw minute-long clip, and the display stopped
+// answering USB when Loop or Shuffle switched between such stills (#37).
+void PrinterProtocolTests::paseImagePreparationBuildsOfficialStill() {
+    QFETCH(quint16, productId);
+    QFETCH(bool, splitArea);
+    QFETCH(QString, sourceName);
+    QFETCH(int, width);
+    if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty() ||
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sourcePath =
+        QDir(temporaryDirectory.path()).filePath(sourceName);
+    QImage image(160, 90, QImage::Format_RGB32);
+    image.fill(QColor(QStringLiteral("#336699")));
+    for (int x = 0; x < image.width(); ++x) {
+        image.setPixelColor(x, x % image.height(),
+                            QColor(QStringLiteral("#f0c040")));
+    }
+    QVERIFY(image.save(sourcePath));
+
+    TryxRuntimeMediaPreparationProfileV1 profile;
+    profile.target = splitArea ? QStringLiteral("SplitArea")
+                               : QStringLiteral("FullFrame");
+    if (splitArea) {
+        profile.transform.mode = QStringLiteral("Crop");
+        profile.transform.zoomPermille = 1500;
+    }
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer,
+                           &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer,
+                         &PrinterMediaPreparer::failed);
+    const QString operationId =
+        QStringLiteral("10211021-1021-4021-8021-102110211021");
+    preparer.prepareWithPreparationProfile(
+        operationId, QStringLiteral("pase-endpoint"), sourcePath,
+        QString(), 12, profile, productId);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    QCOMPARE(preparedSpy.count(), 1);
+    const QList<QVariant> prepared = preparedSpy.first();
+    const QString outputPath = prepared.at(3).toString();
+    const QString remoteName = prepared.at(4).toString();
+    const QString expectedSha256 = prepared.at(5).toString();
+    const QString thumbnailPath = prepared.at(6).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(thumbnailPath);
+    });
+    QVERIFY(remoteName.endsWith(
+        QStringLiteral(".png.h264_%1x1080").arg(width)));
+    QVERIFY(!QFileInfo::exists(outputPath + QStringLiteral(".raw.h264")));
+    QVERIFY(!thumbnailPath.isEmpty());
+    const QImage thumbnail(thumbnailPath);
+    QVERIFY(!thumbnail.isNull());
+    QCOMPARE(thumbnail.width(), 384);
+
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    output.close();
+    QCOMPARE(blob.left(70),
+             officialStillMediaHeader(static_cast<quint32>(width)));
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata,
+             turrisMediaMetadata(2, 1, static_cast<quint32>(width), 1080));
+    QVERIFY(h264.startsWith(QByteArray::fromHex("00000001")) ||
+            h264.startsWith(QByteArray::fromHex("000001")));
+    QCOMPARE(
+        expectedSha256,
+        QString::fromLatin1(
+            QCryptographicHash::hash(blob, QCryptographicHash::Sha256)
+                .toHex()));
+
+    const QString rawPath =
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("pase-still.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")),
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-select_streams"), QStringLiteral("v:0"),
+         QStringLiteral("-count_frames"),
+         QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,level,width,height,has_b_frames,color_range,color_space,nb_read_frames"),
+         QStringLiteral("-of"),
+         QStringLiteral("default=noprint_wrappers=1"), rawPath});
+    QVERIFY(probe.waitForFinished(10000));
+    QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("level=41"),
+             QStringLiteral("width=%1").arg(width),
+             QStringLiteral("height=1080"),
+             QStringLiteral("has_b_frames=0"),
+             QStringLiteral("color_range=pc"),
+             QStringLiteral("color_space=bt709"),
+             QStringLiteral("nb_read_frames=1")}) {
+        QVERIFY2(properties.contains(expected),
+                 qPrintable(expected + QLatin1Char(' ') +
+                            properties.join(QLatin1Char(','))));
+    }
+}
+
+// KANALI 2.6.0 MediaX.dll declares enOriginalMediaType JPEG=1, PNG=2,
+// GIF=3, MP4=4. A copy pulled from the device that starts with a header
+// for a JPEG or PNG original is a still.
+void PrinterProtocolTests::mediaHeaderPrefixRecognisesDeviceStills() {
+    namespace media = tryx::turris_media;
+    const QByteArray payload = QByteArray::fromHex("0000000167640028ac");
+
+    const media::MediaHeaderPrefix png = media::parseMediaHeaderPrefix(
+        officialStillMediaHeader(2240) + payload);
+    QCOMPARE(png.size, qint64{70});
+    QCOMPARE(png.kind, media::kImageKind);
+    QCOMPARE(png.width, 2240U);
+    QCOMPARE(png.height, 1080U);
+    QCOMPARE(png.frameCount, quint64{1});
+    QVERIFY(media::isStillImageMediaHeader(png));
+
+    const QByteArray jpegMetadata = turrisMediaMetadata(1, 1, 1120, 1080);
+    const media::MediaHeaderPrefix jpeg = media::parseMediaHeaderPrefix(
+        wrapTurrisMediaBlob(jpegMetadata, payload));
+    QCOMPARE(jpeg.size, qint64{4 + jpegMetadata.size()});
+    QCOMPARE(jpeg.kind, media::kJpegImageKind);
+    QCOMPARE(jpeg.width, 1120U);
+    QVERIFY(media::isStillImageMediaHeader(jpeg));
+    QCOMPARE(media::framesPerSecondForKind(media::kJpegImageKind), 30U);
+
+    for (const quint32 kind : {media::kGifKind, media::kVideoKind}) {
+        const media::MediaHeaderPrefix moving =
+            media::parseMediaHeaderPrefix(wrapTurrisMediaBlob(
+                turrisMediaMetadata(kind, 90, 2240, 1080), payload));
+        QVERIFY(moving.size > 0);
+        QCOMPARE(moving.kind, kind);
+        QVERIFY(!media::isStillImageMediaHeader(moving));
+    }
+
+    const media::MediaHeaderPrefix raw =
+        media::parseMediaHeaderPrefix(payload);
+    QCOMPARE(raw.size, qint64{0});
+    QVERIFY(!media::isStillImageMediaHeader(raw));
+    // The upload validator still expects this application's PNG kind.
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString jpegPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("jpeg-still.h264"));
+    QVERIFY(writeTextFile(jpegPath, wrapTurrisMediaBlob(
+                                        turrisMediaMetadata(1, 1, 2240, 1080),
+                                        payload)));
+    QCOMPARE(media::readMediaHeaderPrefix(jpegPath).kind,
+             media::kJpegImageKind);
+    QFile jpegFile(jpegPath);
+    QVERIFY(jpegFile.open(QIODevice::ReadOnly));
+    QString error;
+    QVERIFY(!media::validateBlob(
+        &jpegFile, jpegFile.size(),
+        QStringLiteral("still.png.h264_2240x1080"), 2240, 1080, &error));
+    QVERIFY(error.startsWith(QStringLiteral("The media container is invalid")));
+}
+
+void PrinterProtocolTests::recoveredDeviceStillStaysStill_data() {
+    QTest::addColumn<QString>("copyKind");
+    QTest::addColumn<bool>("splitArea");
+    QTest::addColumn<bool>("expectStill");
+    QTest::newRow("png-header-full")
+        << QStringLiteral("png-header") << false << true;
+    QTest::newRow("png-header-to-split")
+        << QStringLiteral("png-header") << true << true;
+    QTest::newRow("jpeg-header-full")
+        << QStringLiteral("jpeg-header") << false << true;
+    // A headerless copy (video, or a minute-long still from an earlier
+    // version) is prepared as video, as before.
+    QTest::newRow("raw-copy-full")
+        << QStringLiteral("raw") << false << false;
+}
+
+// Edit, Save as new and Replace prepare the copy pulled from the device
+// again. A still in the official format stays one frame with the header.
+void PrinterProtocolTests::recoveredDeviceStillStaysStill() {
+    QFETCH(QString, copyKind);
+    QFETCH(bool, splitArea);
+    QFETCH(bool, expectStill);
+    if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty() ||
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray deviceStill;
+    preparePaseStillBlob(temporaryDirectory.path(),
+                         QColor(QStringLiteral("#2266aa")), &deviceStill);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const QByteArray rawStill = deviceStill.mid(70);
+    QByteArray deviceCopy = deviceStill;
+    if (copyKind == QStringLiteral("jpeg-header")) {
+        deviceCopy = wrapTurrisMediaBlob(
+            turrisMediaMetadata(1, 1, 2240, 1080), rawStill);
+    } else if (copyKind == QStringLiteral("raw")) {
+        deviceCopy = rawStill;
+    }
+    const QString copyPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("device-copy.h264"));
+    QVERIFY(writeTextFile(copyPath, deviceCopy));
+    const QString copySha256 = QString::fromLatin1(
+        QCryptographicHash::hash(deviceCopy, QCryptographicHash::Sha256)
+            .toHex());
+
+    TryxRuntimeMediaPreparationProfileV1 profile;
+    profile.target = splitArea ? QStringLiteral("SplitArea")
+                               : QStringLiteral("FullFrame");
+    if (splitArea) {
+        profile.transform.mode = QStringLiteral("Crop");
+    }
+    const int width = splitArea ? 1120 : 2240;
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    preparer.prepareRecoveredWithPreparationProfile(
+        QStringLiteral("38383838-3838-4838-8838-383838383838"),
+        QStringLiteral("pase-endpoint"), copyPath, copySha256, 38,
+        profile, 0x1021);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    const QString outputPath = preparedSpy.first().at(3).toString();
+    const QString remoteName = preparedSpy.first().at(4).toString();
+    const QString thumbnailPath = preparedSpy.first().at(6).toString();
+    const auto releaseArtifacts = qScopeGuard([&]() {
+        preparer.releasePreparedFile(outputPath);
+        preparer.releasePreparedFile(thumbnailPath);
+    });
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    const QByteArray blob = output.readAll();
+    output.close();
+    const QImage thumbnail(thumbnailPath);
+    QVERIFY(!thumbnail.isNull());
+    const QColor center =
+        thumbnail.pixelColor(thumbnail.width() / 2, thumbnail.height() / 2);
+    QVERIFY2(center.blue() > 120 && center.red() < 80,
+             qPrintable(center.name()));
+
+    if (!expectStill) {
+        QVERIFY(remoteName.endsWith(
+            QStringLiteral(".mp4.h264_%1x1080").arg(width)));
+        QVERIFY(blob.startsWith(QByteArray::fromHex("00000001")));
+        QCOMPARE(tryx::turris_media::mediaHeaderPrefixSize(blob),
+                 qint64{0});
+        return;
+    }
+    QVERIFY(remoteName.endsWith(
+        QStringLiteral(".png.h264_%1x1080").arg(width)));
+    QCOMPARE(blob.left(70),
+             officialStillMediaHeader(static_cast<quint32>(width)));
+    QByteArray metadata;
+    QByteArray h264;
+    QVERIFY(splitTurrisMediaBlob(blob, &metadata, &h264));
+    QCOMPARE(metadata,
+             turrisMediaMetadata(2, 1, static_cast<quint32>(width), 1080));
+    const QString rawPath = QDir(temporaryDirectory.path()).filePath(
+        QStringLiteral("recovered-still.raw.h264"));
+    QVERIFY(writeTextFile(rawPath, h264));
+    QProcess probe;
+    probe.start(
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")),
+        {QStringLiteral("-v"), QStringLiteral("error"),
+         QStringLiteral("-f"), QStringLiteral("h264"),
+         QStringLiteral("-count_frames"),
+         QStringLiteral("-show_entries"),
+         QStringLiteral("stream=profile,width,height,nb_read_frames"),
+         QStringLiteral("-of"),
+         QStringLiteral("default=noprint_wrappers=1"), rawPath});
+    QVERIFY(probe.waitForFinished(10000));
+    QCOMPARE(probe.exitCode(), 0);
+    const QStringList properties =
+        QString::fromLatin1(probe.readAllStandardOutput())
+            .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &expected : {
+             QStringLiteral("profile=Main"),
+             QStringLiteral("width=%1").arg(width),
+             QStringLiteral("height=1080"),
+             QStringLiteral("nb_read_frames=1")}) {
+        QVERIFY2(properties.contains(expected),
+                 qPrintable(expected + QLatin1Char(' ') +
+                            properties.join(QLatin1Char(','))));
+    }
+}
+
+// Save as new of a still pulled from the device records the still
+// identity, so the catalog and later reuse treat it as a picture. A raw
+// copy keeps the recovered-video identity.
+void PrinterProtocolTests::recoveredStillSaveAsNewUsesImageIdentity() {
+    if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty() ||
+        QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty()) {
+        QSKIP("ffmpeg and ffprobe are required for the integration test");
+    }
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    QByteArray deviceStill;
+    preparePaseStillBlob(temporaryDirectory.path(),
+                         QColor(QStringLiteral("#22aa66")), &deviceStill);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1021"));
+    QVERIFY(createPrinterEndpoint(
+        sysRoot, devRoot, QStringLiteral("1-1"), QStringLiteral("lp0")));
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    manager->operationCoordinator_.mediaCatalogStore_ =
+        std::make_unique<tryx::MediaCatalogStore>(
+            QDir(temporaryDirectory.path()).filePath(
+                QStringLiteral("media-catalog")));
+    manager->loadMediaCatalogStore();
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+    QCOMPARE(manager->sessionController_.state_.printerProductId,
+             quint16{0x1021});
+
+    PrinterProtocol::MediaFile still;
+    still.name = QStringLiteral("2026-11-17_05-00-00-000-aa.png.h264_2240x1080");
+    still.size = deviceStill.size();
+    still.source = PrinterProtocol::MediaSource::User;
+    still.readOnly = false;
+    PrinterProtocol::MediaFile legacy;
+    legacy.name = QStringLiteral("legacy-still.png.h264_2240x1080");
+    legacy.size = deviceStill.size() - 70;
+    legacy.source = PrinterProtocol::MediaSource::User;
+    legacy.readOnly = false;
+    manager->updateMediaCatalog({still, legacy});
+    const auto &entries = manager->operationCoordinator_.mediaCatalog_.entries;
+    QCOMPARE(entries.size(), 2);
+
+    const QString connectionName = QStringLiteral("tryx-recovered-still-%1")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    QDBusConnection artifactCaller = QDBusConnection::connectToBus(
+        QDBusConnection::SessionBus, connectionName);
+    QVERIFY2(artifactCaller.isConnected(),
+             qPrintable(artifactCaller.lastError().message()));
+    const auto disconnectBus = qScopeGuard([&]() {
+        manager.reset();
+        QDBusConnection::disconnectFromBus(connectionName);
+    });
+    const QString owner = artifactCaller.baseService();
+    auto *store =
+        manager->operationCoordinator_.deviceMediaArtifactStore_.get();
+    const auto stage = [&](const QString &artifactId,
+                           const QString &stageOperationId,
+                           const QString &remoteName,
+                           const QByteArray &payload, QString *leaseId) {
+        const auto entry = std::find_if(
+            entries.cbegin(), entries.cend(),
+            [&remoteName](const TryxRuntimeMediaEntry &candidate) {
+                return candidate.name == remoteName;
+            });
+        QVERIFY(entry != entries.cend());
+        tryx::DeviceMediaArtifactStore::ReservationInput reservation;
+        reservation.artifactId = artifactId;
+        reservation.operationId = stageOperationId;
+        reservation.mediaId = entry->mediaId;
+        reservation.deviceIdentity =
+            manager->sessionController_.state_.printerDeviceSerial.trimmed();
+        reservation.remoteName = remoteName;
+        reservation.expectedSize = static_cast<quint64>(payload.size());
+        reservation.logicalType = QStringLiteral("Video");
+        reservation.ownerUniqueName = owner;
+        const auto reserved = store->reserve(reservation);
+        QVERIFY(reserved.ok());
+        QVERIFY(writeTextFile(reserved.artifact.canonicalPath, payload));
+        QVERIFY(QFile::setPermissions(
+            reserved.artifact.canonicalPath,
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        const QString digest = QString::fromLatin1(
+            QCryptographicHash::hash(payload, QCryptographicHash::Sha256)
+                .toHex());
+        tryx::DeviceMediaArtifactStore::FinalizeInput completion;
+        completion.artifactId = artifactId;
+        completion.operationId = stageOperationId;
+        completion.remoteName = remoteName;
+        completion.outputPath = reserved.artifact.canonicalPath;
+        completion.fileSize = payload.size();
+        completion.chunkCount = 1;
+        completion.rawSha256 = digest;
+        completion.decodedSha256 = digest;
+        QVERIFY(store->finalize(completion).ok());
+        QVERIFY(store->releaseOperationHold(artifactId, stageOperationId)
+                    .ok());
+        const auto claimed =
+            store->claim(artifactId, stageOperationId, owner);
+        QVERIFY(claimed.ok());
+        *leaseId = claimed.leaseId;
+    };
+
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPrepareRecoveredPrinterMedia,
+        manager->printerMediaPreparer_,
+        &PrinterMediaPreparer::prepareRecovered);
+    QSignalSpy prepareSpy(
+        manager.get(), &DeviceManager::requestPrepareRecoveredPrinterMedia);
+    const TryxRuntimeMediaTransform fit;
+
+    const QString stillArtifactId =
+        QStringLiteral("39393939-3939-4939-8939-393939393939");
+    QString stillLease;
+    stage(stillArtifactId,
+          QStringLiteral("40404040-4040-4040-8040-404040404040"),
+          still.name, deviceStill, &stillLease);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const QString stillOperationId =
+        QStringLiteral("41414141-4141-4141-8141-414141414141");
+    QCOMPARE(manager->queueRecoveredMediaUploadOperation(
+                 stillOperationId, stillArtifactId, stillLease, owner, fit),
+             stillOperationId);
+    QCOMPARE(prepareSpy.count(), 1);
+    const PrinterOperationCoordinator::OperationRecord &stillRecord =
+        manager->operationCoordinator_.operations_[stillOperationId];
+    QCOMPARE(stillRecord.conversionProfile,
+             QStringLiteral(
+                 "pase-mxhd-v1-image-2240x1080-yuv420p-30fps-libx264-main41-fast-crf18-kanali"));
+
+    // The runtime hands the copy to the preparer; the result is a still.
+    const QList<QVariant> request = prepareSpy.first();
+    PrinterMediaPreparer preparer;
+    QSignalSpy preparedSpy(&preparer, &PrinterMediaPreparer::prepared);
+    QSignalSpy failedSpy(&preparer, &PrinterMediaPreparer::failed);
+    preparer.prepareRecovered(
+        request.at(0).toString(), request.at(1).toString(),
+        request.at(2).toString(), request.at(3).toString(),
+        request.at(4).toULongLong(),
+        request.at(5).value<TryxRuntimeMediaTransform>(),
+        static_cast<quint16>(request.at(6).toUInt()));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        preparedSpy.count() + failedSpy.count() > 0, 60000);
+    if (!failedSpy.isEmpty()) {
+        QFAIL(qPrintable(failedSpy.first().at(1).toString()));
+    }
+    const QString outputPath = preparedSpy.first().at(3).toString();
+    const QString remoteName = preparedSpy.first().at(4).toString();
+    const QString thumbnailPath = preparedSpy.first().at(6).toString();
+    QVERIFY(remoteName.endsWith(QStringLiteral(".png.h264_2240x1080")));
+    QVERIFY(tryx::printer_media_identity::
+                printerConversionProfileMatchesMediaName(
+                    stillRecord.conversionProfile, remoteName));
+    QFile output(outputPath);
+    QVERIFY(output.open(QIODevice::ReadOnly));
+    QCOMPARE(output.read(70), officialStillMediaHeader(2240));
+    output.close();
+    preparer.releasePreparedFile(outputPath);
+    preparer.releasePreparedFile(thumbnailPath);
+
+    // A prepared copy of the wrong kind is refused before upload.
+    QSignalSpy dispatchSpy(
+        &manager->operationCoordinator_,
+        &PrinterOperationCoordinator::requestDispatchPreparedUpload);
+    manager->operationCoordinator_.handlePrepared(
+        manager->operationContext(), stillOperationId,
+        request.at(1).toString(), request.at(2).toString(),
+        QDir(temporaryDirectory.path()).filePath(
+            QStringLiteral("wrong.mp4.h264_2240x1080")),
+        QStringLiteral("wrong.mp4.h264_2240x1080"),
+        QString(64, QLatin1Char('d')), QString(), QString(),
+        request.at(4).toULongLong());
+    QCOMPARE(dispatchSpy.count(), 0);
+    QCOMPARE(manager->operationInfo(stillOperationId).errorCategory,
+             QStringLiteral("PreparedMediaKindMismatch"));
+    QVERIFY(manager->operationCoordinator_.activeOperationId_.isEmpty());
+
+    // A headerless copy, here a minute-long still from an earlier version,
+    // keeps the recovered-video identity and is prepared as video.
+    const QString legacyArtifactId =
+        QStringLiteral("42424242-4242-4242-8242-424242424242");
+    QString legacyLease;
+    stage(legacyArtifactId,
+          QStringLiteral("43434343-4343-4343-8343-434343434343"),
+          legacy.name, deviceStill.mid(70), &legacyLease);
+    if (QTest::currentTestFailed()) {
+        return;
+    }
+    const QString legacyOperationId =
+        QStringLiteral("44444444-4444-4444-8444-444444444444");
+    QCOMPARE(manager->queueRecoveredMediaUploadOperation(
+                 legacyOperationId, legacyArtifactId, legacyLease, owner,
+                 fit),
+             legacyOperationId);
+    QCOMPARE(prepareSpy.count(), 2);
+    QCOMPARE(manager->operationCoordinator_.operations_[legacyOperationId]
+                 .conversionProfile,
+             tryx::printer_media_identity::paseRecoveredConversionProfile(
+                 tryxFullFrameMediaPreparationProfile(fit)));
+    manager->operationCoordinator_.finishOperation(
+        legacyOperationId, QStringLiteral("Cancelled"),
+        QStringLiteral("TestBoundary"), QString(),
+        QStringLiteral("test cleanup"));
 }
 
 void PrinterProtocolTests::mediaPreparationKeepsRetryArtifactsPrivate_data() {
@@ -12585,7 +14348,7 @@ runtimePreparationProfileAdaptorPreservesSplitTarget() {
     QVERIFY(manager->operationCoordinator_.operations_.value(operationId)
                 .conversionProfile.startsWith(
                     QStringLiteral(
-                        "pase-h264-v3-image-60s-split-area-1120x1080-")));
+                        "pase-mxhd-v1-image-split-area-1120x1080-")));
 }
 
 void PrinterProtocolTests::
@@ -13268,6 +15031,866 @@ void PrinterProtocolTests::runtimeDisplayConfigDbusRoundTrip() {
     QCOMPARE(actualState.settingsAlign2,
              expectedState.settingsAlign2);
     QCOMPARE(actualState.diagnostic, expectedState.diagnostic);
+}
+
+void PrinterProtocolTests::holoRunConfigFollowsOfficialLayout_data() {
+    QTest::addColumn<QStringList>("metrics");
+    QTest::addColumn<QList<quint32>>("groupYs");
+
+    // KANALI holo640: one 640x480 area, PASE row spacing, value text 80.
+    QTest::newRow("one")
+        << QStringList{QStringLiteral("CPU Temperature")}
+        << QList<quint32>{200U};
+    QTest::newRow("two")
+        << QStringList{QStringLiteral("CPU Temperature"),
+                       QStringLiteral("GPU Temperature")}
+        << QList<quint32>{120U, 290U};
+    QTest::newRow("three")
+        << QStringList{QStringLiteral("CPU Temperature"),
+                       QStringLiteral("CPU Usage"),
+                       QStringLiteral("GPU Temperature")}
+        << QList<quint32>{80U, 210U, 340U};
+}
+
+void PrinterProtocolTests::holoRunConfigFollowsOfficialLayout() {
+    QFETCH(QStringList, metrics);
+    QFETCH(QList<quint32>, groupYs);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    const auto holo = printerProductProfileForId(0x1051);
+    QVERIFY(holo.has_value());
+    PrinterProtocol protocol(*holo, 500);
+    const QString endpoint = QStringLiteral("/dev/usb/lp-holo-layout");
+    protocol.adoptFileDescriptorForTesting(sockets[0], endpoint);
+    panorama::wire::v1::Request captured;
+    QString peerError;
+    std::thread peer([&]() {
+        if (!readRequest(sockets[1], &captured, &peerError)) {
+            return;
+        }
+        auto response = baseResponse(captured);
+        response.mutable_acknowledgement();
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.left.metrics = metrics;
+    overlay.left.badges = {QStringLiteral("CPU Badge")};
+    overlay.left.alignment = QStringLiteral("Center");
+    overlay.left.textColor = 0x00FF00U;
+    overlay.cpuBadgeText = QStringLiteral("CPU");
+    QString error;
+    const bool sent = protocol.sendPaseRunConfigForTesting(
+        endpoint, overlay, &error, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(sent, qPrintable(error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(captured.body_case(),
+             panorama::wire::v1::Request::kOverlayLayout);
+    const auto &layout = captured.overlay_layout();
+    QCOMPARE(layout.label_groups_size(), groupYs.size() + 1);
+    for (int index = 0; index < groupYs.size(); ++index) {
+        const auto &group = layout.label_groups(index);
+        QCOMPARE(group.group_x(), 30U);
+        QCOMPARE(group.group_y(), groupYs.at(index));
+        QCOMPARE(group.group_width(), 580U);
+        QCOMPARE(group.group_height(), 80U);
+        QCOMPARE(group.text_align(),
+                 panorama::wire::v1::OverlayGroup::ALIGN_CENTER);
+        QCOMPARE(group.labels_size(), 3);
+        QCOMPARE(group.labels(0).text_size(), 12U);
+        QCOMPARE(group.labels(1).text_size(), 80U);
+        QCOMPARE(group.labels(2).text_size(), 20U);
+        QCOMPARE(group.labels(1).text_color(), 0x00FF00U);
+    }
+    const auto &badge = layout.label_groups(groupYs.size());
+    QCOMPARE(badge.group_id(), 300U);
+    QCOMPARE(badge.group_x(), 40U);
+    QCOMPARE(badge.group_y(), 30U);
+    QCOMPARE(badge.group_width(), 580U);
+    QCOMPARE(badge.line_gap(), 1);
+    QCOMPARE(badge.labels_size(), 1);
+    QCOMPARE(badge.labels(0).label_id(), 301U);
+    QCOMPARE(badge.labels(0).text_size(), 16U);
+}
+
+void PrinterProtocolTests::stageRunConfigFollowsOfficialLayout_data() {
+    QTest::addColumn<bool>("dualMode");
+    QTest::addColumn<QStringList>("leftMetrics");
+    QTest::addColumn<QStringList>("rightMetrics");
+    // Each group as group id, x, y, width; metric groups before the badge
+    // group of their area.
+    QTest::addColumn<QList<quint32>>("groups");
+
+    // KANALI stage1440: 1440x720 with a left and a right area, PASE row
+    // spacing, value text 120, badges 60 px from the top.
+    QTest::newRow("full-one")
+        << false << QStringList{QStringLiteral("CPU Temperature")}
+        << QStringList{}
+        << QList<quint32>{100U, 30U, 300U, 1380U,
+                          300U, 40U, 60U, 1380U};
+    QTest::newRow("full-three")
+        << false
+        << QStringList{QStringLiteral("CPU Temperature"),
+                       QStringLiteral("CPU Usage"),
+                       QStringLiteral("GPU Temperature")}
+        << QStringList{}
+        << QList<quint32>{100U, 30U, 120U, 1380U,
+                          102U, 30U, 310U, 1380U,
+                          104U, 30U, 500U, 1380U,
+                          300U, 40U, 60U, 1380U};
+    QTest::newRow("split")
+        << true
+        << QStringList{QStringLiteral("CPU Temperature"),
+                       QStringLiteral("GPU Temperature")}
+        << QStringList{QStringLiteral("GPU Usage")}
+        << QList<quint32>{100U, 30U, 180U, 660U,
+                          104U, 30U, 430U, 660U,
+                          300U, 40U, 60U, 660U,
+                          206U, 750U, 300U, 660U,
+                          400U, 760U, 60U, 660U};
+}
+
+void PrinterProtocolTests::stageRunConfigFollowsOfficialLayout() {
+    QFETCH(bool, dualMode);
+    QFETCH(QStringList, leftMetrics);
+    QFETCH(QStringList, rightMetrics);
+    QFETCH(QList<quint32>, groups);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    PrinterProtocol protocol(*stage, 500);
+    const QString endpoint = QStringLiteral("/dev/usb/lp-stage-layout");
+    protocol.adoptFileDescriptorForTesting(sockets[0], endpoint);
+    panorama::wire::v1::Request captured;
+    QString peerError;
+    std::thread peer([&]() {
+        if (!readRequest(sockets[1], &captured, &peerError)) {
+            return;
+        }
+        auto response = baseResponse(captured);
+        response.mutable_acknowledgement();
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.dualMode = dualMode;
+    overlay.left.metrics = leftMetrics;
+    overlay.left.badges = {QStringLiteral("CPU Badge")};
+    overlay.left.alignment = QStringLiteral("Center");
+    overlay.left.textColor = 0x00FF00U;
+    if (dualMode) {
+        overlay.right.metrics = rightMetrics;
+        overlay.right.badges = {QStringLiteral("GPU Badge")};
+        overlay.right.alignment = QStringLiteral("Center");
+        overlay.right.textColor = 0x00FF00U;
+    }
+    QString error;
+    const bool sent = protocol.sendPaseRunConfigForTesting(
+        endpoint, overlay, &error, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(sent, qPrintable(error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(captured.body_case(),
+             panorama::wire::v1::Request::kOverlayLayout);
+    const auto &layout = captured.overlay_layout();
+    QCOMPARE(layout.label_groups_size(), groups.size() / 4);
+    for (int index = 0; index < layout.label_groups_size(); ++index) {
+        const auto &group = layout.label_groups(index);
+        QCOMPARE(group.group_id(), groups.at(index * 4));
+        QCOMPARE(group.group_x(), groups.at(index * 4 + 1));
+        QCOMPARE(group.group_y(), groups.at(index * 4 + 2));
+        QCOMPARE(group.group_width(), groups.at(index * 4 + 3));
+        QCOMPARE(group.text_align(),
+                 panorama::wire::v1::OverlayGroup::ALIGN_CENTER);
+        if (group.group_id() == 300U || group.group_id() == 400U) {
+            QCOMPARE(group.line_gap(), 1);
+            QCOMPARE(group.labels_size(), 1);
+            QCOMPARE(group.labels(0).label_id(),
+                     group.group_id() == 300U ? 301U : 402U);
+            QCOMPARE(group.labels(0).text_size(), 20U);
+            continue;
+        }
+        QCOMPARE(group.group_height(), 120U);
+        QCOMPARE(group.labels_size(), 3);
+        QCOMPARE(group.labels(0).text_size(), 15U);
+        QCOMPARE(group.labels(1).text_size(), 120U);
+        QCOMPARE(group.labels(2).text_size(), 25U);
+        QCOMPARE(group.labels(1).text_color(), 0x00FF00U);
+    }
+}
+
+// Split screen writes the two 720x720 media of the areas as KANALI does:
+// dual media mode, a single loop, no mirror or rotation.
+void PrinterProtocolTests::stageSplitApplyWritesDualMedia() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::UserConfiguration device;
+    device.mutable_poweron_config()->set_media_file(
+        "default_poweron_1440x720.mp4.h264");
+    device.mutable_standby_config()->set_media_file(
+        "default_standby_1440x720.mp4.h264");
+    auto *work = device.mutable_work_config();
+    work->set_media_mode(panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+    work->set_loop_mode(panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    work->set_single_mode_media_file("festival.mp4.h264_1440x720");
+    auto *display = device.mutable_display_config();
+    display->set_backlight_enable(true);
+    display->set_backlight_brightness(80);
+
+    // Serves 104 with the current configuration, stores the 200 and
+    // acknowledges everything else, for one read-modify-write cycle.
+    QList<panorama::wire::v1::UserConfiguration> written;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::UserConfiguration current = device;
+        bool readBack = false;
+        while (!readBack) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError)) {
+                return;
+            }
+            auto response = baseResponse(request);
+            if (request.body_case() ==
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+                *response.mutable_user_configuration() = current;
+                readBack = !written.isEmpty();
+            } else {
+                if (request.body_case() ==
+                    panorama::wire::v1::Request::kUserConfiguration) {
+                    current = request.user_configuration();
+                    written.append(current);
+                }
+                response.mutable_acknowledgement();
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+        }
+    });
+
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    PrinterProtocol protocol(*stage, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-split");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.mediaPresent = true;
+    config.screenMode = QStringLiteral("Screen Splitting");
+    config.playMode = QStringLiteral("Single");
+    config.media = {QStringLiteral("2026-11-17_12-00-00-000.mp4.h264_720x720"),
+                    QStringLiteral("2026-11-17_12-00-01-000.png.h264_720x720")};
+    config.display.orientationPresent = true;
+    QString applyError;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &applyError, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(applied, qPrintable(applyError));
+    QCOMPARE(written.size(), 1);
+    const auto &userConfig = written.constFirst();
+    QCOMPARE(userConfig.work_config().media_mode(),
+             panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
+    QCOMPARE(userConfig.work_config().loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    QCOMPARE(QString::fromStdString(
+                 userConfig.work_config().dual_mode_left_media_file()),
+             config.media.at(0));
+    QCOMPARE(QString::fromStdString(
+                 userConfig.work_config().dual_mode_right_media_file()),
+             config.media.at(1));
+    QVERIFY(!userConfig.display_config().mirror());
+    QCOMPARE(userConfig.display_config().ui_rotation(), 0U);
+    QCOMPARE(userConfig.display_config().media_rotation(), 0U);
+    QCOMPARE(QString::fromStdString(userConfig.poweron_config().media_file()),
+             QStringLiteral("default_poweron_1440x720.mp4.h264"));
+}
+
+namespace {
+
+// The media catalog and user configuration of a real STAGE ARGB 360 as issue
+// #57 reports them. Folders, names, extensions and read-only flags come from
+// the report. It names only the active upload and gives upload sizes only as
+// 2.7 to 4.8 MB, so the other four uploads follow the active one's pattern
+// and every size is made up. The cosmos, erebos and festival copies in
+// preset/ and fixed/ have the same size, so whenever they share a list they
+// also share a media identity.
+constexpr char kStageActiveUpload[] =
+    "2026-10-20_21-14-02-997.mp4.h264_1440x720";
+
+enum class StageFolder { Media, Preset, Fixed };
+
+// The report does not say which protobuf list carries preset/ and fixed/.
+enum class StageCatalogLists {
+    // media/ as user media, preset/ and fixed/ as presets, as on PASE.
+    PresetAndFixedInPresetList,
+    // Every folder as user media; only the read-only flag marks fixed/.
+    EverythingInMediaList,
+    // media/ and preset/ as user media, fixed/ as presets.
+    FixedInPresetList,
+};
+
+struct StageCatalogFile {
+    StageFolder folder;
+    QString name;
+    QString extension;
+    quint32 size;
+    bool readOnly;
+};
+
+QList<StageCatalogFile> stageHardwareCatalogFiles() {
+    const QString full = QStringLiteral(".h264_1440x720");
+    const QString plain = QStringLiteral(".h264");
+    return {
+        {StageFolder::Media, QString::fromLatin1(kStageActiveUpload), full,
+         4'812'301, false},
+        {StageFolder::Media,
+         QStringLiteral("2026-10-20_21-09-47-412.mp4.h264_1440x720"), full,
+         2'734'118, false},
+        {StageFolder::Media,
+         QStringLiteral("2026-10-20_21-10-58-030.mp4.h264_1440x720"), full,
+         3'106'552, false},
+        {StageFolder::Media,
+         QStringLiteral("2026-10-20_21-12-05-671.mp4.h264_1440x720"), full,
+         3'950'007, false},
+        {StageFolder::Media,
+         QStringLiteral("2026-10-20_21-13-20-145.mp4.h264_1440x720"), full,
+         4'207'736, false},
+        {StageFolder::Preset, QStringLiteral("cosmos.mp4.h264_1440x720"), full,
+         5'210'440, false},
+        {StageFolder::Preset, QStringLiteral("erebos.mp4.h264_1440x720"), full,
+         6'018'712, false},
+        {StageFolder::Preset, QStringLiteral("festival.mp4.h264_1440x720"),
+         full, 5'734'096, false},
+        // The first and the last of the reported downloads.
+        {StageFolder::Preset, QStringLiteral("download_58.mp4.h264_1440x720"),
+         full, 4'402'210, false},
+        {StageFolder::Preset, QStringLiteral("download_108.mp4.h264_1440x720"),
+         full, 3'871'504, false},
+        {StageFolder::Preset,
+         QStringLiteral("default_poweron_1440x720.mp4.h264"), plain,
+         1'204'388, false},
+        {StageFolder::Preset,
+         QStringLiteral("default_standby_1440x720.mp4.h264"), plain, 986'112,
+         false},
+        {StageFolder::Fixed, QStringLiteral("cosmos.mp4.h264_1440x720"), full,
+         5'210'440, true},
+        {StageFolder::Fixed, QStringLiteral("erebos.mp4.h264_1440x720"), full,
+         6'018'712, true},
+        {StageFolder::Fixed, QStringLiteral("festival.mp4.h264_1440x720"), full,
+         5'734'096, true},
+        {StageFolder::Fixed, QStringLiteral("graffiti.mp4.h264_1440x720"), full,
+         4'990'256, true},
+    };
+}
+
+bool stageFolderInPresetList(StageFolder folder, StageCatalogLists lists) {
+    switch (lists) {
+    case StageCatalogLists::PresetAndFixedInPresetList:
+        return folder != StageFolder::Media;
+    case StageCatalogLists::EverythingInMediaList:
+        return false;
+    case StageCatalogLists::FixedInPresetList:
+        return folder == StageFolder::Fixed;
+    }
+    return false;
+}
+
+QString stageFolderPath(StageFolder folder) {
+    switch (folder) {
+    case StageFolder::Media:
+        return QStringLiteral("/mnt/data/app/media/");
+    case StageFolder::Preset:
+        return QStringLiteral("/mnt/data/app/preset/");
+    case StageFolder::Fixed:
+        return QStringLiteral("/mnt/data/app/fixed/");
+    }
+    return {};
+}
+
+panorama::wire::v1::MediaCatalog stageHardwareCatalog(
+    StageCatalogLists lists) {
+    panorama::wire::v1::MediaCatalog catalog;
+    for (const StageCatalogFile &file : stageHardwareCatalogFiles()) {
+        auto *entry = stageFolderInPresetList(file.folder, lists)
+            ? catalog.add_preset_file_list()
+            : catalog.add_media_file_list();
+        entry->set_file_path(
+            (stageFolderPath(file.folder) + file.name).toStdString());
+        entry->set_file_ext(file.extension.toStdString());
+        entry->set_file_size(file.size);
+        entry->set_read_only(file.readOnly);
+    }
+    return catalog;
+}
+
+// What the runtime lists from that catalog: the user media list, then the
+// preset list, every file under its bare name with its own size and flag.
+QList<PrinterProtocol::MediaFile> expectedStageMediaFiles(
+    StageCatalogLists lists) {
+    QList<PrinterProtocol::MediaFile> files;
+    for (const bool presetList : {false, true}) {
+        for (const StageCatalogFile &file : stageHardwareCatalogFiles()) {
+            if (stageFolderInPresetList(file.folder, lists) != presetList) {
+                continue;
+            }
+            files.append({file.name, file.size, file.readOnly,
+                          presetList ? PrinterProtocol::MediaSource::Preset
+                                     : PrinterProtocol::MediaSource::User});
+        }
+    }
+    return files;
+}
+
+panorama::wire::v1::UserConfiguration stageHardwareUserConfiguration() {
+    panorama::wire::v1::UserConfiguration config;
+    config.mutable_poweron_config()->set_media_file(
+        "default_poweron_1440x720.mp4.h264");
+    auto *standby = config.mutable_standby_config();
+    standby->set_enable(true);
+    standby->set_media_file("default_standby_1440x720.mp4.h264");
+    // media_mode and loop_mode are omitted: MEDIA_SINGLE, LOOP_SINGLE.
+    config.mutable_work_config()->set_single_mode_media_file(
+        kStageActiveUpload);
+    auto *display = config.mutable_display_config();
+    display->set_backlight_enable(true);
+    display->set_backlight_brightness(80);
+    return config;
+}
+
+// Reads the catalog through a STAGE PrinterProtocol, as the runtime's media
+// list refresh does.
+PrinterProtocol::MediaListResult readStageHardwareCatalog(
+    StageCatalogLists lists, QString *peerError) {
+    const PrinterProductProfile stage =
+        printerProductProfileForId(0x1041).value();
+    int sockets[2] = {-1, -1};
+    if (!createSocketPair(sockets, peerError)) {
+        return {};
+    }
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, peerError)) {
+            return;
+        }
+        if (request.body_case() !=
+            panorama::wire::v1::Request::kMediaCatalogQuery) {
+            *peerError = QStringLiteral("expected a FileList query");
+            return;
+        }
+        auto response = baseResponse(request);
+        *response.mutable_media_catalog() = stageHardwareCatalog(lists);
+        writeResponse(sockets[1], response, peerError);
+    });
+    PrinterProtocol protocol(stage, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-catalog");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    const PrinterProtocol::MediaListResult result =
+        protocol.readMediaList(devicePath, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+    return result;
+}
+
+void addStageCatalogListRows() {
+    QTest::addColumn<int>("lists");
+    QTest::newRow("preset-and-fixed-in-preset-list")
+        << static_cast<int>(StageCatalogLists::PresetAndFixedInPresetList);
+    QTest::newRow("everything-in-media-list")
+        << static_cast<int>(StageCatalogLists::EverythingInMediaList);
+    QTest::newRow("fixed-in-preset-list")
+        << static_cast<int>(StageCatalogLists::FixedInPresetList);
+}
+
+}  // namespace
+
+void PrinterProtocolTests::stageHardwareCatalogListsEveryEntry_data() {
+    addStageCatalogListRows();
+}
+
+// Issue #57: the catalog of a real STAGE is listed whole under every
+// plausible split of its folders over the two lists. A preset name in both
+// preset/ and the read-only fixed/ stays two entries, and the ".h264"
+// power-on and standby defaults keep the names the user configuration uses.
+void PrinterProtocolTests::stageHardwareCatalogListsEveryEntry() {
+    QFETCH(int, lists);
+    const auto catalogLists = static_cast<StageCatalogLists>(lists);
+
+    QString peerError;
+    const PrinterProtocol::MediaListResult result =
+        readStageHardwareCatalog(catalogLists, &peerError);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(result.success, qPrintable(result.error));
+
+    const QList<PrinterProtocol::MediaFile> expected =
+        expectedStageMediaFiles(catalogLists);
+    QCOMPARE(result.files.size(), expected.size());
+    for (qsizetype index = 0; index < expected.size(); ++index) {
+        const PrinterProtocol::MediaFile &actual = result.files.at(index);
+        const PrinterProtocol::MediaFile &wanted = expected.at(index);
+        QCOMPARE(actual.name, wanted.name);
+        QCOMPARE(actual.size, wanted.size);
+        QCOMPARE(actual.readOnly, wanted.readOnly);
+        QCOMPARE(static_cast<int>(actual.source),
+                 static_cast<int>(wanted.source));
+    }
+
+    int festivalCopies = 0;
+    int readOnlyFestivalCopies = 0;
+    for (const PrinterProtocol::MediaFile &file : result.files) {
+        if (file.name == QStringLiteral("festival.mp4.h264_1440x720")) {
+            ++festivalCopies;
+            readOnlyFestivalCopies += file.readOnly ? 1 : 0;
+        }
+    }
+    QCOMPARE(festivalCopies, 2);
+    QCOMPARE(readOnlyFestivalCopies, 1);
+}
+
+void PrinterProtocolTests::stageHardwareCatalogReachesTheCoordinator_data() {
+    addStageCatalogListRows();
+}
+
+// The coordinator keeps the whole STAGE catalog. It offers to delete the
+// upload, but not the read-only fixed/ presets, the ".h264" defaults or the
+// writable preset/ copy that shares its name with a fixed/ preset: FileRemove
+// names a file, not a folder, so the device client refuses that name as
+// ambiguous. A preset Apply still goes out by name.
+void PrinterProtocolTests::stageHardwareCatalogReachesTheCoordinator() {
+    QFETCH(int, lists);
+
+    QString peerError;
+    const PrinterProtocol::MediaListResult listed =
+        readStageHardwareCatalog(static_cast<StageCatalogLists>(lists),
+                                 &peerError);
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(listed.success, qPrintable(listed.error));
+
+    QTemporaryDir temporaryDirectory;
+    QVERIFY(temporaryDirectory.isValid());
+    const QString sysRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("sys"));
+    const QString devRoot =
+        QDir(temporaryDirectory.path()).filePath(QStringLiteral("dev"));
+    QVERIFY(createUsbDevice(sysRoot, QStringLiteral("1-1"), "1041"));
+    QVERIFY(createPrinterEndpoint(sysRoot, devRoot, QStringLiteral("1-1"),
+                                  QStringLiteral("lp0")));
+
+    std::unique_ptr<DeviceManager> manager(
+        DeviceManager::createForTesting(sysRoot, devRoot));
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPrinterDeleteMedia,
+        manager->worker_, &DeviceWorker::deletePrinterMedia);
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestPrinterApplyMedia,
+        manager->worker_, &DeviceWorker::applyPrinterMedia);
+    QObject::disconnect(
+        manager.get(), &DeviceManager::requestStartPrinterSession,
+        manager->worker_, &DeviceWorker::startPrinterDisplaySession);
+    manager->setAutoConnectModeForTesting(true);
+    manager->rescanPrinterForTesting();
+    QVERIFY(manager->isPrinterClassConnected());
+    QCOMPARE(manager->sessionController_.state_.printerProductId,
+             quint16{0x1041});
+    manager->sessionController_.state_.printerDisplaySessionActive = true;
+
+    manager->updateMediaCatalog(listed.files);
+    const TryxRuntimeMediaCatalogSnapshot catalog =
+        manager->mediaCatalogSnapshot();
+    QCOMPARE(catalog.entries.size(), listed.files.size());
+    const QString festival = QStringLiteral("festival.mp4.h264_1440x720");
+    const QString graffiti = QStringLiteral("graffiti.mp4.h264_1440x720");
+    const QSet<QString> undeletable{
+        QStringLiteral("cosmos.mp4.h264_1440x720"),
+        QStringLiteral("erebos.mp4.h264_1440x720"),
+        festival,
+        graffiti,
+        QStringLiteral("default_poweron_1440x720.mp4.h264"),
+        QStringLiteral("default_standby_1440x720.mp4.h264"),
+    };
+    bool uploadListed = false;
+    for (const TryxRuntimeMediaEntry &entry : catalog.entries) {
+        if (entry.name == QString::fromLatin1(kStageActiveUpload)) {
+            uploadListed = true;
+            QVERIFY(entry.deleteAllowed);
+        } else if (undeletable.contains(entry.name)) {
+            QVERIFY2(!entry.deleteAllowed,
+                     qPrintable(QStringLiteral("%1 (source %2%3)")
+                                    .arg(entry.name)
+                                    .arg(entry.source)
+                                    .arg(entry.readOnly
+                                             ? QStringLiteral(", read-only")
+                                             : QString())));
+            QVERIFY(!entry.deleteBlockReason.isEmpty());
+        }
+    }
+    QVERIFY(uploadListed);
+
+    QSignalSpy deleteSpy(
+        manager.get(), &DeviceManager::requestPrinterDeleteMedia);
+    const QList<std::pair<QString, QString>> refusedDeletes{
+        {QStringLiteral("41414141-4141-4141-8141-414141414141"), festival},
+        {QStringLiteral("41414141-4141-4141-8141-414141414142"), graffiti},
+    };
+    for (const auto &[operationId, name] : refusedDeletes) {
+        QCOMPARE(manager->queueDeleteMediaOperation(operationId,
+                                                    QStringList{name}),
+                 operationId);
+        QCOMPARE(manager->operationInfo(operationId).errorCategory,
+                 QStringLiteral("DeleteNotAllowed"));
+    }
+    QCOMPARE(deleteSpy.count(), 0);
+
+    QSignalSpy applySpy(
+        manager.get(), &DeviceManager::requestPrinterApplyMedia);
+    TryxRuntimeApplyRequest preset;
+    preset.presetId = QStringLiteral("Pre-set 1: Festival");
+    const QString applyId =
+        QStringLiteral("41414141-4141-4141-8141-414141414143");
+    QCOMPARE(manager->queueApplyOperation(applyId, preset), applyId);
+    QCOMPARE(manager->operationInfo(applyId).state,
+             QStringLiteral("Preflight"));
+    QCOMPARE(applySpy.count(), 1);
+    QCOMPARE(applySpy.constFirst().at(1).toString(), festival);
+    const TryxRuntimeApplyRequest dispatched =
+        qvariant_cast<TryxRuntimeApplyRequest>(applySpy.constFirst().at(2));
+    QCOMPARE(dispatched.screenMode, QStringLiteral("Full Screen"));
+    QCOMPARE(dispatched.playMode, QStringLiteral("Single"));
+    QCOMPARE(dispatched.media, QStringList{festival});
+}
+
+void PrinterProtocolTests::stageHardwareCatalogNeverRemovesFixedMedia_data() {
+    QTest::addColumn<int>("lists");
+    QTest::addColumn<QString>("target");
+    const QList<std::pair<const char *, StageCatalogLists>> layouts{
+        {"preset-and-fixed-in-preset-list",
+         StageCatalogLists::PresetAndFixedInPresetList},
+        {"everything-in-media-list", StageCatalogLists::EverythingInMediaList},
+        {"fixed-in-preset-list", StageCatalogLists::FixedInPresetList},
+    };
+    for (const auto &[layout, lists] : layouts) {
+        // graffiti exists only in fixed/; festival also in preset/.
+        for (const char *name : {"graffiti", "festival"}) {
+            QTest::addRow("%s/%s", layout, name)
+                << static_cast<int>(lists)
+                << QStringLiteral("%1.mp4.h264_1440x720")
+                       .arg(QString::fromLatin1(name));
+        }
+    }
+}
+
+// Even if a delete of a fixed/ preset name reaches the device client, the
+// fresh STAGE catalog stops it before the user configuration check and
+// before FileRemove.
+void PrinterProtocolTests::stageHardwareCatalogNeverRemovesFixedMedia() {
+    QFETCH(int, lists);
+    QFETCH(QString, target);
+
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("missing delete preflight FileList");
+            }
+            return;
+        }
+        auto response = baseResponse(request);
+        *response.mutable_media_catalog() =
+            stageHardwareCatalog(static_cast<StageCatalogLists>(lists));
+        if (!writeResponse(sockets[1], response, &peerError)) {
+            return;
+        }
+        QString quietError;
+        if (!verifyNoPeerPayload(sockets[1], 150, &quietError)) {
+            peerError = QStringLiteral(
+                "a request followed the refused delete preflight");
+        }
+    });
+
+    PrinterProtocol protocol(*stage, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-delete");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    int dispatchCount = 0;
+    const PrinterProtocol::DeleteResult result = protocol.removeUserMedia(
+        devicePath, QStringList{target},
+        [&dispatchCount](int, const PrinterProtocol::MediaFile &, QString *) {
+            ++dispatchCount;
+            return true;
+        },
+        {}, PrinterProtocol::OperationContext{}, false);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(!result.success);
+    QCOMPARE(result.outcome, PrinterProtocol::MutationOutcome::NotStarted);
+    QVERIFY2(result.error.contains(target), qPrintable(result.error));
+    QVERIFY(result.deletedNames.isEmpty());
+    QCOMPARE(dispatchCount, 0);
+}
+
+// Issue #57: the user configuration of a real STAGE (media and loop mode
+// omitted, no filter configuration) reads as the upload in full screen.
+// A preset Apply as the coordinator maps "Pre-set 1: Festival", a full-screen
+// Apply of the upload and a split Apply of two 720x720 area files then each
+// change only the work configuration and keep the ".h264" power-on and
+// standby media, standby, backlight and brightness as the device had them.
+void PrinterProtocolTests::
+    stageHardwareConfigurationAppliesPresetUploadAndAreas() {
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    using tryx::pase_overlay_config::printerPresetMediaFile;
+    const QString festival =
+        printerPresetMediaFile(QStringLiteral("Pre-set 1: Festival"), 0x1041);
+    QCOMPARE(festival, QStringLiteral("festival.mp4.h264_1440x720"));
+    const QString upload = QString::fromLatin1(kStageActiveUpload);
+    const QStringList areas{
+        QStringLiteral("2026-11-27_10-00-00-000.mp4.h264_720x720"),
+        QStringLiteral("2026-11-27_10-00-01-000.png.h264_720x720")};
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    // Serves 104 with the current configuration, stores every 200 and
+    // acknowledges everything else, until the readback of the third write.
+    constexpr qsizetype kApplies = 3;
+    QList<panorama::wire::v1::UserConfiguration> written;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::UserConfiguration current =
+            stageHardwareUserConfiguration();
+        bool lastReadBack = false;
+        while (!lastReadBack) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError)) {
+                return;
+            }
+            auto response = baseResponse(request);
+            if (request.body_case() ==
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+                *response.mutable_user_configuration() = current;
+                lastReadBack = written.size() == kApplies;
+            } else {
+                if (request.body_case() ==
+                    panorama::wire::v1::Request::kUserConfiguration) {
+                    current = request.user_configuration();
+                    written.append(current);
+                }
+                response.mutable_acknowledgement();
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+        }
+    });
+
+    PrinterProtocol protocol(*stage, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-hardware");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    const PrinterProtocol::OperationContext context;
+    const PrinterProtocol::PaseDisplayStateResult active =
+        protocol.readPaseDisplayState(devicePath, context);
+
+    PrinterProtocol::PaseApplyConfig presetApply;
+    presetApply.mediaPresent = true;
+    presetApply.screenMode = QStringLiteral("Full Screen");
+    presetApply.playMode = QStringLiteral("Single");
+    presetApply.media = {festival};
+    QString presetError;
+    const bool presetApplied = protocol.applyPaseConfiguration(
+        devicePath, presetApply, &presetError, context);
+
+    PrinterProtocol::PaseApplyConfig uploadApply = presetApply;
+    uploadApply.media = {upload};
+    QString uploadError;
+    const bool uploadApplied = protocol.applyPaseConfiguration(
+        devicePath, uploadApply, &uploadError, context);
+
+    PrinterProtocol::PaseApplyConfig splitApply;
+    splitApply.mediaPresent = true;
+    splitApply.screenMode = QStringLiteral("Screen Splitting");
+    splitApply.playMode = QStringLiteral("Single");
+    splitApply.media = areas;
+    QString splitError;
+    const bool splitApplied = protocol.applyPaseConfiguration(
+        devicePath, splitApply, &splitError, context);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(active.success, qPrintable(active.error));
+    QCOMPARE(active.state.screenMode, QStringLiteral("Full Screen"));
+    QCOMPARE(active.state.playMode, QStringLiteral("Single"));
+    QCOMPARE(active.state.media, QStringList{upload});
+    QVERIFY(!active.presetPlayback);
+    QVERIFY(active.state.backlightEnabled);
+    QCOMPARE(active.state.brightness, 80);
+    QVERIFY(active.state.standbyEnabled);
+    QCOMPARE(active.state.standbyMedia,
+             QStringLiteral("default_standby_1440x720.mp4.h264"));
+    QVERIFY(!active.state.mirrorMode);
+    QVERIFY(!active.state.waterfallMode);
+
+    QVERIFY2(presetApplied, qPrintable(presetError));
+    QVERIFY2(uploadApplied, qPrintable(uploadError));
+    QVERIFY2(splitApplied, qPrintable(splitError));
+    QCOMPARE(written.size(), kApplies);
+    for (qsizetype index = 0; index < 2; ++index) {
+        const auto &work = written.at(index).work_config();
+        QCOMPARE(work.media_mode(),
+                 panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        QCOMPARE(work.loop_mode(),
+                 panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+        QCOMPARE(QString::fromStdString(work.single_mode_media_file()),
+                 index == 0 ? festival : upload);
+    }
+    const auto &split = written.at(2).work_config();
+    QCOMPARE(split.media_mode(),
+             panorama::wire::v1::WorkConfiguration::MEDIA_DUAL);
+    QCOMPARE(split.loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    QCOMPARE(QString::fromStdString(split.dual_mode_left_media_file()),
+             areas.at(0));
+    QCOMPARE(QString::fromStdString(split.dual_mode_right_media_file()),
+             areas.at(1));
+    for (const panorama::wire::v1::UserConfiguration &config : written) {
+        QCOMPARE(QString::fromStdString(config.poweron_config().media_file()),
+                 QStringLiteral("default_poweron_1440x720.mp4.h264"));
+        QVERIFY(config.standby_config().enable());
+        QCOMPARE(QString::fromStdString(config.standby_config().media_file()),
+                 QStringLiteral("default_standby_1440x720.mp4.h264"));
+        QVERIFY(config.display_config().backlight_enable());
+        QCOMPARE(config.display_config().backlight_brightness(), 80U);
+        QVERIFY(!config.has_filter_config());
+    }
 }
 
 void PrinterProtocolTests::paseRunConfigUsesWireLayout() {
@@ -15609,6 +18232,411 @@ void PrinterProtocolTests::readPaseDisplayStateDecodesDualConfiguration() {
     QCOMPARE(result.state.media,
              QStringList({QStringLiteral("left.h264"),
                           QStringLiteral("right.h264")}));
+}
+
+static void addPresetLoopModeRows() {
+    QTest::addColumn<int>("deviceLoopMode");
+    QTest::addColumn<QString>("playMode");
+    QTest::addColumn<int>("writtenLoopMode");
+    QTest::newRow("preset-all")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_PRESET_ALL)
+        << QStringLiteral("Loop")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QTest::newRow("preset-random")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_PRESET_RANDOM)
+        << QStringLiteral("Shuffle")
+        << static_cast<int>(panorama::wire::v1::WorkConfiguration::LOOP_RANDOM);
+}
+
+void PrinterProtocolTests::readPaseDisplayStateReadsPresetLoopModes_data() {
+    addPresetLoopModeRows();
+}
+
+// KANALI 2.6.0 loop modes 3 and 4 used to fail the whole active-layout
+// decode with "unknown playback mode".
+void PrinterProtocolTests::readPaseDisplayStateReadsPresetLoopModes() {
+    QFETCH(int, deviceLoopMode);
+    QFETCH(QString, playMode);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop read did not request user config");
+            return;
+        }
+        auto response = baseResponse(request);
+        auto *userConfig = response.mutable_user_configuration();
+        userConfig->mutable_display_config()->set_backlight_enable(true);
+        userConfig->mutable_display_config()->set_backlight_brightness(40);
+        auto *work = userConfig->mutable_work_config();
+        work->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        work->set_loop_mode(
+            static_cast<panorama::wire::v1::WorkConfiguration::LoopMode>(
+                deviceLoopMode));
+        work->set_single_mode_media_file("default_1_2240x1080.mp4.h264");
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    const PrinterProtocol::PaseDisplayStateResult result =
+        protocol.readPaseDisplayState(
+            devicePath, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(result.presetPlayback);
+    QCOMPARE(result.state.screenMode, QStringLiteral("Full Screen"));
+    QCOMPARE(result.state.playMode, playMode);
+    QCOMPARE(result.state.media,
+             QStringList{QStringLiteral("default_1_2240x1080.mp4.h264")});
+    QCOMPARE(result.state.brightness, 40);
+}
+
+void PrinterProtocolTests::paseDisplayApplyReplacesPresetLoopMode_data() {
+    addPresetLoopModeRows();
+}
+
+// A display-only Apply is a read-modify-write of the device configuration.
+// The preset loop mode the device reported must not be echoed back: the host
+// writes the user-media mode the display state shows.
+void PrinterProtocolTests::paseDisplayApplyReplacesPresetLoopMode() {
+    QFETCH(int, deviceLoopMode);
+    QFETCH(QString, playMode);
+    QFETCH(int, writtenLoopMode);
+
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::Request capturedUserConfig;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request getRequest;
+        if (!readRequest(sockets[1], &getRequest, &peerError) ||
+            getRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop apply did not read user config");
+            return;
+        }
+        auto getResponse = baseResponse(getRequest);
+        auto *userConfig = getResponse.mutable_user_configuration();
+        userConfig->mutable_display_config()->set_backlight_enable(true);
+        userConfig->mutable_display_config()->set_backlight_brightness(21);
+        auto *work = userConfig->mutable_work_config();
+        work->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        work->set_loop_mode(
+            static_cast<panorama::wire::v1::WorkConfiguration::LoopMode>(
+                deviceLoopMode));
+        work->set_single_mode_media_file("keep-media.h264");
+        if (!writeResponse(sockets[1], getResponse, &peerError)) {
+            return;
+        }
+
+        if (!readRequest(sockets[1], &capturedUserConfig, &peerError) ||
+            capturedUserConfig.body_case() !=
+                panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral(
+                "preset loop apply did not send user config");
+            return;
+        }
+        auto userResponse = baseResponse(capturedUserConfig);
+        userResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], userResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request runRequest;
+        if (!readRequest(sockets[1], &runRequest, &peerError) ||
+            runRequest.body_case() !=
+                panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral(
+                "preset loop apply did not activate run config");
+            return;
+        }
+        auto runResponse = baseResponse(runRequest);
+        runResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], runResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request readbackRequest;
+        if (!readRequest(sockets[1], &readbackRequest, &peerError) ||
+            readbackRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop apply did not verify user config");
+            return;
+        }
+        auto readbackResponse = baseResponse(readbackRequest);
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
+        writeResponse(sockets[1], readbackResponse, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop-apply");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.display.brightnessPresent = true;
+    config.display.brightness = 68;
+    QString error;
+    PrinterProtocol::PaseDisplayState appliedState;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &error, PrinterProtocol::OperationContext{},
+        nullptr, &appliedState);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(capturedUserConfig.body_case(),
+             panorama::wire::v1::Request::kUserConfiguration);
+    const auto &written = capturedUserConfig.user_configuration();
+    QCOMPARE(static_cast<int>(written.work_config().loop_mode()), writtenLoopMode);
+    QCOMPARE(written.work_config().media_mode(),
+             panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+    QCOMPARE(QString::fromStdString(written.work_config().single_mode_media_file()),
+             QStringLiteral("keep-media.h264"));
+    QCOMPARE(written.display_config().backlight_brightness(), 68U);
+    QVERIFY2(applied, qPrintable(error));
+    QCOMPARE(appliedState.playMode, playMode);
+    QCOMPARE(appliedState.brightness, 68);
+}
+
+// The HOLO reports a decoration light (UserConfigPb field 6) that this
+// application has no controls for. Apply and brightness writes are a
+// read-modify-write of the device configuration and must carry it back as
+// the device reported it.
+void PrinterProtocolTests::holoApplyPreservesLightConfiguration() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::UserConfiguration device;
+    device.mutable_poweron_config()->set_media_file(
+        "default_poweron.mp4.h264_640x480");
+    device.mutable_standby_config()->set_media_file(
+        "default_standby.mp4.h264_640x480");
+    auto *work = device.mutable_work_config();
+    work->set_media_mode(panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+    work->set_loop_mode(panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    work->set_single_mode_media_file("default_01.mp4.h264_640x480");
+    auto *display = device.mutable_display_config();
+    display->set_backlight_enable(true);
+    display->set_backlight_brightness(80);
+    auto *light = device.mutable_light_config();
+    light->set_enable(true);
+    light->set_brightness(55);
+    light->set_effect(panorama::wire::v1::LightConfiguration::LIGHT_EFFECT_BREATH);
+    light->mutable_color()->set_r(12);
+    light->mutable_color()->set_g(200);
+    light->mutable_color()->set_b(77);
+    light->set_speed(3);
+    light->set_control_mode(
+        panorama::wire::v1::LightConfiguration::LIGHT_CONTROL_ARGB_SYNC);
+    const panorama::wire::v1::LightConfiguration reportedLight = *light;
+
+    // Serves 104 with the current configuration, stores each 200 and
+    // acknowledges everything else, for two read-modify-write cycles.
+    QList<panorama::wire::v1::UserConfiguration> written;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::UserConfiguration current = device;
+        int readbacks = 0;
+        while (readbacks < 2) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError)) {
+                return;
+            }
+            auto response = baseResponse(request);
+            if (request.body_case() ==
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+                *response.mutable_user_configuration() = current;
+            } else {
+                if (request.body_case() ==
+                    panorama::wire::v1::Request::kUserConfiguration) {
+                    current = request.user_configuration();
+                    written.append(current);
+                }
+                response.mutable_acknowledgement();
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+            if (request.body_case() ==
+                    panorama::wire::v1::Request::kUserConfigurationQuery &&
+                written.size() > readbacks) {
+                ++readbacks;
+            }
+        }
+    });
+
+    const auto holo = printerProductProfileForId(0x1051);
+    QVERIFY(holo.has_value());
+    PrinterProtocol protocol(*holo, 500);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-holo-light");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.mediaPresent = true;
+    config.screenMode = QStringLiteral("Full Screen");
+    config.playMode = QStringLiteral("Loop");
+    config.media = {QStringLiteral("2026-11-17_12-00-00-000.mp4.h264_640x480")};
+    config.display.orientationPresent = true;
+    QString applyError;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &applyError, PrinterProtocol::OperationContext{});
+    QString brightnessError;
+    const bool brightnessSet = protocol.setBrightness(
+        devicePath, 35, &brightnessError, PrinterProtocol::OperationContext{});
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(applied, qPrintable(applyError));
+    QVERIFY2(brightnessSet, qPrintable(brightnessError));
+    QCOMPARE(written.size(), 2);
+    for (const auto &userConfig : written) {
+        QVERIFY(userConfig.has_light_config());
+        QCOMPARE(userConfig.light_config().SerializeAsString(),
+                 reportedLight.SerializeAsString());
+        QVERIFY(!userConfig.display_config().mirror());
+        QCOMPARE(userConfig.display_config().ui_rotation(), 0U);
+        QCOMPARE(userConfig.display_config().media_rotation(), 0U);
+        QCOMPARE(QString::fromStdString(userConfig.poweron_config().media_file()),
+                 QStringLiteral("default_poweron.mp4.h264_640x480"));
+    }
+    QCOMPARE(written.at(0).work_config().loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QCOMPARE(QString::fromStdString(written.at(0).work_config().single_mode_media_file()),
+             config.media.constFirst());
+    QCOMPARE(written.at(0).display_config().backlight_brightness(), 80U);
+    QCOMPARE(written.at(1).display_config().backlight_brightness(), 35U);
+    QCOMPARE(written.at(1).work_config().single_mode_media_file(),
+             written.at(0).work_config().single_mode_media_file());
+}
+
+// The host writes LOOP_ALL for "Loop". A device that still reports a preset
+// loop afterwards decodes to the same "Loop" text, so the readback check has
+// to look at the preset flag to notice it.
+void PrinterProtocolTests::paseMediaApplyRejectsPresetLoopReadback() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::Request capturedUserConfig;
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request getRequest;
+        if (!readRequest(sockets[1], &getRequest, &peerError) ||
+            getRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not read user config");
+            return;
+        }
+        auto getResponse = baseResponse(getRequest);
+        auto *initial = getResponse.mutable_user_configuration();
+        initial->mutable_display_config()->set_backlight_brightness(50);
+        auto *initialWork = initial->mutable_work_config();
+        initialWork->set_media_mode(
+            panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+        initialWork->set_loop_mode(
+            panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+        initialWork->set_single_mode_media_file("old.h264");
+        if (!writeResponse(sockets[1], getResponse, &peerError)) {
+            return;
+        }
+
+        if (!readRequest(sockets[1], &capturedUserConfig, &peerError) ||
+            capturedUserConfig.body_case() !=
+                panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not write user config");
+            return;
+        }
+        auto userResponse = baseResponse(capturedUserConfig);
+        userResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], userResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request runRequest;
+        if (!readRequest(sockets[1], &runRequest, &peerError) ||
+            runRequest.body_case() !=
+                panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not write run config");
+            return;
+        }
+        auto runResponse = baseResponse(runRequest);
+        runResponse.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], runResponse, &peerError)) {
+            return;
+        }
+
+        panorama::wire::v1::Request readbackRequest;
+        if (!readRequest(sockets[1], &readbackRequest, &peerError) ||
+            readbackRequest.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral(
+                "preset loop readback test did not request readback");
+            return;
+        }
+        auto readbackResponse = baseResponse(readbackRequest);
+        *readbackResponse.mutable_user_configuration() =
+            capturedUserConfig.user_configuration();
+        readbackResponse.mutable_user_configuration()
+            ->mutable_work_config()
+            ->set_loop_mode(
+                panorama::wire::v1::WorkConfiguration::LOOP_PRESET_ALL);
+        writeResponse(sockets[1], readbackResponse, &peerError);
+    });
+
+    PrinterProtocol protocol(500);
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-preset-loop-readback");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.media = {QStringLiteral("new.h264")};
+    config.screenMode = QStringLiteral("Full Screen");
+    config.playMode = QStringLiteral("Loop");
+    config.mediaPresent = true;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool applied = protocol.applyPaseConfiguration(
+        devicePath, config, &error, PrinterProtocol::OperationContext{},
+        &mutation);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(capturedUserConfig.user_configuration().work_config().loop_mode(),
+             panorama::wire::v1::WorkConfiguration::LOOP_ALL);
+    QVERIFY(!applied);
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::VerificationFailed);
+    QVERIFY2(error.contains(QStringLiteral("play mode"), Qt::CaseInsensitive),
+             qPrintable(error));
 }
 
 void PrinterProtocolTests::standalonePaseMetricsConfigurationIsAcknowledged() {
@@ -38127,6 +41155,45 @@ void PrinterProtocolTests::legacyHelpersPassArgumentsWithoutShellParsing() {
     QVERIFY(!panorama::Adb::is_plain_media_name("clip\n.mp4"));
 }
 
+void PrinterProtocolTests::legacyAdbStatusNamesTheMissingPart() {
+    using Status = panorama::Adb::Status;
+    const auto parse = [](const std::string &output) {
+        return panorama::Adb::parse_device_list(output);
+    };
+
+    QCOMPARE(parse("List of devices attached\n\n").status, Status::NoDevice);
+    QCOMPARE(parse("* daemon not running; starting now at tcp:5037\n"
+                   "* daemon started successfully\n"
+                   "List of devices attached\n\n").status,
+             Status::NoDevice);
+    QCOMPARE(parse("List of devices attached\nTRYX0001\tdevice\n").status,
+             Status::Ready);
+    QCOMPARE(parse("List of devices attached\nother\toffline\nTRYX0001\tdevice\r\n")
+                 .status,
+             Status::Ready);
+
+    const auto unauthorized = parse("List of devices attached\nTRYX0001\tunauthorized\n");
+    QCOMPARE(unauthorized.status, Status::NotReady);
+    QCOMPARE(QString::fromStdString(unauthorized.state), QStringLiteral("unauthorized"));
+
+    const std::string noPermissions =
+        "no permissions (missing udev rules? user is in the plugdev group); "
+        "see [http://developer.android.com/tools/device.html]";
+    const auto denied = parse("List of devices attached\n????????????\t" +
+                              noPermissions + "\nother\toffline\n");
+    QCOMPARE(denied.status, Status::NoPermissions);
+    QCOMPARE(denied.state, noPermissions);
+
+    // Without adb on PATH the status says so instead of "no device".
+    QTemporaryDir emptyPath;
+    QVERIFY(emptyPath.isValid());
+    const QByteArray savedPath = qgetenv("PATH");
+    const auto restorePath = qScopeGuard([&savedPath]() { qputenv("PATH", savedPath); });
+    qputenv("PATH", emptyPath.path().toLocal8Bit());
+    QCOMPARE(panorama::Adb::device_status().status, Status::NotInstalled);
+    QVERIFY(!panorama::Adb::is_device_connected());
+}
+
 void PrinterProtocolTests::legacyHandshakeRetriesAndDropsLateReplies() {
     const int master = ::posix_openpt(
         O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
@@ -41791,6 +44858,144 @@ void PrinterProtocolTests::udbSessionBootstrapSkipsStaleTrackedResponse() {
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
 }
 
+// KANALI 2.6.0 notifications (820 to 822) and bodies this schema does not
+// know arrive on their own, possibly with a header.
+static panorama::wire::v1::Response appExceptionNotification(
+    const panorama::wire::v1::Request &request) {
+    auto notification = baseResponse(request);
+    auto *exception = notification.mutable_app_exception();
+    exception->set_exception_type(
+        panorama::wire::v1::AppException::EXCEPTION_STORAGE);
+    exception->set_error_code(-28);
+    exception->set_source("media_service");
+    exception->set_message("userdata\nnearly full");
+    exception->set_timestamp(1763337600);
+    return notification;
+}
+
+static panorama::wire::v1::Response unknownBodyNotification(
+    const panorama::wire::v1::Request &request) {
+    auto notification = baseResponse(request);
+    // Vendor storage_status (510): available_bytes = 1024.
+    notification.GetReflection()
+        ->MutableUnknownFields(&notification)
+        ->AddLengthDelimited(510, std::string("\x10\x80\x08", 3));
+    return notification;
+}
+
+static QRegularExpression appExceptionWarningPattern() {
+    return QRegularExpression(QStringLiteral(
+        "^TRYX device reported an application exception: type=Storage "
+        "code=-28 source=\"media_service\" message=\"userdata nearly full\" "
+        "timestamp=1763337600 track_id=\\d+$"));
+}
+
+void PrinterProtocolTests::udbSessionBootstrapSkipsUnsolicitedNotifications() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request deviceInfoRequest;
+        if (!readRequest(sockets[1], &deviceInfoRequest, &peerError) ||
+            deviceInfoRequest.body_case() !=
+                panorama::wire::v1::Request::kDeviceInformationQuery) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral(
+                    "notification bootstrap did not receive DeviceInfo");
+            }
+            return;
+        }
+
+        // Same track-zero header as the DeviceInfo answer itself.
+        if (!writeResponse(sockets[1], appExceptionNotification(deviceInfoRequest),
+                           &peerError)) {
+            return;
+        }
+        panorama::wire::v1::Response headerlessVolume;
+        headerlessVolume.mutable_host_volume_set()->set_volume(35);
+        if (!writeResponse(sockets[1], headerlessVolume, &peerError)) {
+            return;
+        }
+        auto launch = baseResponse(deviceInfoRequest);
+        launch.mutable_quick_launcher_shortcut_launch()->set_slot_index(2);
+        launch.mutable_quick_launcher_shortcut_launch()->set_program_path(
+            "C:\\Games\\launcher.exe");
+        if (!writeResponse(sockets[1], launch, &peerError)) {
+            return;
+        }
+
+        auto deviceInfoResponse = baseResponse(deviceInfoRequest);
+        auto *deviceInfo = deviceInfoResponse.mutable_device_information();
+        deviceInfo->set_product_name("PANORAMA SE");
+        deviceInfo->set_firmware_version("notification-firmware");
+        deviceInfo->set_serial_number("notification-serial");
+        if (!writeResponse(sockets[1], deviceInfoResponse, &peerError)) {
+            return;
+        }
+
+        const auto respond = [&](auto expectedBody, auto populateResponse,
+                                 bool unknownBodyFirst) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError) ||
+                request.body_case() != expectedBody) {
+                if (peerError.isEmpty()) {
+                    peerError = QStringLiteral(
+                        "notification bootstrap sequence was incomplete");
+                }
+                return false;
+            }
+            if (unknownBodyFirst &&
+                !writeResponse(sockets[1], unknownBodyNotification(request),
+                               &peerError)) {
+                return false;
+            }
+            auto response = baseResponse(request);
+            populateResponse(&response);
+            return writeResponse(sockets[1], response, &peerError);
+        };
+
+        if (!respond(
+                panorama::wire::v1::Request::kSystemConfigurationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_system_configuration();
+                },
+                true) ||
+            !respond(
+                panorama::wire::v1::Request::kDeviceAuthenticationQuery,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_device_authentication()->set_auth("ok");
+                },
+                false) ||
+            !respond(
+                panorama::wire::v1::Request::kOverlayLayout,
+                [](panorama::wire::v1::Response *response) {
+                    response->mutable_acknowledgement();
+                },
+                false)) {
+            return;
+        }
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol protocol(500);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("test-endpoint"));
+    const PrinterProtocol::Result result = protocol.startDisplaySession(
+        QStringLiteral("test-endpoint"), {});
+
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.deviceInfo.firmwareVersion,
+             QStringLiteral("notification-firmware"));
+    QCOMPARE(result.deviceInfo.serialNumber,
+             QStringLiteral("notification-serial"));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
 void PrinterProtocolTests::udbSessionBootstrapRejectsUnboundedStaleResponses() {
     int sockets[2] = {-1, -1};
     QString socketError;
@@ -42738,6 +45943,118 @@ void PrinterProtocolTests::notificationBeforeExpectedResponse() {
     peer.join();
     ::close(sockets[1]);
     QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+void PrinterProtocolTests::unsolicitedNotificationsBeforeTrackedResponseAreSkipped() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() !=
+                panorama::wire::v1::Request::kMediaCatalogQuery) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("missing tracked file-list request");
+            }
+            return;
+        }
+
+        // The notifications even carry the track id of the request in flight.
+        if (!writeResponse(sockets[1], appExceptionNotification(request),
+                           &peerError)) {
+            return;
+        }
+        panorama::wire::v1::Response headerlessLaunch;
+        headerlessLaunch.mutable_quick_launcher_shortcut_launch()->set_slot_index(1);
+        if (!writeResponse(sockets[1], headerlessLaunch, &peerError)) {
+            return;
+        }
+        auto volume = baseResponse(request);
+        volume.mutable_host_volume_set()->set_mute(true);
+        if (!writeResponse(sockets[1], volume, &peerError) ||
+            !writeResponse(sockets[1], unknownBodyNotification(request),
+                           &peerError)) {
+            return;
+        }
+
+        auto response = baseResponse(request);
+        auto *file = response.mutable_media_catalog()->add_media_file_list();
+        file->set_file_path("/userdata/user/after-notification.png");
+        file->set_file_ext(".h264_2240x1080");
+        file->set_file_size(321);
+        writeResponse(sockets[1], response, &peerError);
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol protocol(500);
+    protocol.adoptFileDescriptorForTesting(sockets[0],
+                                           QStringLiteral("test-endpoint"));
+    const PrinterProtocol::OperationContext context;
+    const auto result =
+        protocol.readMediaList(QStringLiteral("test-endpoint"), context);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(result.success, qPrintable(result.error));
+    QCOMPARE(result.files.size(), 1);
+    QCOMPARE(result.files.first().name,
+             QStringLiteral("after-notification.png.h264_2240x1080"));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+}
+
+// A tracked setter takes its optional answer from the drain. A notification
+// with the setter's track id must neither acknowledge it nor hide the
+// rejection that follows.
+void PrinterProtocolTests::optionalSetterRejectionSurvivesUnsolicitedNotification() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError), qPrintable(socketError));
+
+    PrinterProtocol protocol;
+    const QString devicePath =
+        QStringLiteral("/dev/usb/lp-pase-notification-setter");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    QString peerError;
+    std::thread peer([&]() {
+        panorama::wire::v1::Request request;
+        if (!readRequest(sockets[1], &request, &peerError) ||
+            request.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
+            if (peerError.isEmpty()) {
+                peerError = QStringLiteral("missing overlay layout setter");
+            }
+            return;
+        }
+        if (!writeResponse(sockets[1], appExceptionNotification(request),
+                           &peerError)) {
+            return;
+        }
+        auto rejection = baseResponse(request);
+        rejection.mutable_error()->set_code(
+            panorama::wire::v1::ProtocolError::FAILURE);
+        rejection.mutable_error()->set_why("layout refused");
+        writeResponse(sockets[1], rejection, &peerError);
+    });
+
+    QTest::ignoreMessage(QtWarningMsg, appExceptionWarningPattern());
+    PrinterProtocol::PaseOverlayConfig overlay;
+    overlay.left.metrics = {QStringLiteral("CPU Power")};
+    overlay.left.alignment = QStringLiteral("Right");
+    overlay.left.textColor = 0x000000U;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool configured = protocol.configurePaseOverlay(
+        devicePath, overlay, &error, PrinterProtocol::OperationContext{},
+        &mutation);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY(!configured);
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Rejected);
+    QCOMPARE(error, QStringLiteral("layout refused"));
 }
 
 void PrinterProtocolTests::headerlessPongBeforeTrackedResponseIsSkipped() {
@@ -46115,6 +49432,141 @@ void PrinterProtocolTests::
     QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
              qPrintable(peerError));
     ::close(sockets[1]);
+}
+
+// The header check before the upload takes the area from the remote name: a
+// 720x720 name needs the 30 fps split-area header, a 1440x720 name the
+// full-screen one.
+void PrinterProtocolTests::stageUploadChecksTheAreaHeaderBeforeUsb() {
+    const auto profile = printerProductProfileForId(0x1041);
+    QVERIFY(profile.has_value());
+    const QByteArray rawH264 = QByteArray::fromHex(
+        "000000016764001facd9405005bb0110000003001000000303c0f1831960"
+        "0000000168ebe3cb22c0"
+        "00000001658884000affff");
+    const QByteArray splitVideo = wrapTurrisMediaBlob(
+        turrisMediaMetadata(4, 30, 720, 720, 30), rawH264);
+    const QByteArray fullVideo = wrapTurrisMediaBlob(
+        turrisMediaMetadata(4, 60, 1440, 720, 60), rawH264);
+    const QByteArray splitVideoAt60 = wrapTurrisMediaBlob(
+        turrisMediaMetadata(4, 60, 720, 720, 60), rawH264);
+
+    struct RejectedCase {
+        QByteArray contents;
+        QString remoteName;
+    };
+    for (const RejectedCase &testCase : {
+             RejectedCase{splitVideo, QStringLiteral("area.mp4.h264_1440x720")},
+             RejectedCase{fullVideo, QStringLiteral("area.mp4.h264_720x720")},
+             RejectedCase{splitVideoAt60, QStringLiteral("area.mp4.h264_720x720")},
+         }) {
+        QTemporaryFile media;
+        QVERIFY(media.open());
+        QCOMPARE(media.write(testCase.contents),
+                 static_cast<qint64>(testCase.contents.size()));
+        media.flush();
+        int sockets[2] = {-1, -1};
+        QString socketError;
+        QVERIFY2(createSocketPair(sockets, &socketError),
+                 qPrintable(socketError));
+        PrinterProtocol protocol(*profile, 100);
+        protocol.adoptFileDescriptorForTesting(
+            sockets[0], QStringLiteral("stage-endpoint"));
+        QString uploadedName;
+        QString error;
+        PrinterProtocol::MutationDetails mutation;
+        QVERIFY(!protocol.uploadMedia(
+            QStringLiteral("stage-endpoint"), media.fileName(),
+            testCase.remoteName, &uploadedName, &error, {}, {}, &mutation));
+        QCOMPARE(mutation.outcome,
+                 PrinterProtocol::MutationOutcome::Rejected);
+        QVERIFY2(error.contains(QStringLiteral("container"),
+                                Qt::CaseInsensitive),
+                 qPrintable(error));
+        QString peerError;
+        QVERIFY2(verifyNoPeerPayload(sockets[1], 150, &peerError),
+                 qPrintable(peerError));
+        ::close(sockets[1]);
+    }
+
+    QTemporaryFile media;
+    QVERIFY(media.open());
+    QCOMPARE(media.write(splitVideo),
+             static_cast<qint64>(splitVideo.size()));
+    media.flush();
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+    const QString remoteName = QStringLiteral("area.mp4.h264_720x720");
+    QString peerError;
+    std::thread peer([&]() {
+        const QList<panorama::wire::v1::Request::BodyCase> expected = {
+            panorama::wire::v1::Request::kTransferBegin,
+            panorama::wire::v1::Request::kTransferChunk,
+            panorama::wire::v1::Request::kTransferEnd};
+        for (int index = 0; index < expected.size(); ++index) {
+            panorama::wire::v1::Request request;
+            if (!readRequest(sockets[1], &request, &peerError) ||
+                request.body_case() != expected.at(index)) {
+                if (peerError.isEmpty()) {
+                    peerError = QStringLiteral(
+                        "unexpected STAGE upload request %1").arg(index);
+                }
+                return;
+            }
+            auto response = baseResponse(request);
+            if (index == 0) {
+                if (QString::fromStdString(
+                        request.transfer_begin().file_name()) != remoteName ||
+                    request.transfer_begin().file_size() !=
+                        static_cast<quint32>(splitVideo.size())) {
+                    peerError = QStringLiteral(
+                        "invalid STAGE upload begin fields");
+                    return;
+                }
+                response.mutable_transfer_begin_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            } else if (index == 1) {
+                const std::string &chunk =
+                    request.transfer_chunk().file_data();
+                if (QByteArray(chunk.data(),
+                               static_cast<qsizetype>(chunk.size())) !=
+                    splitVideo) {
+                    peerError = QStringLiteral(
+                        "invalid STAGE upload chunk");
+                    return;
+                }
+                response.mutable_transfer_chunk_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            } else {
+                response.mutable_transfer_end_status()->set_status(
+                    panorama::wire::v1::TransferStatus::OK);
+            }
+            if (!writeResponse(sockets[1], response, &peerError)) {
+                return;
+            }
+        }
+    });
+
+    PrinterProtocol protocol(*profile, 500);
+    protocol.setFileTransmitResponseTimeoutForTesting(3000);
+    protocol.adoptFileDescriptorForTesting(
+        sockets[0], QStringLiteral("stage-endpoint"));
+    QString uploadedName;
+    QString error;
+    PrinterProtocol::MutationDetails mutation;
+    const bool uploaded = protocol.uploadMedia(
+        QStringLiteral("stage-endpoint"), media.fileName(), remoteName,
+        &uploadedName, &error, {}, {}, &mutation);
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(uploaded, qPrintable(error));
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QCOMPARE(uploadedName, remoteName);
+    QCOMPARE(mutation.outcome,
+             PrinterProtocol::MutationOutcome::Succeeded);
 }
 
 void PrinterProtocolTests::uploadDataUsesDedicatedWriteDeadline() {

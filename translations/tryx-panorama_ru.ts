@@ -910,6 +910,10 @@
         <translation>Исходный медиафайл изменился во время конвертации</translation>
     </message>
     <message>
+        <source>The prepared device copy is not the expected kind of media</source>
+        <translation>Подготовленная копия с устройства не того типа, который ожидался</translation>
+    </message>
+    <message>
         <location filename="../src/devicemanager.cpp" line="7153"/>
         <source>Prepared media is ready for upload</source>
         <translation>Подготовленный медиафайл готов к загрузке</translation>
@@ -2886,6 +2890,10 @@
         <source>Waterfall orientation is not supported for USB product %1</source>
         <translation>Ориентация «Водопад» не поддерживается для USB-продукта %1</translation>
     </message>
+    <message>
+        <source>Mirror orientation is not supported for USB product %1</source>
+        <translation>Зеркальное отображение не поддерживается для USB-продукта %1</translation>
+    </message>
 </context>
 <context>
     <name>DeviceMediaWorkflowController</name>
@@ -3051,6 +3059,18 @@
         <location filename="../src/devicemanager.cpp" line="1186"/>
         <source>ADB device not found</source>
         <translation>ADB-устройство не найдено</translation>
+    </message>
+    <message>
+        <source>adb not found. This display lists and receives media over ADB: install android-tools (the adb package on Debian and Ubuntu)</source>
+        <translation>adb не найден. Этот дисплей получает список медиа и файлы через ADB: установите android-tools (пакет adb в Debian и Ubuntu)</translation>
+    </message>
+    <message>
+        <source>adb cannot open the USB device of the display: %1</source>
+        <translation>adb не может открыть USB-устройство дисплея: %1</translation>
+    </message>
+    <message>
+        <source>adb lists the display in the %1 state, not ready</source>
+        <translation>adb показывает дисплей в состоянии %1, он не готов</translation>
     </message>
     <message>
         <location filename="../src/devicemanager.cpp" line="1045"/>
@@ -6708,6 +6728,10 @@
         <source>Waterfall orientation is not available for this display model.</source>
         <translation>Ориентация «Водопад» недоступна для этой модели дисплея.</translation>
     </message>
+    <message>
+        <source>Orientation settings are not available for this display model.</source>
+        <translation>Настройки ориентации недоступны для этой модели дисплея.</translation>
+    </message>
 </context>
 <context>
     <name>PrinterDeviceMonitor</name>
@@ -6873,6 +6897,66 @@
         <location filename="../src/printermediapreparer.cpp" line="806"/>
         <source>Could not finalize the Turris media blob</source>
         <translation>Не удалось сформировать медиафайл Turris</translation>
+    </message>
+    <message>
+        <source>ffprobe is required to prepare still images</source>
+        <translation>Для подготовки изображений требуется ffprobe</translation>
+    </message>
+    <message>
+        <source>Still image preparation timed out</source>
+        <translation>Истекло время подготовки изображения</translation>
+    </message>
+    <message>
+        <source>Checking the still image frame...</source>
+        <translation>Проверка кадра изображения...</translation>
+    </message>
+    <message>
+        <source>Still image frame check timed out</source>
+        <translation>Истекло время проверки кадра изображения</translation>
+    </message>
+    <message>
+        <source>The prepared still image is not exactly one frame</source>
+        <translation>Подготовленное изображение состоит не ровно из одного кадра</translation>
+    </message>
+    <message>
+        <source>The prepared still image is not exactly one frame: %1</source>
+        <translation>Подготовленное изображение состоит не ровно из одного кадра: %1</translation>
+    </message>
+    <message>
+        <source>Adding the media header...</source>
+        <translation>Добавление заголовка медиафайла...</translation>
+    </message>
+    <message>
+        <source>Could not add the media header</source>
+        <translation>Не удалось добавить заголовок медиафайла</translation>
+    </message>
+    <message>
+        <source>The prepared still image failed its media header check: %1</source>
+        <translation>Подготовленное изображение не прошло проверку заголовка медиафайла: %1</translation>
+    </message>
+    <message>
+        <source>ffprobe is required to prepare this media</source>
+        <translation>Для подготовки этого медиафайла требуется ffprobe</translation>
+    </message>
+    <message>
+        <source>Media preparation timed out</source>
+        <translation>Истекло время подготовки медиафайла</translation>
+    </message>
+    <message>
+        <source>Counting exact media frames...</source>
+        <translation>Подсчёт точного числа кадров медиафайла...</translation>
+    </message>
+    <message>
+        <source>Media frame counting timed out</source>
+        <translation>Истекло время подсчёта кадров медиафайла</translation>
+    </message>
+    <message>
+        <source>Could not determine the exact media frame count</source>
+        <translation>Не удалось определить точное число кадров медиафайла</translation>
+    </message>
+    <message>
+        <source>Could not determine the exact media frame count: %1</source>
+        <translation>Не удалось определить точное число кадров медиафайла: %1</translation>
     </message>
     <message>
         <location filename="../src/printermediapreparer.cpp" line="1004"/>
@@ -8338,73 +8422,77 @@
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="223"/>
-        <source>Turris media attributes are invalid</source>
-        <translation>Недопустимые атрибуты медиафайла Turris</translation>
+        <source>Media header attributes are invalid</source>
+        <translation>Недопустимые атрибуты заголовка медиафайла</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="230"/>
-        <source>Turris media metadata is invalid</source>
-        <translation>Недопустимые метаданные медиафайла Turris</translation>
+        <source>Media header metadata is invalid</source>
+        <translation>Недопустимые метаданные заголовка медиафайла</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="245"/>
-        <source>Prepared Turris H264 is not a bounded regular file</source>
-        <translation>Подготовленный H264-файл Turris не является допустимым обычным файлом ограниченного размера</translation>
+        <source>The prepared H264 stream is not a bounded regular file</source>
+        <translation>Подготовленный поток H264 не является обычным файлом допустимого размера</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="252"/>
-        <source>Cannot open prepared Turris H264: %1</source>
-        <translation>Не удалось открыть подготовленный H264-файл Turris: %1</translation>
+        <source>Cannot open the prepared H264 stream: %1</source>
+        <translation>Не удалось открыть подготовленный поток H264: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="259"/>
-        <source>Cannot create Turris media blob: %1</source>
-        <translation>Не удалось создать медиафайл Turris: %1</translation>
+        <source>Cannot create the media file with header: %1</source>
+        <translation>Не удалось создать медиафайл с заголовком: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="265"/>
-        <source>Cannot restrict Turris media blob permissions</source>
-        <translation>Не удалось ограничить права доступа к медиафайлу Turris</translation>
+        <source>Cannot restrict the permissions of the media file with header</source>
+        <translation>Не удалось ограничить права доступа к медиафайлу с заголовком</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="274"/>
-        <source>Cannot write Turris media metadata: %1</source>
-        <translation>Не удалось записать метаданные медиафайла Turris: %1</translation>
+        <source>Cannot write the media header: %1</source>
+        <translation>Не удалось записать заголовок медиафайла: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="292"/>
-        <source>Cannot read prepared Turris H264: %1</source>
-        <translation>Не удалось прочитать подготовленный H264-файл Turris: %1</translation>
+        <source>Cannot read the prepared H264 stream: %1</source>
+        <translation>Не удалось прочитать подготовленный поток H264: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="301"/>
-        <source>Cannot write Turris media payload: %1</source>
-        <translation>Не удалось записать данные медиафайла Turris: %1</translation>
+        <source>Cannot write the media payload: %1</source>
+        <translation>Не удалось записать данные медиафайла: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="312"/>
-        <source>Prepared Turris H264 changed while it was wrapped</source>
-        <translation>Подготовленный H264-файл Turris изменился во время упаковки</translation>
+        <source>The prepared H264 stream changed while the media header was added</source>
+        <translation>Подготовленный поток H264 изменился во время добавления заголовка</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="323"/>
-        <source>Cannot commit Turris media blob: %1</source>
-        <translation>Не удалось завершить запись медиафайла Turris: %1</translation>
+        <source>Cannot commit the media file with header: %1</source>
+        <translation>Не удалось завершить запись медиафайла с заголовком: %1</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="333"/>
-        <source>Committed Turris media blob failed size verification</source>
-        <translation>Записанный медиафайл Turris не прошёл проверку размера</translation>
+        <source>The media file with header failed its size check</source>
+        <translation>Медиафайл с заголовком не прошёл проверку размера</translation>
     </message>
     <message>
         <location filename="../src/turrismediaformat.cpp" line="393"/>
-        <source>Turris media container is invalid: %1</source>
-        <translation>Недопустимый контейнер медиафайла Turris: %1</translation>
+        <source>The media container is invalid: %1</source>
+        <translation>Недопустимый контейнер медиафайла: %1</translation>
     </message>
     <message>
         <location filename="../src/printerprotocol.cpp" line="6205"/>
         <source>Prepared Turris media changed during validation</source>
         <translation>Подготовленный медиафайл Turris изменился во время проверки</translation>
+    </message>
+    <message>
+        <source>Prepared media changed during validation</source>
+        <translation>Подготовленный медиафайл изменился во время проверки</translation>
     </message>
     <message>
         <location filename="../src/printerprotocol.cpp" line="4954"/>

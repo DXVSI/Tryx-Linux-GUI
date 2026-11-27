@@ -5,7 +5,12 @@
 #include "turrismediaformat.h"
 
 #include <QDebug>
+#include <QMutex>
 #include <QRandomGenerator>
+#include <QSet>
+#include <QStringList>
+
+#include <google/protobuf/unknown_field_set.h>
 
 #include <cerrno>
 #include <poll.h>
@@ -29,6 +34,119 @@ QString PrinterTransactionChannel::transactionProfileName(TransactionProfile pro
         return QStringLiteral("media-pull");
     }
     return QStringLiteral("unknown");
+}
+
+namespace {
+
+// Device-provided text on one bounded log line.
+QString boundedDeviceText(const std::string &value) {
+    constexpr qsizetype kMaximumCharacters = 256;
+    QString text =
+        QString::fromUtf8(value.data(),
+                          static_cast<qsizetype>(qMin<size_t>(value.size(), 1024)))
+            .simplified();
+    if (text.size() > kMaximumCharacters) {
+        text = text.left(kMaximumCharacters) + QStringLiteral("...");
+    }
+    return text;
+}
+
+QString appExceptionTypeName(panorama::wire::v1::AppException::Type type) {
+    switch (type) {
+    case panorama::wire::v1::AppException::EXCEPTION_UNKNOWN:
+        return QStringLiteral("Unknown");
+    case panorama::wire::v1::AppException::EXCEPTION_STORAGE:
+        return QStringLiteral("Storage");
+    case panorama::wire::v1::AppException::EXCEPTION_CONFIG:
+        return QStringLiteral("Config");
+    case panorama::wire::v1::AppException::EXCEPTION_PERIPHERAL:
+        return QStringLiteral("Peripheral");
+    case panorama::wire::v1::AppException::EXCEPTION_SYSTEM:
+        return QStringLiteral("System");
+    default:
+        return QString::number(static_cast<int>(type));
+    }
+}
+
+QString responseTrackText(const panorama::wire::v1::Response &response) {
+    return response.has_header() ? QString::number(response.header().track_id())
+                                 : QStringLiteral("none");
+}
+
+} // namespace
+
+bool PrinterTransactionChannel::skipUnsolicitedResponse(
+    const panorama::wire::v1::Response &response) {
+    switch (response.body_case()) {
+    case panorama::wire::v1::Response::kAsynchronousEvent:
+        return true;
+    case panorama::wire::v1::Response::kHostVolumeSet:
+        qInfo().noquote()
+            << QStringLiteral(
+                   "TRYX device reported a host volume change; ignored: volume=%1 mute=%2 track_id=%3")
+                   .arg(response.host_volume_set().volume())
+                   .arg(response.host_volume_set().mute() ? QStringLiteral("true")
+                                                          : QStringLiteral("false"))
+                   .arg(responseTrackText(response));
+        return true;
+    case panorama::wire::v1::Response::kQuickLauncherShortcutLaunch:
+        qInfo().noquote()
+            << QStringLiteral(
+                   "TRYX device requested a quick launcher shortcut; ignored: slot=%1 program_path=\"%2\" track_id=%3")
+                   .arg(response.quick_launcher_shortcut_launch().slot_index())
+                   .arg(boundedDeviceText(
+                       response.quick_launcher_shortcut_launch().program_path()))
+                   .arg(responseTrackText(response));
+        return true;
+    case panorama::wire::v1::Response::kAppException: {
+        const auto &exception = response.app_exception();
+        qWarning().noquote()
+            << QStringLiteral(
+                   "TRYX device reported an application exception: type=%1 code=%2 source=\"%3\" message=\"%4\" timestamp=%5 track_id=%6")
+                   .arg(appExceptionTypeName(exception.exception_type()))
+                   .arg(exception.error_code())
+                   .arg(boundedDeviceText(exception.source()),
+                        boundedDeviceText(exception.message()))
+                   .arg(exception.timestamp())
+                   .arg(responseTrackText(response));
+        return true;
+    }
+    case panorama::wire::v1::Response::BODY_NOT_SET: {
+        // A header-only acknowledgement has no unknown fields. Response has
+        // no top-level fields besides header, error and the body, so an
+        // unknown one is a body this schema does not describe.
+        const google::protobuf::UnknownFieldSet &unknown =
+            response.GetReflection()->GetUnknownFields(response);
+        if (unknown.empty()) {
+            return false;
+        }
+        // A firmware may repeat such a notification; name each unknown
+        // body field once per process.
+        static QMutex loggedFieldsMutex;
+        static QSet<int> loggedFields;
+        QStringList fieldNumbers;
+        {
+            const QMutexLocker locker(&loggedFieldsMutex);
+            for (int index = 0; index < unknown.field_count(); ++index) {
+                const int number = unknown.field(index).number();
+                if (loggedFields.size() < 64 && !loggedFields.contains(number)) {
+                    loggedFields.insert(number);
+                    fieldNumbers.append(QString::number(number));
+                }
+            }
+        }
+        if (!fieldNumbers.isEmpty()) {
+            qInfo().noquote()
+                << QStringLiteral(
+                       "TRYX skips responses with an unknown body: fields=%1 track_id=%2")
+                       .arg(fieldNumbers.join(QLatin1Char(',')),
+                            responseTrackText(response));
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
 }
 
 PrinterTransactionChannel::PrinterTransactionChannel(quint16 expectedProductId,
@@ -272,7 +390,7 @@ bool PrinterTransactionChannel::execute(
             return false;
         }
 
-        if (parsed.body_case() == panorama::wire::v1::Response::kAsynchronousEvent ||
+        if (skipUnsolicitedResponse(parsed) ||
             (parsed.body_case() == panorama::wire::v1::Response::kPong &&
              expectedBody != panorama::wire::v1::Response::kPong)) {
             ++skippedFrames;
@@ -918,12 +1036,14 @@ bool PrinterTransactionChannel::drainKeepaliveResponses(const OperationContext &
                                                         quint64 trackedResponseId,
                                                         TransactionOutcome *outcome) {
     int drainedFrames = 0;
+    int unsolicitedFrames = 0;
     int readAttempts = 0;
     qsizetype discardedBytes = 0;
     qsizetype drainedResponseBytes = 0;
     QElapsedTimer drainTimer;
     drainTimer.start();
     while (drainedFrames <= kMaxSkippedResponseFrames &&
+           unsolicitedFrames <= kMaxSkippedResponseFrames &&
            readAttempts <= kMaxSkippedResponseFrames &&
            drainedResponseBytes <= kMaxSkippedResponseBytes &&
            drainTimer.elapsed() < kQueuedResponseDrainTimeoutMs) {
@@ -957,10 +1077,19 @@ bool PrinterTransactionChannel::drainKeepaliveResponses(const OperationContext &
             continue;
         }
         if (decodeStatus == PrinterFrameCodec::DecodeStatus::FrameReady) {
+            panorama::wire::v1::Response response;
+            const bool parsedFrame = response.ParseFromArray(
+                payload.constData(), static_cast<int>(payload.size()));
+            if (parsedFrame && skipUnsolicitedResponse(response)) {
+                // A device notification neither acknowledges the command just
+                // written nor takes the place of its optional response, which
+                // is still awaited within the same drain window.
+                ++unsolicitedFrames;
+                drainedResponseBytes += payload.size() + 8;
+                continue;
+            }
             if (trackedResponseId != 0) {
-                panorama::wire::v1::Response response;
-                if (response.ParseFromArray(payload.constData(),
-                                            static_cast<int>(payload.size())) &&
+                if (parsedFrame &&
                     response.has_header() && response.header().version() == 1 &&
                     response.header().track_id() == trackedResponseId) {
                     if (response.has_error() &&
@@ -990,10 +1119,7 @@ bool PrinterTransactionChannel::drainKeepaliveResponses(const OperationContext &
                 }
             }
             if (waitForOptionalResponse) {
-                panorama::wire::v1::Response response;
-                if (response.ParseFromArray(payload.constData(),
-                                            static_cast<int>(payload.size())) &&
-                    response.has_error() &&
+                if (parsedFrame && response.has_error() &&
                     response.error().code() !=
                         panorama::wire::v1::ProtocolError::SUCCESS) {
                     if (outcome) {
@@ -1017,17 +1143,14 @@ bool PrinterTransactionChannel::drainKeepaliveResponses(const OperationContext &
             // RunConfig and metric replies must not tear down an otherwise
             // healthy display session.
             if (expectedProductId_ == tryx::turris_media::kProductId) {
-                panorama::wire::v1::Response drained;
-                const bool parsedFrame = drained.ParseFromArray(
-                    payload.constData(), static_cast<int>(payload.size()));
                 qInfo().noquote()
                     << QStringLiteral(
                            "tryx_turris_wire drained_response parsed=%1 body=%2 "
                            "version=%3 tracked=%4")
                            .arg(parsedFrame ? QStringLiteral("true") : QStringLiteral("false"))
-                           .arg(parsedFrame ? static_cast<int>(drained.body_case()) : -1)
-                           .arg(parsedFrame && drained.has_header()
-                                    ? static_cast<int>(drained.header().version())
+                           .arg(parsedFrame ? static_cast<int>(response.body_case()) : -1)
+                           .arg(parsedFrame && response.has_header()
+                                    ? static_cast<int>(response.header().version())
                                     : -1)
                            .arg(trackedResponseId != 0 ? QStringLiteral("true")
                                                        : QStringLiteral("false"));
@@ -1157,6 +1280,7 @@ bool PrinterTransactionChannel::drainKeepaliveResponses(const OperationContext &
     }
 
     const bool budgetExceeded = drainedFrames > kMaxSkippedResponseFrames ||
+                                unsolicitedFrames > kMaxSkippedResponseFrames ||
                                 readAttempts > kMaxSkippedResponseFrames ||
                                 drainedResponseBytes > kMaxSkippedResponseBytes ||
                                 discardedBytes > kMaxFrameResynchronizationBytes;

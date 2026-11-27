@@ -111,6 +111,36 @@ message AsynchronousEvent {
   bool play_finished = 1;
 }
 
+// Device-initiated notifications added in KANALI 2.6.0 (vendor
+// HostCtlSetVolumePb, QuickLauncherShortcutLaunchPb and AppExceptionPb). The
+// host never requests them; they are logged and skipped while a response is
+// awaited.
+message HostVolume {
+  bool mute = 1;
+  int32 volume = 2;
+}
+
+message QuickLauncherShortcutLaunch {
+  uint32 slot_index = 1;
+  string program_path = 2;
+}
+
+message AppException {
+  enum Type {
+    EXCEPTION_UNKNOWN = 0;
+    EXCEPTION_STORAGE = 1;
+    EXCEPTION_CONFIG = 2;
+    EXCEPTION_PERIPHERAL = 3;
+    EXCEPTION_SYSTEM = 4;
+  }
+
+  Type exception_type = 1;
+  int32 error_code = 2;
+  string source = 3;
+  string message = 4;
+  int64 timestamp = 5;
+}
+
 message Request {
   WireHeader header = 1;
 
@@ -148,6 +178,9 @@ message Response {
     TransferStatus transfer_chunk_status = 801;
     TransferStatus transfer_end_status = 802;
     MediaReadChunkResponse media_read_chunk = 805;
+    HostVolume host_volume_set = 820;
+    QuickLauncherShortcutLaunch quick_launcher_shortcut_launch = 821;
+    AppException app_exception = 822;
     AsynchronousEvent asynchronous_event = 987;
   }
 }

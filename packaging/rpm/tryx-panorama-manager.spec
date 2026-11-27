@@ -1,5 +1,5 @@
 Name:           tryx-panorama-manager
-Version:        2.5.4
+Version:        2.6.0
 Release:        1%{?dist}
 Summary:        Linux manager for supported TRYX cooler displays
 
@@ -121,6 +121,14 @@ udevadm verify --resolve-names=never \
 %{_mandir}/man1/tryx.1*
 
 %changelog
+* Fri Nov 27 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.6.0-1
+- Add test support for the STAGE ARGB 360 (391a:1041) and HOLO 360 (391a:1051): media in the official media header, Apply, brightness, backlight and overlay metrics, mapped from the official application and not tested on hardware
+- Recognize 391a:1061, 391a:1071 (Panorama SE V2), 391a:10a1 and 391a:10b1 with the matching Panorama-family profiles; not tested on hardware
+- Upload Panorama-family still images as one frame in the TRYX media header, as the official application does, instead of a raw 60-second clip
+- Read the preset Loop and Shuffle modes of newer firmware, and skip responses the display sends on its own instead of failing the transaction
+- On legacy cm01 displays, say when adb is missing, cannot open the display or lists it as not ready, instead of reporting that no ADB device was found
+- Enable Save in the support report folder picker only after the current folder has been listed
+
 * Fri Nov 13 2026 DXVSI <DXVSI@users.noreply.github.com> - 2.5.4-1
 - Keep the uaccess tag on every udev event except remove, so logind grants the seat ACL to supported displays at login and users outside the lp group no longer stay on Waiting for Device after every boot
 - Notice USB access that is granted after the runtime started, without waiting for the next USB event

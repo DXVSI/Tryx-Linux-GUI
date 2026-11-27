@@ -3,6 +3,7 @@
 #include "printermediahelpers_p.h"
 #include "printeroperation_p.h"
 #include "printerprotocolconstants_p.h"
+#include "printermediaidentity.h"
 #include "turrismediaformat.h"
 
 #include <QCryptographicHash>
@@ -845,10 +846,23 @@ bool PaseMediaClient::uploadMedia(const QString &devicePath, const QString &loca
     options.fixedTrackId = productProfile_.fileTransferTrackId;
     options.logTransferStages = productProfile_.family == PrinterProtocolFamily::Turris;
     if (productProfile_.mediaContainer == PrinterMediaContainer::MxhdH264) {
-        options.validateSource = [&remoteFileName, errorMessage, mutationDetails](
+        // The name, already checked against the profile, tells a full-screen
+        // upload from one made for a split area.
+        QSize mediaSize = tryx::printer_media_identity::printerMediaSizeForName(
+            remoteFileName, productProfile_);
+        if (!mediaSize.isValid()) {
+            mediaSize = QSize(productProfile_.mediaWidth, productProfile_.mediaHeight);
+        }
+        const quint32 width = static_cast<quint32>(mediaSize.width());
+        const quint32 height = static_cast<quint32>(mediaSize.height());
+        const bool splitArea = mediaSize.width() != productProfile_.mediaWidth;
+        const bool turris = productProfile_.family == PrinterProtocolFamily::Turris;
+        options.validateSource = [&remoteFileName, errorMessage, mutationDetails,
+                                  width, height, splitArea, turris](
                                      QFile &file, qint64 declaredSize,
                                      const std::function<bool()> &sourceIsUnchanged) {
             if (!tryx::turris_media::validateBlob(&file, declaredSize, remoteFileName,
+                                                  width, height, splitArea,
                                                   errorMessage)) {
                 if (mutationDetails) {
                     mutationDetails->outcome = MutationOutcome::Rejected;
@@ -858,7 +872,10 @@ bool PaseMediaClient::uploadMedia(const QString &devicePath, const QString &loca
             if (!sourceIsUnchanged() || !file.seek(0)) {
                 if (errorMessage) {
                     *errorMessage =
-                        QObject::tr("Prepared Turris media changed during validation");
+                        turris ? QObject::tr(
+                                     "Prepared Turris media changed during validation")
+                               : QObject::tr(
+                                     "Prepared media changed during validation");
                 }
                 return false;
             }

@@ -283,6 +283,9 @@ public:
         PaseDisplayState state;
         // The device answered with a protocol error instead of a config.
         bool deviceRejected = false;
+        // The device cycles through its presets (KANALI 2.6.0 loop modes 3
+        // and 4); state.playMode shows the nearest user-media mode.
+        bool presetPlayback = false;
     };
 
     using UploadProgress = std::function<void(qint64 bytesSent, qint64 totalBytes)>;

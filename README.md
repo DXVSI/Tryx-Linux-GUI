@@ -46,11 +46,11 @@ the maintainer; roadmap entries do not imply current compatibility.
 | [PANORAMA SE ARGB 360](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-se/black-360) | AIO liquid cooler | 6.67-inch curved AMOLED, 2240 × 1080 | Tested on real hardware |
 | [PANORAMA SE ARGB 240](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-se/black-360) | AIO liquid cooler | 6.67-inch curved AMOLED, 2240 × 1080 | Hardware needed; protocol unverified |
 | [PANORAMA WB](https://www.tryx.com/en/products/liquid-cooling/panorama/panorama-wb/black) | Custom-loop CPU water block | 6.5-inch curved AMOLED, 2240 × 1080 | Community-tested; not maintainer-tested |
-| [STAGE ARGB 360](https://www.tryx.com/en/products/liquid-cooling/stage/stage/white) | AIO liquid cooler | Dual 4.0-inch IPS, 720 × 720 each | Planned; hardware and protocol research required |
+| [STAGE ARGB 360](https://www.tryx.com/en/products/liquid-cooling/stage/stage/white) | AIO liquid cooler | Dual 4.0-inch IPS, 720 × 720 each | `391a:1041` mapped from the official application, not tested on hardware |
 | [TURRIS 620](https://www.tryx.com/en/products/liquid-cooling/turris/turris-620/black) | Dual-tower air cooler | 5.0-inch IPS, 1280 × 720 | Community-tested; not maintainer-tested |
-| [HOLO ARGB 360](https://www.tryx.com/en/products/liquid-cooling/holo/holo/white-360) | AIO liquid cooler | Holographic display, 640 × 480 | Planned; hardware and protocol research required |
+| [HOLO ARGB 360](https://www.tryx.com/en/products/liquid-cooling/holo/holo/white-360) | AIO liquid cooler | Holographic display, 640 × 480 | `391a:1051` mapped from the official application, not tested on hardware |
 | [PANORAMA V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
-| [PANORAMA SE V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; planned |
+| [PANORAMA SE V2](https://www.tryx.com/en/about/news/tryx-computex-2026) | AIO liquid cooler | 2K curved AMOLED | Announced for Q3 2026; `391a:1071` mapped like the official application, not tested on hardware |
 
 **Status definitions:**
 
@@ -67,6 +67,12 @@ that every TRYX display has the same geometry or capabilities:
 | `391a:1021` | Panorama SE / PASE | 2240 × 1080 | Current PASE printer-class features |
 | `391a:1011` | Panorama | 2240 × 1080 | PASE media, display, and overlay features; firmware flashing disabled; community-tested |
 | `391a:1031` | Panorama WB | 2240 × 1080 | Same feature set as Panorama `391a:1011`, following the official application's shared Panorama layout; firmware flashing disabled; community-tested |
+| `391a:1041` | STAGE ARGB 360 | 1440 × 720 | Mapped from the official application 2.6.0 (Panorama SE commands, a left and a right 720 × 720 area), not tested on hardware: media upload in the official media header (full screen with 60 fps video and GIF and 30 fps stills, one 720 × 720 area at 30 fps), FileList catalog with read-only device presets, full-screen Apply with Single/Loop/Shuffle, split-screen Apply with one medium per area, brightness and backlight, overlay metrics with hardware badges in one or both areas, saved layouts. No mirror, waterfall, custom badge text, media pull (Save as new/Replace), or firmware |
+| `391a:1051` | HOLO 360 | 640 × 480 | Mapped from the official application 2.6.0 (Panorama SE commands, one 4:3 area), not tested on hardware: media upload in the official media header with its 60 fps video and GIF and 30 fps stills, FileList catalog with read-only device presets, full-screen single-media Apply with Single/Loop/Shuffle, brightness and backlight, overlay metrics with hardware badges, saved layouts; the decoration light is kept as the device reports it. No split screen, mirror, waterfall, custom badge text, light controls, media pull (Save as new/Replace), or firmware |
+| `391a:1061` | Panorama SE / PASE | 2240 × 1080 | Same feature set as Panorama `391a:1011` (custom badge text stays `391a:1021` only); mapped to PASE like the official application 2.6.0; firmware flashing disabled; not tested on hardware |
+| `391a:1071` | Panorama SE V2 | 2240 × 1080 | Same feature set as Panorama `391a:1011`; the official application 2.6.0 drives it with the PASE screen profile; firmware flashing disabled, its firmware package differs; not tested on hardware |
+| `391a:10a1` | Panorama WB | 2240 × 1080 | Same feature set as Panorama `391a:1011`; mapped to Panorama WB like the official application 2.6.0; firmware flashing disabled; not tested on hardware |
+| `391a:10b1` | Panorama | 2240 × 1080 | Same feature set as Panorama `391a:1011`; mapped to Panorama like the official application 2.6.0; firmware flashing disabled; not tested on hardware |
 | `391a:2011` | Turris 620 | 1280 × 720 | MXHD media upload, FileList catalog with read-only device presets, single-media Apply with Single/Loop/Shuffle, brightness, backlight and mirror, overlay metrics with hardware badges; no split screen, waterfall, custom badge text, media pull (Save as new/Replace), saved layouts, or firmware; community-tested |
 
 Turris support follows the command set of the official desktop application.
@@ -247,6 +253,28 @@ to the user service. A separate Settings switch can create an owner-managed
 XDG Autostart entry for the GUI. Login start hides the initial window only when
 Hide to tray is selected and a tray host is actually available; otherwise the
 window is shown. This switch never changes the background runtime service.
+
+## What's new in 2.6.0
+
+- The STAGE ARGB 360 (`391a:1041`) and HOLO 360 (`391a:1051`) get media
+  upload, Apply, brightness and the metrics overlay, set up the way the
+  official application drives them. Nobody has run them on hardware yet, so
+  this is test support; reports are welcome in #57 and #42.
+- More product IDs from the official application are recognized: Panorama SE
+  V2 `391a:1071`, and `391a:1061`, `391a:10a1` and `391a:10b1` as Panorama SE,
+  Panorama WB and Panorama. They are not tested on hardware either.
+- Pictures for the Panorama, Panorama SE and Panorama WB are uploaded as one
+  frame in the TRYX media header, the format the official application uses,
+  instead of a raw minute-long clip. This targets the Loop and Shuffle stall
+  (#37) and is not yet confirmed on hardware. Delete pictures uploaded with
+  older versions and upload them again.
+- With newer firmware, the preset Loop and Shuffle modes set by the official
+  application read correctly, and messages the display sends on its own no
+  longer break a command.
+- On legacy `cm01` displays, the app says when `adb` is missing or cannot open
+  the display, instead of "ADB device not found" (#59).
+- The support report folder picker enables Save only after the selected folder
+  has been listed.
 
 ## What's new in 2.5.4
 
@@ -546,7 +574,8 @@ Manual user upload remains available. Thumbnails are generated from the user-sel
 
 Writable user media already stored on a PASE device has an action menu in the
 Media Library. `Export copy…` saves the exact prepared device stream as
-`.h264`; it cannot reconstruct the original MP4, GIF, image, audio, or file
+`.h264`, without the official media header that a picture carries on the
+device; it cannot reconstruct the original MP4, GIF, image, audio, or file
 name. `Edit` downloads the same private copy into the background runtime,
 opens it in the Fit, Fill, Crop and Stretch editor, and offers two explicit
 results:
@@ -591,7 +620,7 @@ runtime remote, and a working USB portal backend are required. Stop any other
 TRYX runtime before starting this build.
 
 ```fish
-flatpak install --user ./tryx-panorama-manager-2.5.4-experimental-x86_64.flatpak
+flatpak install --user ./tryx-panorama-manager-2.6.0-experimental-x86_64.flatpak
 flatpak run io.github.dxvsi.tryx_panorama_manager//experimental
 ```
 
@@ -623,13 +652,13 @@ Install a downloaded package with the package manager for your distribution:
 # Fedora. Enable RPM Fusion Free first because media conversion requires the
 # full ffmpeg package with the libx264 encoder.
 set tryx_fedora_release (rpm -E %fedora)
-sudo dnf install --allowerasing ./tryx-panorama-manager-2.5.4-1.fc$tryx_fedora_release.x86_64.rpm
+sudo dnf install --allowerasing ./tryx-panorama-manager-2.6.0-1.fc$tryx_fedora_release.x86_64.rpm
 
 # Ubuntu 24.04 or Linux Mint 22
-sudo apt install ./tryx-panorama-manager_2.5.4-1_amd64.deb
+sudo apt install ./tryx-panorama-manager_2.6.0-1_amd64.deb
 
 # Arch Linux
-sudo pacman -U ./tryx-panorama-manager-2.5.4-1-x86_64.pkg.tar.zst
+sudo pacman -U ./tryx-panorama-manager-2.6.0-1-x86_64.pkg.tar.zst
 ```
 
 These commands use the distribution package manager to resolve and download
@@ -750,7 +779,7 @@ still rejected.
 
 **Runtime:**
 - `ffmpeg` with the `libx264` encoder - media conversion
-- `adb` (android-tools) - legacy OTA file transfer and optional Rockchip reboot-to-loader
+- `adb` (android-tools) - media list and upload on legacy serial/ADB displays, legacy OTA file transfer and optional Rockchip reboot-to-loader
 - `unzip` - firmware package validation and extraction
 - `debugfs` (e2fsprogs) - Rockchip rootfs inspection
 - `upgrade_tool` - optional external Rockchip flashing backend for new KANALI firmware bundles
@@ -766,7 +795,7 @@ sudo dnf install -y android-tools unzip e2fsprogs ffmpeg mesa-demos
 
 **Permissions:**
 - User must be in `dialout` group (or `uucp` on Arch) for serial access
-- Supported printer-class devices use `391a:1011` for Panorama, `391a:1021` for Panorama SE / PASE, `391a:1031` for Panorama WB, and `391a:2011` for Turris 620; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
+- Supported printer-class devices use `391a:1011` for Panorama, `391a:1021` for Panorama SE / PASE, `391a:1031` for Panorama WB, and `391a:2011` for Turris 620; `391a:1041` (STAGE ARGB 360), `391a:1051` (HOLO 360), `391a:1061`, `391a:1071`, `391a:10a1` and `391a:10b1` are mapped like the official application but not tested on hardware; direct libusb access uses `/dev/bus/usb/*/*` and requires the `lp` group or a seat ACL from `TAG+="uaccess"`
 - Fedora's generic printer rule must not start CUPS `configure-printer` for this vendor protocol. The qmake install target places an early access rule and a late printer-suppression rule in `/usr/lib/udev/rules.d`; do not create same-named overrides in `/etc/udev/rules.d`, because they would shadow packaged updates.
 
 ### Display drops off USB and only returns after a power-off
@@ -801,8 +830,15 @@ longer accepts data, and the runtime reports that the keepalive stopped after
 only switching the power supply off does. On the same setup, one still image
 and a Loop of two videos each ran for more than 10 hours.
 
-Until TRYX fixes the firmware, put only videos in a Loop or Shuffle playlist,
-or show a single image. Details are in issue #37.
+Earlier versions uploaded a picture to the Panorama family as a raw
+minute-long clip. This version uploads it the way the official application
+does: one frame with the official media header. This is meant to fix the
+Loop and Shuffle stall, but it is not yet confirmed on hardware. Pictures
+uploaded by an earlier version stay on the device in the old format; delete
+and upload them again from the original file before you use Loop or Shuffle.
+`Edit` of such an older picture keeps it a minute-long clip. Until the fix is
+confirmed, a playlist of videos or a single image is the safe choice. Details
+are in issue #37.
 
 ### The display session never starts after the first media upload
 

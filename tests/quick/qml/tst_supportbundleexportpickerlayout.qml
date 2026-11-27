@@ -122,6 +122,53 @@ TestCase {
         tryVerify(() => launcher.activeFocus)
     }
 
+    function navigateAndExpectSaveToWait(saveButton, folder) {
+        // FolderListModel keeps the previous folder's status until its
+        // worker thread posts Loading for the new one. Nothing below runs
+        // the event loop before tryVerify, so these checks see the state a
+        // click right after navigation would hit.
+        picker.navigate(folder)
+        verify(!picker.currentFolderReady,
+               "Ready reported for the previous folder must not count")
+        verify(!saveButton.enabled)
+        picker.saveHere()
+        verify(picker.opened)
+        tryVerify(() => saveButton.enabled)
+        verify(picker.currentFolderReady)
+        compare(controllerMock.exportCount, 0)
+    }
+
+    function test_saveWaitsForTheNewFolderListing() {
+        launcher.forceActiveFocus()
+        tryVerify(() => launcher.activeFocus)
+        picker.openForExport()
+        tryVerify(() => picker.opened)
+        const list = findChild(picker, "supportBundleFolderList")
+        const saveButton = findChild(
+            picker, "supportBundleFolderSaveButton")
+        verify(list !== null)
+        verify(saveButton !== null)
+        tryVerify(() => saveButton.enabled && list.count > 0 &&
+                        list.itemAtIndex(0) !== null)
+        const subfolder = list.itemAtIndex(0).fileUrl
+
+        // tests/quick/qml has no subfolders: an empty list is its listing.
+        navigateAndExpectSaveToWait(saveButton, subfolder)
+        compare(list.count, 0)
+        // Qt 6.11 can report Null for the first navigation after the model
+        // is created; going back always starts from a settled Ready.
+        navigateAndExpectSaveToWait(saveButton, picker.homeFolder)
+        verify(list.count > 0)
+
+        saveButton.forceActiveFocus()
+        tryVerify(() => saveButton.activeFocus)
+        keyClick(Qt.Key_Space)
+        tryCompare(controllerMock, "exportCount", 1)
+        compare(String(controllerMock.exportedFolder),
+                String(picker.homeFolder))
+        tryVerify(() => launcher.activeFocus)
+    }
+
     function test_busyDisablesSaveAndEscapeRestoresFocus() {
         launcher.forceActiveFocus()
         tryVerify(() => launcher.activeFocus)
