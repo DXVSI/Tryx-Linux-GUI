@@ -1,3 +1,10 @@
+tryx-panorama-manager (2.6.1-1) noble; urgency=medium
+
+  * Keep the session when a STAGE ARGB 360 does not acknowledge a new configuration: Apply waits one second, then confirms the write by reading the configuration back, as it already does for the Turris 620, instead of closing the session and asking for a reconnect.
+  * Publish a second DEB built on Ubuntu 26.04, because the Ubuntu 24.04 package depends on Qt library package names that Ubuntu 26.04 no longer has.
+
+ -- DXVSI <dxvsi123@gmail.com>  Fri, 27 Nov 2026 22:00:00 +0000
+
 tryx-panorama-manager (2.6.0-1) noble; urgency=medium
 
   * Add test support for the STAGE ARGB 360 (391a:1041) and HOLO 360 (391a:1051): media in the official media header, Apply, brightness, backlight and overlay metrics, mapped from the official application and not tested on hardware.
