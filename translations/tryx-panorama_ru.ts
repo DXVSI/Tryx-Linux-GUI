@@ -3061,6 +3061,18 @@
         <translation>ADB-устройство не найдено</translation>
     </message>
     <message>
+        <source>adb not found. This display lists and receives media over ADB: install android-tools (the adb package on Debian and Ubuntu)</source>
+        <translation>adb не найден. Этот дисплей получает список медиа и файлы через ADB: установите android-tools (пакет adb в Debian и Ubuntu)</translation>
+    </message>
+    <message>
+        <source>adb cannot open the USB device of the display: %1</source>
+        <translation>adb не может открыть USB-устройство дисплея: %1</translation>
+    </message>
+    <message>
+        <source>adb lists the display in the %1 state, not ready</source>
+        <translation>adb показывает дисплей в состоянии %1, он не готов</translation>
+    </message>
+    <message>
         <location filename="../src/devicemanager.cpp" line="1045"/>
         <source>ffmpeg not found. Install it with your system package manager</source>
         <translation>ffmpeg не найден. Установите его через пакетный менеджер вашей системы</translation>

@@ -74,35 +74,47 @@ std::optional<std::string> Adb::run_device_shell(
   return run_command({"shell", remote_command});
 }
 
-bool Adb::is_device_connected() {
+Adb::DeviceStatus Adb::parse_device_list(const std::string& output) {
+  DeviceStatus result;
+  std::string::size_type pos = 0;
+  while (pos < output.size()) {
+    auto eol = output.find('\n', pos);
+    if (eol == std::string::npos) {
+      eol = output.size();
+    }
+    const std::string row = output.substr(pos, eol - pos);
+    pos = eol + 1;
+    const auto tab_idx = row.find('\t');
+    if (tab_idx == std::string::npos) {
+      continue;
+    }
+    std::string state = row.substr(tab_idx + 1);
+    while (!state.empty() && (state.back() == '\r' || state.back() == '\n' ||
+                              state.back() == ' ')) {
+      state.pop_back();
+    }
+    if (state == "device") {
+      return {Status::Ready, state};
+    }
+    if (state.rfind("no permissions", 0) == 0) {
+      result = {Status::NoPermissions, state};
+    } else if (result.status != Status::NoPermissions) {
+      result = {Status::NotReady, state};
+    }
+  }
+  return result;
+}
+
+Adb::DeviceStatus Adb::device_status() {
   auto output = run_command({"devices"});
   if (!output.has_value()) {
-    return false;
+    return {Status::NotInstalled, {}};
   }
+  return parse_device_list(output.value());
+}
 
-  const std::string& text = output.value();
-  std::string::size_type pos = 0;
-  while (pos < text.size()) {
-    auto eol = text.find('\n', pos);
-    if (eol == std::string::npos) {
-      eol = text.size();
-    }
-    std::string row = text.substr(pos, eol - pos);
-    auto tab_idx = row.find('\t');
-    if (tab_idx != std::string::npos) {
-      std::string status = row.substr(tab_idx + 1);
-      while (!status.empty() && (status.back() == '\r' ||
-                                  status.back() == '\n' ||
-                                  status.back() == ' ')) {
-        status.pop_back();
-      }
-      if (status == "device") {
-        return true;
-      }
-    }
-    pos = eol + 1;
-  }
-  return false;
+bool Adb::is_device_connected() {
+  return device_status().status == Status::Ready;
 }
 
 bool Adb::push(const std::string& local_path,
