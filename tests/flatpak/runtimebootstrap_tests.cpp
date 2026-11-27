@@ -67,6 +67,11 @@ private slots:
             runtime.call(QStringLiteral("Quit"));
             QTRY_VERIFY_WITH_TIMEOUT(owner().isEmpty(), 2000);
         }
+        // The sandbox runtime keeps its guard on the native service name
+        // until after the API name is gone. The next test must not start
+        // while the child it stopped still holds that guard.
+        QTRY_VERIFY_WITH_TIMEOUT(
+            owner(tryx::packaging::nativeRuntimeService()).isEmpty(), 2000);
     }
 
     void startsBundledRuntimeWithoutSystemd() {
