@@ -10,6 +10,25 @@ class Adb {
  public:
   static constexpr const char* MEDIA_PATH = "/sdcard/pcMedia/";
 
+  enum class Status {
+    Ready,          // a device row in the "device" state
+    NotInstalled,   // the adb program could not be started
+    NoDevice,       // adb lists no device
+    NoPermissions,  // adb cannot open the device's USB node
+    NotReady,       // another state, such as unauthorized or offline
+  };
+
+  struct DeviceStatus {
+    Status status = Status::NoDevice;
+    // The state adb printed for Status::NotReady and Status::NoPermissions.
+    std::string state;
+  };
+
+  // Runs `adb devices` and classifies its output.
+  static DeviceStatus device_status();
+  // Classifies the output of `adb devices`; a row in the "device" state wins.
+  static DeviceStatus parse_device_list(const std::string& output);
+
   static bool is_device_connected();
   static bool push(const std::string& local_path,
                    const std::string& remote_name);
