@@ -2372,6 +2372,7 @@ private slots:
     void stageRunConfigFollowsOfficialLayout_data();
     void stageRunConfigFollowsOfficialLayout();
     void stageSplitApplyWritesDualMedia();
+    void stageApplyToleratesUnacknowledgedUserConfig();
     void stageHardwareCatalogListsEveryEntry_data();
     void stageHardwareCatalogListsEveryEntry();
     void stageHardwareCatalogReachesTheCoordinator_data();
@@ -11250,6 +11251,8 @@ void PrinterProtocolTests::kanaliMappedProductIdsReusePanoramaProfiles() {
     QCOMPARE(profile->fileTransferTrackId, base->fileTransferTrackId);
     QCOMPARE(profile->readbackConfirmedWriteAckWindowMs,
              base->readbackConfirmedWriteAckWindowMs);
+    QCOMPARE(profile->userConfigurationAckWindowMs,
+             base->userConfigurationAckWindowMs);
     QCOMPARE(profile->keepBulkInPending, base->keepBulkInPending);
     QCOMPARE(profile->defaultPowerOnMedia, base->defaultPowerOnMedia);
     QCOMPARE(profile->defaultStandbyMedia, base->defaultStandbyMedia);
@@ -11327,6 +11330,7 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
                  PrinterDisplayOrientationModel::RotationFields);
         QCOMPARE(profile->fileTransferTrackId, quint64{0});
         QCOMPARE(profile->readbackConfirmedWriteAckWindowMs, 0);
+        QCOMPARE(profile->userConfigurationAckWindowMs, 0);
         QVERIFY(profile->defaultPowerOnMedia.isEmpty());
         QVERIFY(profile->defaultStandbyMedia.isEmpty());
         QVERIFY(profile->mediaUploadSupported);
@@ -11354,6 +11358,7 @@ void PrinterProtocolTests::productProfilesExposeExactCapabilities() {
     QCOMPARE(turris->mediaContainer, PrinterMediaContainer::MxhdH264);
     QCOMPARE(turris->keepalive, PrinterSessionKeepalive::Negotiated);
     QCOMPARE(turris->readbackConfirmedWriteAckWindowMs, 300);
+    QCOMPARE(turris->userConfigurationAckWindowMs, 300);
     QCOMPARE(turris->overlayLayout,
              PrinterOverlayLayoutKind::TurrisSingleArea1280);
     QCOMPARE(turris->orientationModel,
@@ -11431,6 +11436,7 @@ void PrinterProtocolTests::holoProfileMapsOfficialCapabilities() {
              PrinterDisplayOrientationModel::RotationFields);
     QCOMPARE(holo->fileTransferTrackId, quint64{0});
     QCOMPARE(holo->readbackConfirmedWriteAckWindowMs, 0);
+    QCOMPARE(holo->userConfigurationAckWindowMs, 0);
     QVERIFY(holo->keepBulkInPending);
     QCOMPARE(holo->defaultPowerOnMedia,
              QStringLiteral("default_poweron.mp4.h264_640x480"));
@@ -11648,6 +11654,7 @@ void PrinterProtocolTests::stageProfileMapsOfficialCapabilities() {
              PrinterDisplayOrientationModel::RotationFields);
     QCOMPARE(stage->fileTransferTrackId, quint64{0});
     QCOMPARE(stage->readbackConfirmedWriteAckWindowMs, 0);
+    QCOMPARE(stage->userConfigurationAckWindowMs, 1000);
     QVERIFY(stage->keepBulkInPending);
     QCOMPARE(stage->defaultPowerOnMedia,
              QStringLiteral("default_poweron_1440x720.mp4.h264"));
@@ -15320,6 +15327,116 @@ void PrinterProtocolTests::stageSplitApplyWritesDualMedia() {
     QCOMPARE(userConfig.display_config().media_rotation(), 0U);
     QCOMPARE(QString::fromStdString(userConfig.poweron_config().media_file()),
              QStringLiteral("default_poweron_1440x720.mp4.h264"));
+}
+
+// Issue #57: a real STAGE shows and stores the UserConfiguration (200) but
+// sends no acknowledgement within 3 s. Apply must keep the session, confirm
+// the write by the readback and skip an acknowledgement that comes late.
+void PrinterProtocolTests::stageApplyToleratesUnacknowledgedUserConfig() {
+    int sockets[2] = {-1, -1};
+    QString socketError;
+    QVERIFY2(createSocketPair(sockets, &socketError),
+             qPrintable(socketError));
+
+    panorama::wire::v1::UserConfiguration device;
+    device.mutable_poweron_config()->set_media_file(
+        "default_poweron_1440x720.mp4.h264");
+    device.mutable_standby_config()->set_media_file(
+        "default_standby_1440x720.mp4.h264");
+    auto *work = device.mutable_work_config();
+    work->set_media_mode(panorama::wire::v1::WorkConfiguration::MEDIA_SINGLE);
+    work->set_loop_mode(panorama::wire::v1::WorkConfiguration::LOOP_SINGLE);
+    work->set_single_mode_media_file("festival.mp4.h264_1440x720");
+    auto *display = device.mutable_display_config();
+    display->set_backlight_enable(true);
+    display->set_backlight_brightness(80);
+
+    const QString upload =
+        QStringLiteral("2026-11-27_06-46-44-320.png.h264_1440x720");
+    QString peerError;
+    panorama::wire::v1::UserConfiguration written;
+    std::thread peer([&]() {
+        QByteArray buffer;
+        panorama::wire::v1::Request preflight;
+        if (!readRequest(sockets[1], &preflight, &peerError, kPeerTimeoutMs,
+                         &buffer) ||
+            preflight.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral("apply did not start with a 104 query");
+            return;
+        }
+        auto current = baseResponse(preflight);
+        *current.mutable_user_configuration() = device;
+        if (!writeResponse(sockets[1], current, &peerError)) {
+            return;
+        }
+        // 200: stored and shown, not acknowledged.
+        panorama::wire::v1::Request write;
+        if (!readRequest(sockets[1], &write, &peerError, kPeerTimeoutMs, &buffer) ||
+            write.body_case() != panorama::wire::v1::Request::kUserConfiguration) {
+            peerError = QStringLiteral("apply did not write the user configuration");
+            return;
+        }
+        written = write.user_configuration();
+        // 201 activation: one-way.
+        panorama::wire::v1::Request trigger;
+        if (!readRequest(sockets[1], &trigger, &peerError, kPeerTimeoutMs,
+                         &buffer) ||
+            trigger.body_case() != panorama::wire::v1::Request::kOverlayLayout) {
+            peerError = QStringLiteral("apply did not send the layout trigger");
+            return;
+        }
+        panorama::wire::v1::Request readback;
+        if (!readRequest(sockets[1], &readback, &peerError, kPeerTimeoutMs,
+                         &buffer) ||
+            readback.body_case() !=
+                panorama::wire::v1::Request::kUserConfigurationQuery) {
+            peerError = QStringLiteral("apply did not read the configuration back");
+            return;
+        }
+        // The 200 acknowledgement arrives late, ahead of the readback answer.
+        auto lateAck = baseResponse(write);
+        lateAck.mutable_acknowledgement();
+        if (!writeResponse(sockets[1], lateAck, &peerError)) {
+            return;
+        }
+        auto stored = baseResponse(readback);
+        *stored.mutable_user_configuration() = written;
+        writeResponse(sockets[1], stored, &peerError);
+    });
+
+    const auto stage = printerProductProfileForId(0x1041);
+    QVERIFY(stage.has_value());
+    // The production transaction timeout: the silent 200 must not cost it.
+    PrinterProtocol protocol(*stage, 3000);
+    const QString devicePath = QStringLiteral("/dev/usb/lp-stage-silent-200");
+    protocol.adoptFileDescriptorForTesting(sockets[0], devicePath);
+    PrinterProtocol::PaseApplyConfig config;
+    config.mediaPresent = true;
+    config.screenMode = QStringLiteral("Full Screen");
+    config.playMode = QStringLiteral("Single");
+    config.media = {upload};
+    QString applyError;
+    PrinterProtocol::MutationDetails mutation;
+    PrinterProtocol::PaseDisplayState applied;
+    QElapsedTimer applyTimer;
+    applyTimer.start();
+    const bool ok = protocol.applyPaseConfiguration(
+        devicePath, config, &applyError, PrinterProtocol::OperationContext{},
+        &mutation, &applied);
+    const qint64 applyElapsedMs = applyTimer.elapsed();
+    peer.join();
+    ::close(sockets[1]);
+
+    QVERIFY2(peerError.isEmpty(), qPrintable(peerError));
+    QVERIFY2(ok, qPrintable(applyError));
+    QCOMPARE(mutation.outcome, PrinterProtocol::MutationOutcome::Succeeded);
+    // Only the STAGE acknowledgement window is spent on the silent write.
+    QVERIFY2(applyElapsedMs >= 900 && applyElapsedMs < 2500,
+             qPrintable(QString::number(applyElapsedMs)));
+    QCOMPARE(applied.media, QStringList{upload});
+    QCOMPARE(QString::fromStdString(written.work_config().single_mode_media_file()),
+             upload);
 }
 
 namespace {
